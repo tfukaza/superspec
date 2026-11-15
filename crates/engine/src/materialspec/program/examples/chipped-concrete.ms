@@ -1,0 +1,14 @@
+material 1;
+import "./common.ms";
+param chip_size: scalar = 0.08 range(0.005, 0.5);
+param chip_depth: scalar = 0.002 range(0.0, 0.02);
+param coverage_amount: scalar = 0.48 range(0.1, 0.9);
+param tint: vec3 = vec3(0.43, 0.40, 0.35) range(0.0, 1.0);
+let aggregate = fbm(surface / 0.012, seed("aggregate"), 4);
+let warped = surface / chip_size + vec2(noise(surface / 0.09, seed("warp-x")), noise(surface / 0.09, seed("warp-y"))) * 0.4;
+let chips = coverage(fbm(warped, seed("chips"), 4), coverage_amount, 0.08);
+let runoff_mask = runoff(0.025, 0.7);
+output base_color = mix(tinted(tint, aggregate), tint * 0.58, chips) * (1.0 - runoff_mask * 0.25);
+output roughness = mix(0.68, 0.96, chips);
+output metalness = 0.0;
+output height = aggregate * 0.0003 - chips * chip_depth;

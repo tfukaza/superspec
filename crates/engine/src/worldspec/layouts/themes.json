@@ -1,0 +1,354 @@
+[
+  {
+    "id": "foundry",
+    "name": "Foundry",
+    "blurb": "Rolling mills and slag. Everything is hot and orange and too loud.",
+    "wallThickness": 0.3,
+    "ceiling": [
+      4.2,
+      5.4
+    ],
+    "palette": {
+      "roles": {
+        "floor": 4866104,
+        "roof": 3287846,
+        "static_hard": 9072470,
+        "exterior_wall": 7164736,
+        "riser": 6113078,
+        "stair": 8020816,
+        "ramp": 8020816,
+        "cover": 10246698,
+        "soft_panel": 12876341,
+        "glass": 16756838
+      },
+      "fog": 1905161,
+      "fogNear": 22,
+      "fogFar": 110,
+      "sky": 1905161,
+      "sun": 16756838,
+      "sunIntensity": 2.2,
+      "hemiSky": 16757626,
+      "hemiGround": 2758152,
+      "hemiIntensity": 1.7,
+      "grid": {
+        "line": 0,
+        "alpha": 0.26
+      },
+      "emissive": {
+        "glass": {
+          "color": 16742938,
+          "intensity": 1.6
+        }
+      }
+    },
+    "decor": {
+      "colonnade": 0.5,
+      "beams": 0.6,
+      "centreCover": 0.5,
+      "clutter": 0.8,
+      "floaters": 0.15,
+      "arches": 0.4,
+      "pillarHeight": [
+        3.2,
+        4.4
+      ],
+      "crateHeight": [
+        0.9,
+        1.6
+      ]
+    }
+  },
+  {
+    "id": "cryo",
+    "name": "Cryo Station",
+    "blurb": "Frost on the glass and not enough light. Long sightlines, cold floors.",
+    "wallThickness": 0.24,
+    "ceiling": [
+      3.6,
+      4.6
+    ],
+    "palette": {
+      "roles": {
+        "floor": 6320254,
+        "roof": 4477533,
+        "static_hard": 10466500,
+        "exterior_wall": 8295331,
+        "riser": 7571094,
+        "stair": 9348019,
+        "ramp": 9348019,
+        "cover": 6259350,
+        "soft_panel": 11061468,
+        "glass": 12577535
+      },
+      "fog": 857888,
+      "fogNear": 26,
+      "fogFar": 130,
+      "sky": 857888,
+      "sun": 14217471,
+      "sunIntensity": 1.9,
+      "hemiSky": 13625599,
+      "hemiGround": 1780536,
+      "hemiIntensity": 2.3,
+      "grid": {
+        "line": 5160,
+        "alpha": 0.22
+      },
+      "emissive": {
+        "glass": {
+          "color": 9428223,
+          "intensity": 0.9
+        }
+      }
+    },
+    "decor": {
+      "colonnade": 0.35,
+      "beams": 0.4,
+      "centreCover": 0.45,
+      "clutter": 0.55,
+      "floaters": 0.3,
+      "arches": 0.5,
+      "pillarHeight": [
+        2.8,
+        3.6
+      ],
+      "crateHeight": [
+        0.9,
+        1.4
+      ]
+    }
+  },
+  {
+    "id": "sandstone",
+    "name": "Sandstone",
+    "blurb": "Sun-bleached courtyards and thick shade. You can see a long way here.",
+    "wallThickness": 0.36,
+    "ceiling": [
+      4.5,
+      6
+    ],
+    "palette": {
+      "roles": {
+        "floor": 12101252,
+        "roof": 10259049,
+        "static_hard": 14205850,
+        "exterior_wall": 13217928,
+        "riser": 12560511,
+        "stair": 13351060,
+        "ramp": 13351060,
+        "cover": 10321746,
+        "soft_panel": 14731680,
+        "glass": 13625087
+      },
+      "fog": 14272934,
+      "fogNear": 50,
+      "fogFar": 220,
+      "sky": 14272934,
+      "sun": 16773583,
+      "sunIntensity": 2.6,
+      "hemiSky": 16773328,
+      "hemiGround": 9074000,
+      "hemiIntensity": 2.4,
+      "grid": {
+        "line": 3812372,
+        "alpha": 0.16
+      }
+    },
+    "decor": {
+      "colonnade": 0.65,
+      "beams": 0.2,
+      "centreCover": 0.4,
+      "clutter": 0.5,
+      "floaters": 0.05,
+      "arches": 0.7,
+      "pillarHeight": [
+        3.4,
+        5
+      ],
+      "crateHeight": [
+        1,
+        1.5
+      ]
+    }
+  },
+  {
+    "id": "overgrown",
+    "name": "Overgrown",
+    "blurb": "Something used to run here. Now it is roots and standing water.",
+    "wallThickness": 0.28,
+    "ceiling": [
+      3.8,
+      5
+    ],
+    "palette": {
+      "roles": {
+        "floor": 4871234,
+        "roof": 3357744,
+        "static_hard": 7306334,
+        "exterior_wall": 6056524,
+        "riser": 5595722,
+        "stair": 6714202,
+        "ramp": 6714202,
+        "cover": 6060604,
+        "soft_panel": 8688991,
+        "glass": 10475168
+      },
+      "fog": 1186322,
+      "fogNear": 20,
+      "fogFar": 100,
+      "sky": 1186322,
+      "sun": 14086320,
+      "sunIntensity": 1.7,
+      "hemiSky": 12575656,
+      "hemiGround": 1910296,
+      "hemiIntensity": 2,
+      "grid": {
+        "line": 660488,
+        "alpha": 0.24
+      },
+      "emissive": {
+        "glass": {
+          "color": 8388512,
+          "intensity": 0.7
+        }
+      }
+    },
+    "decor": {
+      "colonnade": 0.45,
+      "beams": 0.5,
+      "centreCover": 0.6,
+      "clutter": 0.9,
+      "floaters": 0.25,
+      "arches": 0.35,
+      "pillarHeight": [
+        2.6,
+        4.2
+      ],
+      "crateHeight": [
+        0.8,
+        1.6
+      ]
+    }
+  },
+  {
+    "id": "void",
+    "name": "Void Terminal",
+    "blurb": "Platforms hanging in nothing, joined by light. Mind the edges.",
+    "wallThickness": 0.26,
+    "ceiling": [
+      4,
+      5.5
+    ],
+    "palette": {
+      "roles": {
+        "floor": 2762048,
+        "roof": 1841200,
+        "static_hard": 5589632,
+        "exterior_wall": 4142947,
+        "riser": 4734574,
+        "stair": 5984140,
+        "ramp": 5984140,
+        "cover": 8018616,
+        "soft_panel": 9400272,
+        "glass": 13215743
+      },
+      "fog": 460303,
+      "fogNear": 24,
+      "fogFar": 140,
+      "sky": 460303,
+      "sun": 12626175,
+      "sunIntensity": 1.5,
+      "hemiSky": 11113215,
+      "hemiGround": 1182754,
+      "hemiIntensity": 1.9,
+      "grid": {
+        "line": 1182248,
+        "alpha": 0.3
+      },
+      "emissive": {
+        "glass": {
+          "color": 12160255,
+          "intensity": 2
+        },
+        "riser": {
+          "color": 6967248,
+          "intensity": 0.5
+        }
+      }
+    },
+    "decor": {
+      "colonnade": 0.3,
+      "beams": 0.35,
+      "centreCover": 0.35,
+      "clutter": 0.4,
+      "floaters": 0.75,
+      "arches": 0.3,
+      "pillarHeight": [
+        3,
+        5
+      ],
+      "crateHeight": [
+        0.9,
+        1.5
+      ]
+    }
+  },
+  {
+    "id": "bunker",
+    "name": "Bunker",
+    "blurb": "Poured concrete, low ceilings, and corners you should check twice.",
+    "wallThickness": 0.34,
+    "ceiling": [
+      3.3,
+      4
+    ],
+    "palette": {
+      "roles": {
+        "floor": 5921370,
+        "roof": 4079166,
+        "static_hard": 9276813,
+        "exterior_wall": 7303023,
+        "riser": 6776679,
+        "stair": 8158332,
+        "ramp": 8158332,
+        "cover": 7170654,
+        "soft_panel": 11049597,
+        "glass": 11060420
+      },
+      "fog": 987411,
+      "fogNear": 16,
+      "fogFar": 80,
+      "sky": 987411,
+      "sun": 15790054,
+      "sunIntensity": 1.5,
+      "hemiSky": 12568268,
+      "hemiGround": 2236959,
+      "hemiIntensity": 1.7,
+      "grid": {
+        "line": 0,
+        "alpha": 0.28
+      },
+      "emissive": {
+        "glass": {
+          "color": 16767370,
+          "intensity": 1.2
+        }
+      }
+    },
+    "decor": {
+      "colonnade": 0.55,
+      "beams": 0.7,
+      "centreCover": 0.55,
+      "clutter": 0.75,
+      "floaters": 0.05,
+      "arches": 0.45,
+      "pillarHeight": [
+        3,
+        3.6
+      ],
+      "crateHeight": [
+        0.9,
+        1.5
+      ]
+    }
+  }
+]

@@ -1,0 +1,12 @@
+material 1;
+import "./common.ms";
+param flake_size: scalar = 0.025 range(0.002, 0.3);
+param damage: scalar = 0.55 range(0.1, 0.9);
+param paint: vec3 = vec3(0.025, 0.14, 0.21) range(0.0, 1.0);
+param polished: bool = false;
+let flakes = coverage(cellular(surface / flake_size, seed("flakes")), damage, 0.07);
+let scratches = fbm(scale(rotate(surface, 0.2), vec2(160.0, 8.0)), seed("scratches"), 3);
+output base_color = mix(paint, vec3(0.21, 0.16, 0.10), flakes);
+output roughness = mix(select(polished, 0.2, 0.48), 0.88, flakes) + scratches * 0.04;
+output metalness = 1.0 - flakes * 0.7;
+output height = -flakes * 0.0005 + scratches * 0.00002;

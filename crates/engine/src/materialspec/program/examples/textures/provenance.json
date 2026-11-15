@@ -1,0 +1,18 @@
+{
+  "description": "Source images of the Kowloon concrete study, copied unchanged so the ported recipe builds without LevelSpec. Linear means are the study's recorded values.",
+  "assets": {
+    "concrete-plain.png": {
+      "source": "levelspec/projects/kowloon-concrete-study/textures/concrete-plain.png",
+      "generator": "Built-in ImageGen",
+      "purpose": "Plain gray concrete base with fine pores, no stains or cracks",
+      "sha256": "25341f2f7d6a6fa91de7a52b04ad0dcae3935c593939129a958c39d3004512ff",
+      "linearMean": [0.37286770477657405, 0.3662141145046476, 0.3582086447939772]
+    },
+    "concrete-fine-sand.png": {
+      "source": "levelspec/projects/kowloon-concrete-study/textures/concrete-fine-sand.png",
+      "generator": "Built-in ImageGen",
+      "sha256": "59e2a45ae03bbf621093e97b8e07e4d005ba9292ce5a0bb0873b928c49d94c4a",
+      "linearMean": [0.20798059217157364, 0.20320214220777086, 0.18970546072187944]
+    }
+  }
+}

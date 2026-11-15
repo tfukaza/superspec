@@ -1,0 +1,31 @@
+[package]
+name = "superspec-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+authoring = ["dep:rustfft", "dep:skrifa", "dep:ab_glyph_rasterizer"]
+wasm-threads = ["dep:rayon"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rayon = { version = "=1.11.0", optional = true, features = ["web_spin_lock"] }
+
+[dependencies]
+superspec-profiles = { path = "../profiles" }
+superspec-catalog = { path = "../catalog" }
+superspec-model = { path = "../model" }
+superspec-types = { path = "../types" }
+superspec-aml = { path = "../aml" }
+superspec-geometry = { path = "../geometry" }
+serde.workspace = true
+serde_json.workspace = true
+ryu-js = "=1.0.3"
+sha2 = "=0.10.9"
+rustfft = { version = "6.4.1", optional = true }
+skrifa = { version = "0.50.0", optional = true }
+ab_glyph_rasterizer = { version = "0.1.10", optional = true }
+
+[lints]
+workspace = true
