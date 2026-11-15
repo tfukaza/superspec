@@ -1,0 +1,11 @@
+<architecture version="1" id="rust-stage1" name="Rust / Wasm courtyard study" validation="premap">
+  <material id="plaster" color="#dbcbb1" roughness="0.85"/>
+  <material id="stone" color="#828d88" roughness="0.9"/>
+  <material id="accent" color="#ad583b" roughness="0.7"/>
+  <box id="ground" position="-1 -2 -0.25" width="8" depth="6" height="0.25" material="stone"/>
+  <path id="wall-axis" points="0 0 0; 6 0 0"/>
+  <wall id="wall" path="wall-axis" thickness="0.3" height="3" material="plaster"/>
+  <opening id="door" host="wall" center="3 1" width="1.2" height="2"/>
+  <box id="bench" position="1 2 0" width="2" depth="0.65" height="0.5" material="accent"/>
+  <box id="plinth" position="5 2 0" anchor="bottom-center" width="0.8" depth="0.8" height="0.9" material="plaster"/>
+</architecture>

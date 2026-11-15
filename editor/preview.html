@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>SuperSpec — file preview</title></head>
+<body><header><div><strong>SuperSpec</strong> <span>Read-only file preview</span></div><output id="status" role="status">Connecting…</output><button id="walk">Walk</button></header>
+<main class="file-preview"><section class="preview"><div id="viewport" aria-label="Three-dimensional scene"></div><div class="caption"><strong id="title">Preview</strong><label class="walk-controls">Movement helper <select id="walk-helper"><option value="off">Off</option><option value="jump">Repeat jump</option><option value="crouch">Crouch</option></select></label><span>Save the AML source or a companion asset to rebuild. Navigation has not been validated.</span><span id="selection">Click a model to inspect its source.</span><pre id="diagnostics" aria-live="polite"></pre></div></section></main>
+<script type="module" src="/preview.ts"></script></body></html>
