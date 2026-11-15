@@ -1,0 +1,44 @@
+{
+  "name": "superspec",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Shared browser preview and editor for the SuperSpec Rust compiler.",
+  "scripts": {
+    "dev": "vite --config vite.rust.config.ts",
+    "dev:rust": "vite --config vite.rust.config.ts",
+    "build:viewer": "vite build --config vite.rust.config.ts",
+    "build:rust-ui": "vite build --config vite.rust.config.ts",
+    "check": "tsc --noEmit",
+    "check:architecture": "cargo run --quiet --locked -p superspec-architecture-check",
+    "check:sdk": "cargo run --quiet --locked -p superspec-cli --bin superspec-studio -- sdk --out generated/material-sdk && tsc -p tests/sdk-types/tsconfig.json",
+    "test": "node --test tests/browser/rust-packet.test.ts tests/browser/rust-updates.test.ts",
+    "test:rust:packet": "node --test tests/browser/rust-packet.test.ts tests/browser/rust-updates.test.ts",
+    "test:rust:browser": "node tests/rust-editor-browser.mjs",
+    "test:preview:browser": "node tests/rust-preview-browser.mjs",
+    "test:export:browser": "node tests/rust-export-browser.mjs",
+    "test:studio:browser": "node tests/rust-studio-browser.mjs",
+    "test:material:browser": "node tests/material-program-browser.mjs",
+    "test:recipe:browser": "node tests/material-ts-browser.mjs",
+    "test:scene:browser": "node tests/material-scene-browser.mjs",
+    "test:world:browser": "node tests/authoring-world-browser.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "@types/three": "^0.186.0",
+    "axe-core": "^4.13.0",
+    "gltf-validator": "^2.0.0-dev.3.10",
+    "material-typescript": "npm:typescript@5.9.3",
+    "playwright": "^1.63.0",
+    "pngjs": "7.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  },
+  "allowScripts": {
+    "fsevents@2.3.3": true
+  },
+  "license": "MIT",
+  "private": true
+}

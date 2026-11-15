@@ -1,0 +1,15 @@
+[package]
+name = "superspec-architecture-check"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+syn = { version = "3", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true
