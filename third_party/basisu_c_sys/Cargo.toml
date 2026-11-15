@@ -1,0 +1,40 @@
+# Vendored from basisu_c_sys 0.7.1 (crates.io), MIT OR Apache-2.0. See PROVENANCE.md for the
+# changes: checked-in bindings replace bindgen, and the unused `extra` API is removed.
+[package]
+edition = "2024"
+name = "basisu_c_sys"
+version = "0.7.1"
+build = "build.rs"
+description = "Rust binding and wrappers for the Basis Universal pure C API (SuperSpec vendored copy)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/beicause/bevy_basisu_loader"
+publish = false
+
+[features]
+default = []
+encoder = []
+# Kept so upstream's cfg attributes resolve; SuperSpec does not enable it.
+serde = []
+
+[workspace]
+
+[lib]
+name = "basisu_c_sys"
+path = "src/lib.rs"
+
+[build-dependencies.cc]
+version = "1.2"
+features = ["parallel"]
+
+[target.wasm32-unknown-unknown.dependencies.async-lock]
+version = "3.4.2"
+default-features = false
+
+[target.wasm32-unknown-unknown.dependencies.js-sys]
+version = "0.3"
+
+[target.wasm32-unknown-unknown.dependencies.wasm-bindgen]
+version = "0.2"
+
+[target.wasm32-unknown-unknown.dependencies.wasm-bindgen-futures]
+version = "0.4"
