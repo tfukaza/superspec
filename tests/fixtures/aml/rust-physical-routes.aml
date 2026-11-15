@@ -1,0 +1,18 @@
+<architecture version="1" id="physical-routes">
+  <profile id="left-profile" points="0 0; 4 0; 4 8; 0 8"/>
+  <profile id="right-profile" points="4 0; 8 0; 8 8; 4 8"/>
+  <path id="door-a" points="4 1.25 0; 4 2.75 0"/>
+  <path id="door-b" points="4 5.25 0; 4 6.75 0"/>
+  <slab id="left" profile="left-profile" thickness="0.2" playable="true"/>
+  <slab id="right" profile="right-profile" thickness="0.2" playable="true"/>
+  <box id="divider-a" position="3.9 0 0" width="0.2" depth="1.25" height="2.5" anchor="corner"/>
+  <box id="divider-b" position="3.9 2.75 0" width="0.2" depth="2.5" height="2.5" anchor="corner"/>
+  <box id="divider-c" position="3.9 6.75 0" width="0.2" depth="1.25" height="2.5" anchor="corner"/>
+  <connection id="entrance-a" from="left" to="right" path="door-a"/>
+  <connection id="entrance-b" from="left" to="right" path="door-b"/>
+  <connection id="entrance-a-alias" from="right" to="left" path="door-a"/>
+  <marker id="start" kind="attacker_spawn" position="1 4 0" element="left"/>
+  <marker id="finish" kind="objective" position="7 4 0" element="right"/>
+  <player radius="0.25" height="1.8" step="0.4" slope="42" ladder="true"/>
+  <route id="cross" from="start" to="finish" min-routes="2"/>
+</architecture>

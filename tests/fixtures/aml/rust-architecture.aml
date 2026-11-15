@@ -1,0 +1,11 @@
+<architecture version="1" id="rust-architecture" name="Architectural compiler acceptance">
+  <datum id="upper" elevation="2"/>
+  <profile id="floor" points="0 0;4 0;4 4;0 4"><hole points="1 1;1 3;3 3;3 1"/></profile>
+  <slab id="floor-slab" profile="floor" datum="upper" thickness="0.25"/>
+  <coordinate-frame id="turn" position="8 0 0" rotation="0 0 90"/>
+  <definition id="unit"><box id="body" width="2" depth="1" height="3"/></definition>
+  <instance id="placed" ref="unit" frame="turn" position="1 0 0"/>
+  <path id="axis" points="0 -1 0;4 -1 0"/>
+  <wall id="wall" path="axis" thickness="0.2" height="3"/>
+  <opening id="arch" host="wall" shape="arch" center="2 1" width="1" height="2"/>
+</architecture>

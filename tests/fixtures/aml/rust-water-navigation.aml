@@ -1,0 +1,12 @@
+<architecture version="1" id="water-navigation">
+  <profile id="pond" points="0 0; 8 0; 8 4; 0 4"/>
+  <slab id="bed" profile="pond" elevation="-2" thickness="0.5"/>
+  <water id="water" profile="pond" elevation="0"/>
+  <boat radius="0.25" height="1" draft="0.4"/>
+  <marker id="boat-start" kind="spawn" movement="water" position="1 2 0"/>
+  <marker id="boat-finish" kind="objective" movement="water" position="7 2 0"/>
+  <marker id="bed-start" kind="spawn" position="1 2 -2"/>
+  <marker id="bed-finish" kind="objective" position="7 2 -2"/>
+  <route id="boat-cross" from="boat-start" to="boat-finish" movement="water"/>
+  <route id="bed-cross" from="bed-start" to="bed-finish"/>
+</architecture>

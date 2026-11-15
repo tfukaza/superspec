@@ -1,0 +1,21 @@
+[package]
+name = "superspec-kernel-acceptance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+superspec-engine = { path = "../../crates/engine" }
+superspec-aml = { path = "../../crates/aml" }
+superspec-geometry = { path = "../../crates/geometry" }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "=0.2.130"
+
+[lints]
+workspace = true

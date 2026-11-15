@@ -1,0 +1,22 @@
+<architecture version="1" id="rust-patched-ground">
+  <material id="finish" color="#c6c2b4" repeat="1.7"/>
+  <material id="inlay" color="#465865"/>
+  <profile id="plan" points="0 0; 6 0; 6 4; 0 4">
+    <hole points="4 2; 5 2; 5 3; 4 3"/>
+  </profile>
+  <profile id="neighbor-plan" points="1 -2; 2 -2; 2 0; 1 0"/>
+  <profile id="inlay-plan" points="1 1; 2 1; 2 2; 1 2"/>
+  <path id="wall-path" points="0 0 0; 3 0 0; 6 0 0"/>
+  <path id="mouth" points="1.5 -1 0; 1.5 .1 0"/>
+  <slab id="floor" profile="plan" thickness=".2"/>
+  <slab id="neighbor" profile="neighbor-plan" thickness=".2"/>
+  <wall id="wall" path="wall-path" thickness=".2" height="3"/>
+  <opening id="door" host="wall" width="1.2" height="2.2" center="1.5 1.1"/>
+  <face-material id="inlay-face" host="floor" face="top" profile="inlay-plan" material="inlay"/>
+  <connection id="entry" from="neighbor" to="floor" path="mouth"/>
+  <box id="host" width="6" depth="6" height="6.35" position="8 0 0" collidable="false"/>
+  <dressing seed="courtyard/地面🌿" grime=".7" wear=".3">
+    <floor host="floor" material="finish" ground="patched" patch-size="2.3" material-size="7" relief=".032" wetness=".32" litter=".5" repairs=".55" tile-share=".1" timber-share=".025" joined-pours=".8" asphalt=".18" manholes=".55" breakup=".7" asphalt-material="builtin:asphalt" texture-density="16"/>
+    <building host="host" material="finish" shops="1" texture-density="16"/>
+  </dressing>
+</architecture>

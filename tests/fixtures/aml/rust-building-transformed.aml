@@ -1,0 +1,10 @@
+<architecture version="1" id="rust-building-dressing">
+  <material id="metal" color="#d4c7b0" repeat="1.7"/>
+  <profile id="ground-plan" points="-3 -3; 7 -3; 7 7; -3 7"/>
+  <slab id="ground" profile="ground-plan" thickness=".2"/>
+  <box id="host" width="3" depth="3" height="3.2" collidable="false" anchor="bottom-center" rotation="0 0 31" scale="-1 1 1" position="1.5 2 0"/>
+  <box id="support" width=".2" depth="1" height="1" position="5 5 0"/>
+  <dressing seed="connected-building" detail="low">
+    <building host="host" material="metal" texture-density="16"/>
+  </dressing>
+</architecture>

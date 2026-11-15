@@ -1,0 +1,18 @@
+{
+  "extends": "../../generated/material-sdk/tsconfig.json",
+  "compilerOptions": {
+    "paths": { "@superspec/material/v1": ["../../generated/material-sdk/index.d.ts"] }
+  },
+  "include": [],
+  "files": [
+    "../../generated/material-sdk/index.d.ts",
+    "negative.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/common.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/chipped-concrete.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/painted-metal.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/tiled-courtyard.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/kowloon-noise.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/kowloon-concrete.material.ts",
+    "../../crates/engine/src/materialspec/program/examples/kowloon-rusted-steel.material.ts"
+  ]
+}

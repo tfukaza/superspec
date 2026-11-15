@@ -1,0 +1,8 @@
+<architecture version="1" id="navigation-tiles">
+  <profile id="floor-profile" points="0 0; 80 0; 80 10; 0 10"/>
+  <slab id="floor" profile="floor-profile" thickness="0.2" playable="true"/>
+  <player radius="0.25" height="1.8" step="0.4"/>
+  <marker id="start" kind="spawn" position="2 5 0" element="floor"/>
+  <marker id="end" kind="objective" position="78 5 0" element="floor"/>
+  <route id="cross-long" from="start" to="end"/>
+</architecture>

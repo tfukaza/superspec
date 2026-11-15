@@ -1,0 +1,4 @@
+<architecture version="1" id="materials" name="Rust material channels">
+  <material id="paint" color="#ccddee" repeat="2" roughness="0.6" metalness="0.2" emissive="#112233" emissive-strength="0.3" texture="asymmetric-heightmap.png" opacity="0.8"/>
+  <box id="surface" width="4" depth="2" height="1" material="paint"/>
+</architecture>

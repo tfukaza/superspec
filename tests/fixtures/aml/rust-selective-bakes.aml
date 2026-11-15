@@ -1,0 +1,10 @@
+<architecture version="1" id="selective-bakes">
+  <material id="finish" color="#c6c2b4" texture="asymmetric-heightmap.png" repeat="1.7"/>
+  <material id="blue" color="#63869f"/>
+  <profile id="plan" points="0 0; 2 0; 2 2; 0 2"/>
+  <slab id="floor" profile="plan" thickness="0.2"/>
+  <box id="step" material="blue" position="3 0 0" width="1" depth="1" height="0.2"/>
+  <dressing seed="selective-bakes" grime="0.7" wear="0.3">
+    <floor host="floor" material="finish" ground="patched" patch-size="1" material-size="3" texture-density="16" tile-share="0" timber-share="0" relief="0.03" wetness="0" litter="0" repairs="0.3" asphalt="0" manholes="0" breakup="0"/>
+  </dressing>
+</architecture>

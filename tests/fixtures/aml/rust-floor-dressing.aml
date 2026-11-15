@@ -1,0 +1,11 @@
+<architecture version="1" id="rust-floor-dressing">
+  <material id="finish" color="#c6c2b4" repeat="1.7"/>
+  <material id="inlay" color="#465865"/>
+  <profile id="plan" points="0 0; 4 0; 4 3; 0 3"/>
+  <profile id="inlay-plan" points="1 1; 2 1; 2 2; 1 2"/>
+  <slab id="floor" profile="plan" thickness="0.2"/>
+  <face-material id="inlay-face" host="floor" face="top" profile="inlay-plan" material="inlay"/>
+  <dressing seed="courtyard/地面🌿" grime="0.8" wear="0.2">
+    <floor host="floor" material="finish"/>
+  </dressing>
+</architecture>

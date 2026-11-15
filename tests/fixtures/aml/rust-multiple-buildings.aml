@@ -1,0 +1,12 @@
+<architecture version="1" id="rust-multiple-buildings">
+  <material id="metal" color="#d4c7b0" repeat="1.7"/>
+  <profile id="ground-plan" points="-3 -3; 19 -3; 19 9; -3 9"/>
+  <slab id="ground" profile="ground-plan" thickness=".2"/>
+  <box id="host" width="6" depth="6" height="6.35" collidable="false"/>
+  <box id="support" width=".2" depth="1" height="1" position="5 5 0"/>
+  <box id="second" width="6" depth="6" height="6.35" position="10 0 0" collidable="false"/>
+  <dressing seed="connected-building" detail="low">
+    <building host="host" material="metal" texture-density="16"/>
+    <building host="second" material="metal" texture-density="16"/>
+  </dressing>
+</architecture>
