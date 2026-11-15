@@ -1,0 +1,15 @@
+[package]
+name = "superspec-model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+superspec-types = { path = "../types" }
+superspec-geometry = { path = "../geometry" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "superspec-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+superspec-types = { path = "../types" }
+superspec-model = { path = "../model" }
+superspec-geometry = { path = "../geometry" }
+serde.workspace = true
+serde_json.workspace = true
+uvunwrap = { version = "=0.3.0", default-features = false }
+
+[dev-dependencies]
+superspec-aml = { path = "../aml" }
+superspec-engine = { path = "../engine" }
+
+[lints]
+workspace = true

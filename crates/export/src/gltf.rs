@@ -1,0 +1,667 @@
+//! glTF 2.0: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+use crate::{Options, Purpose, tangents::material_tangents};
+use serde::Serialize;
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+use superspec_geometry::math::unit;
+use superspec_geometry::{image, ktx2};
+use superspec_model::{Mesh, Scene};
+use superspec_types::material::Material;
+
+#[derive(Serialize)]
+struct Document<'a> {
+    #[serde(flatten)]
+    gltf: &'a Value,
+    extras: Extras<'a>,
+}
+#[derive(Serialize)]
+struct Extras<'a> {
+    superspec: Metadata<'a>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Metadata<'a> {
+    schema_version: u32,
+    id: &'a str,
+    purpose: &'static str,
+    source_axes: &'static str,
+    export_axes: &'static str,
+    units: &'static str,
+    architecture: &'a Option<superspec_model::architecture::Context>,
+    geometry_validation: &'a str,
+    navigation_validation: &'a str,
+    diagnostics: &'a [superspec_types::diagnostic::Diagnostic],
+}
+
+struct Buffer<'a, 'cancel> {
+    bytes: Vec<u8>,
+    views: Vec<Value>,
+    accessors: Vec<Value>,
+    options: &'a Options<'cancel>,
+}
+impl Buffer<'_, '_> {
+    fn view(&mut self, bytes: &[u8], target: Option<u32>) -> Result<usize, String> {
+        let padding = (4 - self.bytes.len() % 4) % 4;
+        let length = self
+            .bytes
+            .len()
+            .checked_add(padding)
+            .and_then(|n| n.checked_add(bytes.len()))
+            .ok_or("Export size overflow.")?;
+        self.options.check(length)?;
+        self.bytes.resize(self.bytes.len() + padding, 0);
+        let mut view = json!({"buffer":0,"byteOffset":self.bytes.len(),"byteLength":bytes.len()});
+        if let Some(target) = target {
+            view["target"] = json!(target);
+        }
+        self.views.push(view);
+        self.bytes.extend_from_slice(bytes);
+        Ok(self.views.len() - 1)
+    }
+    fn floats(&mut self, values: &[f32], components: usize, bounds: bool) -> Result<usize, String> {
+        self.options.check(
+            self.bytes
+                .len()
+                .checked_add(values.len() * 4)
+                .ok_or("Export size overflow.")?,
+        )?;
+        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let view = self.view(&bytes, Some(34962))?;
+        let mut accessor = json!({"bufferView":view,"componentType":5126,"count":values.len()/components,"type":match components {2=>"VEC2",3=>"VEC3",4=>"VEC4",_=>unreachable!()}});
+        if bounds {
+            let mut minimum = vec![f32::INFINITY; components];
+            let mut maximum = vec![f32::NEG_INFINITY; components];
+            for (i, v) in values.iter().enumerate() {
+                minimum[i % components] = minimum[i % components].min(*v);
+                maximum[i % components] = maximum[i % components].max(*v);
+            }
+            accessor["min"] = json!(minimum);
+            accessor["max"] = json!(maximum);
+        }
+        self.accessors.push(accessor);
+        Ok(self.accessors.len() - 1)
+    }
+    fn indices(&mut self, values: &[u32]) -> Result<usize, String> {
+        self.options.check(
+            self.bytes
+                .len()
+                .checked_add(values.len() * 4)
+                .ok_or("Export size overflow.")?,
+        )?;
+        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let view = self.view(&bytes, Some(34963))?;
+        self.accessors.push(
+            json!({"bufferView":view,"componentType":5125,"count":values.len(),"type":"SCALAR"}),
+        );
+        Ok(self.accessors.len() - 1)
+    }
+}
+
+fn linear(color: &str) -> Result<[f64; 3], String> {
+    if color.len() != 7
+        || !color.starts_with('#')
+        || !color[1..].bytes().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err("Export material requires six-digit sRGB color.".into());
+    }
+    Ok(superspec_types::color::srgb(color))
+}
+fn check_material(material: &Material) -> Result<(), String> {
+    linear(&material.color)?;
+    if let Some(color) = &material.emissive {
+        linear(color)?;
+    }
+    if ![
+        material.roughness,
+        material.metalness,
+        material.opacity.unwrap_or(1.),
+        if material.alpha_mode.is_some() {
+            0.
+        } else {
+            material.alpha_cutoff.unwrap_or(0.)
+        },
+    ]
+    .iter()
+    .all(|v| (0.0..=1.0).contains(v))
+        || material
+            .alpha_cutoff
+            .is_some_and(|v| !v.is_finite() || v < 0.)
+        || [
+            material.normal_scale.unwrap_or(1.),
+            material.emissive_strength.unwrap_or(1.),
+        ]
+        .iter()
+        .any(|v| !v.is_finite() || *v < 0.)
+    {
+        return Err("Invalid export material factors.".into());
+    }
+    Ok(())
+}
+
+/// Checks public scene ranges before indexing; selected geometry may never silently disappear.
+fn selected<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Vec<&'a Mesh>, String> {
+    options.check(0)?;
+    let vertices = scene.manifest.vertex_count;
+    if !scene.manifest.success
+        || vertices > 6_000_000
+        || scene.manifest.index_count > 6_000_000
+        || scene.positions.len() != vertices * 3
+        || scene.normals.len() != vertices * 3
+        || scene.colors.len() != vertices * 3
+        || scene.uvs.len() != vertices * 2
+        || scene.indices.len() != scene.manifest.index_count
+    {
+        return Err("Export requires a complete successful scene.".into());
+    }
+    let colliders: BTreeSet<_> = scene
+        .manifest
+        .colliders
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut ids = BTreeSet::new();
+    let mut selected = vec![];
+    let mut estimate = scene.manifest.id.len() * 2;
+    let owners: BTreeSet<_> = scene
+        .manifest
+        .architecture
+        .iter()
+        .flat_map(|context| &context.objects)
+        .map(|o| o.id.as_str())
+        .collect();
+    for mesh in &scene.manifest.meshes {
+        options.check(0)?;
+        if !ids.insert(mesh.id.as_str()) {
+            return Err("Duplicate scene mesh identity.".into());
+        }
+        if !(if options.purpose == Purpose::Collision {
+            colliders.contains(mesh.id.as_str())
+        } else {
+            mesh.visible
+        }) {
+            continue;
+        }
+        if mesh.vertex_count == 0
+            || mesh.index_count == 0
+            || !mesh.index_count.is_multiple_of(3)
+            || mesh
+                .vertex_start
+                .checked_add(mesh.vertex_count)
+                .is_none_or(|n| n > vertices)
+            || mesh
+                .index_start
+                .checked_add(mesh.index_count)
+                .is_none_or(|n| n > scene.indices.len())
+        {
+            return Err(format!("Invalid export mesh range: {}", mesh.id));
+        }
+        if !owners.contains(mesh.object_id.as_str()) {
+            return Err("Export mesh references an unknown source owner.".into());
+        }
+        estimate = estimate
+            .checked_add(
+                mesh.vertex_count * 60
+                    + mesh.index_count * 4
+                    + mesh.id.len() * 3
+                    + mesh.object_id.len(),
+            )
+            .ok_or("Export size overflow.")?;
+        options.check(estimate)?;
+        let a = mesh.vertex_start;
+        let b = a + mesh.vertex_count;
+        if scene.positions[a * 3..b * 3]
+            .iter()
+            .chain(&scene.normals[a * 3..b * 3])
+            .chain(&scene.uvs[a * 2..b * 2])
+            .any(|v| !v.is_finite())
+            || scene.indices[mesh.index_start..mesh.index_start + mesh.index_count]
+                .iter()
+                .any(|i| *i as usize >= mesh.vertex_count)
+        {
+            return Err(format!("Invalid export attributes or indices: {}", mesh.id));
+        }
+        if options.purpose == Purpose::Visual
+            && scene.colors[a * 3..b * 3]
+                .iter()
+                .any(|v| !v.is_finite() || *v < 0.)
+        {
+            return Err(format!(
+                "glTF vertex colors require finite nonnegative values; {} contains invalid color.",
+                mesh.id
+            ));
+        }
+        selected.push(mesh);
+    }
+    if colliders.iter().any(|id| !ids.contains(id)) {
+        return Err("Collision references an unknown mesh.".into());
+    }
+    if selected.is_empty() {
+        return Err("Cannot export an empty model.".into());
+    }
+    Ok(selected)
+}
+
+/// Self-contained binary glTF. Collision exports contain canonical physical geometry only.
+/// How each texture used by the exported materials is sampled: color (sRGB base color and
+/// emissive) or data (normals, metallic-roughness, occlusion and live-operation channels). A
+/// texture used both ways is treated as data, the stricter encoding.
+fn texture_roles<'a>(
+    used: &BTreeSet<&str>,
+    materials: &BTreeMap<&str, &'a Material>,
+) -> BTreeMap<&'a str, ktx2::Kind> {
+    use ktx2::Kind::{Color, Data};
+    let mut uses: Vec<(&'a str, ktx2::Kind)> = vec![];
+    for material in used.iter().filter_map(|id| materials.get(id)) {
+        for (id, kind) in [
+            (&material.texture, Color),
+            (&material.emissive_texture, Color),
+            (&material.normal_texture, Data),
+            (&material.metallic_roughness_texture, Data),
+            (&material.occlusion_texture, Data),
+        ] {
+            if let Some(id) = id {
+                uses.push((id.as_str(), kind));
+            }
+        }
+        for operation in &material.live {
+            for argument in operation.arguments.values() {
+                if let superspec_types::material::LiveArgument::Texture { texture, .. } = argument {
+                    uses.push((texture.as_str(), Data));
+                }
+            }
+        }
+    }
+    let mut roles = BTreeMap::new();
+    for (id, kind) in uses {
+        let role = roles.entry(id).or_insert(kind);
+        if kind == Data {
+            *role = Data;
+        }
+    }
+    roles
+}
+
+struct Payload<'a> {
+    bytes: std::borrow::Cow<'a, [u8]>,
+    mime: &'static str,
+}
+
+/// Image bytes for every used texture in the requested format. PNG and JPEG pass through for PNG
+/// output and KTX2 sources are transcoded to PNG; for KTX2 output, PNG and JPEG sources are
+/// encoded by role and KTX2 sources pass through. Encoding is per texture and deterministic, so
+/// encoding them in parallel (native targets only) never changes the bytes.
+fn texture_payloads<'a>(
+    scene: &'a Scene,
+    assets: &BTreeMap<&str, &superspec_model::Asset>,
+    roles: &BTreeMap<&str, ktx2::Kind>,
+    options: &Options<'_>,
+) -> Result<BTreeMap<String, Payload<'a>>, String> {
+    let source = |id: &str| -> Result<(&'a [u8], &'static str), String> {
+        let asset = assets
+            .get(id)
+            .ok_or_else(|| format!("Missing export image: {id}"))?;
+        let end = asset
+            .byte_start
+            .checked_add(asset.byte_length)
+            .ok_or("Invalid export image range.")?;
+        let bytes = scene
+            .asset_bytes
+            .get(asset.byte_start..end)
+            .ok_or("Invalid export image range.")?;
+        if bytes.is_empty() || !["image/png", "image/jpeg", ktx2::MIME].contains(&asset.mime) {
+            return Err("Unsupported export image type.".into());
+        }
+        Ok((bytes, asset.mime))
+    };
+    // Only the format crosses into worker threads; the cancellation callback stays on this one.
+    let format = options.textures;
+    let convert = |id: &str, kind: ktx2::Kind| -> Result<Payload<'a>, String> {
+        let (bytes, mime) = source(id)?;
+        let borrowed = || Payload {
+            bytes: bytes.into(),
+            mime,
+        };
+        match (format, mime == ktx2::MIME) {
+            (crate::Textures::Png, false) | (crate::Textures::Ktx2, true) => Ok(borrowed()),
+            (crate::Textures::Png, true) => Ok(Payload {
+                bytes: image::encode(&image::decode(bytes)?)?.into(),
+                mime: "image/png",
+            }),
+            (crate::Textures::Ktx2, false) => Ok(Payload {
+                bytes: ktx2::encode(&image::decode(bytes)?, kind)
+                    .map_err(|e| format!("{id}: {e}"))?
+                    .into(),
+                mime: ktx2::MIME,
+            }),
+        }
+    };
+    let jobs: Vec<(&str, ktx2::Kind)> = roles.iter().map(|(id, kind)| (*id, *kind)).collect();
+    let parallel = !cfg!(target_arch = "wasm32") && options.textures == crate::Textures::Ktx2;
+    let results: Vec<Result<Payload<'a>, String>> = if parallel && jobs.len() > 1 {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .chunks(jobs.len().div_ceil(threads))
+                .map(|share| {
+                    let convert = &convert;
+                    scope.spawn(move || {
+                        share
+                            .iter()
+                            .map(|(id, kind)| convert(id, *kind))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("texture encoding does not panic"))
+                .collect()
+        })
+    } else {
+        jobs.iter()
+            .map(|(id, kind)| {
+                options.check(0)?;
+                convert(id, *kind)
+            })
+            .collect()
+    };
+    options.check(0)?;
+    jobs.iter()
+        .zip(results)
+        .map(|((id, _), payload)| payload.map(|payload| ((*id).to_owned(), payload)))
+        .collect()
+}
+
+/// Navigation/geometry audit statuses remain explicit metadata; export success is not validation.
+pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
+    let selected = selected(scene, options)?;
+    let visual = options.purpose == Purpose::Visual;
+    let mut buffer = Buffer {
+        bytes: vec![],
+        views: vec![],
+        accessors: vec![],
+        options,
+    };
+    let mut materials = vec![];
+    let mut material_indices = BTreeMap::new();
+    let mut images = vec![];
+    let mut textures = vec![];
+    let mut texture_indices = BTreeMap::new();
+    let mut assets = BTreeMap::new();
+    for asset in &scene.manifest.assets {
+        if assets.insert(asset.id.as_str(), asset).is_some() {
+            return Err("Duplicate export image identity.".into());
+        }
+    }
+    let source_materials: BTreeMap<_, _> = scene
+        .manifest
+        .materials
+        .iter()
+        .map(|m| (m.id.as_str(), m))
+        .collect();
+    if source_materials.len() != scene.manifest.materials.len() {
+        return Err("Duplicate export material identity.".into());
+    }
+    let used: BTreeSet<_> = selected
+        .iter()
+        .filter_map(|m| m.material.as_deref())
+        .collect();
+    let mut emissive_strength = false;
+    let payloads = if visual {
+        texture_payloads(
+            scene,
+            &assets,
+            &texture_roles(&used, &source_materials),
+            options,
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let ktx2 = payloads.values().any(|payload| payload.mime == ktx2::MIME);
+    if visual {
+        let mut texture = |id: &str| -> Result<usize, String> {
+            if let Some(index) = texture_indices.get(id) {
+                return Ok(*index);
+            }
+            let payload = payloads
+                .get(id)
+                .ok_or_else(|| format!("Missing export image: {id}"))?;
+            let view = buffer.view(&payload.bytes, None)?;
+            let index = images.len();
+            images.push(json!({"name":id,"bufferView":view,"mimeType":payload.mime}));
+            textures.push(if payload.mime == ktx2::MIME {
+                // Required extension without a fallback source: the point is the smaller file.
+                json!({"sampler":0,"extensions":{"KHR_texture_basisu":{"source":index}}})
+            } else {
+                json!({"source":index,"sampler":0})
+            });
+            texture_indices.insert(id.to_string(), index);
+            Ok(index)
+        };
+        for id in used {
+            options.check(0)?;
+            let material = source_materials
+                .get(id)
+                .ok_or_else(|| format!("Unknown export material: {id}"))?;
+            check_material(material)?;
+            let color = material
+                .base_color_factor
+                .unwrap_or(linear(&material.color)?);
+            let mut pbr = json!({"baseColorFactor":[color[0],color[1],color[2],material.opacity.unwrap_or(1.)],"roughnessFactor":material.roughness,"metallicFactor":material.metalness});
+            if let Some(id) = &material.texture {
+                pbr["baseColorTexture"] = json!({"index":texture(id)?,"texCoord":0});
+            }
+            if let Some(id) = &material.metallic_roughness_texture {
+                pbr["metallicRoughnessTexture"] = json!({"index":texture(id)?,"texCoord":0});
+            }
+            let mut entry = json!({"name":id,"pbrMetallicRoughness":pbr,"doubleSided":material.opacity.unwrap_or(1.)>=1.});
+            if let Some(double_sided) = material.double_sided {
+                entry["doubleSided"] = json!(double_sided);
+            }
+            if let Some(id) = &material.normal_texture {
+                entry["normalTexture"] = json!({"index":texture(id)?,"texCoord":0,"scale":material.normal_scale.unwrap_or(1.)});
+            }
+            if let Some(color) = &material.emissive {
+                let strength = material.emissive_strength.unwrap_or(1.);
+                entry["emissiveFactor"] = json!(
+                    material
+                        .emissive_factor
+                        .unwrap_or(linear(color)?)
+                        .map(|v| v * strength.min(1.))
+                );
+                if strength > 1. {
+                    entry["extensions"] =
+                        json!({"KHR_materials_emissive_strength":{"emissiveStrength":strength}});
+                    emissive_strength = true;
+                }
+            }
+            if let Some(id) = &material.emissive_texture {
+                entry["emissiveTexture"] = json!({"index":texture(id)?,"texCoord":0});
+            }
+            if let Some(id) = &material.occlusion_texture {
+                entry["occlusionTexture"] = json!({"index":texture(id)?,"texCoord":0,"strength":material.occlusion_strength.unwrap_or(1.)});
+            }
+            if let Some(cutoff) = material.alpha_cutoff {
+                entry["alphaMode"] = json!("MASK");
+                entry["alphaCutoff"] = json!(cutoff);
+            }
+            if material.opacity.unwrap_or(1.) < 1. {
+                entry["alphaMode"] = json!("BLEND");
+            }
+            if let Some(mode) = material.alpha_mode {
+                entry["alphaMode"] = json!(mode);
+            }
+            if !material.live.is_empty() {
+                // Live renderer operations travel with the portable PBR material; texture
+                // arguments name glTF textures on UV0.
+                let mut live = vec![];
+                for operation in &material.live {
+                    let mut arguments = serde_json::Map::new();
+                    for (name, argument) in &operation.arguments {
+                        if !argument.valid() {
+                            return Err(format!(
+                                "Invalid live argument {name} of {}.",
+                                operation.id
+                            ));
+                        }
+                        let value = match argument {
+                            superspec_types::material::LiveArgument::Constant { value } => {
+                                json!({ "value": value })
+                            }
+                            superspec_types::material::LiveArgument::Texture {
+                                texture: image,
+                                channel,
+                                scale,
+                                offset,
+                            } => json!({
+                                "texture": texture(image)?, "channel": channel, "scale": scale, "offset": offset,
+                            }),
+                        };
+                        arguments.insert(name.clone(), value);
+                    }
+                    live.push(json!({
+                        "id": operation.id, "stage": operation.stage,
+                        "requires": operation.requires, "arguments": arguments,
+                    }));
+                }
+                entry["extras"] = json!({ "materialSpec": { "version": 1, "live": live } });
+            }
+            material_indices.insert(id, materials.len());
+            materials.push(entry);
+        }
+    }
+    let mut meshes = vec![];
+    let mut nodes = vec![];
+    for mesh in selected {
+        options.check(0)?;
+        let a = mesh.vertex_start;
+        let b = a + mesh.vertex_count;
+        let position = buffer.floats(&scene.positions[a * 3..b * 3], 3, true)?;
+        let normals = scene.normals[a * 3..b * 3]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|n| unit(n.map(f64::from)).map(|n| n.map(|v| v as f32)))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let normal = buffer.floats(&normals, 3, false)?;
+        let mut attributes = json!({"POSITION":position,"NORMAL":normal});
+        if visual {
+            let uv = scene.uvs[a * 2..b * 2]
+                .iter()
+                .enumerate()
+                .map(|(i, v)| if i % 2 == 0 { *v } else { 1. - v })
+                .collect::<Vec<_>>();
+            if uv.iter().any(|v| !v.is_finite()) {
+                return Err("Export UV conversion overflow.".into());
+            }
+            attributes["TEXCOORD_0"] = json!(buffer.floats(&uv, 2, false)?);
+            if let Some(lightmap) = &scene.lightmap_uvs {
+                let uv1 = lightmap
+                    .get(a * 2..b * 2)
+                    .ok_or("Invalid lightmap UV range.")?;
+                attributes["TEXCOORD_1"] = json!(buffer.floats(uv1, 2, false)?);
+            }
+            let colors = &scene.colors[a * 3..b * 3];
+            if colors.iter().any(|v| *v > 1.) {
+                attributes["_SUPERSPEC_HDR_COLOR"] = json!(buffer.floats(colors, 3, false)?);
+                attributes["COLOR_0"] = json!(buffer.floats(
+                    &colors.iter().map(|v| v.min(1.)).collect::<Vec<_>>(),
+                    3,
+                    false
+                )?);
+            } else {
+                attributes["COLOR_0"] = json!(buffer.floats(colors, 3, false)?);
+            }
+            if scene.manifest.mesh_tangents.contains_key(&mesh.id)
+                || mesh
+                    .material
+                    .as_deref()
+                    .and_then(|id| source_materials.get(id))
+                    .is_some_and(|m| m.normal_texture.is_some())
+            {
+                attributes["TANGENT"] =
+                    json!(buffer.floats(&material_tangents(scene, mesh, options)?, 4, false)?);
+            }
+        }
+        let indices = buffer
+            .indices(&scene.indices[mesh.index_start..mesh.index_start + mesh.index_count])?;
+        let mut primitive = json!({"attributes":attributes,"indices":indices,"mode":4});
+        if let Some(index) = mesh
+            .material
+            .as_deref()
+            .and_then(|id| material_indices.get(id))
+        {
+            primitive["material"] = json!(index);
+        }
+        let index = meshes.len();
+        meshes.push(json!({"name":mesh.id,"primitives":[primitive]}));
+        nodes.push(json!({"name":mesh.id,"mesh":index,"extras":{"meshId":mesh.id,"objectId":mesh.object_id,"source":mesh.source,"collidable":scene.manifest.colliders.contains(&mesh.id)}}));
+    }
+    let root = nodes.len();
+    nodes.push(json!({"name":scene.manifest.id,"rotation":[-std::f64::consts::FRAC_1_SQRT_2,0.,0.,std::f64::consts::FRAC_1_SQRT_2],"children":(0..root).collect::<Vec<_>>() }));
+    let mut document = json!({"asset":{"version":"2.0","generator":"SuperSpec Rust"},"scene":0,"scenes":[{"nodes":[root]}],"nodes":nodes,"meshes":meshes,
+        "buffers":[{"byteLength":buffer.bytes.len()}],"bufferViews":buffer.views,"accessors":buffer.accessors});
+    if !materials.is_empty() {
+        document["materials"] = json!(materials);
+    }
+    if !images.is_empty() {
+        document["images"] = json!(images);
+        document["textures"] = json!(textures);
+        document["samplers"] =
+            json!([{"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}]);
+    }
+    let mut extensions = vec![];
+    if emissive_strength {
+        extensions.push("KHR_materials_emissive_strength");
+    }
+    if ktx2 {
+        extensions.push("KHR_texture_basisu");
+        document["extensionsRequired"] = json!(["KHR_texture_basisu"]);
+    }
+    if !extensions.is_empty() {
+        document["extensionsUsed"] = json!(extensions);
+    }
+    let metadata = Metadata {
+        schema_version: 1,
+        id: &scene.manifest.id,
+        purpose: if visual { "visual" } else { "collision" },
+        source_axes: "right-handed-z-up",
+        export_axes: "right-handed-y-up",
+        units: "meters",
+        architecture: &scene.manifest.architecture,
+        geometry_validation: scene.manifest.geometry_validation,
+        navigation_validation: scene.manifest.navigation_validation,
+        diagnostics: &scene.manifest.diagnostics,
+    };
+    let wrapped = Document {
+        gltf: &document,
+        extras: Extras {
+            superspec: metadata,
+        },
+    };
+    let overhead = 28 + buffer.bytes.len() + 6; // Up to three padding bytes for each chunk.
+    let mut json = crate::json::encode(&wrapped, options, overhead)?;
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    while !buffer.bytes.len().is_multiple_of(4) {
+        buffer.bytes.push(0);
+    }
+    let length = 28usize
+        .checked_add(json.len())
+        .and_then(|n| n.checked_add(buffer.bytes.len()))
+        .ok_or("Export size overflow.")?;
+    options.check(length)?;
+    let mut output = Vec::with_capacity(length);
+    for value in [0x46546c67, 2, length as u32, json.len() as u32, 0x4e4f534a] {
+        output.extend(value.to_le_bytes());
+    }
+    output.extend(json);
+    output.extend((buffer.bytes.len() as u32).to_le_bytes());
+    output.extend(0x004e4942u32.to_le_bytes());
+    output.extend(buffer.bytes);
+    Ok(output)
+}

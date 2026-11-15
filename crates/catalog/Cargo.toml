@@ -1,0 +1,13 @@
+[package]
+name = "superspec-catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+superspec-types = { path = "../types" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "superspec-geometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+manifold-rust = "=0.19.2"
+spade = "=2.15.1"
+png = "=0.18.1"
+jpeg-decoder = { version = "=0.3.2", default-features = false, features = ["platform_independent"] }
+rerecast = { version = "=0.5.1", default-features = false, features = ["libm"] }
+# Vendored Basis Universal bindings for KTX2 textures; see third_party/basisu_c_sys/PROVENANCE.md.
+basisu_c_sys = { path = "../../third_party/basisu_c_sys", features = ["encoder"] }
+
+[lints]
+workspace = true

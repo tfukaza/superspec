@@ -1,0 +1,16 @@
+[package]
+name = "superspec-aml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+superspec-catalog = { path = "../catalog" }
+superspec-types = { path = "../types" }
+roxmltree.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

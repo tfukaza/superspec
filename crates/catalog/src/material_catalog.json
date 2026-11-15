@@ -1,0 +1,302 @@
+{
+  "concrete": {
+    "color": "#ffffff",
+    "repeat": 0.125,
+    "roughness": 0.96,
+    "metalness": 0,
+    "texture": "superspec-material:concrete-shared.png",
+    "normalTexture": "superspec-material:concrete-shared-normal.png",
+    "normalScale": 1
+  },
+  "roofing": {
+    "color": "#ffffff",
+    "repeat": 0.65,
+    "roughness": 0.88,
+    "metalness": 0,
+    "texture": "superspec-material:roofing.png"
+  },
+  "lettering": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.75,
+    "metalness": 0,
+    "texture": "superspec-material:lettering.png",
+    "alphaCutoff": 0.5
+  },
+  "signboard": {
+    "color": "#ffffff",
+    "repeat": 0.8,
+    "roughness": 0.7,
+    "metalness": 0,
+    "texture": "superspec-material:signboard.png"
+  },
+  "rust": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 0.92,
+    "metalness": 0.2,
+    "texture": "superspec-material:rust.png"
+  },
+  "metal": {
+    "color": "#ffffff",
+    "repeat": 1.4,
+    "roughness": 0.6,
+    "metalness": 0.2,
+    "texture": "superspec-material:metal.png"
+  },
+  "sheet": {
+    "color": "#ffffff",
+    "repeat": 1.6,
+    "roughness": 0.6,
+    "metalness": 0.3,
+    "texture": "superspec-material:sheet.png"
+  },
+  "timber": {
+    "color": "#ffffff",
+    "repeat": 1.5,
+    "roughness": 0.8,
+    "metalness": 0,
+    "texture": "superspec-material:timber.png"
+  },
+  "restaurant-food": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.65,
+    "metalness": 1,
+    "texture": "superspec-material:restaurant-food.png",
+    "normalTexture": "superspec-material:restaurant-food-normal.png",
+    "metallicRoughnessTexture": "superspec-material:restaurant-food-properties.png"
+  },
+  "brushed-metal": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:brushed-metal.png",
+    "normalTexture": "superspec-material:brushed-metal-normal.png",
+    "metallicRoughnessTexture": "superspec-material:brushed-metal-properties.png"
+  },
+  "restaurant-tiles": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:restaurant-tiles.png",
+    "normalTexture": "superspec-material:restaurant-tiles-normal.png",
+    "metallicRoughnessTexture": "superspec-material:restaurant-tiles-properties.png"
+  },
+  "restaurant-surfaces": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:restaurant-surfaces.png",
+    "metallicRoughnessTexture": "superspec-material:restaurant-surfaces-properties.png"
+  },
+  "shop-timber": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:shop-timber.png",
+    "normalTexture": "superspec-material:shop-timber-normal.png",
+    "metallicRoughnessTexture": "superspec-material:shop-timber-properties.png"
+  },
+  "market-apple": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.48,
+    "metalness": 0,
+    "texture": "superspec-material:market-apple.png"
+  },
+  "grocer-props": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:grocer-props.png",
+    "normalTexture": "superspec-material:grocer-props-normal.png",
+    "metallicRoughnessTexture": "superspec-material:grocer-props-properties.png"
+  },
+  "snack-packet": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.55,
+    "metalness": 0,
+    "texture": "superspec-material:snack-packet.png"
+  },
+  "balcony-cloth": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:balcony-cloth.png",
+    "normalTexture": "superspec-material:balcony-cloth-normal.png",
+    "metallicRoughnessTexture": "superspec-material:balcony-cloth-properties.png"
+  },
+  "balcony-plants": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:balcony-plants.png",
+    "normalTexture": "superspec-material:balcony-plants-normal.png",
+    "metallicRoughnessTexture": "superspec-material:balcony-plants-properties.png"
+  },
+  "cloth": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.95,
+    "metalness": 0,
+    "texture": "superspec-material:cloth.png"
+  },
+  "tarp": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 1,
+    "metalness": 0,
+    "texture": "superspec-material:tarp.png",
+    "normalTexture": "superspec-material:tarp-normal.png",
+    "normalScale": 0.7,
+    "metallicRoughnessTexture": "superspec-material:tarp-properties.png"
+  },
+  "aircon": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.6,
+    "metalness": 0.15,
+    "texture": "superspec-material:aircon.png"
+  },
+  "ceramic": {
+    "color": "#ffffff",
+    "repeat": 2.5,
+    "roughness": 0.68,
+    "metalness": 0,
+    "texture": "superspec-material:wall-ceramic-weathered.png",
+    "normalTexture": "superspec-material:wall-ceramic-normal.png",
+    "normalScale": 0.55
+  },
+  "tile-bed": {
+    "color": "#aaa69a",
+    "repeat": 0.125,
+    "roughness": 0.96,
+    "metalness": 0,
+    "texture": "superspec-material:concrete-shared.png",
+    "normalTexture": "superspec-material:concrete-shared-normal.png",
+    "normalScale": 0.4
+  },
+  "wall-metal": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 0.68,
+    "metalness": 0.55,
+    "texture": "superspec-material:wall-metal-weathered.png",
+    "normalTexture": "superspec-material:wall-metal-normal.png",
+    "normalScale": 0.45
+  },
+  "wall-rust": {
+    "color": "#bcb0a0",
+    "repeat": 2,
+    "roughness": 0.88,
+    "metalness": 0.25,
+    "texture": "superspec-material:wall-metal-weathered.png",
+    "normalTexture": "superspec-material:wall-metal-normal.png",
+    "normalScale": 0.65
+  },
+  "wall-cable": {
+    "color": "#292721",
+    "repeat": 4,
+    "roughness": 0.87,
+    "metalness": 0,
+    "texture": "superspec-material:wall-metal-weathered.png",
+    "normalTexture": "superspec-material:wall-metal-normal.png",
+    "normalScale": 0.18
+  },
+  "wall-posters": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.96,
+    "metalness": 0,
+    "texture": "superspec-material:posters-atlas.jpg"
+  },
+  "render-weathered": {
+    "color": "#ffffff",
+    "repeat": 0.125,
+    "roughness": 0.96,
+    "metalness": 0,
+    "texture": "superspec-material:concrete-shared.png",
+    "normalTexture": "superspec-material:concrete-shared-normal.png",
+    "normalScale": 1
+  },
+  "render-repair": {
+    "color": "#ffffff",
+    "repeat": 0.5,
+    "roughness": 0.88,
+    "metalness": 0,
+    "texture": "superspec-material:building-plaster-plain.png"
+  },
+  "asphalt": {
+    "color": "#ffffff",
+    "repeat": 0.6666666666666666,
+    "roughness": 0.94,
+    "metalness": 0,
+    "texture": "superspec-material:ground-asphalt.png",
+    "normalTexture": "superspec-material:ground-asphalt-normal.png",
+    "normalScale": 1.15
+  },
+  "plaster": {
+    "color": "#ffffff",
+    "repeat": 0.5,
+    "roughness": 0.9,
+    "metalness": 0,
+    "texture": "superspec-material:building-plaster-plain.png"
+  },
+  "vent-metal": {
+    "color": "#ffffff",
+    "repeat": 0.5,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:vent-metal.png",
+    "normalTexture": "superspec-material:vent-metal-normal.png",
+    "metallicRoughnessTexture": "superspec-material:vent-metal-properties.png"
+  },
+  "vent-edge": {
+    "color": "#f4faf7",
+    "repeat": 1,
+    "roughness": 0.34,
+    "metalness": 0.42
+  },
+  "shop-register": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:shop-register.png",
+    "normalTexture": "superspec-material:shop-register-normal.png",
+    "metallicRoughnessTexture": "superspec-material:shop-register-properties.png"
+  },
+  "kitchen-metal": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:kitchen-metal.png",
+    "normalTexture": "superspec-material:kitchen-metal-normal.png",
+    "metallicRoughnessTexture": "superspec-material:kitchen-metal-properties.png"
+  },
+  "market-trays": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:market-trays.png",
+    "normalTexture": "superspec-material:market-trays-normal.png",
+    "metallicRoughnessTexture": "superspec-material:market-trays-properties.png"
+  },
+  "tile-grime": {
+    "color": "#725139",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 0
+  }
+}
