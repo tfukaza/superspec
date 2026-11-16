@@ -39,7 +39,11 @@ npm run test:washroom:browser
 
 runs the browser benchmark against `generated/rust-editor` (build the Wasm module and
 `npm run build:viewer` first). `RESOLUTION` sets the texture size and `SCREENSHOT` saves the
-loaded viewport.
+loaded viewport. This is the repository's default scene for scene-level tests, timings and
+screenshots; extend it instead of creating another one. Headless Chromium renders on
+SwiftShader unless `BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist"` selects the GPU
+(the test prints the WebGL renderer in its frame-time line). On an RTX 5060 Ti at 512 px:
+first preview and loaded about 4.4 s, 33 ms per frame.
 
 ## Measurements
 

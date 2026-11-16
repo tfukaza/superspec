@@ -40,3 +40,12 @@ plus native/Wasm and consumer boundary checks before a cutover.
 
 Do not alter source distribution pins until the corresponding changes are reviewed.
 Generated output belongs under `generated/` or an explicit external target directory.
+
+The default test, benchmark and screenshot scene is the washroom in
+`tests/studio/washroom` (concrete corner, tiled wall, enamel sink, duct and vent,
+rusted pipes, bench, drain). Reuse it, via `tests/material-washroom-browser.mjs`
+(`RESOLUTION`, `SCREENSHOT`) or `build.mjs`, for scene-level checks, timings and
+screenshots; extend its model or materials rather than writing a new ad hoc scene.
+Swatch and starter tests keep using the shipped starters. To render on a real GPU
+instead of headless SwiftShader, set
+`BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist"`.

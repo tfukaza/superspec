@@ -127,6 +127,43 @@ baked bytes, identities or native/Wasm parity.
 25. Split the broad commit `15fd24e` only if a clean history matters; it mixes earlier
     uncommitted work with the agents' changes.
 
+## H. Shadows as authoring inputs
+
+Priority set by the user: baked appearance and runtime shadow styling matter;
+placement by shadow matters least. "Shadow" is three separate things sharing one
+occluder service.
+
+26. **Occluder service (groundwork).** A content-hashed BVH over the lowered scene
+    geometry and a deterministic ray cast (`program/numeric.rs` math, identical on
+    native and Wasm). It becomes a receiver input next to the edges `runoff` and
+    `creaseDistance` read.
+27. **Baked appearance fields (important).** `shadow(sunDir, softness)`,
+    `occlusion(radius)` and `sunExposure(...)` (visibility averaged over several sun
+    directions, usually the better weathering mask). They are CPU-only fields, so the
+    hybrid lane serves them: the CPU bakes the field, the GPU preview samples it. Bake
+    them at low resolution and filter, since shadows are smooth and many rays per
+    texel are slow in Wasm. Rules: the occluder set joins the bake key through a
+    selective dependency (only occluders that can reach the receiver), swatches get a
+    stand-in occluder, and baked shadow is an appearance mask, never a darkening of
+    base color that the renderer's own shadows would double.
+28. **Mask helpers.** Pointwise use (mask, threshold, noise-broken edges, remap)
+    already works on any field. Blur and edge distance are neighborhood operations and
+    need the pass graph (item 9): materialize, filter in meters using each chart's
+    texel density, never bleed across chart boundaries.
+29. **Runtime shadow styling (important).** Renderer-side live operations behind the
+    portable `LiveOperation` contract: shadow softness (shadow-map radius or variance
+    shadow maps), noise-jittered shadow edges, shadow tint, and the light's shadow term
+    exposed as a mask for other live effects. Dynamic lights only; implemented
+    identically in Studio and the three.js game runtime; not representable in a plain
+    GLB. Builds on the Studio viewer's default-on shadows.
+30. **Placement by shadow (least important, later).** A light survey over ground and
+    wall samples exposing `shadowAt(point)` / `sunExposure(point)` as placement
+    predicates. CPU-only and deterministic; surveyed on architecture first, with a
+    defined second pass for prop-on-prop shadows.
+
+Order: 26, then 27 and 29 in parallel (29 does not need the occluder service), 28
+with the pass graph, 30 last.
+
 ## Suggested order
 
 1. A1–A2 (real GPU numbers and failure tests): cheap, and they decide how much to trust
