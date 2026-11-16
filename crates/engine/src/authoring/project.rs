@@ -42,16 +42,41 @@ impl Default for Target {
     }
 }
 
-/// One imported model of a multi-model project: a GLB companion or an AML scene. Its mesh and
+/// One model of a multi-model project: a GLB companion, an AML scene or an item. Its mesh and
 /// owner identities are placed under `<id>/` so several models compose without collisions.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ModelSource {
     pub id: String,
-    /// `glb` (the companion named `name`) or `aml` (the scene text in `source`).
+    /// `glb` (the companion named `name`), `aml` (the scene text in `source`) or `item` (the
+    /// ItemSpec definition in the project module `entry`, or in `source`).
     pub kind: String,
     pub source: Option<String>,
     pub name: Option<String>,
+    /// `item`: the project module holding the definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+    /// `item`: values of the definition's controls.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, serde_json::Value>,
+    /// `item`: where the item stands, as four affine columns (three basis vectors and the
+    /// translation) in meters, Z up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<crate::itemspec::definition::Transform>,
+    /// `item`: the project material (a `MaterialAssignment` identity) each of the item's
+    /// slots shows. Every mesh of a part's face group with that slot is a receiver of that
+    /// material, as if the assignment listed it; a slot left out keeps a plain surface.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub slots: BTreeMap<String, String>,
+}
+
+/// A scene project with its item models resolved (`Session::resolve_items`).
+pub(super) struct ResolvedItems {
+    /// The project with every item slot's meshes added to the material assignment it names
+    /// and each of those meshes given its part's named features.
+    pub project: Project,
+    /// What each item reports about itself, by model identity (see `PlacedItem::metadata`).
+    pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One material applied to a set of meshes. Every assignment's entry module comes from the
@@ -106,6 +131,14 @@ pub struct Project {
     /// Named features of each mesh, by mesh id, in world meters (`Request::features`).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
+    /// The mapping of a material assignment where it is not the project's, by assignment id:
+    /// `uv`, `object`, `world` or `anchored`, slot by slot.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mappings: BTreeMap<String, Mapping>,
+    /// The pattern anchor of each mesh an anchored material is baked on, by mesh id
+    /// (`Request::anchors`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub anchors: BTreeMap<String, super::Anchor>,
 }
 impl Default for Project {
     fn default() -> Self {
@@ -132,6 +165,8 @@ impl Default for Project {
             planes: BTreeMap::new(),
             plane_materials: BTreeMap::new(),
             features: BTreeMap::new(),
+            mappings: BTreeMap::new(),
+            anchors: BTreeMap::new(),
         }
     }
 }
@@ -413,9 +448,19 @@ impl Session {
                         .and_then(|model| model.scene_cancellable(revision as u32, cancelled))
                         .map_err(&fail)?
                 }
+                "item" => {
+                    let prefix = format!("{}/", model.id);
+                    let placed = self.place_item(project, model, &prefix, assets, cancelled)?;
+                    for (id, matrix) in placed.transforms {
+                        transforms.insert(format!("{prefix}{id}"), matrix);
+                    }
+                    WorldModel::from_instances(placed.model)
+                        .and_then(|model| model.scene_cancellable(revision as u32, cancelled))
+                        .map_err(&fail)?
+                }
                 other => {
                     return Err(fail(format!(
-                        "Model {} has unsupported kind {other}; use glb or aml.",
+                        "Model {} has unsupported kind {other}; use glb, aml or item.",
                         model.id
                     )));
                 }
@@ -430,6 +475,82 @@ impl Session {
         Ok((WorldModel::from_scene(scene).map_err(&fail)?, transforms))
     }
 
+    /// Resolves the item models of a scene project: generates each one (parts whose geometry
+    /// key did not change since the session last placed it are kept), adds the meshes of every
+    /// slot the model binds to the material assignment it names, and gives each of those
+    /// meshes the named features of its part, so a material can follow a sill, a base, a top
+    /// or a joint. `None` for a project without item models, which is used as it is.
+    pub(super) fn resolve_items(
+        &mut self,
+        project: &Project,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<ResolvedItems>, Vec<Diagnostic>> {
+        if !project.models.iter().any(|model| model.kind == "item") {
+            return Ok(None);
+        }
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
+        let mut resolved = ResolvedItems {
+            project: project.clone(),
+            metadata: serde_json::Map::new(),
+        };
+        for model in project.models.iter().filter(|model| model.kind == "item") {
+            if !valid_identity(&model.id) {
+                return Err(fail(format!("Invalid model identity {}.", model.id)));
+            }
+            let prefix = format!("{}/", model.id);
+            let placed = self.place_item(project, model, &prefix, assets, cancelled)?;
+            for (slot, material) in &model.slots {
+                if !placed.slots.values().any(|used| used == slot) {
+                    return Err(fail(format!(
+                        "Model {} binds slot {slot}, which its item does not have.",
+                        model.id
+                    )));
+                }
+                let assignment = resolved
+                    .project
+                    .materials
+                    .iter_mut()
+                    .find(|assignment| &assignment.id == material)
+                    .ok_or_else(|| {
+                        fail(format!(
+                            "Model {} binds slot {slot} to {material}, which is not a material of the project.",
+                            model.id
+                        ))
+                    })?;
+                for (mesh, _) in placed.slots.iter().filter(|(_, used)| *used == slot) {
+                    let id = format!("{prefix}{mesh}");
+                    if !assignment.meshes.contains(&id) {
+                        assignment.meshes.push(id);
+                    }
+                }
+            }
+            for (mesh, features) in placed.features {
+                resolved
+                    .project
+                    .features
+                    .entry(format!("{prefix}{mesh}"))
+                    .or_default()
+                    .extend(features);
+            }
+            // Each mesh is anchored to its part's pattern anchor (read by `Mapping::Anchored`),
+            // unless the project states an anchor of its own for it.
+            for (mesh, anchor) in placed.anchors {
+                resolved
+                    .project
+                    .anchors
+                    .entry(format!("{prefix}{mesh}"))
+                    .or_insert(super::Anchor {
+                        origin: anchor.origin,
+                        u: anchor.u,
+                        v: anchor.v,
+                    });
+            }
+            resolved.metadata.insert(model.id.clone(), placed.metadata);
+        }
+        Ok(Some(resolved))
+    }
+
     /// Builds a multi-model, multi-material project: the composed models, then each material
     /// baked onto its own meshes in order. A material without meshes is still compiled, so its
     /// diagnostics and parameters are reported while it waits to be applied.
@@ -440,6 +561,12 @@ impl Session {
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<ProjectOutput, Vec<Diagnostic>> {
+        // Item models bind their slots' meshes to materials and name their features.
+        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let items = resolved.as_ref().map(|resolved| &resolved.metadata);
+        let project = resolved
+            .as_ref()
+            .map_or(project, |resolved| &resolved.project);
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         if project.materials.len() > MAX_ASSIGNMENTS {
             return Err(fail(format!(
@@ -531,14 +658,16 @@ impl Session {
             return Err(fail("Project authoring cancelled.".into()));
         }
         let meshes: Vec<&str> = visible.into_iter().collect();
-        Ok(ProjectOutput {
-            model,
-            metadata: serde_json::json!({
-                "materials": materials,
-                "meshes": meshes,
-                "receiverTransforms": transforms,
-            }),
-        })
+        let mut metadata = serde_json::json!({
+            "materials": materials,
+            "meshes": meshes,
+            "receiverTransforms": transforms,
+        });
+        if let Some(items) = items {
+            metadata["items"] = serde_json::Value::Object(items.clone());
+            metadata["bindings"] = bindings(project);
+        }
+        Ok(ProjectOutput { model, metadata })
     }
 }
 
@@ -556,10 +685,9 @@ pub(super) fn material_request(
         .iter()
         .filter_map(|receiver| Some((of(receiver), project.planes.get(&receiver.id)?.clone())))
         .collect();
-    let features = receivers
-        .iter()
-        .filter_map(|receiver| Some((of(receiver), project.features.get(&receiver.id)?.clone())))
-        .collect();
+    // Features and anchors are part of a receiver's layout, which is also asked for one
+    // receiver at a time (`project_layouts`), so every mesh's are passed along.
+    let features = project.features.clone();
     Request {
         kind: "material".into(),
         entry: assignment.entry.clone(),
@@ -569,13 +697,17 @@ pub(super) fn material_request(
         seed: assignment.seed,
         resolution: project.resolution,
         inspection: (project.inspection != "final").then(|| project.inspection.clone()),
-        mapping: project.mapping,
+        mapping: *project
+            .mappings
+            .get(&assignment.id)
+            .unwrap_or(&project.mapping),
         domain: project.domain,
         edges: project.edges.clone(),
         gravity: project.gravity,
         profile: project.profile,
         texel_density: project.texel_density,
         receivers,
+        anchors: project.anchors.clone(),
         materials: if planes.is_empty() {
             BTreeMap::new()
         } else {
@@ -613,6 +745,13 @@ impl Session {
             ));
         }
         self.begin_authoring(revision, &project.entry)?;
+        // Item models bind their slots' meshes to materials and name their features.
+        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let items = resolved.as_ref().map(|resolved| &resolved.metadata);
+        let project = resolved
+            .as_ref()
+            .map_or(project, |resolved| &resolved.project);
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
@@ -767,17 +906,35 @@ impl Session {
             }
         }
         let ids: Vec<&str> = visible.into_iter().collect();
-        Ok(ProjectOutput {
-            model,
-            metadata: serde_json::json!({
-                "materials": materials,
-                "meshes": ids,
-                "shading": meshes,
-                "gravity": project.gravity,
-                "domain": project.domain,
-            }),
-        })
+        let mut metadata = serde_json::json!({
+            "materials": materials,
+            "meshes": ids,
+            "shading": meshes,
+            "gravity": project.gravity,
+            "domain": project.domain,
+        });
+        if let Some(items) = items {
+            metadata["items"] = serde_json::Value::Object(items.clone());
+            metadata["bindings"] = bindings(project);
+        }
+        Ok(ProjectOutput { model, metadata })
     }
+}
+
+/// The material each assigned mesh of a (resolved) project shows, by mesh identity: with item
+/// models, the assignments a host wrote plus the meshes of the slots the items bind.
+fn bindings(project: &Project) -> serde_json::Value {
+    project
+        .materials
+        .iter()
+        .flat_map(|assignment| {
+            assignment
+                .meshes
+                .iter()
+                .map(|mesh| (mesh.clone(), serde_json::Value::from(assignment.id.clone())))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 /// Points this close to another surface, in meters, touch it.

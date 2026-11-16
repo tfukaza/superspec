@@ -30,6 +30,11 @@ pub struct Chart {
     /// atlas's density, so its texels repeat those samples instead of evaluating finer detail
     /// than the rest of the receiver has.
     pub samples: [usize; 2],
+    /// For a chart on a pattern anchor's texel lattice: along its width and its height, how
+    /// far into a lattice cell its rectangle starts and how many cells its edge is long (both
+    /// in texels, neither whole in general). Texel centers are then lattice points, inside the
+    /// receiver or just beyond its edge.
+    pub lattice: Option<[[f64; 2]; 2]>,
 }
 
 pub struct Atlas {
@@ -58,6 +63,13 @@ pub struct Atlas {
     features: std::sync::OnceLock<(program::FeatureSet, bool)>,
     /// The features the receiver's owner named, each name with its own grid.
     pub named: program::NamedFeatures,
+    /// The pattern anchor's origin and axes (u, v, normal), under [`Mapping::Anchored`].
+    frame: Option<([f64; 3], [[f64; 3]; 3])>,
+    /// Whether each triangle's chart is on the anchor's texel lattice, and the lattice step.
+    snapped: Vec<bool>,
+    step: f64,
+    /// See [`Self::legs`].
+    framed: Vec<Option<[[f64; 3]; 3]>>,
 }
 pub fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|i| a[i] + b[i])
@@ -124,7 +136,8 @@ impl Atlas {
     /// gravity, profile allowance and texel density, so every consumer sizes it by one rule.
     pub fn for_request(receiver: Receiver, request: &super::Request) -> Result<Self, String> {
         let named = request.features.get(&receiver.id).cloned();
-        Self::new(
+        let anchor = request.anchors.get(&receiver.id).copied();
+        Self::build(
             receiver,
             request.resolution,
             request.mapping,
@@ -132,6 +145,8 @@ impl Atlas {
             request.gravity,
             request.profile.max_resolution(),
             request.texel_density,
+            anchor.filter(|_| request.mapping == Mapping::Anchored),
+            true,
         )?
         .with_named(named.as_deref().unwrap_or(&[]))
     }
@@ -146,6 +161,7 @@ impl Atlas {
         self.turns[triangle]
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(
         receiver: Receiver,
         resolution: usize,
@@ -155,6 +171,55 @@ impl Atlas {
         max_resolution: usize,
         texel_density: Option<f64>,
     ) -> Result<Self, String> {
+        Self::build(
+            receiver,
+            resolution,
+            mapping,
+            domain,
+            gravity,
+            max_resolution,
+            texel_density,
+            None,
+            true,
+        )
+    }
+
+    /// [`Self::new`] for a receiver with a pattern anchor (see [`Mapping::Anchored`]); `snap`
+    /// puts the charts that can be on the anchor's texel lattice.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        receiver: Receiver,
+        resolution: usize,
+        mapping: Mapping,
+        domain: [f64; 2],
+        gravity: [f64; 3],
+        max_resolution: usize,
+        texel_density: Option<f64>,
+        anchor: Option<super::Anchor>,
+        snap: bool,
+    ) -> Result<Self, String> {
+        // The anchor's frame: its origin and unit axes u, v and their normal. Without an anchor
+        // the frame is the world's, so anchored coordinates are world coordinates.
+        let frame = match (mapping, anchor) {
+            (Mapping::Anchored, Some(anchor)) => {
+                let u = unit(anchor.u)?;
+                let v = unit(sub(anchor.v, mul(u, dot(anchor.v, u))))?;
+                if anchor
+                    .origin
+                    .iter()
+                    .any(|c| !c.is_finite() || c.abs() > 1e9)
+                {
+                    return Err("A pattern anchor needs a finite origin.".into());
+                }
+                Some((anchor.origin, [u, v, cross(u, v)]))
+            }
+            (Mapping::Anchored, None) => {
+                Some(([0.; 3], [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]))
+            }
+            _ => None,
+        };
+        // Charts go on the lattice only at exactly the requested density.
+        let lattice = frame.filter(|_| snap).zip(texel_density);
         if texel_density.is_some_and(|density| !(1. ..=100_000.).contains(&density)) {
             return Err("Texel density must be 1 to 100000 texels per meter.".into());
         }
@@ -262,6 +327,9 @@ impl Atlas {
         }
         let mut charts: Vec<Chart> = Vec::new();
         let mut sizes: Vec<[f64; 2]> = Vec::new();
+        // For a triangle whose chart is not laid along its own legs: the corner and the two
+        // edges of the chart's rectangle, which stand in for the triangle's.
+        let mut framed: Vec<Option<[[f64; 3]; 3]>> = vec![None; triangles];
         for triangle in 0..triangles {
             if taken[triangle] && partner[triangle].is_none() {
                 continue;
@@ -275,12 +343,86 @@ impl Atlas {
             // Charts lie wider than tall: rotate when the first leg is the shorter one.
             // Legs equal up to rounding noise do not rotate, so a rigidly moved receiver keeps the
             // chart orientation of the original.
-            let rotated = along < across * (1. - 1e-9);
+            let mut rotated = along < across * (1. - 1e-9);
             sizes.push(if rotated {
                 [across, along]
             } else {
                 [along, across]
             });
+            // A chart whose legs run along the anchor's axes can sample the anchor's lattice:
+            // one texel a lattice cell, wherever on the lattice its corner falls. It then
+            // spans the cells its edges reach into, which may be one more than its length.
+            let mut on_lattice = None;
+            if let Some(((origin, axes), density)) = lattice {
+                let corner = corners[triangle];
+                let a = point(corner[0]);
+                let (first, second) = (sub(point(corner[1]), a), sub(point(corner[2]), a));
+                let along_axis = |leg: [f64; 3]| {
+                    let length = dot(leg, leg).sqrt();
+                    axes.iter()
+                        .any(|axis| (dot(leg, *axis).abs() - length).abs() <= 1e-9 * length)
+                };
+                if along_axis(first) && along_axis(second) && dot(first, second).abs() < 1e-9 {
+                    // Where the chart's rectangle starts, and the directions of its +x and +y.
+                    let (start, x, y) = if rotated {
+                        (add(a, second), mul(second, -1.), first)
+                    } else {
+                        (a, first, second)
+                    };
+                    let size = *sizes.last().expect("the chart's size");
+                    let fit = |direction: [f64; 3], length: f64| {
+                        let direction = mul(direction, 1. / dot(direction, direction).sqrt());
+                        let cells = dot(sub(start, origin), direction) * density;
+                        // A corner within a millionth of a cell of a boundary is on it.
+                        let into = (cells - (cells + 1e-6).floor()).max(0.);
+                        [into, length * density]
+                    };
+                    let fits = [fit(x, size[0]), fit(y, size[1])];
+                    *sizes.last_mut().expect("the chart's size") =
+                        fits.map(|[into, texels]| (into + texels - 1e-6).max(1e-6) / density);
+                    on_lattice = Some(fits);
+                } else if let (None, Ok(normal)) = (partner[triangle], face_normal(&corner)) {
+                    // A lone triangle in a plane of the anchor's frame, whatever way its edges
+                    // run: its chart is its bounding rectangle along the two axes of that
+                    // plane, so its texels are lattice cells too. The chart's frame is then
+                    // that rectangle's corner and edges rather than the triangle's own.
+                    let across = axes
+                        .iter()
+                        .position(|axis| dot(normal, *axis).abs() > 1. - 1e-9);
+                    if let Some(across) = across {
+                        let extent = |axis: [f64; 3]| {
+                            let along = corner.map(|index| dot(sub(point(index), origin), axis));
+                            let low = along.into_iter().fold(f64::INFINITY, f64::min);
+                            (
+                                low,
+                                along.into_iter().fold(f64::NEG_INFINITY, f64::max) - low,
+                            )
+                        };
+                        // The longer extent runs along the chart's width; +y is a quarter turn
+                        // from +x about the face's normal, which keeps the frame's handedness.
+                        let [p, q] = [axes[(across + 1) % 3], axes[(across + 2) % 3]];
+                        let x = if extent(p).1 >= extent(q).1 { p } else { q };
+                        let y = cross(normal, x);
+                        let ((low_x, width), (low_y, height)) = (extent(x), extent(y));
+                        if width > 1e-9 && height > 1e-9 {
+                            let start = add(
+                                add(origin, mul(normal, dot(sub(a, origin), normal))),
+                                add(mul(x, low_x), mul(y, low_y)),
+                            );
+                            let fit = |low: f64, length: f64| {
+                                let cells = low * density;
+                                [(cells - (cells + 1e-6).floor()).max(0.), length * density]
+                            };
+                            let fits = [fit(low_x, width), fit(low_y, height)];
+                            *sizes.last_mut().expect("the chart's size") = fits
+                                .map(|[into, texels]| (into + texels - 1e-6).max(1e-6) / density);
+                            rotated = false;
+                            on_lattice = Some(fits);
+                            framed[triangle] = Some([start, mul(x, width), mul(y, height)]);
+                        }
+                    }
+                }
+            }
             charts.push(Chart {
                 x: 0,
                 y: 0,
@@ -290,6 +432,7 @@ impl Atlas {
                 second: partner[triangle],
                 rotated,
                 samples: [1, 1],
+                lattice: on_lattice,
             });
         }
         // One texel density for the whole receiver, the largest whose shelf packing fits the
@@ -343,6 +486,21 @@ impl Atlas {
                 })
                 .map(|width| (width, density))
         });
+        if lattice.is_some() && sized.is_none() {
+            // The receiver cannot be laid out at the requested density, so its texels are not
+            // lattice cells: it is laid out as any other, in anchored coordinates.
+            return Self::build(
+                receiver.clone(),
+                resolution,
+                mapping,
+                domain,
+                gravity,
+                max_resolution,
+                texel_density,
+                anchor,
+                false,
+            );
+        }
         let (width, density) = sized.unwrap_or_else(|| {
             let (mut low, mut high) = (0f64, resolution as f64 / longest.max(1e-9));
             for _ in 0..48 {
@@ -361,12 +519,25 @@ impl Atlas {
             chart.samples = std::array::from_fn(|axis| {
                 ((size[axis] * density).ceil() as usize).clamp(1, inner[axis])
             });
+            // Every texel of a chart on the lattice is its own lattice cell.
+            if chart.lattice.is_some() {
+                chart.samples = inner;
+            }
         }
         let mut spans = vec![[1., 1.]; triangles];
         let mut turns = vec![0u8; triangles];
+        let mut snapped = vec![false; triangles];
         for chart in &charts {
             // Samples per leg: footprints and height steps follow the samples, not the padding.
             let mut inner = chart.samples.map(|count| count as f64);
+            if let Some(fits) = chart.lattice {
+                // On the lattice a leg is as many texels long as it is cells long.
+                inner = fits.map(|[_, texels]| texels);
+                snapped[chart.first] = true;
+                if let Some(second) = chart.second {
+                    snapped[second] = true;
+                }
+            }
             if chart.rotated {
                 inner.swap(0, 1);
             }
@@ -394,34 +565,52 @@ impl Atlas {
                 extent[axis] = extent[axis].max(point[axis]);
             }
         }
-        let mut placement = vec![(0usize, 0usize, [0f64; 2]); triangles];
+        // Each triangle's chart corner in atlas texels, where its unit rectangle starts past
+        // the gutter, and that rectangle's size in texels.
+        let mut placement = vec![(0usize, 0usize, [0f64; 2], [0f64; 2]); triangles];
         for chart in &charts {
-            let inner = [
-                (chart.width - 2 * GUTTER) as f64,
-                (chart.height - 2 * GUTTER) as f64,
-            ];
-            placement[chart.first] = (chart.x, chart.y, inner);
+            let (into, inner) = match chart.lattice {
+                Some([[x, width], [y, height]]) => ([x, y], [width, height]),
+                None => (
+                    [0.; 2],
+                    [
+                        (chart.width - 2 * GUTTER) as f64,
+                        (chart.height - 2 * GUTTER) as f64,
+                    ],
+                ),
+            };
+            placement[chart.first] = (chart.x, chart.y, into, inner);
             if let Some(second) = chart.second {
-                placement[second] = (chart.x, chart.y, inner);
+                placement[second] = (chart.x, chart.y, into, inner);
             }
         }
         for (triangle, corner) in corners.iter().enumerate() {
             let a = point(corner[0]);
             unit(cross(sub(point(corner[1]), a), sub(point(corner[2]), a)))?;
-            let (x0, y0, inner) = placement[triangle];
+            let (x0, y0, into, inner) = placement[triangle];
             // Corner, first-leg end and second-leg end in the unit inner rectangle for each turn.
-            let local: [[f64; 2]; 3] = match turns[triangle] {
+            let mut local: [[f64; 2]; 3] = match turns[triangle] {
                 0 => [[0., 0.], [1., 0.], [0., 1.]],
                 1 => [[1., 0.], [1., 1.], [0., 0.]],
                 2 => [[1., 1.], [0., 1.], [1., 0.]],
                 _ => [[0., 1.], [0., 0.], [1., 1.]],
             };
+            // In a chart framed by its rectangle, each corner lies where it is in that frame.
+            if let Some([start, across, down]) = framed[triangle] {
+                local = corner.map(|index| {
+                    let from = sub(point(index), start);
+                    [
+                        dot(from, across) / dot(across, across),
+                        dot(from, down) / dot(down, down),
+                    ]
+                });
+            }
             for (k, index) in corner.iter().enumerate() {
                 mesh.positions.push(point(*index));
                 mesh.normals.push(unit(vertex(&receiver.normals, *index))?);
                 mesh.colors.push([1.; 3]);
-                let x = (x0 + GUTTER) as f64 + local[k][0] * inner[0];
-                let y = (y0 + GUTTER) as f64 + local[k][1] * inner[1];
+                let x = (x0 + GUTTER) as f64 + into[0] + local[k][0] * inner[0];
+                let y = (y0 + GUTTER) as f64 + into[1] + local[k][1] * inner[1];
                 mesh.uvs.push([x / width as f64, 1. - y / height as f64]);
                 mesh.indices.push(mesh.indices.len() as u32);
             }
@@ -443,7 +632,23 @@ impl Atlas {
             extent,
             features: std::sync::OnceLock::new(),
             named: program::NamedFeatures::default(),
+            frame,
+            snapped,
+            step: texel_density.map_or(0., |density| 1. / density),
+            framed,
         })
+    }
+
+    /// The corner and legs a triangle's chart is laid along: its own first corner and edges,
+    /// or the rectangle its chart is framed by.
+    fn legs(&self, triangle: usize) -> ([f64; 3], [f64; 3], [f64; 3]) {
+        match self.framed[triangle] {
+            Some([start, across, down]) => (start, across, down),
+            None => {
+                let p = &self.mesh.positions[triangle * 3..triangle * 3 + 3];
+                (p[0], sub(p[1], p[0]), sub(p[2], p[0]))
+            }
+        }
     }
 
     /// This atlas with the receiver's named features, indexed by name once for every bake of
@@ -486,6 +691,17 @@ impl Atlas {
     /// The triangle and leg parameters a chart texel samples. Gutter texels clamp to the nearest
     /// edge; a lone triangle's texels beyond its hypotenuse project onto it.
     pub fn texel(&self, chart: &Chart, x: usize, y: usize) -> (usize, f64, f64) {
+        // On the lattice every texel is its own cell: nothing clamps or repeats, and texels past
+        // the receiver's edge sample the pattern where it continues.
+        if let Some([[into_x, width], [into_y, height]]) = chart.lattice {
+            let s = (x as f64 + 0.5 - GUTTER as f64 - into_x) / width;
+            let t = (y as f64 + 0.5 - GUTTER as f64 - into_y) / height;
+            let (u, v) = if chart.rotated { (t, 1. - s) } else { (s, t) };
+            return match chart.second {
+                Some(second) if u + v > 1. => (second, 1. - u, 1. - v),
+                _ => (chart.first, u, v),
+            };
+        }
         let inner = [
             (chart.width - 2 * GUTTER) as f64,
             (chart.height - 2 * GUTTER) as f64,
@@ -521,6 +737,22 @@ impl Atlas {
         let a = vertex(&self.receiver.positions, indices[0]);
         let b = vertex(&self.receiver.positions, indices[1]);
         let c = vertex(&self.receiver.positions, indices[2]);
+        // In a chart framed by its rectangle, (u, v) are along the rectangle's edges: the same
+        // point of the triangle's plane in the triangle's own leg parameters.
+        let (u, v) = match self.framed[triangle] {
+            Some([start, across, down]) => {
+                let (first, second) = (sub(b, a), sub(c, a));
+                let from = sub(add(start, add(mul(across, u), mul(down, v))), a);
+                let (ff, fs, ss) = (dot(first, first), dot(first, second), dot(second, second));
+                let (pf, ps) = (dot(from, first), dot(from, second));
+                let determinant = ff * ss - fs * fs;
+                (
+                    (pf * ss - ps * fs) / determinant,
+                    (ps * ff - pf * fs) / determinant,
+                )
+            }
+            None => (u, v),
+        };
         let world = add(a, add(mul(sub(b, a), u), mul(sub(c, a), v)));
         let object = self
             .receiver
@@ -541,11 +773,21 @@ impl Atlas {
                 + uv[indices[1] as usize * 2 + axis] * u
                 + uv[indices[2] as usize * 2 + axis] * v
         });
-        let coordinates = match self.mapping {
-            Mapping::World => world,
+        // In the anchor's frame, the position from its origin along its axes.
+        let anchored = self.frame.map(|(origin, axes)| {
+            let from = sub(world, origin);
+            (
+                axes.map(|axis| dot(from, axis)),
+                axes.map(|axis| dot(normal, axis)),
+            )
+        });
+        let coordinates = match (self.mapping, anchored) {
+            (_, Some((coordinates, _))) => coordinates,
+            (Mapping::World, _) => world,
             _ => object,
         };
         let projection_normal = match (self.mapping, self.receiver.object_to_world.as_ref()) {
+            _ if anchored.is_some() => anchored.expect("an anchored sample").1,
             (Mapping::Object, Some(m)) => unit([
                 dot([m[0], m[1], m[2]], normal),
                 dot([m[4], m[5], m[6]], normal),
@@ -577,6 +819,18 @@ impl Atlas {
             ((data[end] - data[start]).powi(2) + (data[end + 1] - data[start + 1]).powi(2)).sqrt()
         };
         let uv_footprint = Some((uv_edge(indices[1]) / along).max(uv_edge(indices[2]) / across));
+        // On the lattice the pattern is sampled at the lattice point itself and at the lattice
+        // step: the same bits on every receiver and at every size, whatever rounding the way
+        // from texel to position took. The other inputs keep the texel's own position.
+        let (surface, footprint) = if self.snapped[triangle] {
+            let step = self.step;
+            (
+                surface.map(|position| ((position / step - 0.5).round() + 0.5) * step),
+                step,
+            )
+        } else {
+            (surface, footprint)
+        };
         Ok(Sample {
             uv,
             surface,
@@ -593,9 +847,7 @@ impl Atlas {
 
     /// Height derivatives are measured along the chart edges, then resolved in its tangent frame.
     pub fn normal(&self, triangle: usize, du: f64, dv: f64) -> Result<[f64; 3], String> {
-        let p = &self.mesh.positions[triangle * 3..triangle * 3 + 3];
-        let u = sub(p[1], p[0]);
-        let v = sub(p[2], p[0]);
+        let (_, u, v) = self.legs(triangle);
         let t = unit(u)?;
         let n = unit(cross(u, v))?;
         let b = cross(n, t);
@@ -614,9 +866,7 @@ impl Atlas {
     /// World-space x and y directions of the tangent space [`Self::normal`] encodes: the first
     /// edge and the reversed bitangent (atlas V runs down image rows).
     pub fn frame(&self, triangle: usize) -> Result<[[f64; 3]; 2], String> {
-        let p = &self.mesh.positions[triangle * 3..triangle * 3 + 3];
-        let u = sub(p[1], p[0]);
-        let v = sub(p[2], p[0]);
+        let (_, u, v) = self.legs(triangle);
         let t = unit(u)?;
         let n = unit(cross(u, v))?;
         let b = cross(n, t);

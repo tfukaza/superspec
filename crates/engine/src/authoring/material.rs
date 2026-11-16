@@ -1098,6 +1098,12 @@ fn layout_node(index: usize, receiver: &super::Receiver, request: &Request) -> N
     if let Some(named) = request.features.get(&receiver.id).filter(|n| !n.is_empty()) {
         inputs.extend(json(named));
     }
+    // So is the pattern anchor, where the mapping reads one.
+    if let (super::Mapping::Anchored, Some(anchor)) =
+        (request.mapping, request.anchors.get(&receiver.id))
+    {
+        inputs.extend(json(anchor));
+    }
     node(
         format!("layout/{index}"),
         "receiver-atlas-v3",

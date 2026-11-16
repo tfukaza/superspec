@@ -114,6 +114,19 @@ material's own domain instead of by a receiver's texels.
   two of texels is the sure case); `ReceiverLayout::surface` says so for each chart. Other
   charts share nothing. Sharing them needs sample positions snapped to the lattice, or
   resampling for charts that are turned or scaled, and either changes baked pixels.
+- An anchored mapping (`authoring::Mapping::Anchored`, opt-in) puts receivers on the lattice by
+  construction. The surface domain is measured from a pattern anchor the receiver's owner
+  supplies (`Request::anchors`; an item part's `PatternAnchor`), so a resize does not move the
+  pattern. With a texel density, a chart in a plane of the anchor's frame has one texel for
+  each lattice cell: a quad along the anchor's axes as before, any other triangle framed by
+  its bounding rectangle along those axes, each starting wherever on the lattice its corner
+  falls. Texels past the receiver's edge sample the pattern where it continues, and a sample's
+  surface position and footprint are the lattice point's and the lattice step's exactly. The
+  item fixture `washroom-wall` resized through its width keeps the bytes of every lattice
+  point both sizes cover, and reads the raster from its third size on. Charts in other
+  planes, and receivers that cannot reach the density, are laid out as before in anchored
+  coordinates. Triangles that are not half of an axis-aligned quad each get a whole bounding
+  rectangle, so a face cut by an opening spends about twice its area in texels.
 - For a GPU host, `Shader::reads` flags intrinsic outputs, and the entry points
   `ms_evaluate_intrinsic` and `ms_evaluate_remainder` evaluate the two halves.
   `ReceiverLayout::surface` gives each chart's map from atlas texels to the surface domain.

@@ -1003,6 +1003,169 @@ fn an_intrinsic_field_is_baked_once_for_every_receiver_and_size_that_samples_the
     assert_same(&output, &fresh_of(&far), "after a cancelled build");
 }
 
+/// The front face of the washroom wall item at a width, as a receiver, with the wall part's
+/// pattern anchor.
+fn item_wall(width: f64) -> (crate::authoring::Receiver, crate::authoring::Anchor) {
+    use crate::itemspec::definition as item;
+    let text = include_str!("../itemspec/definition/fixtures/washroom-wall.item.json");
+    let definition = item::parse("washroom-wall.item.json", text).unwrap();
+    let values: item::Values = [("width".to_owned(), serde_json::json!(width))].into();
+    let generated = item::generate(
+        &definition,
+        &values,
+        &|name| Err(format!("Missing {name}")),
+        &|| false,
+    )
+    .unwrap_or_else(|e| panic!("{e:?}"));
+    let anchor = &generated.geometry.anchors[0];
+    assert_eq!(anchor.part, "wall");
+    // The concrete face that looks along the anchor's normal.
+    let (mut positions, mut normals, mut uvs, mut indices) = (vec![], vec![], vec![], vec![]);
+    for mesh in &generated.geometry.meshes {
+        let facing = mesh.normals.iter().all(|normal| {
+            (0..3)
+                .map(|axis| normal[axis] * anchor.normal[axis])
+                .sum::<f64>()
+                > 0.999
+        });
+        if mesh.material_slot != "concrete" || !facing || mesh.positions.is_empty() {
+            continue;
+        }
+        let base = (positions.len() / 3) as u32;
+        positions.extend(mesh.positions.iter().flatten());
+        normals.extend(mesh.normals.iter().flatten());
+        uvs.extend(mesh.uvs.iter().flatten());
+        indices.extend(mesh.indices.iter().map(|index| base + index));
+    }
+    assert!(
+        indices.len() >= 6 * 3,
+        "the face around the window: {} indices",
+        indices.len()
+    );
+    let receiver = crate::authoring::Receiver {
+        id: "wall/front".into(),
+        object_id: "wall".into(),
+        positions,
+        normals,
+        uvs,
+        indices,
+        object_to_world: None,
+        contacts: Vec::new(),
+    };
+    let anchor = crate::authoring::Anchor {
+        origin: anchor.origin,
+        u: anchor.u,
+        v: anchor.v,
+    };
+    (receiver, anchor)
+}
+
+/// The grained material on the item wall, anchored, at 64 texels a meter.
+fn anchored_wall(width: f64) -> Request {
+    let (receiver, anchor) = item_wall(width);
+    let mut request = request(GRAINED.into(), 512);
+    request.mapping = crate::authoring::Mapping::Anchored;
+    request.texel_density = Some(64.);
+    request.anchors.insert(receiver.id.clone(), anchor);
+    request.receivers = vec![receiver];
+    request
+}
+
+/// The baked color of every lattice point a build's texels sample, with how many texels of
+/// the atlas are lattice points and how many are not.
+fn lattice_colors(
+    request: &Request,
+    output: &Output,
+) -> (BTreeMap<LatticePoint, [u8; 3]>, usize, usize) {
+    let atlas = Atlas::for_request(request.receivers[0].clone(), request).unwrap();
+    let color = &pixels(output)["color"];
+    let mut colors = BTreeMap::new();
+    let (mut on, mut off) = (0, 0);
+    for chart in &atlas.charts {
+        for y in 0..chart.height {
+            for x in 0..chart.width {
+                let (triangle, u, v) = atlas.texel(chart, x, y);
+                let sample = atlas.sample(triangle, u, v).unwrap();
+                let Some(point) = IntrinsicRaster::point(&sample) else {
+                    off += 1;
+                    continue;
+                };
+                on += 1;
+                let at = ((chart.y + y) * atlas.width + chart.x + x) * 4;
+                let rgb = [color[at], color[at + 1], color[at + 2]];
+                // Two charts that sample one point bake one color.
+                assert_eq!(*colors.entry(point).or_insert(rgb), rgb, "{point:?}");
+            }
+        }
+    }
+    (colors, on, off)
+}
+
+#[test]
+fn resizing_an_anchored_wall_keeps_its_pattern_and_reuses_the_intrinsic_bake() {
+    let mut session = Session::default();
+    let mut kept: Option<(f64, BTreeMap<LatticePoint, [u8; 3]>)> = None;
+    for (revision, width) in [2.7, 3.1, 3.5, 2.2].into_iter().enumerate() {
+        let request = anchored_wall(width);
+        let (output, log) = intrinsic_build(&mut session, revision as u64 + 1, &request);
+        // The maps are the bytes a session that shares nothing bakes.
+        assert_same(
+            &output,
+            &fresh(&request, &Assets::default()),
+            &format!("width {width}"),
+        );
+        let (colors, on, off) = lattice_colors(&request, &output);
+        assert_eq!(
+            off, 0,
+            "every texel of the anchored face is a lattice point"
+        );
+        // The wall's face is on the lattice whatever its width: 64 texels a meter.
+        assert!(
+            on as f64 >= width * 2.6 * 64. * 64. * 0.8,
+            "{on} texels at width {width}"
+        );
+        if let Some((before, previous)) = &kept {
+            // The region both sizes cover: the same lattice points, the same bytes.
+            let shared: Vec<_> = colors
+                .keys()
+                .filter(|point| previous.contains_key(point))
+                .collect();
+            let least = before.min(width) * 2.6 * 64. * 64. * 0.7;
+            assert!(
+                shared.len() as f64 >= least,
+                "{} shared points",
+                shared.len()
+            );
+            for point in shared {
+                assert_eq!(
+                    colors[point], previous[point],
+                    "{point:?} from {before} to {width}"
+                );
+            }
+        }
+        // The first layout leaves a mark and the second fills the raster; from the third on
+        // the region already baked is read from it, not computed.
+        match revision {
+            0 => assert!(log.is_empty(), "{log:?}"),
+            1 => assert_eq!(log[0].1, 0, "{log:?}"),
+            _ => {
+                let (points, found) = log[0];
+                let least = (if width > 3.2 { 3.1 } else { width }) * 2.6 * 64. * 64. * 0.7;
+                assert!(
+                    found as f64 >= least && found <= points,
+                    "{log:?} at width {width}"
+                );
+            }
+        }
+        kept = Some((width, colors));
+    }
+    // Unanchored, the same wall is laid out as it always was, off the lattice.
+    let mut plain = anchored_wall(2.7);
+    plain.mapping = crate::authoring::Mapping::Object;
+    let (_, on, off) = lattice_colors(&plain, &fresh(&plain, &Assets::default()));
+    assert!(off > on, "{on} on the lattice, {off} off it");
+}
+
 /// How much of the washroom's surface samples its footprint's lattice exactly, which is what
 /// shares intrinsic values between receivers today:
 /// `WASHROOM_PROJECT=<studio.json> cargo test --release -p superspec-engine --lib

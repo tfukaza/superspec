@@ -6,6 +6,7 @@ pub mod occlusion;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
+pub(crate) use item::PlacedItemState;
 pub use layout::{LAYOUT_RECORD, ProjectLayouts, ReceiverLayout};
 pub use material::{FieldBake, PendingBake};
 pub use project::{
@@ -44,13 +45,29 @@ pub struct Contact {
     pub end: [f64; 3],
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mapping {
     Uv,
     #[default]
     Object,
     World,
+    /// The material's surface domain is measured from a pattern anchor the receiver's owner
+    /// supplies ([`Request::anchors`]), not from the receiver's own bounds, so resizing the
+    /// receiver does not move the pattern. With a texel density, charts whose edges run along
+    /// the anchor's axes sample the anchor's texel lattice exactly: the same positions on every
+    /// receiver and at every size.
+    Anchored,
+}
+
+/// The frame a surface pattern is fixed to, in world meters: an origin and two axes spanning
+/// the pattern's plane (made unit and perpendicular; their cross product is the third axis).
+/// An item part's `PatternAnchor` under the item's placement is one.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Anchor {
+    pub origin: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
 }
 
 /// How a bake is scheduled. Both profiles evaluate the same program with the same seeds and
@@ -122,6 +139,10 @@ pub struct Request {
     /// part of a receiver's layout, like its geometry.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub features: BTreeMap<String, Vec<program::NamedFeature>>,
+    /// The pattern anchor of each receiver, by receiver id, for [`Mapping::Anchored`]. A
+    /// receiver without one is anchored at the world's origin along the world's axes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub anchors: BTreeMap<String, Anchor>,
 }
 
 /// An item's features (`itemspec::definition::output::Feature`: joint, end, bracket-contact,
@@ -195,6 +216,7 @@ impl Default for Request {
             planes: BTreeMap::new(),
             materials: BTreeMap::new(),
             features: BTreeMap::new(),
+            anchors: BTreeMap::new(),
         }
     }
 }

@@ -288,8 +288,14 @@ fn cumulative_authored_and_baked_pixels_reject_before_commit_and_allow_smaller_r
     };
     let bytes = superspec_geometry::image::encode(&image).unwrap();
     drop(image);
+    // As many authored 2048 px images as leave room for one baked material of three 1024 px
+    // maps under the scene's pixel budget, and not for two.
+    let budget = superspec_types::limits::MAX_SCENE_IMAGE_PIXELS;
+    let (authored, baked) = (2048 * 2048, 3 * 1024 * 1024);
+    let images = (budget - baked) / authored;
+    assert!(images * authored + 2 * baked > budget);
     let mut source = String::from("<architecture version=\"1\" id=\"budget\">");
-    for i in 0..47 {
+    for i in 0..images {
         source.push_str(&format!("<material id=\"m{i}\" texture=\"{i}.png\"/><box id=\"b{i}\" material=\"m{i}\" position=\"{} 0 0\" width=\"1\" depth=\"1\" height=\"1\"/>",i*2));
     }
     source.push_str("</architecture>");
@@ -361,7 +367,7 @@ fn cumulative_authored_and_baked_pixels_reject_before_commit_and_allow_smaller_r
     scene
         .append_baked_visual("b0", &mesh, &binding, &[small])
         .unwrap();
-    assert_eq!(scene.manifest.assets.len(), 53);
+    assert_eq!(scene.manifest.assets.len(), images + 6);
 }
 
 #[test]
