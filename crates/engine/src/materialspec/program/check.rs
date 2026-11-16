@@ -148,9 +148,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
                         mark,
                     )]);
                 }
-                let default = eval::constant(&program, value)
-                    .map_err(|error| vec![error])?
-                    .json();
+                let default = eval::constant(&program, value).map_err(|error| vec![error])?;
                 if !parameter_valid(*kind, &default, *range) {
                     return Err(vec![program.diagnostic(
                         "MS_PARAMETER",

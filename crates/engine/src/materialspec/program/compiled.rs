@@ -50,15 +50,168 @@ pub(super) enum Kind {
     Field(usize),
     /// Index into the enclosing helper's arguments.
     Local(usize),
-    Unary(&'static str, Box<Node>),
-    Binary(&'static str, Box<Node>, Box<Node>),
+    Unary(Op, Box<Node>),
+    Binary(Op, Box<Node>, Box<Node>),
     /// Selected component indices, in order.
     Member(Box<Node>, Vec<usize>),
     Select(Box<Node>, Box<Node>, Box<Node>),
     /// Index into the program's helpers.
     Function(usize, Vec<Node>),
-    /// A catalog operation, by its static identifier.
-    Builtin(&'static str, Vec<Node>),
+    /// A catalog operation.
+    Builtin(Builtin, Vec<Node>),
+}
+
+/// A unary or binary operator, resolved from its spelling once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Op {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    And,
+    Or,
+    Equal,
+    NotEqual,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    Not,
+}
+
+impl Op {
+    /// The checker admits only known operators; any other spelling reads as `+`, as before.
+    fn named(op: &str) -> Self {
+        match op {
+            "-" => Self::Sub,
+            "*" => Self::Mul,
+            "/" => Self::Div,
+            "%" => Self::Rem,
+            "&&" => Self::And,
+            "||" => Self::Or,
+            "==" => Self::Equal,
+            "!=" => Self::NotEqual,
+            "<" => Self::Less,
+            ">" => Self::Greater,
+            "<=" => Self::LessEqual,
+            ">=" => Self::GreaterEqual,
+            "!" => Self::Not,
+            _ => Self::Add,
+        }
+    }
+}
+
+/// A catalog operation the evaluator implements, resolved from its identifier once so samples
+/// never compare strings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Builtin {
+    Vec2,
+    Vec3,
+    Mix,
+    Clamp,
+    Smoothstep,
+    Abs,
+    Floor,
+    Fract,
+    Sin,
+    Cos,
+    Sqrt,
+    Min,
+    Max,
+    Step,
+    ValueNoise,
+    Hash,
+    Dot,
+    Cross,
+    Length,
+    Normalize,
+    Pow,
+    Exp,
+    Seed,
+    Noise,
+    Fbm,
+    Cellular,
+    Scale,
+    Offset,
+    Warp,
+    Repeat,
+    Rotate,
+    SampleColor,
+    SampleData,
+    SampleAlpha,
+    Runoff,
+    CreaseDistance,
+    CreaseNormal,
+    CreaseTangent,
+    CreaseAdjacentNormal,
+    AdjustNormal,
+    TriplanarWeights,
+    VariedColor,
+    Remap,
+    SoftThreshold,
+    DistanceBand,
+    SoftUnion,
+    MaskIntersect,
+    MaskSubtract,
+    /// A name outside the catalog; the checker rejects these before evaluation.
+    Unknown,
+}
+
+impl Builtin {
+    fn named(id: &str) -> Self {
+        match id {
+            "vec2" => Self::Vec2,
+            "vec3" => Self::Vec3,
+            "mix" => Self::Mix,
+            "clamp" => Self::Clamp,
+            "smoothstep" => Self::Smoothstep,
+            "abs" => Self::Abs,
+            "floor" => Self::Floor,
+            "fract" => Self::Fract,
+            "sin" => Self::Sin,
+            "cos" => Self::Cos,
+            "sqrt" => Self::Sqrt,
+            "min" => Self::Min,
+            "max" => Self::Max,
+            "step" => Self::Step,
+            "value_noise" => Self::ValueNoise,
+            "hash" => Self::Hash,
+            "dot" => Self::Dot,
+            "cross" => Self::Cross,
+            "length" => Self::Length,
+            "normalize" => Self::Normalize,
+            "pow" => Self::Pow,
+            "exp" => Self::Exp,
+            "seed" => Self::Seed,
+            "noise" => Self::Noise,
+            "fbm" => Self::Fbm,
+            "cellular" => Self::Cellular,
+            "scale" => Self::Scale,
+            "offset" => Self::Offset,
+            "warp" => Self::Warp,
+            "repeat" => Self::Repeat,
+            "rotate" => Self::Rotate,
+            "sample_color" => Self::SampleColor,
+            "sample_data" => Self::SampleData,
+            "sample_alpha" => Self::SampleAlpha,
+            "runoff" => Self::Runoff,
+            "crease_distance" => Self::CreaseDistance,
+            "crease_normal" => Self::CreaseNormal,
+            "crease_tangent" => Self::CreaseTangent,
+            "crease_adjacent_normal" => Self::CreaseAdjacentNormal,
+            "adjust_normal" => Self::AdjustNormal,
+            "triplanar_weights" => Self::TriplanarWeights,
+            "varied_color" => Self::VariedColor,
+            "remap" => Self::Remap,
+            "soft_threshold" => Self::SoftThreshold,
+            "distance_band" => Self::DistanceBand,
+            "soft_union" => Self::SoftUnion,
+            "mask_intersect" => Self::MaskIntersect,
+            "mask_subtract" => Self::MaskSubtract,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -80,18 +233,6 @@ pub(super) struct Compiled {
     pub outputs: Vec<(String, Node)>,
     /// Conservative retained allocation charge of these nodes.
     pub retained: usize,
-}
-
-const OPERATORS: [&str; 14] = [
-    "+", "-", "*", "/", "%", "&&", "||", "==", "!=", "<", ">", "<=", ">=", "!",
-];
-
-fn operator(op: &str) -> &'static str {
-    OPERATORS
-        .iter()
-        .copied()
-        .find(|known| *known == op)
-        .unwrap_or("+")
 }
 
 struct Resolver<'a> {
@@ -130,9 +271,9 @@ impl Resolver<'_> {
                     )
                 }
             }
-            Expression::Unary(op, a) => Kind::Unary(operator(op), Box::new(self.node(a, locals))),
+            Expression::Unary(op, a) => Kind::Unary(Op::named(op), Box::new(self.node(a, locals))),
             Expression::Binary(op, a, b) => Kind::Binary(
-                operator(op),
+                Op::named(op),
                 Box::new(self.node(a, locals)),
                 Box::new(self.node(b, locals)),
             ),
@@ -162,7 +303,8 @@ impl Resolver<'_> {
                 match self.functions.get(name.as_str()) {
                     Some(index) => Kind::Function(*index, resolved),
                     None => Kind::Builtin(
-                        super::super::catalog::find(name).map_or("", |operation| operation.id),
+                        super::super::catalog::find(name)
+                            .map_or(Builtin::Unknown, |operation| Builtin::named(operation.id)),
                         resolved,
                     ),
                 }
@@ -233,6 +375,26 @@ pub(super) fn resolve(
         functions,
         outputs,
         retained,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_catalog_operation_resolves_to_an_evaluator_builtin() {
+        for operation in super::super::super::catalog::operations() {
+            // `select` evaluates lazily as its own node kind.
+            if operation.id != "select" {
+                assert_ne!(
+                    Builtin::named(operation.id),
+                    Builtin::Unknown,
+                    "{}",
+                    operation.id
+                );
+            }
+        }
     }
 }
 

@@ -156,7 +156,7 @@ pub(super) fn crease_normal(
     features: &[Feature],
     point: [f64; 3],
     normal: [f64; 3],
-    selector: &str,
+    selector: Selector,
     min_angle: f64,
     limit: f64,
 ) -> [f64; 3] {
@@ -181,7 +181,7 @@ pub(super) fn crease_normal(
 pub(super) fn crease_tangent(
     features: &[Feature],
     point: [f64; 3],
-    selector: &str,
+    selector: Selector,
     min_angle: f64,
     limit: f64,
 ) -> [f64; 3] {
@@ -206,7 +206,7 @@ pub(super) fn crease_adjacent_normal(
     features: &[Feature],
     point: [f64; 3],
     normal: [f64; 3],
-    selector: &str,
+    selector: Selector,
     min_angle: f64,
     limit: f64,
 ) -> [f64; 3] {
@@ -379,20 +379,49 @@ pub fn receiver_seams(positions: &[f64], uvs: &[f64], indices: &[u32]) -> Vec<Fe
 
 /// Whether a feature matches a `crease_distance` selector at a minimum crease angle. Seams and
 /// contacts are selected only by their own names.
-pub(super) fn selected(feature: &Feature, selector: &str, min_angle: f64) -> bool {
+pub(super) fn selected(feature: &Feature, selector: Selector, min_angle: f64) -> bool {
     let crease = |kind| feature.kind == kind && feature.angle >= min_angle;
     match selector {
-        "convex" => crease(FeatureKind::Convex),
-        "concave" => crease(FeatureKind::Concave),
-        "boundary" => feature.kind == FeatureKind::Boundary,
-        "exposed" => crease(FeatureKind::Convex) || feature.kind == FeatureKind::Boundary,
-        "any" => {
+        Selector::Convex => crease(FeatureKind::Convex),
+        Selector::Concave => crease(FeatureKind::Concave),
+        Selector::Boundary => feature.kind == FeatureKind::Boundary,
+        Selector::Exposed => crease(FeatureKind::Convex) || feature.kind == FeatureKind::Boundary,
+        Selector::Any => {
             crease(FeatureKind::Convex)
                 || crease(FeatureKind::Concave)
                 || feature.kind == FeatureKind::Boundary
         }
-        "seam" => feature.kind == FeatureKind::Seam,
-        "contact" => feature.kind == FeatureKind::Contact,
-        _ => false,
+        Selector::Seam => feature.kind == FeatureKind::Seam,
+        Selector::Contact => feature.kind == FeatureKind::Contact,
+        Selector::Nothing => false,
+    }
+}
+
+/// A feature query's selector, read from its name once per query instead of once per feature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Selector {
+    Convex,
+    Concave,
+    Boundary,
+    Exposed,
+    Any,
+    Seam,
+    Contact,
+    /// An unknown name selects no feature.
+    Nothing,
+}
+
+impl Selector {
+    pub(super) fn named(name: &str) -> Self {
+        match name {
+            "convex" => Self::Convex,
+            "concave" => Self::Concave,
+            "boundary" => Self::Boundary,
+            "exposed" => Self::Exposed,
+            "any" => Self::Any,
+            "seam" => Self::Seam,
+            "contact" => Self::Contact,
+            _ => Self::Nothing,
+        }
     }
 }

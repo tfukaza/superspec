@@ -3,6 +3,12 @@ fn uint32(value: f64) -> u32 {
     if !value.is_finite() {
         return 0;
     }
+    // Truncating to i64 and keeping the low 32 bits is the same reduction modulo 2^32, without
+    // the floating-point remainder (a slow software routine in Wasm). Larger magnitudes, which
+    // an i64 cannot hold, take the general path below.
+    if value.abs() < 9.0e18 {
+        return value as i64 as u32;
+    }
     let reduced = value.trunc() % 4294967296.;
     (if reduced < 0. {
         reduced + 4294967296.

@@ -9,6 +9,7 @@ mod memory;
 mod numeric;
 mod syntax;
 mod ts;
+pub use eval::FieldSelection;
 pub use features::{
     COPLANAR_DEGREES, MAX_FEATURES, bend_shaded, orient_relief, receiver_features, receiver_seams,
 };
@@ -319,10 +320,11 @@ pub struct Evaluator<'a> {
     program: &'a Program,
     inputs: &'a Inputs,
     features: &'a [Feature],
-    parameters: Vec<eval::Value>,
+    parameters: Vec<eval::Value<'static>>,
     remaining: usize,
+    scratch: eval::Scratch<'a>,
 }
-impl Evaluator<'_> {
+impl<'a> Evaluator<'a> {
     pub fn evaluate(&mut self, sample: &Sample) -> Result<Outputs, ProgramDiagnostic> {
         self.wanted(sample, eval::Want::All)
     }
@@ -346,6 +348,17 @@ impl Evaluator<'_> {
     ) -> Result<Outputs, ProgramDiagnostic> {
         self.wanted(sample, eval::Want::Channels(fields))
     }
+    /// Every output channel plus fields chosen once with [Program::select_fields], written to
+    /// `values` in the order they were named. The returned outputs' own field map stays empty, so
+    /// a bake can read per-texel fields without allocating or comparing names.
+    pub fn evaluate_selected(
+        &mut self,
+        sample: &Sample,
+        selection: &FieldSelection,
+        values: &mut [FieldValue],
+    ) -> Result<Outputs, ProgramDiagnostic> {
+        self.wanted(sample, eval::Want::Selected(selection, values))
+    }
     /// Only the height output, for derivative samples; identical to [`Self::evaluate`]'s height.
     pub fn evaluate_height(&mut self, sample: &Sample) -> Result<f64, ProgramDiagnostic> {
         Ok(self.wanted(sample, eval::Want::Height)?.height)
@@ -368,6 +381,7 @@ impl Evaluator<'_> {
             sample,
             &self.parameters,
             &mut self.remaining,
+            &mut self.scratch,
             want,
         )
     }
@@ -386,6 +400,10 @@ impl Program {
     }
     pub fn evaluate(&self, inputs: &Inputs, sample: &Sample) -> Result<Outputs, ProgramDiagnostic> {
         eval::evaluate(self, inputs, sample)
+    }
+    /// Resolves field names once for [Evaluator::evaluate_selected].
+    pub fn select_fields(&self, names: &[&str]) -> Result<FieldSelection, String> {
+        FieldSelection::new(self, names)
     }
     pub fn evaluator<'a>(&'a self, inputs: &'a Inputs) -> Result<Evaluator<'a>, ProgramDiagnostic> {
         self.evaluator_with_budget(inputs, 64_000_000)
@@ -409,6 +427,7 @@ impl Program {
             features: &inputs.features,
             parameters,
             remaining: operations,
+            scratch: eval::Scratch::default(),
         })
     }
     /// An evaluator whose receiver features replace `inputs.features`, so a host can bake each
