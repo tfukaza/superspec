@@ -2,13 +2,13 @@ import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_B
 import "./style.css";
 import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
-import { projectLighting, statesAmbientOcclusion, storedLighting, type Lighting } from "../../browser/renderer/lighting.ts";
+import { projectLighting, statesAmbientOcclusion, storedLighting, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
 import { LightingPanel } from "./lighting.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
 import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
 import { decodePacket, type SceneMesh, type ScenePacket } from "../../browser/model/packet.ts";
-import { AuthoringCompiler, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type ItemReport, type ParameterValue, type StudioMaterial } from "../../browser/runtime/authoring.ts";
+import { AuthoringCompiler, OCCLUSION_PLANES, type OcclusionReport, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type ItemReport, type ParameterValue, type StudioMaterial } from "../../browser/runtime/authoring.ts";
 import { ItemPanel } from "./items.ts";
 import { readAmlSelection } from "../open-aml.ts";
 import { AmlLoader } from "./aml.ts";
@@ -708,8 +708,11 @@ class Studio {
       seed: candidate.seed, resolution: candidate.resolution, inspection: candidate.inspection === "final" ? undefined : candidate.inspection,
       assets: candidate.assets, mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
     if (this.kind === "material" && base && candidate.target.enabled) request.receivers = receivers(base, ids, baseMetadata?.receiverTransforms);
+    const built = performance.now();
     const result = scene ? await this.authoring.previewProject(candidate, revision) : await this.authoring.compile(request);
     if (revision !== this.revision) return false;
+    // A CPU-baked scene whose materials read the occluder service's planes had them baked for this build.
+    if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - built);
     // What a scene build says about its items and their bindings, before the metadata is narrowed to the active material.
     const itemMetadata = result.metadata;
     if (scene && result.metadata) {
@@ -781,6 +784,7 @@ class Studio {
   private showLighting(): void {
     const stated = this.project.lighting, lighting = projectLighting(this.project);
     this.scene.setLighting(lighting, stated);
+    this.shadowSun = this.sunKey();
     this.lightingPanel.show(lighting, statesAmbientOcclusion(stated));
     this.noteLighting();
   }
@@ -805,7 +809,17 @@ class Studio {
     if (stored) this.project.lighting = stored; else delete this.project.lighting;
     this.scene.setLighting(lighting, stored);
     this.noteLighting();
+    // A sun that moved (or stopped casting shadows) changes the occluder service's `shadow` plane and nothing else:
+    // the materials that read it are baked again once the control rests, the others are left alone.
+    const sun = this.sunKey();
+    if (sun === this.shadowSun) return;
+    this.shadowSun = sun;
+    clearTimeout(this.shadowTimer);
+    this.shadowTimer = setTimeout(() => this.scene.planesChanged(["shadow"]), 200);
   }
+  /** The sun the scene's `shadow` planes were last asked for (`sunKey`). */
+  private shadowSun?: string;
+  private shadowTimer?: ReturnType<typeof setTimeout>;
 
   /** Whether a project previews through shaders: a scene project showing its final channels. */
   private liveScene(candidate: StudioProject): boolean {
@@ -821,7 +835,7 @@ class Studio {
     const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
     // While an item control is dragged the scene is shown per pixel alone; its settled value is baked.
     const baking = this.sceneBake && !this.dragging;
-    const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.gravity, candidate.domain,
+    const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.mappings, candidate.anchors, candidate.gravity, candidate.domain,
       (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
       Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
       // Baked maps follow the receivers' atlases, which these size.
@@ -842,8 +856,9 @@ class Studio {
       }
       packet = decodePacket(result.packet); metadata = result.metadata;
       const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity, domain: metadata.domain } as unknown as SceneShading;
+      this.mapShading(shading, metadata, candidate);
       // With the receivers' atlas layouts, GPU-baked maps follow the first look; without them the scene stays per pixel.
-      const bake = baking && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[] }[]) => this.sceneFields(requests) } : undefined;
+      const bake = baking && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[]; planes: string[][] }[]) => this.sceneFields(requests) } : undefined;
       if (baking && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
       else delete element("viewport").dataset.sceneBakeFallback;
       const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake);
@@ -880,43 +895,112 @@ class Studio {
   }
 
   /**
-   * CPU-baked fields for the scene's GPU bake: the parts of hybrid programs only the CPU evaluates (runoff), per mesh
-   * over its receiver's atlas, on the preview lane's worker. Null when a newer edit superseded the request.
+   * Gives a shaded scene what the engine's description leaves to the project: each material's own mapping
+   * (`mappings`) and, for a material mapped `anchored`, each receiver's pattern anchor: the one the project states for
+   * the mesh (`anchors`), else its item part's (`Session::resolve_items` binds them by the same rule).
    */
-  private async sceneFields(requests: { mesh: string; names: string[] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[] }> | null> {
-    const project = this.bakeProject;
-    if (!project) return null;
-    // Fields are kept by everything they are baked from, so a scene rebuilt for an edit to another material (or a value
-    // set back) asks the CPU for nothing. Parameters count whole: finer than that is the engine's to know.
-    const scene = JSON.stringify([project.modules, project.models, project.mapping, project.domain, project.gravity, project.edges,
-      project.resolution, project.texelDensity, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
-    const key = (request: { mesh: string; names: string[] }): string => {
-      const bound = this.meshBindings[request.mesh];
-      const material = project.materials?.find(candidate => candidate.id === bound || candidate.meshes.includes(request.mesh));
-      return JSON.stringify([scene, request.mesh, request.names, material?.entry, material?.seed, material?.parameters]);
-    };
-    const found = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
-    const missing = requests.filter(request => {
-      const kept = this.sceneFieldCache.get(key(request));
-      if (kept) { this.sceneFieldCache.delete(key(request)); this.sceneFieldCache.set(key(request), kept); found.set(request.mesh, kept); }
-      return !kept;
-    });
-    if (!missing.length) return found;
-    let result;
-    try { result = await this.lane.bakeProjectFields(project, missing, this.revision); }
-    catch (error) { if (error instanceof DOMException && error.name === "AbortError") return null; throw error; }
-    if (result.error || !result.projectFields) throw new Error(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
-    for (const baked of result.projectFields) {
-      if (!("fields" in baked)) continue;
-      found.set(baked.mesh, baked);
-      const request = missing.find(candidate => candidate.mesh === baked.mesh);
-      if (request) this.sceneFieldCache.set(key(request), baked);
+  private mapShading(shading: SceneShading, metadata: AuthoringMetadata, candidate: StudioProject): void {
+    const mappings = candidate.mappings ?? {};
+    for (const [id, mapping] of Object.entries(mappings)) if (shading.materials[id]) shading.materials[id] = { ...shading.materials[id], mapping };
+    if (!Object.values(mappings).includes("anchored")) return;
+    const anchors = new Map<string, { origin: number[]; u: number[]; v: number[] }>();
+    for (const item of Object.values((metadata.items ?? {}) as Record<string, ItemReport>)) {
+      for (const part of item.parts) if (part.anchor) for (const mesh of part.meshes) anchors.set(mesh, part.anchor);
     }
-    // Least recently used first; a field set is a few megabytes at most.
-    while (this.sceneFieldCache.size > 32) this.sceneFieldCache.delete(this.sceneFieldCache.keys().next().value!);
+    for (const [mesh, anchor] of Object.entries(candidate.anchors ?? {})) anchors.set(mesh, anchor);
+    for (const [id, mesh] of Object.entries(shading.meshes)) if (anchors.has(id)) mesh.anchor = anchors.get(id);
+  }
+
+  /** What the occluder service's `shadow` plane reads of the lighting record: the direction of a sun that casts shadows. */
+  private sunKey(): string {
+    const sun = sunOf(projectLighting(this.project));
+    return JSON.stringify(sun?.castsShadow ? sun.direction : null);
+  }
+
+  /**
+   * CPU-baked fields for the scene's GPU bake: the parts of hybrid programs only the CPU evaluates (runoff, and what
+   * reads the occluder service's planes), per mesh over its receiver's atlas, on the preview lane's worker. Null when a
+   * newer edit superseded the request.
+   *
+   * Each field is kept by everything it is baked from, so a scene rebuilt for an edit to another material (or a value
+   * set back) asks the CPU for nothing, and a moved sun asks only for the fields that read `shadow`. The worker bakes
+   * the planes those fields read first and keeps them by content: it casts rays only for planes whose key is new.
+   */
+  private async sceneFields(requests: { mesh: string; names: string[]; planes: string[][] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }> | null> {
+    const baseline = this.bakeProject;
+    if (!baseline) return null;
+    // The lighting record is not part of a build: the planes are lit by the one in effect now.
+    const project: StudioProject = { ...baseline };
+    if (this.project.lighting) project.lighting = this.project.lighting; else delete project.lighting;
+    // Parameters count whole: finer than that is the engine's to know.
+    const scene = JSON.stringify([project.modules, project.models, project.mapping, project.mappings, project.anchors, project.domain, project.gravity, project.edges,
+      project.resolution, project.texelDensity, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
+    const sun = this.sunKey();
+    const key = (mesh: string, name: string, planes: string[]): string => {
+      const bound = this.meshBindings[mesh];
+      const material = project.materials?.find(candidate => candidate.id === bound || candidate.meshes.includes(mesh));
+      return JSON.stringify([scene, mesh, name, material?.entry, material?.seed, material?.parameters, planes.length ? [planes, planes.includes("shadow") ? sun : null] : null]);
+    };
+    type Kept = { width: number; height: number; field: Float32Array; planes?: string };
+    const kept = new Map<string, (Kept | undefined)[]>();
+    const missing: { mesh: string; names: string[] }[] = [];
+    let occlusion = false;
+    for (const request of requests) {
+      const fields = request.names.map((name, index) => {
+        const at = key(request.mesh, name, request.planes[index] ?? []), field = this.sceneFieldCache.get(at);
+        if (field) { this.sceneFieldCache.delete(at); this.sceneFieldCache.set(at, field); }
+        return field;
+      });
+      kept.set(request.mesh, fields);
+      const names = request.names.filter((_, index) => !fields[index]);
+      if (!names.length) continue;
+      missing.push({ mesh: request.mesh, names });
+      occlusion ||= request.names.some((_, index) => !fields[index] && (request.planes[index]?.length ?? 0) > 0);
+    }
+    if (missing.length) {
+      let result;
+      const started = performance.now();
+      try { result = await this.lane.bakeProjectFields(project, missing, this.revision, occlusion); }
+      catch (error) { if (error instanceof DOMException && error.name === "AbortError") return null; throw error; }
+      if (result.error || !result.projectFields) throw new Error(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
+      if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - started);
+      for (const baked of result.projectFields) {
+        const request = requests.find(candidate => candidate.mesh === baked.mesh), asked = missing.find(candidate => candidate.mesh === baked.mesh);
+        if (!("fields" in baked) || !request || !asked) continue;
+        asked.names.forEach((name, index) => {
+          const at = request.names.indexOf(name), planes = request.planes[at] ?? [];
+          // The content of the planes the field was baked from, where it read any.
+          const read = planes.length && baked.planes ? planes.map(plane => `${plane}=${baked.planes![plane] ?? ""}`).join(",") : undefined;
+          const field: Kept = { width: baked.width, height: baked.height, field: baked.fields[index], ...(read === undefined ? {} : { planes: read }) };
+          kept.get(request.mesh)![at] = field;
+          this.sceneFieldCache.set(key(request.mesh, name, planes), field);
+        });
+      }
+      // Least recently used first; a field is four floats per texel of its receiver's atlas.
+      while (this.sceneFieldCache.size > 256) this.sceneFieldCache.delete(this.sceneFieldCache.keys().next().value!);
+    }
+    const found = new Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }>();
+    for (const request of requests) {
+      const fields = kept.get(request.mesh)!;
+      // A mesh whose bake failed is left out: the scene's baker says so for that mesh.
+      if (!fields.length || fields.some(field => !field || field.width !== fields[0]!.width || field.height !== fields[0]!.height)) continue;
+      found.set(request.mesh, { width: fields[0]!.width, height: fields[0]!.height, fields: fields.map(field => field!.field),
+        ...(fields.some(field => field!.planes !== undefined) ? { keys: fields.map(field => field!.planes ?? "") } : {}) });
+    }
     return found;
   }
-  private readonly sceneFieldCache = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
+  private readonly sceneFieldCache = new Map<string, { width: number; height: number; field: Float32Array; planes?: string }>();
+
+  /** States what the occluder service did for the scene's bakes (`data-occlusion`), for inspection and tests: the last request and the totals. */
+  private noteOcclusion(report: OcclusionReport, ms: number): void {
+    const count = (baked: boolean) => Object.fromEntries(OCCLUSION_PLANES.map(name => [name, report.planes.filter(plane => plane.name === name && plane.baked === baked).length]).filter(([, planes]) => planes));
+    const rays = Object.fromEntries(OCCLUSION_PLANES.map(name => [name, report.planes.filter(plane => plane.name === name).reduce((sum, plane) => sum + plane.rays, 0)]).filter(([, cast]) => cast));
+    this.occlusionRuns++;
+    element("viewport").dataset.occlusion = JSON.stringify({ run: this.occlusionRuns, ms: report.ms, requestMs: Math.round(ms), baked: count(true), held: count(false), rays,
+      texels: Object.fromEntries([...new Map(report.planes.map(plane => [plane.mesh, `${plane.width}x${plane.height}`]))]),
+      meshes: [...new Set(report.planes.filter(plane => plane.baked).map(plane => plane.mesh))] });
+  }
+  private occlusionRuns = 0;
 
   /** Exports only a captured ready revision; a newer edit cancels delivery without changing the viewport. */
   private async exportGlb(): Promise<void> {

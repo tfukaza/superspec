@@ -76,7 +76,7 @@ export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSourc
 /** Materials prepared for a scene's meshes while the scene before it is still displayed: put on them, or given up. */
 export interface SceneLook { commit(): void; discard(): void }
 /** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
-const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msMapping"];
+const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msAnchorFromWorld", "msMapping"];
 
 /**
  * How long a newly shaded scene waits for its baked maps alone before its per-pixel looks start compiling beside them
@@ -535,7 +535,8 @@ export class RustScene {
       const entry: ShadedMaterial = { uniforms: await this.programUniforms(material, values[id] ?? {}, image), material, values: JSON.stringify(values[id] ?? {}) };
       // A program with CPU-only parts is baked from its plan: a shader that reads those parts as CPU-baked fields.
       const plan = (material as PlannedShading).plan;
-      if (bake && plan && gpuBakeUnsupported(material, true)) {
+      // So is one that reads external planes: its plain shader has only their fallbacks.
+      if (bake && plan && (gpuBakeUnsupported(material, true) || plan.shader.cpuFields?.some(field => field.planes?.length))) {
         const planned: MaterialShading = { ...material, shader: plan.shader, seedValues: plan.seedValues };
         entry.plan = { material: planned, uniforms: await this.programUniforms(planned, values[id] ?? {}, image) };
       }
@@ -706,6 +707,12 @@ export class RustScene {
 
   private sceneBaker?: SceneBaker;
   private unbakedRefinement?: () => void;
+
+  /**
+   * The source of some external planes changed (the sun moved: `shadow`): the displayed scene's meshes whose materials
+   * read them get their CPU fields and their maps again (see `SceneBaker.planesChanged`). Returns how many meshes.
+   */
+  planesChanged(names: string[]): number { return this.sceneBaker?.planesChanged(names) ?? 0; }
 
   private newSceneBaker(): SceneBaker {
     return new SceneBaker({

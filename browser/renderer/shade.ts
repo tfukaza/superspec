@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import { INSTANCE_ATTRIBUTE } from "./batch.ts";
+import { MAPPINGS, SURFACE_OF, anchorFromWorld, type PatternAnchor } from "./atlas.ts";
 
 /**
  * Seconds of the viewer's time-driven render mode (`RustScene.setContinuous`), shared by every program material as
@@ -82,7 +83,8 @@ export interface MaterialShading {
   shader: ProgramShader;
   seedValues: number[];
   parameters: { name: string; default: unknown }[];
-  mapping: "uv" | "object" | "world";
+  /** `anchored` measures the surface from each receiver's pattern anchor (`MeshShading.anchor`). */
+  mapping: "uv" | "object" | "world" | "anchored";
 }
 /** One mesh's receiver inputs: bounds and features as rows of twelve numbers (see `shade_project`). */
 export interface MeshShading {
@@ -91,6 +93,8 @@ export interface MeshShading {
   boundsMax: number[];
   features: number[];
   objectToWorld?: number[] | null;
+  /** The receiver's pattern anchor, for a material mapped `anchored`; without one the frame is the world's. */
+  anchor?: PatternAnchor | null;
 }
 export interface SceneShading {
   materials: Record<string, MaterialShading>;
@@ -206,7 +210,9 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     ms_bounds_min: { value: new THREE.Vector3(...(mesh.boundsMin as [number, number, number])) },
     ms_bounds_max: { value: new THREE.Vector3(...(mesh.boundsMax as [number, number, number])) },
     msObjectFromWorld: { value: objectFromWorld },
-    msMapping: { value: ["uv", "object", "world"].indexOf(shading.mapping) },
+    // Read under the anchored mapping alone: the receiver's pattern anchor frame (the world's without an anchor).
+    msAnchorFromWorld: { value: new THREE.Matrix4().fromArray(anchorFromWorld(mesh.anchor)) },
+    msMapping: { value: MAPPINGS.indexOf(shading.mapping) },
     msReliefSamples: { value: 2 },
     msTime: programTime,
   };
@@ -250,6 +256,7 @@ varying vec3 msWorld;
 varying vec3 msNormal;
 varying vec2 msUv;
 uniform mat4 msObjectFromWorld;
+uniform mat4 msAnchorFromWorld;
 uniform int msMapping;
 uniform int msReliefSamples;
 uniform float msTime;
@@ -265,9 +272,7 @@ void msPlace(vec3 world, vec2 uv) {
   ms_world = world;
   ms_object = (msObjectFromWorld * vec4(world, 1.0)).xyz;
   ms_uv = uv;
-  vec3 at = msMapping == 2 ? ms_world : ms_object;
-  vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * ms_normal : ms_normal);
-  ms_surface = msMapping == 0 ? uv : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
+  ${SURFACE_OF("ms_world", "ms_object", "ms_normal", "uv", "ms_surface")}
 }`)
       .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>
   ms_normal = normalize(msNormal);

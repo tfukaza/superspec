@@ -80,6 +80,30 @@ export interface AuthoringProject {
    * (the preview packet and exports) holds the batches in their templates' place.
    */
   batches?: ProjectBatch[];
+  /**
+   * The mapping of a material where it is not the project's, by material id (`Project.mappings`). `anchored` measures
+   * the surface from each receiver's pattern anchor: an item part's, or the one `anchors` states for the mesh.
+   */
+  mappings?: Record<string, "uv" | "object" | "world" | "anchored">;
+  /** The pattern anchor of a mesh, by mesh id, where it is not its item part's (`Project.anchors`). */
+  anchors?: Record<string, { origin: number[]; u: number[]; v: number[] }>;
+  /**
+   * Planes bound to the external inputs of the materials baked on each mesh, by mesh id and input name
+   * (`Project.planes`): an asset's name, or a value of another material. The occluder service's planes (`shadow`,
+   * `occlusion`, `sunExposure`) are bound by the authoring worker for the build they are baked for, never stored here.
+   */
+  planes?: Record<string, Record<string, string | { material: string; value: string }>>;
+}
+/** The external inputs the occluder service supplies (`authoring::occlusion::PLANES`), in the order it makes them. */
+export const OCCLUSION_PLANES = ["shadow", "occlusion", "sunExposure"] as const;
+/**
+ * What the occluder service did for a request: for each plane name, the milliseconds its call took in the worker
+ * (composing the scene, laying out the receivers and keying every plane included), then every plane with its key, its
+ * size, the rays cast for it and whether it was baked now (`false`: the session held a plane of that key).
+ */
+export interface OcclusionReport {
+  ms: Record<string, number>;
+  planes: { mesh: string; name: string; key: string; width: number; height: number; rays: number; occluders: number; baked: boolean }[];
 }
 /** One instanced batch of a project; `value` and `tint` are given for every instance or for none. */
 export interface ProjectBatch {
@@ -166,6 +190,11 @@ export interface AuthoringProjectFieldsRequest {
   project: Omit<AuthoringProject, "assets">;
   meshes: { mesh: string; names: string[] }[];
   assets: Record<string, Uint8Array>;
+  /**
+   * The occluder service's planes these meshes' materials read are baked first (lit by the project's `lighting`) and
+   * bound for the field bake. Each mesh's reply then carries the keys of its planes.
+   */
+  occlusion?: boolean;
 }
 /**
  * Evaluates fields of a material request's program over its receiver atlas on the CPU, for a GPU preview that binds
@@ -216,7 +245,9 @@ export interface AuthoringResult {
   /** Receiver atlases, when a shade request asked for them. */
   layouts?: ProjectLayouts;
   /** Baked fields by mesh, for a `bake-project-fields` request; a mesh whose bake failed carries the reason instead. */
-  projectFields?: ({ mesh: string } & (BakedFields | { error: string }))[];
+  projectFields?: ({ mesh: string; planes?: Record<string, string> } & (BakedFields | { error: string }))[];
+  /** What the occluder service baked or found held for the request, when it ran. */
+  occlusion?: OcclusionReport;
   download?: ArrayBuffer;
   metadata?: AuthoringMetadata;
   diagnostics?: AuthoringDiagnostic[];
@@ -272,9 +303,9 @@ export class AuthoringCompiler {
   }
 
   /** Bakes CPU-only fields for meshes of a scene project (see `AuthoringProjectFieldsRequest`). */
-  bakeProjectFields(project: AuthoringProject, meshes: { mesh: string; names: string[] }[], requestId: number): Promise<AuthoringResult> {
+  bakeProjectFields(project: AuthoringProject, meshes: { mesh: string; names: string[] }[], requestId: number, occlusion = false): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
-    return this.dispatch({ action: "bake-project-fields", requestId, project: inputs, meshes, assets });
+    return this.dispatch({ action: "bake-project-fields", requestId, project: inputs, meshes, assets, ...(occlusion ? { occlusion } : {}) });
   }
 
   /** Bakes fields of `request`'s program on the CPU (see `AuthoringFieldsRequest`). */

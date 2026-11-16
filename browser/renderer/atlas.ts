@@ -17,7 +17,11 @@ import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
  */
 
 /** One receiver's atlas as the engine describes it (`ReceiverLayout` in `authoring/layout.rs`). */
-export interface ReceiverLayout { id: string; material: string; width: number; height: number; density: number; triangles: number; offset: number }
+export interface ReceiverLayout {
+  id: string; material: string; width: number; height: number; density: number; triangles: number; offset: number;
+  /** Ten numbers per chart: how its texels map to the material's surface domain (`ReceiverLayout::surface`). */
+  surface?: number[];
+}
 /** Every assigned receiver's atlas of a scene project, with the triangle records they index. */
 export interface ProjectLayouts { gutter: number; record: number; receivers: ReceiverLayout[]; records: Float32Array }
 
@@ -35,8 +39,17 @@ export interface AtlasLayout {
   density: number;
   triangles: number;
   records: Float32Array;
+  /**
+   * Ten numbers per chart, as the engine states them (`ReceiverLayout::surface`): the chart's x and y in atlas texels,
+   * the surface position of its first inner texel, that position's change one texel along atlas +x and +y, the sample
+   * footprint in meters, and whether the first inner texel is on the lattice of its footprint.
+   */
+  surface: Float64Array;
   key: string;
 }
+
+/** Numbers per chart in `AtlasLayout.surface`. */
+const SURFACE = 10;
 
 /** FNV-1a over the bits of floats, for content keys; not a security boundary. */
 function hashFloats(values: Float32Array, seed = 0x811c9dc5): string {
@@ -53,9 +66,12 @@ export function atlasLayouts(layouts: ProjectLayouts): Map<string, AtlasLayout> 
   for (const receiver of layouts.receivers) {
     const records = layouts.records.subarray(receiver.offset, receiver.offset + receiver.triangles * RECORD);
     if (records.length !== receiver.triangles * RECORD) throw new Error(`Receiver layout of ${receiver.id} is incomplete.`);
+    const surface = Float64Array.from(receiver.surface ?? []);
+    // The surface map names where a chart's texels sample the pattern: part of the content, like the records.
+    const mapped = surface.length ? `:${hashFloats(new Float32Array(new Float64Array(surface).buffer))}` : "";
     found.set(receiver.id, { id: receiver.id, material: receiver.material, width: receiver.width, height: receiver.height, gutter: layouts.gutter,
-      density: receiver.density, triangles: receiver.triangles, records,
-      key: `${receiver.width}x${receiver.height}:${layouts.gutter}:${hashFloats(records)}:${hashFloats(records, 0x9747b28c)}` });
+      density: receiver.density, triangles: receiver.triangles, records, surface,
+      key: `${receiver.width}x${receiver.height}:${layouts.gutter}:${hashFloats(records)}:${hashFloats(records, 0x9747b28c)}${mapped}` });
   }
   return found;
 }
@@ -79,8 +95,13 @@ export function displayGeometry(layout: AtlasLayout): THREE.BufferGeometry {
   return geometry;
 }
 
-/** Floats per vertex of the bake geometry: atlas position (3), then a triangle record without its atlas UVs. */
-const STRIDE = 3 + ATLAS_UVS;
+/**
+ * Floats per vertex of the bake geometry: atlas position (3), a triangle record, then its chart's surface map without
+ * the chart's position (eight numbers; zero for a chart that is not on a pattern anchor's lattice).
+ */
+const STRIDE = 3 + RECORD + SURFACE - 2;
+/** The role of a triangle of a whole flat face on a pattern anchor's lattice (`LAYOUT_RECORD` in `authoring/layout.rs`). */
+const FACE = 3;
 
 /** The part of a convex polygon where `side * f(point) >= 0` (Sutherland-Hodgman against one line). */
 function clip(points: number[][], f: (point: number[]) => number, side: number): number[][] {
@@ -101,15 +122,48 @@ function clip(points: number[][], f: (point: number[]) => number, side: number):
  * The geometry an atlas is drawn with: every chart's rectangle (gutters included) in atlas texels, each vertex carrying
  * the record of the triangle whose points its texels sample. A lone triangle's chart is one rectangle; a pair's is cut
  * along the pair's shared edge, so each texel is drawn once, by the triangle the atlas gives it.
+ *
+ * A whole flat face on a pattern anchor's lattice (role 3) is drawn where the engine put it, never along its
+ * triangles' own legs: each triangle covers the texels whose centers lie in it (its atlas UVs), and the shaders map a
+ * texel to the triangle's plane affinely from its three atlas UV and position pairs. The face's rectangle is drawn
+ * first, with the record of the face's first triangle, so texels in no triangle (the gutter, a hole, a notch of the
+ * outline) continue the face's plane; the engine gives those the nearest triangle of their row, which on a flat face
+ * is the same point of the plane. Every vertex of such a chart carries the chart's surface map
+ * (`AtlasLayout.surface`), from which the bake takes the lattice point each texel samples.
  */
 export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
   const vertices: number[] = [], indices: number[] = [];
   const gutter = layout.gutter;
+  const charts = new Map<string, Float64Array>();
+  for (let chart = 0; chart + SURFACE <= layout.surface.length; chart += SURFACE) {
+    charts.set(`${layout.surface[chart]},${layout.surface[chart + 1]}`, layout.surface.subarray(chart + 2, chart + SURFACE));
+  }
+  const none = new Float64Array(SURFACE - 2);
+  const faces = new Set<string>();
+  const emit = (polygon: number[][], record: Float32Array, surface: Float64Array): void => {
+    if (polygon.length < 3) return;
+    const first = vertices.length / STRIDE;
+    for (const point of polygon) {
+      vertices.push(point[0], point[1], 0);
+      for (let index = 0; index < RECORD; index++) vertices.push(record[index]);
+      for (let index = 0; index < SURFACE - 2; index++) vertices.push(surface[index]);
+    }
+    for (let corner = 1; corner + 1 < polygon.length; corner++) indices.push(first, first + corner, first + corner + 1);
+  };
   for (let triangle = 0; triangle < layout.triangles; triangle++) {
-    const record = layout.records.subarray(triangle * RECORD, triangle * RECORD + ATLAS_UVS);
+    const record = layout.records.subarray(triangle * RECORD, (triangle + 1) * RECORD);
     const [x, y, width, height] = record;
     const turn = record[META], role = record[META + 3];
     let polygon = [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
+    if (role === FACE) {
+      const name = `${x},${y}`, surface = charts.get(name);
+      if (!surface) throw new Error(`Receiver layout of ${layout.id} states no surface map for the chart at ${name}.`);
+      // The last number says the chart is one the shaders read through its surface map.
+      const mapped = Float64Array.from(surface); mapped[SURFACE - 3] = 1;
+      if (!faces.has(name)) { faces.add(name); emit(polygon, record, mapped); }
+      emit([0, 1, 2].map(corner => [record[ATLAS_UVS + corner * 2] * layout.width, (1 - record[ATLAS_UVS + corner * 2 + 1]) * layout.height]), record, mapped);
+      continue;
+    }
     if (role > 0) {
       // Past the shared edge the atlas samples the pair's second triangle: where the legs' parameters sum to more than one.
       const rotated = (turn & 1) === 1;
@@ -119,10 +173,7 @@ export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
       };
       polygon = clip(polygon, edge, role === 1 ? -1 : 1);
     }
-    if (polygon.length < 3) continue;
-    const first = vertices.length / STRIDE;
-    for (const point of polygon) { vertices.push(point[0], point[1], 0); for (let index = 0; index < ATLAS_UVS; index++) vertices.push(record[index]); }
-    for (let corner = 1; corner + 1 < polygon.length; corner++) indices.push(first, first + corner, first + corner + 1);
+    emit(polygon, record, none);
   }
   const buffer = new THREE.InterleavedBuffer(new Float32Array(vertices), STRIDE);
   const geometry = new THREE.BufferGeometry();
@@ -133,7 +184,9 @@ export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
     attribute(`aP${corner}`, 3, 3 + POSITIONS + corner * 3);
     attribute(`aN${corner}`, 3, 3 + NORMALS + corner * 3);
   }
-  attribute("aUv01", 4, 3 + UVS); attribute("aUv2", 2, 3 + UVS + 4);
+  // The third corner's surface UV with the first corner's atlas UV, then the other two corners' atlas UVs.
+  attribute("aUv01", 4, 3 + UVS); attribute("aUv2A0", 4, 3 + UVS + 4); attribute("aA12", 4, 3 + ATLAS_UVS + 2);
+  attribute("aSurface0", 4, 3 + RECORD); attribute("aSurface1", 4, 3 + RECORD + 4);
   geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
   return geometry;
 }
@@ -363,12 +416,51 @@ function fnv(text: string): string {
   return (value >>> 0).toString(16).padStart(8, "0");
 }
 
+/**
+ * GLSL that assigns `target` the surface position a program reads at a point (`Atlas::sample`), from the names of the
+ * point's world and object positions, its normal and its scaled UV, by `msMapping`: 0 UV, 1 object, 2 world, 3 anchored.
+ * Anchored, the position is measured in the receiver's pattern anchor frame (`msAnchorFromWorld`: the anchor's axes as
+ * rows and its origin taken off), and the plane it is projected on is chosen by the normal in that frame. The per-pixel
+ * look (shade.ts) uses the same text, so a bake and the look it replaces agree on where the pattern is.
+ */
+export const SURFACE_OF = (world: string, object: string, normal: string, uv: string, target: string): string => `{
+    vec3 msAt = msMapping == 2 ? ${world} : (msMapping == 3 ? (msAnchorFromWorld * vec4(${world}, 1.0)).xyz : ${object});
+    vec3 msFacing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * ${normal} : (msMapping == 3 ? mat3(msAnchorFromWorld) * ${normal} : ${normal}));
+    ${target} = msMapping == 0 ? ${uv}
+      : (msFacing.z >= max(msFacing.x, msFacing.y) ? msAt.xy : (msFacing.y >= msFacing.x ? msAt.xz : msAt.yz));
+  }`;
+
+/** The values of `msMapping`, in order. */
+export const MAPPINGS = ["uv", "object", "world", "anchored"] as const;
+
+/** A pattern anchor as its owner states it (`authoring::Anchor`): an origin and two axes spanning the pattern's plane, world meters. */
+export interface PatternAnchor { origin: number[]; u: number[]; v: number[] }
+
+/**
+ * What takes a world point to a pattern anchor's frame, as sixteen numbers in column order: the anchor's axes made
+ * unit and perpendicular (`Atlas::build`: u, v without its part along u, and their cross product) as rows, after its
+ * origin is taken off. Without an anchor the frame is the world's.
+ */
+export function anchorFromWorld(anchor?: PatternAnchor | null): number[] {
+  if (!anchor) return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const unit = (a: number[]) => { const length = Math.hypot(a[0], a[1], a[2]) || 1; return a.map(value => value / length); };
+  const u = unit(anchor.u), along = dot(anchor.v, u);
+  const v = unit(anchor.v.map((value, axis) => value - u[axis] * along));
+  const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  return [u[0], v[0], n[0], 0, u[1], v[1], n[1], 0, u[2], v[2], n[2], 0, -dot(u, anchor.origin), -dot(v, anchor.origin), -dot(n, anchor.origin), 1];
+}
+
 const RECORD_INPUTS = `
 flat in vec4 vRect;
 flat in vec4 vMeta;
 flat in vec3 vP0;
 flat in vec3 vP1;
 flat in vec3 vP2;
+flat in vec4 vLegMap;
+flat in vec2 vLegOrigin;
+flat in vec4 vSurface0;
+flat in vec4 vSurface1;
 `;
 
 /** The chart texel a fragment is and the leg parameters it samples (\`Atlas::texel\`); \`msGutter\` is the chart margin. */
@@ -377,9 +469,23 @@ uniform vec2 msAtlas;
 uniform float msGutter;
 // Rows count from the atlas's upper edge; framebuffer row 0 is the lowest.
 vec2 msAtlasTexel() { return vec2(floor(gl_FragCoord.x), msAtlas.y - 1.0 - floor(gl_FragCoord.y)); }
+// Whether the chart is a flat face on a pattern anchor's lattice: every texel is its own lattice cell, inside the
+// receiver or past its edge, and lies in the face's plane where the triangle's atlas UVs put it.
+bool msOnLattice() { return vSurface1.w > 0.5; }
+// The lattice point a texel of such a chart samples (\`Atlas::sample\` snaps the same way), from the chart's surface map.
+vec2 msLatticeSurface(vec2 texel) {
+  vec2 from = texel - vRect.xy - msGutter;
+  vec2 at = vSurface0.xy + from.x * vSurface0.zw + from.y * vSurface1.xy;
+  return (round(at / vSurface1.z - 0.5) + 0.5) * vSurface1.z;
+}
 // Parameters along the triangle's two legs. Gutter texels take the nearest inner texel's point; a chart padded to the
-// minimum size snaps to its samples; a lone triangle's texels past its long edge project onto it.
+// minimum size snaps to its samples; a lone triangle's texels past its long edge project onto it. On the lattice
+// nothing clamps: the parameters are the texel center's in the triangle's atlas triangle, which may lie outside it.
 vec2 msLegs(vec2 texel) {
+  if (msOnLattice()) {
+    vec2 from = texel + 0.5 - vLegOrigin;
+    return vec2(dot(vLegMap.xy, from), dot(vLegMap.zw, from));
+  }
   vec2 inner = vRect.zw - 2.0 * msGutter;
   vec2 st = clamp((texel - vRect.xy + 0.5 - msGutter) / inner, 0.0, 1.0);
   vec2 count = vMeta.yz;
@@ -403,8 +509,15 @@ in vec3 aN0;
 in vec3 aN1;
 in vec3 aN2;
 in vec4 aUv01;
-in vec2 aUv2;
+in vec4 aUv2A0;
+in vec4 aA12;
+in vec4 aSurface0;
+in vec4 aSurface1;
 uniform vec2 msAtlas;
+flat out vec4 vLegMap;
+flat out vec2 vLegOrigin;
+flat out vec4 vSurface0;
+flat out vec4 vSurface1;
 flat out vec4 vRect;
 flat out vec4 vMeta;
 flat out vec3 vP0;
@@ -423,8 +536,16 @@ void main() {
   // Samples along each leg: a texel's footprint is the leg over them (\`Atlas::sample\`).
   vec2 spans = (int(aMeta.x + 0.5) & 1) == 1 ? aMeta.zy : aMeta.yz;
   float footprint = max(length(aP1 - aP0) / spans.x, length(aP2 - aP0) / spans.y);
-  float uvFootprint = max(length(aUv01.zw - aUv01.xy) / spans.x, length(aUv2 - aUv01.xy) / spans.y);
-  vUv2Footprints = vec4(aUv2, footprint, uvFootprint);
+  float uvFootprint = max(length(aUv01.zw - aUv01.xy) / spans.x, length(aUv2A0.xy - aUv01.xy) / spans.y);
+  vUv2Footprints = vec4(aUv2A0.xy, footprint, uvFootprint);
+  // The triangle's corners in atlas texels (rows from the upper edge), and the map from a texel there to the
+  // parameters along its legs: a point is the corner plus the legs times those.
+  vec2 corner = vec2(aUv2A0.z, 1.0 - aUv2A0.w) * msAtlas;
+  vec2 first = vec2(aA12.x, 1.0 - aA12.y) * msAtlas - corner, second = vec2(aA12.z, 1.0 - aA12.w) * msAtlas - corner;
+  float area = first.x * second.y - first.y * second.x;
+  vLegOrigin = corner;
+  vLegMap = area != 0.0 ? vec4(second.y, -second.x, -first.y, first.x) / area : vec4(0.0);
+  vSurface0 = aSurface0; vSurface1 = aSurface1;
   gl_Position = vec4(position.x / msAtlas.x * 2.0 - 1.0, 1.0 - position.y / msAtlas.y * 2.0, 0.0, 1.0);
 }
 `;
@@ -461,6 +582,7 @@ flat in vec3 vN2;
 flat in vec4 vUv01;
 flat in vec4 vUv2Footprints;
 uniform mat4 msObjectFromWorld;
+uniform mat4 msAnchorFromWorld;
 uniform vec2 msExtent;
 uniform int msMapping;
 ${TEXEL_LEGS}
@@ -474,13 +596,10 @@ void main() {
   ms_object = (msObjectFromWorld * vec4(ms_world, 1.0)).xyz;
   ms_normal = normalize(vN0 * corner + vN1 * legs.x + vN2 * legs.y);
   ms_uv = vUv01.xy * corner + vUv01.zw * legs.x + vUv2Footprints.xy * legs.y;
-  {
-    vec3 at = msMapping == 2 ? ms_world : ms_object;
-    vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * ms_normal : ms_normal);
-    ms_surface = msMapping == 0 ? ms_uv * msExtent
-      : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
-  }
+  ${SURFACE_OF("ms_world", "ms_object", "ms_normal", "ms_uv * msExtent", "ms_surface")}
   ms_footprint = vUv2Footprints.z;
+  // On a pattern anchor's lattice the pattern is read at the lattice point itself and at the lattice step.
+  if (msOnLattice()) { ms_surface = msLatticeSurface(texel); ms_footprint = vSurface1.z; }
   ms_uv_footprint = vUv2Footprints.w;
   ms_texel = ivec2(texel);
   ms_evaluate();
@@ -504,6 +623,7 @@ flat in vec3 vN2;
 flat in vec4 vUv01;
 flat in vec4 vUv2Footprints;
 uniform mat4 msObjectFromWorld;
+uniform mat4 msAnchorFromWorld;
 uniform vec2 msExtent;
 uniform int msMapping;
 ${TEXEL_LEGS}
@@ -513,16 +633,18 @@ uniform vec2 msIntrinsicSize;
 uniform float msIntrinsicDensity;
 layout(location = 0) out vec4 msOut;
 void main() {
-  vec2 legs = msLegs(msAtlasTexel());
+  vec2 texel = msAtlasTexel();
+  vec2 legs = msLegs(texel);
   float corner = 1.0 - legs.x - legs.y;
   vec3 world = vP0 * corner + vP1 * legs.x + vP2 * legs.y;
   vec3 normal = normalize(vN0 * corner + vN1 * legs.x + vN2 * legs.y);
   vec2 uv = vUv01.xy * corner + vUv01.zw * legs.x + vUv2Footprints.xy * legs.y;
-  vec3 at = msMapping == 2 ? world : (msObjectFromWorld * vec4(world, 1.0)).xyz;
-  vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * normal : normal);
-  vec2 surface = msMapping == 0 ? uv * msExtent
-    : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
-  float lod = max(0.0, log2(max(vUv2Footprints.z * msIntrinsicDensity, 1e-6)));
+  vec3 object = (msObjectFromWorld * vec4(world, 1.0)).xyz;
+  vec2 surface;
+  ${SURFACE_OF("world", "object", "normal", "uv * msExtent", "surface")}
+  float footprint = vUv2Footprints.z;
+  if (msOnLattice()) { surface = msLatticeSurface(texel); footprint = vSurface1.z; }
+  float lod = max(0.0, log2(max(footprint * msIntrinsicDensity, 1e-6)));
   msOut = textureLod(msIntrinsic, (surface - msIntrinsicOrigin) / msIntrinsicSize, lod);
 }
 `;
@@ -545,9 +667,13 @@ ${RELIEF_ADJUST}
 ${NORMAL_ENCODE}
 vec4 msHeightAt(ivec2 texel) { return texelFetch(msHeightMap, ivec2(texel.x, int(msAtlas.y) - 1 - texel.y), 0); }
 vec3 msRelief(ivec2 texel) {
-  ivec2 low = ivec2(vRect.xy) + int(msGutter), high = ivec2(vRect.xy + vRect.zw) - int(msGutter) - 1;
+  // On a pattern anchor's lattice every texel of the chart is a sample, the gutter's too, and the chart's frame is its
+  // rectangle's (\`Atlas::legs\`): atlas +x and +y, whatever way the triangle's own legs run.
+  bool lattice = msOnLattice();
+  int margin = lattice ? 0 : int(msGutter);
+  ivec2 low = ivec2(vRect.xy) + margin, high = ivec2(vRect.xy + vRect.zw) - margin - 1;
   texel = clamp(texel, low, high);
-  int turn = int(vMeta.x + 0.5);
+  int turn = lattice ? 0 : int(vMeta.x + 0.5);
   // Atlas directions (x right, y down the rows) of a step along the first and the second leg.
   ivec2 first = turn == 0 ? ivec2(1, 0) : turn == 1 ? ivec2(0, 1) : turn == 2 ? ivec2(-1, 0) : ivec2(0, -1);
   ivec2 second = turn == 0 ? ivec2(0, 1) : turn == 1 ? ivec2(-1, 0) : turn == 2 ? ivec2(0, -1) : ivec2(1, 0);
@@ -559,6 +685,11 @@ vec3 msRelief(ivec2 texel) {
     : center.r - msHeightAt(clamp(texel - second, low, high)).r;
   vec2 spans = (turn & 1) == 1 ? vMeta.zy : vMeta.yz;
   vec3 u = vP1 - vP0, v = vP2 - vP0;
+  if (lattice) {
+    // The plane's change one texel along atlas +x and +y, from the triangle's legs: a step of one sample each.
+    vec3 across = u * vLegMap.x + v * vLegMap.z, down = u * vLegMap.y + v * vLegMap.w;
+    u = across; v = down; spans = vec2(1.0);
+  }
   vec3 t = normalize(u), n = normalize(cross(u, v)), bitangent = cross(n, t);
   float gt = du * spans.x / dot(u, t);
   float gb = (dv * spans.y - gt * dot(v, t)) / dot(v, bitangent);

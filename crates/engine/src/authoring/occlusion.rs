@@ -57,7 +57,7 @@ pub const SUN_EXPOSURE: &str = "sunExposure";
 /// Every plane the service makes, in the order it makes them.
 pub const PLANES: [&str; 3] = [SHADOW, OCCLUSION, SUN_EXPOSURE];
 /// Part of every key; a change in what a plane's values mean bumps it.
-pub const OCCLUSION_VERSION: u32 = 1;
+pub const OCCLUSION_VERSION: u32 = 2;
 
 /// Coordinates beyond this many meters are refused.
 const MAX_COORDINATE: f64 = 1_000_000.;
@@ -400,6 +400,28 @@ pub fn bind_occlusion(
     assets
 }
 
+/// Binds every baked plane to its mesh's external input of the same name in a scene project
+/// (`Project::planes`), as [`bind_occlusion`] does for a request, and returns the assets the
+/// bindings name for the planes that carry bytes. A plane the project already binds under that
+/// name on that mesh is replaced: the service's plane is the current one.
+pub fn bind_project_occlusion(
+    project: &mut Project,
+    baked: &[ReceiverOcclusion],
+) -> BTreeMap<String, Arc<[u8]>> {
+    let mut assets = BTreeMap::new();
+    for receiver in baked {
+        let bound = project.planes.entry(receiver.id.clone()).or_default();
+        for plane in &receiver.planes {
+            let asset = plane.asset();
+            bound.insert(plane.name.clone(), PlaneSource::Asset(asset.clone()));
+            if let Some(bytes) = &plane.bytes {
+                assets.insert(asset, bytes.clone());
+            }
+        }
+    }
+    assets
+}
+
 impl Session {
     /// Bakes the planes of `job` for the assigned receivers of a version 2 material project
     /// (`meshes` narrows them), against every visible mesh of its composed models. The atlases
@@ -413,6 +435,37 @@ impl Session {
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<ReceiverOcclusion>, Vec<Diagnostic>> {
+        self.occlusion_of(project, meshes, job, false, revision, assets, cancelled)
+    }
+
+    /// [`Session::project_occlusion`] for only the planes each receiver's material reads: of
+    /// the names of `job`, a receiver gets those its assignment's program declares as external
+    /// inputs (`Metadata::externals`), and a receiver whose material reads none is left out. A
+    /// project none of whose materials reads a plane of `job` costs its programs' compilation
+    /// and nothing else: no model is composed.
+    pub fn project_occlusion_read(
+        &mut self,
+        project: &Project,
+        meshes: Option<&[String]>,
+        job: &OcclusionJob<'_>,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<ReceiverOcclusion>, Vec<Diagnostic>> {
+        self.occlusion_of(project, meshes, job, true, revision, assets, cancelled)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn occlusion_of(
+        &mut self,
+        project: &Project,
+        meshes: Option<&[String]>,
+        job: &OcclusionJob<'_>,
+        read: bool,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<ReceiverOcclusion>, Vec<Diagnostic>> {
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         if project.schema_version != 2 || project.kind != "material" {
             return Err(fail(
@@ -420,6 +473,45 @@ impl Session {
             ));
         }
         self.begin_authoring(revision, &project.entry)?;
+        // The planes of the job each assignment's material reads, by assignment (item models
+        // add meshes to assignments, never assignments). A material whose module is missing
+        // reads none here; the build of the project reports it.
+        let mut wanted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for assignment in &project.materials {
+            let names: Vec<&str> = if read {
+                let Some(source) = project.modules.get(&assignment.entry) else {
+                    continue;
+                };
+                let program = self.program(&Request {
+                    kind: "material".into(),
+                    entry: assignment.entry.clone(),
+                    source: source.clone(),
+                    modules: project.modules.clone(),
+                    ..Default::default()
+                })?;
+                let externals = &program.metadata().externals;
+                PLANES
+                    .into_iter()
+                    .filter(|name| {
+                        job.names.contains(name)
+                            && externals.iter().any(|external| external.name == *name)
+                    })
+                    .collect()
+            } else {
+                job.names.to_vec()
+            };
+            if !names.is_empty() {
+                wanted.insert(&assignment.id, names);
+            }
+        }
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Item models bind their slots' meshes to materials (`Session::resolve_items`), and
+        // those meshes are receivers like any other.
+        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let project = resolved.as_ref().map_or(project, |items| &items.project);
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
@@ -427,6 +519,9 @@ impl Session {
         let occluders = Occluders::from_scene(&scene).map_err(&fail)?;
         let mut baked = Vec::new();
         for assignment in &project.materials {
+            let Some(names) = wanted.get(assignment.id.as_str()) else {
+                continue;
+            };
             let ids: BTreeSet<String> = assignment
                 .meshes
                 .iter()
@@ -439,8 +534,12 @@ impl Session {
             // Only the sizing inputs are read, as for a layout.
             let request = material_request(project, assignment, "", Vec::new());
             let found = receivers(&scene, &ids, &transforms);
+            let job = OcclusionJob {
+                names: names.as_slice(),
+                ..*job
+            };
             baked.extend(
-                occlusion_planes(&occluders, &found, &request, job, cancelled).map_err(&fail)?,
+                occlusion_planes(&occluders, &found, &request, &job, cancelled).map_err(&fail)?,
             );
         }
         Ok(baked)
@@ -756,6 +855,27 @@ impl Layout {
             word(&mut hash, usize::from(chart.rotated));
             word(&mut hash, chart.samples[0]);
             word(&mut hash, chart.samples[1]);
+            // A chart on a pattern anchor's lattice: where its rectangle starts in a cell, how
+            // many cells its edges are long, and, for a whole flat face, its other triangles
+            // and the triangle each texel samples. Two faces of the same rectangle that differ
+            // in membership sample different points.
+            match chart.lattice {
+                None => word(&mut hash, 0),
+                Some(fits) => {
+                    word(&mut hash, 1);
+                    for value in fits.iter().flatten() {
+                        hash.update((value + 0.).to_bits().to_le_bytes());
+                    }
+                }
+            }
+            word(&mut hash, chart.others.len());
+            for other in &chart.others {
+                word(&mut hash, *other);
+            }
+            word(&mut hash, chart.owners.len());
+            for owner in &chart.owners {
+                hash.update(owner.to_le_bytes());
+            }
             for y in chart.y..chart.y + chart.height {
                 owner[y * atlas.width + chart.x..][..chart.width].fill(index as u32 + 1);
             }

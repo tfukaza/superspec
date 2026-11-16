@@ -134,6 +134,8 @@ try {
   const first = await baked();
   quadScale = await page.evaluate(() => document.querySelector("#viewport canvas").clientWidth);
   console.log(`Opened in ${Date.now() - opened} ms: ${first.meshes} receivers, ${first.baked} baked, bake ${first.ms} ms (compile ${first.compileMs}, draw ${first.drawMs}), unsupported ${JSON.stringify(first.unsupported)}`);
+  const mib = bytes => (bytes / 1048576).toFixed(1);
+  console.log(`GPU memory at ${resolution} px: maps on screen ${mib(first.bytes)} MiB; the pass graph holds ${first.graph.nodes} textures, ${mib(first.graph.bytes)} MiB (${first.graph.idle} idle, ${mib(first.graph.idleBytes)} MiB)`);
   assert.deepEqual(first.unsupported, {}, "every receiver of the item washroom shows GPU-baked maps");
   const start = await json("items");
   assert.deepEqual(Object.keys(start).sort(), ["bench", "drain", "duct", "pipe", "slab", "wall-low", "wall-tall"]);
@@ -260,6 +262,7 @@ try {
   const droppedDrawn = drawn(dropped);
   const final = await json("itemEdit");
   console.log(`Check 5: drag steps (ms to the per-pixel picture; engine and viewer ms; width): ${JSON.stringify(steps)}; on release baked in ${Date.now() - released} ms: ${dropped.drawn} drawn, ${dropped.reused} reused; drawn: ${droppedDrawn.join(", ")}`);
+  console.log(`Check 5: after the release the pass graph holds ${dropped.graph.nodes} textures, ${mib(dropped.graph.bytes)} MiB (${dropped.graph.idle} idle, ${mib(dropped.graph.idleBytes)} MiB); maps on screen ${mib(dropped.bytes)} MiB`);
   assert.equal(final.dragging, false);
   assert.ok(Math.abs(final.value - (3.2 - 0.3)) < 0.06, `the handle moved the width by the distance dragged: ${final.value}`);
   assert.ok(await revision() > dragStart);

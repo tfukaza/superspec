@@ -1,6 +1,6 @@
 import initialize, { Authoring, prepareTextures } from "../../generated/wasm/superspec_wasm.js";
 import wasmUrl from "../../generated/wasm/superspec_wasm_bg.wasm?url";
-import type { AuthoringMessage, AuthoringProgress, AuthoringResult } from "./authoring.ts";
+import { OCCLUSION_PLANES, type AuthoringMessage, type AuthoringProgress, type AuthoringResult, type OcclusionReport } from "./authoring.ts";
 import { bakeHelpers, bakeShares } from "./bake-pool.ts";
 import { libraryAsset } from "./library.ts";
 import { encodeTextures, type TextureJob } from "./texture-encoder.ts";
@@ -97,6 +97,39 @@ async function distributed<T>(active: Authoring, assets: Record<string, Uint8Arr
 }
 
 /**
+ * Bakes the occluder service's planes that a scene project's materials read (`Authoring::occlude_project`) and returns
+ * the project with them bound, as JSON, with a report. The session keeps the planes by content, so only planes whose
+ * key is new cast rays: after a moved sun that is `shadow` alone. One call per plane name, so each is timed on its
+ * own. A project without scene materials, or none of whose materials reads a plane, is returned as it is.
+ */
+function occluded(active: Authoring, project: Record<string, unknown>, requestId: number, meshes?: string[]): { encoded: string; report?: OcclusionReport; keys: Map<string, Record<string, string>> } {
+  const keys = new Map<string, Record<string, string>>();
+  const encoded = JSON.stringify(project);
+  if (project.schemaVersion !== 2 || project.kind !== "material" || !Array.isArray(project.materials) || !project.materials.length) return { encoded, keys };
+  const report: OcclusionReport = { ms: {}, planes: [] };
+  const bound: Record<string, Record<string, unknown>> = {};
+  for (const name of OCCLUSION_PLANES) {
+    const started = performance.now();
+    const reply = JSON.parse(active.occlude_project(encoded, requestId, JSON.stringify({ names: [name], ...(meshes ? { meshes } : {}) })));
+    if (!reply.success) throw new Error(JSON.stringify(reply.diagnostics));
+    const receivers = reply.receivers as { id: string; planes: { name: string; key: string; width: number; height: number; rays: number; occluders: number; baked: boolean }[] }[];
+    if (!receivers.length) continue;
+    report.ms[name] = +(performance.now() - started).toFixed(1);
+    for (const receiver of receivers) for (const plane of receiver.planes) {
+      report.planes.push({ mesh: receiver.id, name: plane.name, key: plane.key, width: plane.width, height: plane.height, rays: plane.rays, occluders: plane.occluders, baked: plane.baked });
+      (keys.get(receiver.id) ?? keys.set(receiver.id, {}).get(receiver.id)!)[plane.name] = plane.key;
+    }
+    for (const [mesh, planes] of Object.entries(reply.planes as Record<string, Record<string, unknown>>)) bound[mesh] = { ...bound[mesh], ...planes };
+  }
+  if (!report.planes.length) return { encoded, keys };
+  // Over what the project binds itself: the service's plane of a name is the current one.
+  const stated = (project.planes ?? {}) as Record<string, Record<string, unknown>>;
+  const planes = { ...stated };
+  for (const [mesh, added] of Object.entries(bound)) planes[mesh] = { ...stated[mesh], ...added };
+  return { encoded: JSON.stringify({ ...project, planes }), report, keys };
+}
+
+/**
  * Requests run one at a time, in order. A handler awaits (the library's images, helper bakes, texture encoding) while
  * it uses the one session, so a second request starting in the middle would replace the first one's assets and the
  * first one's cleanup would clear the second's. A kept worker (the GPU preview lane's) does receive a request while an
@@ -138,11 +171,13 @@ async function handle(message: AuthoringMessage): Promise<void> {
     }
     if (action === "bake-project-fields" && "meshes" in request) {
       // The CPU-only fields of a scene's hybrid materials, one receiver at a time; a mesh that fails does not stop the others.
-      const encodedProject = JSON.stringify(request.project);
-      for (const name of JSON.parse(active.project_library_assets(encodedProject)) as string[]) {
+      for (const name of JSON.parse(active.project_library_assets(JSON.stringify(request.project))) as string[]) {
         images[name] = await libraryAsset(name);
         active.set_asset(name, images[name]);
       }
+      // The occluder service's planes these meshes' materials read, bound for the field bakes below.
+      const occlusion = request.occlusion ? occluded(active, request.project as unknown as Record<string, unknown>, requestId, request.meshes.map(entry => entry.mesh)) : undefined;
+      const encodedProject = occlusion?.encoded ?? JSON.stringify(request.project);
       const projectFields: NonNullable<AuthoringResult["projectFields"]> = [];
       const transfer: ArrayBufferLike[] = [];
       for (const { mesh, names } of request.meshes) {
@@ -150,20 +185,31 @@ async function handle(message: AuthoringMessage): Promise<void> {
         if (!reply.success) { projectFields.push({ mesh, error: (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n") }); continue; }
         const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
         transfer.push(...fields.map(field => field.buffer));
-        projectFields.push({ mesh, width: reply.width, height: reply.height, fields });
+        projectFields.push({ mesh, width: reply.width, height: reply.height, fields, ...(occlusion?.keys.has(mesh) ? { planes: occlusion.keys.get(mesh) } : {}) });
       }
-      self.postMessage({ requestId, projectFields }, { transfer: transfer as Transferable[] });
+      self.postMessage({ requestId, projectFields, ...(occlusion?.report ? { occlusion: occlusion.report } : {}) }, { transfer: transfer as Transferable[] });
       return;
     }
     const exporting = action === "export-project";
     const shading = action === "shade-project";
     const whole = exporting || shading || action === "preview-project";
-    const encoded = whole && "project" in request ? JSON.stringify(request.project) : JSON.stringify(request);
+    let encoded = whole && "project" in request ? JSON.stringify(request.project) : JSON.stringify(request);
     // A shader preview compiles recipes but reads no image.
     const catalog = shading ? [] : JSON.parse(whole ? active.project_library_assets(encoded) : active.library_assets(encoded)) as string[];
     for (const name of catalog) {
       images[name] = await libraryAsset(name);
       active.set_asset(name, images[name]);
+    }
+    // A CPU bake of a scene (a build or an export) reads the occluder service's planes its materials declare: they are
+    // baked here, lit by the project's lighting record, and bound for this build alone.
+    let occlusion: OcclusionReport | undefined;
+    if (whole && !shading && "project" in request) {
+      const made = occluded(active, request.project as unknown as Record<string, unknown>, requestId);
+      encoded = made.encoded; occlusion = made.report;
+      // Helpers that bake a share of a material read the planes as assets, like its images.
+      if (occlusion && bakeHelpers() > 1) {
+        for (const plane of occlusion.planes) { const asset = `occlusion/${plane.name}/${plane.key}`; images[asset] ??= active.occlusion_plane(asset); }
+      }
     }
     if (exporting) {
       const ktx2 = !("textures" in request) || request.textures !== "png";
@@ -198,7 +244,7 @@ async function handle(message: AuthoringMessage): Promise<void> {
       }
       result.metadata.layoutError = (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n");
     }
-    self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer }, { transfer: [bytes.buffer] });
+    self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, ...(occlusion ? { occlusion } : {}) }, { transfer: [bytes.buffer] });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     let diagnostics: unknown;

@@ -109,9 +109,18 @@ export interface GraphDevice {
 }
 
 export interface GraphLimits {
-  /** Nodes kept after their last user, least recently used dropped first, and the memory they may take together. */
-  idleNodes: number;
+  /**
+   * The memory the nodes kept after their last user may take together, least recently used dropped first. Memory is
+   * the bound, not a count: a scene of many small receivers and one of a few large ones keep the same amount.
+   */
   idleBytes: number;
+  /**
+   * The least a kept node is charged against `idleBytes` (0 by default): a render target costs the driver a texture
+   * and a framebuffer object whatever its size, so a great many tiny textures do not hide under the allowance.
+   */
+  nodeFloorBytes?: number;
+  /** A further bound on their number, for a host that wants one (none by default). */
+  idleNodes?: number;
 }
 
 /** The nodes of one realized graph, by name. It holds one use of each until it is released. */
@@ -171,7 +180,7 @@ export class BakeGraph {
   private readonly limits: GraphLimits;
 
   // (Plain fields, not parameter properties: the scheduling tests run this file under Node's type stripping.)
-  constructor(device: GraphDevice, limits: GraphLimits = { idleNodes: 96, idleBytes: 128 * 1024 * 1024 }) { this.device = device; this.limits = limits; }
+  constructor(device: GraphDevice, limits: GraphLimits = { idleBytes: 128 * 1024 * 1024 }) { this.device = device; this.limits = limits; }
 
   /** The resolved key of every node: its own key, its target's format and its inputs' resolved keys. */
   static resolve(specs: NodeSpec[]): Map<string, string> {
@@ -235,11 +244,13 @@ export class BakeGraph {
       return;
     }
     this.idle.delete(node); this.idle.add(node);
+    const floor = this.limits.nodeFloorBytes ?? 0;
+    const charged = (kept: GraphNode) => Math.max(kept.bytes, floor);
     let bytes = 0;
-    for (const kept of this.idle) bytes += kept.bytes;
+    for (const kept of this.idle) bytes += charged(kept);
     for (const kept of [...this.idle]) {
-      if (this.idle.size <= this.limits.idleNodes && bytes <= this.limits.idleBytes) break;
-      bytes -= kept.bytes;
+      if (this.idle.size <= (this.limits.idleNodes ?? Infinity) && bytes <= this.limits.idleBytes) break;
+      bytes -= charged(kept);
       this.idle.delete(kept); this.complete.delete(kept.key);
       kept.target.dispose();
     }
@@ -263,11 +274,12 @@ export class BakeGraph {
     return bytes;
   }
 
-  /** Nodes held complete, how many of them are idle, and the idle ones' memory (diagnostics). */
-  stats(): { nodes: number; idle: number; idleBytes: number } {
-    let idleBytes = 0;
+  /** Nodes held complete and their memory, how many of them are idle, and the idle ones' memory (diagnostics). */
+  stats(): { nodes: number; bytes: number; idle: number; idleBytes: number } {
+    let idleBytes = 0, bytes = 0;
     for (const node of this.idle) idleBytes += node.bytes;
-    return { nodes: this.complete.size, idle: this.idle.size, idleBytes };
+    for (const node of this.complete.values()) bytes += node.bytes;
+    return { nodes: this.complete.size, bytes, idle: this.idle.size, idleBytes };
   }
 
   /** The context went away with every texture: nothing is kept (and nothing can be freed). */

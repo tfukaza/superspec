@@ -851,7 +851,9 @@ fn the_planes_are_the_same_bytes_on_every_target() {
     }
     assert_eq!(
         format!("{:x}", hash.finalize()),
-        "b2bdfec2a573db7b1a45537ff218778f3cfa74811a473320f4e01cdb087837eb"
+        // Version 2: the keys also name a chart's lattice and face membership; the values are
+        // version 1's.
+        "495544656820a5e31595fe4aa8a1dcdc71182a1aa055e96022a89067e2619726"
     );
 }
 

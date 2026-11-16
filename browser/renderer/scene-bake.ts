@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import type { MaterialShading } from "./shade.ts";
-import { GpuBaker, gpuBakeUnsupported, type AtlasMaps, type FieldTexels } from "./bake.ts";
+import { GpuBaker, SCENE_MAP_BYTES, gpuBakeUnsupported, type AtlasMaps, type FieldTexels } from "./bake.ts";
 import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { shareInstanceAttributes } from "./batch.ts";
 
@@ -50,8 +50,15 @@ export interface SceneBakeTarget {
   fieldsId?: string;
 }
 
-/** CPU-baked fields for hybrid programs, by mesh: one entry per requested name, on the mesh's atlas grid. Null when superseded. */
-export type FieldSource = (requests: { mesh: string; names: string[] }[]) => Promise<Map<string, { width: number; height: number; fields: Float32Array[] }> | null>;
+/**
+ * CPU-baked fields for hybrid programs, by mesh: one entry per requested name, on the mesh's atlas grid. Null when
+ * superseded. `planes` lists, for each name, the external planes the field reads (the occluder service's `shadow`,
+ * `occlusion`, `sunExposure`): the source binds them. `keys`, when the source gives them, name for each field the
+ * content of the planes it was baked from, so a field whose planes did not change keeps its identity (and the textures
+ * drawn from it) through a request made for another plane.
+ */
+export type FieldSource = (requests: { mesh: string; names: string[]; planes: string[][] }[]) =>
+  Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }> | null>;
 
 /** What the scene view gives the baker. */
 export interface SceneBakeHost {
@@ -88,6 +95,8 @@ export interface SceneBakeStatus {
   nodesReused: number;
   /** GPU memory of the maps on screen. */
   bytes: number;
+  /** Every complete texture the pass graph holds and their memory, and of those the ones without a user (kept for later). */
+  graph: { nodes: number; bytes: number; idle: number; idleBytes: number };
   /** Whether the per-pixel looks are compiled, so a changed value shows per pixel at once (it is baked on settle either way). */
   shaderReady: boolean;
   /** One line per bake drawn: mesh, material and its milliseconds (c compile, e evaluate, n normals, m mips). */
@@ -130,6 +139,11 @@ interface Entry {
   unsupported?: string;
   fields?: Record<string, FieldTexels>;
   fieldsKey?: string;
+  /**
+   * The next bake follows a changed plane, not a changed value: the per-pixel look has no planes at all, so the maps
+   * on screen stay until the new ones are complete instead of being drawn over.
+   */
+  keepShown?: boolean;
 }
 
 /** The meshes of one shaded scene: prepared, then displayed until the next scene replaces them. */
@@ -158,10 +172,10 @@ interface Run {
 /** Pause after the last parameter change before its materials are baked again. */
 const SETTLE_MS = 160;
 /**
- * GPU memory the maps on screen may take; meshes beyond it stay on the per-pixel look. (What the graph keeps after
- * a node's last user has its own allowance: `GraphLimits`.)
+ * GPU memory the maps on screen may take; meshes beyond it stay on the per-pixel look. What the graph keeps after a
+ * node's last user is bounded by the same number (`SCENE_MAP_BYTES` in bake.ts).
  */
-const SCENE_BAKE_BYTES = 512 * 1024 * 1024;
+const SCENE_BAKE_BYTES = SCENE_MAP_BYTES;
 const NO_TOTALS = { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0, nodesDrawn: 0, nodesReused: 0 };
 
 export class SceneBaker {
@@ -303,6 +317,31 @@ export class SceneBaker {
     this.host.draw();
   }
 
+  /** Counts the changes of each external plane's source (`planesChanged`); part of what a mesh's CPU fields are keyed by. */
+  private readonly planeEpochs = new Map<string, number>();
+
+  /**
+   * The source of some external planes changed (the sun moved: `shadow`): the CPU fields that read them are asked for
+   * again and the meshes that show them are baked again, at once. Only the textures whose fields changed are drawn; a
+   * material that reads none of the planes is not touched. Returns the number of meshes asked again.
+   */
+  planesChanged(names: string[]): number {
+    for (const name of names) this.planeEpochs.set(name, (this.planeEpochs.get(name) ?? 0) + 1);
+    const run = this.current;
+    if (!run) return 0;
+    let asked = 0;
+    for (const entry of run.entries) {
+      if (entry.unsupported || !entry.target.shading.shader.cpuFields?.some(field => field.planes?.some(plane => names.includes(plane)))) continue;
+      entry.wanted++; entry.keepShown = true;
+      asked++;
+    }
+    if (!asked) return 0;
+    if (run.entries.every(entry => entry.unsupported || entry.done === entry.wanted || entry.keepShown)) this.restart(run);
+    this.report(run);
+    void this.pump(run);
+    return asked;
+  }
+
   private restart(run: Run): void {
     run.details = [];
     run.started = performance.now();
@@ -400,7 +439,7 @@ export class SceneBaker {
       unsupported: Object.fromEntries(run.entries.filter(entry => entry.unsupported).map(entry => [entry.target.mesh.name, entry.unsupported!])),
       ms: Math.round(performance.now() - run.started), ...run.totals,
       compileMs: Math.round(run.totals.compileMs), drawMs: +run.totals.drawMs.toFixed(1), fieldMs: Math.round(run.totals.fieldMs),
-      bytes: this.bytesHeld(run), shaderReady: run.shaderReady, details: run.details,
+      bytes: this.bytesHeld(run), graph: this.host.baker().graph.stats(), shaderReady: run.shaderReady, details: run.details,
       atlases: Object.fromEntries(run.entries.map(entry => [entry.target.mesh.name, `${entry.target.layout.width}x${entry.target.layout.height}`])),
     });
   }
@@ -409,7 +448,10 @@ export class SceneBaker {
   private fieldsKey(entry: Entry): string {
     const { shading, uniforms } = entry.target;
     const names = new Set((shading.shader.cpuFields ?? []).flatMap(field => field.parameters));
-    return JSON.stringify(shading.shader.parameters.filter(parameter => names.has(parameter.name)).map(parameter => [parameter.name, uniforms[parameter.uniform]?.value]));
+    const values = shading.shader.parameters.filter(parameter => names.has(parameter.name)).map(parameter => [parameter.name, uniforms[parameter.uniform]?.value]);
+    // And the state of the external planes they read (`planesChanged`).
+    const planes = [...new Set((shading.shader.cpuFields ?? []).flatMap(field => field.planes ?? []))].sort();
+    return JSON.stringify(planes.length ? [values, planes.map(plane => [plane, this.planeEpochs.get(plane) ?? 0])] : values);
   }
 
   /** Asks the CPU for the fields of every hybrid entry that lacks current ones; the entries are baked when they arrive. */
@@ -421,7 +463,8 @@ export class SceneBaker {
     const keys = new Map(needy.map(entry => [entry, this.fieldsKey(entry)]));
     const started = performance.now();
     try {
-      const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.fieldsId ?? entry.target.mesh.name, names: entry.target.shading.shader.cpuFields!.map(field => field.name) })));
+      const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.fieldsId ?? entry.target.mesh.name,
+        names: entry.target.shading.shader.cpuFields!.map(field => field.name), planes: entry.target.shading.shader.cpuFields!.map(field => field.planes ?? []) })));
       if (run.closed) return;
       if (!baked) {
         // Superseded by a newer request of the page; asked again, a few times at most.
@@ -439,8 +482,14 @@ export class SceneBaker {
           continue;
         }
         const key = keys.get(entry)!;
+        // A field that reads planes is named by their content where the source states it (the value of what the field
+        // reads of the parameters besides), so a request made for another plane leaves it, and what is drawn from it, alone.
+        const parameters = (field: (typeof wanted)[number]) => JSON.stringify(field.parameters.map(name =>
+          entry.target.uniforms[entry.target.shading.shader.parameters.find(parameter => parameter.name === name)?.uniform ?? ""]?.value));
+        const named = (field: (typeof wanted)[number], index: number) => field.planes?.length && found.keys?.[index] !== undefined
+          ? `planes:${found.keys[index]}:${parameters(field)}` : key;
         entry.fields = Object.fromEntries(wanted.map((field, index) => [field.uniform,
-          { id: `${entry.target.layout.key}:${entry.target.mesh.name}:${field.name}:${key}`, width, height, rgba: found.fields[index] }]));
+          { id: `${entry.target.layout.key}:${entry.target.mesh.name}:${field.name}:${named(field, index)}`, width, height, rgba: found.fields[index] }]));
         entry.fieldsKey = key;
       }
     } catch (error) {
@@ -496,7 +545,7 @@ export class SceneBaker {
     // Every node a texture already holds (on this mesh, on another mesh, or kept from before) is taken as it is. The
     // others are drawn: over this mesh's own textures where only it holds them, unless they are on screen with no
     // per-pixel look to show meanwhile; into new textures otherwise, which replace the old ones when all are complete.
-    const onScreen = run.attached && entry.showing === "baked" && !run.shaderReady;
+    const onScreen = run.attached && entry.showing === "baked" && (!run.shaderReady || entry.keepShown === true);
     const baked = await baker.bakeAtlas(target.shading, target.uniforms,
       { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver, program }, entry.maps, {
         fields: entry.fields, current, inPlace: !onScreen,
@@ -520,7 +569,7 @@ export class SceneBaker {
     await run.materials;
     if (!current() || entry.maps !== maps || !baker.atlasMapsComplete(maps)) return;
     this.show(entry);
-    entry.done = version;
+    entry.done = version; entry.keepShown = false;
     if (run.attached) { this.display(entry); this.host.draw(); }
   }
 

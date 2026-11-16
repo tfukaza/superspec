@@ -16,6 +16,50 @@ pub struct Authoring {
     staged: crate::staged::StagedExport,
     /// Whether the host answers [`host_cancelled`] (see [`Authoring::set_cancellable`]).
     cancellable: bool,
+    /// The occluder service's planes this session holds (see [`Authoring::occlude_project`]).
+    occlusion: OcclusionStore,
+}
+
+/// Planes of the occluder service, by the asset name projects bind them under
+/// (`occlusion/<name>/<key>`: the key is the plane's content). They outlive a request's assets,
+/// so a later request whose planes have the same keys casts no ray: a moved sun bakes `shadow`
+/// again and finds `occlusion` and `sunExposure` here.
+#[derive(Default)]
+struct OcclusionStore {
+    planes: BTreeMap<String, Arc<[u8]>>,
+    /// Asset names, least recently used first.
+    order: Vec<String>,
+    bytes: usize,
+}
+
+impl OcclusionStore {
+    /// Encoded planes kept at most; what one call uses is kept whatever it takes.
+    const ALLOWANCE: usize = 96 * 1024 * 1024;
+
+    fn holds(&self, name: &str, key: &str) -> bool {
+        self.planes.contains_key(&format!("occlusion/{name}/{key}"))
+    }
+
+    /// Marks planes as used now and adds the new ones, then drops the least recently used
+    /// beyond the allowance, never one of `used`.
+    fn keep(&mut self, used: &[String], added: BTreeMap<String, Arc<[u8]>>) {
+        for (asset, bytes) in added {
+            self.bytes += bytes.len();
+            if let Some(previous) = self.planes.insert(asset, bytes) {
+                self.bytes -= previous.len();
+            }
+        }
+        self.order.retain(|asset| !used.contains(asset));
+        self.order.extend(used.iter().cloned());
+        let mut index = 0;
+        while self.bytes > Self::ALLOWANCE && index + used.len() < self.order.len() {
+            let asset = self.order.remove(index);
+            if let Some(dropped) = self.planes.remove(&asset) {
+                self.bytes -= dropped.len();
+            }
+            index = 0;
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -100,6 +144,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -151,6 +196,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -207,6 +253,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -241,6 +288,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -256,6 +304,133 @@ impl Authoring {
                 serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
             }
         }
+    }
+
+    /// Bakes the occluder service's planes (`shadow`, `occlusion`, `sunExposure`) that the
+    /// materials of a scene project read, each over its receiver's atlas, and keeps them in
+    /// this session under the asset names the reply binds them with: a later build, export or
+    /// field bake of a project whose `planes` carry those bindings reads them from here.
+    ///
+    /// `options` is JSON: `names` (which planes; all three when absent), `meshes` (narrows the
+    /// receivers) and `settings` (`OcclusionSettings`; the defaults when absent). The sun is
+    /// the one of the project document's `lighting` record (the shipped look without one). A
+    /// plane whose key this session already holds is not baked again (`baked` is false, no ray
+    /// is cast): its key names everything that decides its values.
+    ///
+    /// The reply lists, per receiver, each plane's name, key, asset, size, rays cast and
+    /// triangles in reach, and `planes`: the bindings to merge into the project's `planes`.
+    pub fn occlude_project(&mut self, source: &str, revision: u32, options: &str) -> String {
+        use superspec_engine::authoring::occlusion::{
+            OcclusionJob, OcclusionSettings, PLANES, bind_project_occlusion,
+        };
+        let failed = |message: String| vec![Diagnostic::message("project", message)];
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(failed("Authoring project allowance exceeded.".into()));
+            }
+            let document: serde_json::Value =
+                serde_json::from_str(source).map_err(|e| failed(e.to_string()))?;
+            let lighting = superspec_export::project_lighting(&document)
+                .map_err(|findings| {
+                    let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+                    failed(format!("Invalid lighting record: {}.", findings.join("; ")))
+                })?
+                .unwrap_or_default();
+            let mut project: Project =
+                serde_json::from_value(document).map_err(|e| failed(e.to_string()))?;
+            let options: serde_json::Value =
+                serde_json::from_str(options).map_err(|e| failed(e.to_string()))?;
+            let settings: OcclusionSettings = match options.get("settings") {
+                Some(settings) if !settings.is_null() => {
+                    serde_json::from_value(settings.clone()).map_err(|e| failed(e.to_string()))?
+                }
+                _ => OcclusionSettings::default(),
+            };
+            let list = |field: &str| -> Result<Option<Vec<String>>, Vec<Diagnostic>> {
+                match options.get(field) {
+                    Some(value) if !value.is_null() => serde_json::from_value(value.clone())
+                        .map(Some)
+                        .map_err(|e| failed(e.to_string())),
+                    _ => Ok(None),
+                }
+            };
+            let names = list("names")?;
+            let names: Vec<&str> = match &names {
+                Some(names) => names.iter().map(String::as_str).collect(),
+                None => PLANES.to_vec(),
+            };
+            let meshes = list("meshes")?;
+            let store = &self.occlusion;
+            let held = |key: &str| PLANES.iter().any(|name| store.holds(name, key));
+            let job = OcclusionJob {
+                lighting: &lighting,
+                settings: &settings,
+                names: &names,
+                held: &held,
+            };
+            let baked = self.session.project_occlusion_read(
+                &project,
+                meshes.as_deref(),
+                &job,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| cancelled_by_host(self.cancellable),
+            )?;
+            project.planes.clear();
+            let assets = bind_project_occlusion(&mut project, &baked);
+            let receivers: Vec<serde_json::Value> = baked
+                .iter()
+                .map(|receiver| {
+                    let planes: Vec<serde_json::Value> = receiver
+                        .planes
+                        .iter()
+                        .map(|plane| {
+                            serde_json::json!({
+                                "name": plane.name, "key": plane.key, "asset": plane.asset(),
+                                "width": plane.width, "height": plane.height, "rays": plane.rays,
+                                "occluders": plane.occluders, "baked": plane.bytes.is_some(),
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({ "id": receiver.id, "planes": planes })
+                })
+                .collect();
+            let used: Vec<String> = baked
+                .iter()
+                .flat_map(|receiver| receiver.planes.iter().map(|plane| plane.asset()))
+                .collect();
+            Ok((
+                serde_json::json!({"success": true, "receivers": receivers, "planes": project.planes}),
+                used,
+                assets,
+            ))
+        })();
+        match result {
+            Ok((reply, used, assets)) => {
+                self.occlusion.keep(&used, assets);
+                reply.to_string()
+            }
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// The encoded bytes of a plane this session holds, by the asset name
+    /// [`Self::occlude_project`] bound it under, for a host that hands a share of a bake to
+    /// another session; empty for a name it does not hold.
+    pub fn occlusion_plane(&self, asset: &str) -> Vec<u8> {
+        self.occlusion
+            .planes
+            .get(asset)
+            .map(|bytes| bytes.to_vec())
+            .unwrap_or_default()
     }
 
     /// The triangle records of the last [`Self::layout_project`], moved out.
@@ -372,6 +547,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -413,6 +589,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -491,6 +668,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -581,6 +759,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },

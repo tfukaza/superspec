@@ -20,6 +20,21 @@ import { BakeGraph, type DrawStep, type GraphInstance, type NodeOp, type NodeSpe
  * full-screen draw), and values are 32-bit floats.
  */
 export const GPU_PREVIEW_PROFILE = "gpu-preview";
+/**
+ * GPU memory the baked maps of one scene may take, mips included. It is both allowances of the scene view: the maps
+ * on screen (scene-bake.ts refuses a mesh beyond it, which then stays on its per-pixel look) and the maps the pass
+ * graph keeps after their last user (`GraphLimits.idleBytes`), so a scene that fits on screen is also kept whole while
+ * a control is dragged or another scene is shown, and a second idle scene pushes the first one's oldest maps out.
+ * Measured on the item washroom (115 receivers, 736 textures, 128 texels per meter, real GPU): the maps on screen take
+ * 39.4 MiB at 256 px and 71.2 MiB at 512 px; after a wall drag and release the graph holds 853 textures, 62.5 and
+ * 129.4 MiB (117 idle, 23.2 and 59.7 MiB). The old count of 96 idle nodes kept under a seventh of the scene's textures.
+ */
+export const SCENE_MAP_BYTES = 512 * 1024 * 1024;
+/**
+ * The least an idle node is charged: a render target is a texture and a framebuffer object to the driver whatever
+ * its size (a 16 by 16 map with mips is 1.4 KiB of texels).
+ */
+export const NODE_FLOOR_BYTES = 16 * 1024;
 /** Bumped when the bake's output for the same inputs changes; part of every cache key. */
 const GPU_PREVIEW_VERSION = 1;
 
@@ -974,8 +989,9 @@ export class GpuBaker {
     },
     // A scene of items has a receiver per part and face group (the item washroom: 115 receivers, 736 nodes, most of
     // them small). While an item control is dragged the scene is shown per pixel and every node is idle; they must
-    // all still be there on release, so the count is generous and the memory is what bounds them.
-  }, { idleNodes: 4096, idleBytes: 256 * 1024 * 1024 });
+    // all still be there on release. What bounds them is memory alone, and the same memory that bounds the maps on
+    // screen (`SCENE_MAP_BYTES`): a scene that may be displayed may also be kept whole while it is not.
+  }, { idleBytes: SCENE_MAP_BYTES, nodeFloorBytes: NODE_FLOOR_BYTES });
   /** Whether `renderInto` is called from the graph's batch, which saves and restores the renderer's state around it. */
   private batching = false;
 
@@ -1134,7 +1150,7 @@ export class GpuBaker {
 
   /** The key of a mapping node: the receiver's atlas, how it maps points to surface coordinates, and where the intrinsic bake lies. */
   static mappingKey(atlas: { layout: AtlasLayout; extent: [number, number] }, uniforms: Uniforms, domain: IntrinsicDomain): string {
-    return `mapping:1:${atlas.layout.key}:${hash(JSON.stringify([atlas.extent, uniforms.msMapping?.value, uniforms.msObjectFromWorld?.value, domain]))}`;
+    return `mapping:1:${atlas.layout.key}:${hash(JSON.stringify([atlas.extent, uniforms.msMapping?.value, uniforms.msObjectFromWorld?.value, uniforms.msAnchorFromWorld?.value, domain]))}`;
   }
 
   /** Draws `scene` into a target (a band of its rows, or all of it), leaving the renderer as the viewer's frames expect it. */
@@ -1230,6 +1246,7 @@ export class GpuBaker {
           msAtlas: { value: new THREE.Vector2(atlas.layout.width, atlas.layout.height) }, msGutter: { value: atlas.layout.gutter },
           msExtent: { value: new THREE.Vector2(atlas.extent[0], atlas.extent[1]) },
           msObjectFromWorld: uniforms.msObjectFromWorld ?? { value: new THREE.Matrix4() }, msMapping: uniforms.msMapping ?? { value: 2 },
+          msAnchorFromWorld: uniforms.msAnchorFromWorld ?? { value: new THREE.Matrix4() },
           msIntrinsic: { value: inputs.source.texture }, msIntrinsicOrigin: { value: new THREE.Vector2(...domain.origin) },
           msIntrinsicSize: { value: new THREE.Vector2(...domain.size) }, msIntrinsicDensity: { value: domain.density },
         });
