@@ -139,6 +139,29 @@ Studio also has two GPU previews, which are approximations and never authoritati
   other than the plain bake texel (for example through a warped coordinate) is not
   supported and is refused, not approximated; `runoff` only reads the sample's world
   position, so today's CPU fields are always at the plain domain coordinates.
+- **Cold programs, texture units and real GPUs.** A GPU program's first draw is where
+  the driver finishes compiling it, which for the Kowloon concrete takes about 0.7-0.9 s
+  on an idle RTX 5060 Ti (D3D11) and several seconds while the CPU build runs beside
+  it. That cost scales with the number of inlined noise calls; none of the loops,
+  derivatives or `select`s tried dominated it. The GPU value is in edits, so the CPU
+  draft and full build always show first, a late first preview is dropped, and the
+  program keeps compiling in the background: a bake that gave way still compiles and
+  draws its program once at a tiny size, so the next parameter or seed edit shows its
+  preview within a few frames with no compile left (the concrete: a parameter edit
+  previewed 78 ms after the edit on the RTX once warm). The baking program and the
+  viewer material (four maps, the environment, the sun's shadow map and the packed live
+  argument textures) must each fit `MAX_TEXTURE_IMAGE_UNITS` (16 on that GPU, not 32
+  as under SwiftShader); a preview that would not fit falls back with that reason, and
+  `data-gpu-preview` reports the units used. Headless Playwright defaults to
+  SwiftShader, a software renderer, so timings there are order-of-magnitude only. To run
+  the browser suites on a GPU set
+  `BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist"` (PowerShell:
+  `$env:BROWSER_ARGS=...`); `tests/material-gpu-preview-browser.mjs` prints the WebGL
+  renderer string, texture-unit and draw-buffer limits at its start.
+- **Shadows.** The Studio viewer casts and receives shadows from its sun by default
+  (a 2048 px PCF soft shadow map fitted to the loaded models, drawn when the models
+  change rather than every frame). `?shadows=off` in the page URL turns them off for
+  debugging.
 ## TypeScript recipes
 
 Materials can also be written as `.material.ts` files: strict TypeScript against a

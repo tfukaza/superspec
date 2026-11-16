@@ -95,6 +95,8 @@ export interface GpuBake {
    * channels in order), described as the operations a viewer applies. Present when the program has live operations.
    */
   live?: { key: string; operations: LiveArgumentOperation[]; textures: Record<string, THREE.Texture> };
+  /** Texture units used by the baking program and by the viewer material showing the result, and the device limit. */
+  units: { bake: number; viewer: number; limit: number };
 }
 
 /** A live operation whose every argument reads a baked texture channel, unscaled. */
@@ -157,6 +159,8 @@ void main() {
 /** The pass-1 inputs and per-texel setup, shared with the pass that evaluates live renderer arguments. */
 const INPUT_UNIFORMS = PASS1_HEAD.slice(0, PASS1_HEAD.indexOf("layout(location = 0)"));
 const TEXEL_SETUP = PASS1_MAIN.slice(0, PASS1_MAIN.indexOf("  // The base color target"));
+/** Texture units a viewer material uses besides live arguments: base color, normal, properties, emissive, the environment and the sun's shadow map. */
+const VIEWER_UNITS = 6;
 /** Live argument textures one draw writes. */
 const LIVE_PER_DRAW = 4;
 
@@ -362,6 +366,9 @@ export class GpuBaker {
     this.last = undefined;
   }
 
+  /** The fragment shader of pass 1 for a program's shader source (also used by diagnostics). */
+  static pass1Source(source: string): string { return `${PASS1_HEAD}\n${source}\n${PASS1_MAIN}`; }
+
   /** The cache key of a bake: everything that changes a pixel, with the profile and version. */
   static key(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, fieldIds: string[] = []): string {
     const values = Object.entries(uniforms).filter(([, uniform]) => !(uniform.value as { isTexture?: boolean } | null)?.isTexture)
@@ -497,10 +504,36 @@ export class GpuBaker {
   private async pass(source: string, width: number, height: number): Promise<Pass> {
     const cached = this.passes.get(source);
     if (cached) return cached;
+    // One compile per source, however many bakes (a late first preview and the next edit) wait for it.
+    const waiting = this.compiling.get(source);
+    if (waiting) return waiting;
+    const started = this.compileFresh(source, width, height).finally(() => this.compiling.delete(source));
+    this.compiling.set(source, started);
+    return started;
+  }
+
+  private compiling = new Map<string, Promise<Pass>>();
+  /** Sources whose program has been drawn once: the driver finishes compiling at the first draw, so a program is warm only then. */
+  private drawn = new Set<string>();
+
+  /** Whether the program has been compiled and drawn once, so the next bake pays only for its pixels. */
+  hasDrawn(shading: MaterialShading): boolean { return this.drawn.has(shading.shader.source); }
+
+  /**
+   * Compiles and draws a program once at a tiny size, off the critical path: the first draw is where drivers finish the
+   * (sometimes seconds long) shader compile, and a bake that arrives later than the CPU result would otherwise skip it.
+   * Draws nothing a viewer shows. Errors are swallowed; the next real bake reports them.
+   */
+  async warm(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, fields?: Record<string, FieldTexels>): Promise<void> {
+    if (this.busy > 0) return;
+    try { await this.bake(shading, uniforms, scaledDomain(domain, 16), { fields, current: () => true }); } catch { /* reported by a real bake */ }
+  }
+
+  private async compileFresh(source: string, width: number, height: number): Promise<Pass> {
     const material = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: VERTEX,
-      fragmentShader: `${PASS1_HEAD}\n${source}\n${PASS1_MAIN}`,
+      fragmentShader: GpuBaker.pass1Source(source),
       uniforms: {},
       depthTest: false, depthWrite: false, blending: THREE.NoBlending,
     });
@@ -637,6 +670,14 @@ export class GpuBaker {
    * fall back to the CPU draft. The returned textures are overwritten by the next bake of this size.
    */
   async bake(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, options: BakeOptions = {}): Promise<GpuBake | null> {
+    this.busy++;
+    try { return await this.bakeNow(shading, uniforms, domain, options); } finally { this.busy--; }
+  }
+
+  /** Bakes in flight: a warm-up draw waits for them, since the pass uniforms are shared. */
+  private busy = 0;
+
+  private async bakeNow(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, options: BakeOptions): Promise<GpuBake | null> {
     const { measure = false, current = () => true, bandTexels = BAND_TEXELS, fields = {} } = options;
     const reason = this.unavailable();
     if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
@@ -658,6 +699,11 @@ export class GpuBaker {
     targets.flatNormal = targets.flatNormal && !shading.shader.outputs.includes("height");
     const pass = await this.pass(shading.shader.source, domain.width, domain.height);
     const normals = await this.normals(targets.normal);
+    // Texture units: the baking program, and the viewer material that will show the maps (four maps, the environment and
+    // the live argument textures), must each fit the device or the preview gives way to the CPU result.
+    const unitLimit = this.renderer.capabilities.maxTextures;
+    const bakeUnits = (shading.shader.source.match(/uniform\s+(?:highp\s+)?sampler2D/g) ?? []).length;
+    if (bakeUnits > unitLimit) throw new Error(`GPU preview needs ${bakeUnits} texture units to bake; this device has ${unitLimit}.`);
     if (!current()) return null;
     const compiled = clock();
 
@@ -742,18 +788,22 @@ export class GpuBaker {
       const baked = await this.bakeLive(shading, bound, domain, bandRows, current);
       if (!baked) return null;
       live = baked;
+      const viewerUnits = VIEWER_UNITS + Object.keys(baked.textures).length;
+      if (viewerUnits > unitLimit) throw new Error(`GPU preview needs ${viewerUnits} texture units to show its lighting arguments; this device has ${unitLimit}.`);
       settle();
     }
     const done = clock();
     const key = GpuBaker.key(shading, uniforms, domain, fieldIds);
     this.last = { key };
     this.latest = targets;
+    this.drawn.add(shading.shader.source);
     return {
       profile: GPU_PREVIEW_PROFILE, key, width: domain.width, height: domain.height,
       baseColor, properties, emissive, normal: targets.normal.texture,
       timings: { compile: hadPass ? 0 : compiled - started, uniforms: bindTime - compiled, pass1: first - bindTime,
         mips: (mipped - first) + (normalsDone - second), pass2: second - mipped, total: done - started, bands, live: done - normalsDone },
       live,
+      units: { bake: bakeUnits, viewer: VIEWER_UNITS + (live ? Object.keys(live.textures).length : 0), limit: unitLimit },
     };
   }
 

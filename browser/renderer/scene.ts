@@ -87,6 +87,25 @@ export class RustScene {
   private sceneId?: string;
   private frame = 0;
   private closed = false;
+  private readonly sun: THREE.DirectionalLight;
+  /** Whether the viewer casts and receives shadows (on unless `?shadows=off`). */
+  readonly shadows = new URLSearchParams(location.search).get("shadows") !== "off";
+
+  /** Fits the sun's shadow camera to the models' bounds and asks for one new shadow map; the light direction is unchanged. */
+  private fitShadows(): void {
+    if (!this.shadows) return;
+    const bounds = new THREE.Box3().setFromObject(this.models);
+    if (bounds.isEmpty()) return;
+    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+    const direction = new THREE.Vector3(-3, -5, 8).normalize();
+    const radius = Math.max(sphere.radius, 0.05);
+    this.sun.target.position.copy(sphere.center);
+    this.sun.position.copy(sphere.center).addScaledVector(direction, radius * 3);
+    Object.assign(this.sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: radius * 0.5, far: radius * 5.5 });
+    this.sun.shadow.camera.updateProjectionMatrix();
+    this.sun.target.updateMatrixWorld();
+    this.renderer.shadowMap.needsUpdate = true;
+  }
 
   constructor(private readonly host: HTMLElement, private readonly inspect: (mesh?: SceneMesh) => void) {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -110,7 +129,20 @@ export class RustScene {
     ambient.position.set(0, 0, 1);
     const sun = new THREE.DirectionalLight(0xffefdb, 3);
     sun.position.set(-3, -5, 8);
-    this.scene.add(ambient, sun, this.models);
+    this.sun = sun;
+    // Shadows are on by default (`?shadows=off` disables them for debugging). The sun does not move and the viewer renders on
+    // demand, so the shadow map is drawn when the models change (`shadowMap.needsUpdate`), not every frame.
+    if (this.shadows) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      this.renderer.shadowMap.autoUpdate = false;
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      // A small bias against acne and a normal bias that keeps thin parts (ducts, pipes) attached to their shadows.
+      sun.shadow.bias = -0.0003;
+      sun.shadow.normalBias = 0.02;
+    }
+    this.scene.add(ambient, sun, sun.target, this.models);
     host.append(this.renderer.domElement);
     this.renderer.domElement.addEventListener("click", this.pick);
     this.renderer.domElement.addEventListener("webglcontextrestored", this.invalidate);
@@ -207,6 +239,8 @@ export class RustScene {
         const geometry = new THREE.BufferGeometry();
         const material = new THREE.MeshStandardMaterial();
         const mesh = new THREE.Mesh(geometry, material);
+        // Every displayed mesh casts and receives; textures, GPU previews and live operations only change its material.
+        mesh.castShadow = mesh.receiveShadow = this.shadows;
         ordered.push(mesh);
         next.add(mesh);
         geometry.setAttribute("position", new THREE.BufferAttribute(packet.positions.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
@@ -271,6 +305,7 @@ export class RustScene {
       this.scene.remove(previous);
       this.models = next;
       committed = true;
+      this.fitShadows();
       this.texturePool.release(this.textureLeases);
       this.textureLeases = leases;
       this.host.dataset.reusedMeshes = String(reused.length);
@@ -378,6 +413,12 @@ export class RustScene {
     return uniforms;
   }
 
+  /** The shader source pass 1 compiles for the last GPU preview program (diagnostics: `?gpuprobe`). */
+  gpuPreviewSource(): string | undefined {
+    const material = this.gpuUniforms?.material;
+    return material ? GpuBaker.pass1Source(material.shader.source) : undefined;
+  }
+
   private bakerInstance?: GpuBaker;
   private gpuUniforms?: { material: MaterialShading; uniforms: Record<string, THREE.IUniform> };
 
@@ -428,16 +469,22 @@ export class RustScene {
     // The caller may have moved on (a newer edit, or the CPU result for this one) while shaders compile or bands draw.
     const alive = () => current() && this.models.children.includes(mesh);
     let shown: GpuBake | null = null;
+    // A bake that gave way (the CPU result of its edit landed first) still leaves its program compiled and drawn once, at a
+    // tiny size and off the critical path, so the next edit's preview is instant instead of paying the driver's first-draw compile.
+    const warm = (): void => {
+      if (baker.hasDrawn(bound.material) || (bound.material.shader.cpuFields?.length && !fields)) return;
+      setTimeout(() => void baker.warm(bound.material, bound.uniforms, domain, fields), 0);
+    };
     // Large targets show a quarter-size bake first, then refine to the requested size; a newer edit cancels the refinement.
     if (domain.width >= 256) {
       const low = await baker.bake(bound.material, bound.uniforms, scaledDomain(domain, 4), { measure, current: alive, fields });
-      if (!low || !alive()) return null;
+      if (!low || !alive()) { warm(); return null; }
       this.showBaked(mesh, low); onShown?.(low, "low", imagesMs); shown = low;
       await new Promise(done => setTimeout(done, 0));
       if (!alive()) return shown;
     }
     const bake = await baker.bake(bound.material, bound.uniforms, domain, { measure, current: alive, fields });
-    if (!bake || !alive()) return shown;
+    if (!bake || !alive()) { if (!shown) warm(); return shown; }
     this.showBaked(mesh, bake); onShown?.(bake, "full", imagesMs);
     return bake;
   }

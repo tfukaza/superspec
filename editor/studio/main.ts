@@ -1,5 +1,6 @@
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_BYTES, megabytes } from "../../browser/model/limits.ts";
 import "./style.css";
+import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
 import { gpuBakeUnsupported, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
@@ -107,7 +108,7 @@ class Studio {
     this.project = initialProject(kind); this.module = this.project.entry;
     this.scene = new RustScene(element("viewport"), mesh => this.selection(mesh));
     // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
-    if (new URLSearchParams(location.search).has("gpuprobe")) (window as unknown as { __scene: RustScene }).__scene = this.scene;
+    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE });
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
       // A shaded scene takes a parameter as a uniform: nothing to wait for.
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
@@ -561,7 +562,7 @@ class Studio {
         viewport.dataset.gpuPreviewRevision = String(revision);
         const cpuOutputs = use.shader.cpuOutputs ?? [];
         viewport.dataset.gpuPreview = JSON.stringify({ profile: shown.profile, key: shown.key, width: shown.width, height: shown.height, stage,
-          shader: shading ? "bound" : "reused",
+          shader: shading ? "bound" : "reused", units: shown.units,
           // Which channels rest on CPU-supplied fields; the rest are GPU only.
           lane: hybrid ? "hybrid" : "gpu",
           ...(hybrid ? { cpuFields: cpuFields.map(field => field.name), cpuChannels: cpuOutputs,

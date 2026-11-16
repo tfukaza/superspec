@@ -41,7 +41,7 @@ try {
     const findings = await state() === "ready" ? "" : (await page.locator("#diagnostics button").allTextContents()).join("\n");
     assert.equal(await state(), "ready", `${await page.locator("#status").textContent()}\n${findings}`);
   };
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html${process.env.QUERY ? `?${process.env.QUERY}` : ""}`);
   await ready();
 
   const before = Number(await page.locator("#viewport").getAttribute("data-input-revision") ?? 0);

@@ -38,6 +38,13 @@ try {
   };
   await page.goto(`${address}/material.html?gpuprobe=1`);
   await ready("initial");
+  // Which GL implementation ran this: headless Playwright defaults to SwiftShader (software); BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist" picks a GPU.
+  const glInfo = await page.evaluate(() => {
+    const gl = document.createElement("canvas").getContext("webgl2"); const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    return { renderer: ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), textureUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS), drawBuffers: gl.getParameter(gl.MAX_DRAW_BUFFERS), parallelCompile: !!gl.getExtension("KHR_parallel_shader_compile") };
+  });
+  const software = /SwiftShader|llvmpipe|Software/i.test(glInfo.renderer);
+  console.log(`WebGL renderer: ${glInfo.renderer} (${software ? "software" : "GPU"}); texture units ${glInfo.textureUnits}, draw buffers ${glInfo.drawBuffers}, parallel shader compile ${glInfo.parallelCompile}`);
   // Record every GPU preview publication, which the CPU draft replaces within a second.
   await page.evaluate(() => {
     window.__gpu = [];
@@ -82,6 +89,48 @@ try {
     assert.equal(result.state, "ready", `edit ${await page.locator("#status").textContent()} ${(await page.locator("#diagnostics button").allTextContents()).join(" | ")} for ${edit}`);
     return result;
   };
+  // Cold start of the most expensive program, in a page of its own so its shaders are new to the GL context. The CPU result
+  // must not wait for the GPU compile, which continues in the background; once it has drawn once, a parameter drag shows its
+  // GPU preview within a few frames of the edit, with no compile left.
+  {
+    const cold = await browser.newPage({ viewport: { width: 1200, height: 900 } });
+    await cold.goto(`${address}/material.html?gpuprobe=1`);
+    await cold.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 180000 });
+    await cold.evaluate(() => {
+      window.__events = [];
+      const v = document.querySelector("#viewport");
+      new MutationObserver(() => { const d = v.dataset; window.__events.push({ at: performance.now(), preview: d.gpuPreview && JSON.parse(d.gpuPreview), fallback: d.gpuPreviewFallback, state: document.querySelector("#status").dataset.state }); })
+        .observe(v, { attributes: true, attributeFilter: ["data-gpu-preview", "data-gpu-preview-fallback"] });
+    });
+    const t0 = await cold.evaluate(() => performance.now());
+    await cold.locator("#starter").selectOption("kowloon-concrete.material.ts");
+    await cold.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && Number(document.querySelector("#viewport").dataset.inputRevision) > 0, {}, { timeout: 180000 });
+    const cpuReady = await cold.evaluate(t => performance.now() - t, t0);
+    const firstGpu = await cold.evaluate(() => window.__events.find(event => event.preview));
+    // The GPU program is warm once it has been drawn (a late first preview is dropped, but the program is kept and drawn once).
+    await cold.waitForFunction(() => { const s = window.__scene, source = s.gpuUniforms?.material?.shader?.source; return Boolean(source && s.bakerInstance?.drawn.has(source)); }, {}, { timeout: 120000 });
+    const warmAt = await cold.evaluate(t => performance.now() - t, t0);
+    await cold.waitForTimeout(300);
+    await cold.evaluate(() => { window.__events.length = 0; });
+    const edited = await cold.evaluate(async () => {
+      const input = document.querySelector("#parameters input[type=number]");
+      const started = performance.now();
+      input.value = String((Number(input.min || 0) + Number(input.max || 1)) / 2);
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      for (let waited = 0; waited < 8000; waited += 4) {
+        const shown = window.__events.find(event => event.preview);
+        if (shown) return { at: shown.at - started, state: shown.state, compile: shown.preview.timings.compile, stage: shown.preview.stage };
+        await new Promise(done => setTimeout(done, 4));
+      }
+      return null;
+    });
+    console.log(`Cold concrete: CPU result after ${cpuReady.toFixed(0)} ms; GPU first look ${firstGpu ? "shown" : "not shown (CPU came first)"}; GPU program warm after ${warmAt.toFixed(0)} ms; parameter edit shows the GPU preview after ${edited?.at.toFixed(0)} ms (${JSON.stringify(edited)})`);
+    assert.ok(edited, "a parameter edit shows the GPU preview once the program is warm");
+    assert.equal(edited.compile, 0, "no shader compile is left for the edit");
+    assert.ok(edited.at < (software ? 3000 : 400), `the preview follows the edit within a few frames (${edited.at.toFixed(0)} ms)`);
+    await cold.close();
+  }
+
   const report = {};
   const firstUse = {};
   const starterStats = {};
@@ -96,6 +145,9 @@ try {
     if (shown) { firstUse[starter] = shown.preview.timings; starterStats[starter] = events.findLast(event => event.stats)?.stats ?? shown.stats; }
     if (shown) {
       assert.equal(shown.preview.profile, "gpu-preview", `${starter}: own profile`);
+      // Texture units: the baking program and the viewer material (maps, environment, live argument textures) fit the device.
+      assert.ok(shown.preview.units.bake <= shown.preview.units.limit && shown.preview.units.viewer <= shown.preview.units.limit, `${starter}: texture units ${JSON.stringify(shown.preview.units)}`);
+      assert.ok(shown.preview.units.limit <= glInfo.textureUnits, `${starter}: the limit is the device limit`);
       assert.match(shown.preview.key, /^gpu-preview:\d+:/, `${starter}: own cache key`);
       assert.equal(shown.status, "compiling", `${starter}: a GPU preview is never a ready revision`);
       const stats = events.findLast(event => event.stats)?.stats ?? shown.stats;
