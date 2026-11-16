@@ -11,7 +11,7 @@
 //! Bakes stay the authority for exported maps.
 use super::{
     Program, Type,
-    compiled::{Builtin, Input, Kind, Node, Op},
+    compiled::{Builtin, Compiled, Input, Kind, Node, Op},
     syntax::Definition,
 };
 use serde::Serialize;
@@ -155,6 +155,62 @@ fn uses_cpu_only(node: &Node) -> bool {
         Kind::Select(a, b, c) => uses_cpu_only(a) || uses_cpu_only(b) || uses_cpu_only(c),
         Kind::Builtin(_, args) | Kind::Function(_, args) => args.iter().any(uses_cpu_only),
         _ => false,
+    }
+}
+
+/// Marks every field a node reaches, through other fields and helper bodies. A CPU field is
+/// reached but not entered: the shader reads it from its texture.
+fn reach_fields(
+    compiled: &Compiled,
+    cpu_only: &[bool],
+    node: &Node,
+    fields: &mut [bool],
+    helpers: &mut [bool],
+) {
+    match &node.kind {
+        Kind::Field(index) => {
+            if !std::mem::replace(&mut fields[*index], true) && !cpu_only[*index] {
+                reach_fields(
+                    compiled,
+                    cpu_only,
+                    &compiled.fields[*index],
+                    fields,
+                    helpers,
+                );
+            }
+        }
+        Kind::Unary(_, a) | Kind::Member(a, _) => {
+            reach_fields(compiled, cpu_only, a, fields, helpers)
+        }
+        Kind::Binary(_, a, b) => {
+            reach_fields(compiled, cpu_only, a, fields, helpers);
+            reach_fields(compiled, cpu_only, b, fields, helpers);
+        }
+        Kind::Select(a, b, c) => {
+            for part in [a, b, c] {
+                reach_fields(compiled, cpu_only, part, fields, helpers);
+            }
+        }
+        Kind::Builtin(_, args) => {
+            for argument in args {
+                reach_fields(compiled, cpu_only, argument, fields, helpers);
+            }
+        }
+        Kind::Function(index, args) => {
+            for argument in args {
+                reach_fields(compiled, cpu_only, argument, fields, helpers);
+            }
+            if !std::mem::replace(&mut helpers[*index], true) {
+                reach_fields(
+                    compiled,
+                    cpu_only,
+                    &compiled.functions[*index].body,
+                    fields,
+                    helpers,
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -736,6 +792,7 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
     let mut body = String::new();
     let mut declarations = String::new();
     let mut cpu_fields: Vec<CpuField> = Vec::new();
+    let mut field_lines: Vec<(usize, String)> = Vec::new();
     let table = partition.then(|| program.dependency_table());
     for index in emitter.field_order.clone() {
         let kind = if emitter.field_is_seed(index) {
@@ -761,7 +818,9 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
                 Type::Vec3 => format!("{fetch}.xyz"),
                 _ => format!("({fetch}.x > 0.5)"),
             };
-            body.push_str(&format!("  ms_f{index} = {value};\n"));
+            let line = format!("  ms_f{index} = {value};\n");
+            body.push_str(&line);
+            field_lines.push((index, line));
             let found = table
                 .as_ref()
                 .and_then(|table| table.fields.get(&field.name))
@@ -787,11 +846,17 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
         } else {
             emitter.emit(node, None)
         };
-        body.push_str(&format!("  ms_f{index} = {value};\n"));
+        let line = format!("  ms_f{index} = {value};\n");
+        body.push_str(&line);
+        field_lines.push((index, line));
     }
     let mut outputs = Vec::new();
+    let mut height: Option<(&Node, String)> = None;
     for (name, node) in &compiled.outputs {
         let value = emitter.emit(node, None);
+        if name == "height" {
+            height = Some((node, value.clone()));
+        }
         body.push_str(&format!("  ms_{name} = {value};\n"));
         outputs.push(name.clone());
     }
@@ -883,6 +948,28 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
     );
     source.push_str(&body);
     source.push_str("}\n");
+    // The height alone: only the fields the height output reaches, in the same order. A renderer
+    // that shades per pixel calls it at neighboring surface points to take the relief's slope by
+    // finite differences, which screen derivatives of `ms_height` give at half resolution. It
+    // writes the same field globals as `ms_evaluate`, so hosts call it before `ms_evaluate`.
+    if let Some((node, value)) = &height {
+        let mut reached = vec![false; compiled.fields.len()];
+        let mut helpers_seen = vec![false; compiled.functions.len()];
+        reach_fields(
+            compiled,
+            &emitter.cpu_only,
+            node,
+            &mut reached,
+            &mut helpers_seen,
+        );
+        source.push_str("void ms_evaluate_height() {\n  ms_height = 0.0;\n");
+        for (index, line) in &field_lines {
+            if reached[*index] {
+                source.push_str(line);
+            }
+        }
+        source.push_str(&format!("  ms_height = {value};\n}}\n"));
+    }
     let cpu_outputs: Vec<String> = table
         .as_ref()
         .filter(|_| !cpu_fields.is_empty())
@@ -1013,6 +1100,49 @@ mod tests {
         );
         assert!(plan.source.contains("ms_cpu0")); // Downstream of the CPU field the math stays on the GPU.
         assert!(plan.parameters.iter().any(|p| p.name == "shade"));
+    }
+
+    /// A program with a height output also gets a height-only entry point that computes just the
+    /// fields the height reaches; a program without one gets none.
+    #[test]
+    fn height_entry_point_computes_only_what_the_height_reaches() {
+        let source = |height: &str| {
+            format!(
+                "material 1;
+                 fn lifted(x: scalar) -> scalar = x * relief;
+                 let tone = noise(surface * 3.0, seed(\"tone\"));
+                 let relief = noise(surface * 9.0, seed(\"relief\"));
+                 let bump = lifted(0.5) + 0.1;
+                 output base_color = vec3(tone);
+                 output roughness = 0.5;
+                 output metalness = 0;
+                 {height}"
+            )
+        };
+        let shader = plan_of(&source("output height = bump * 0.01;")).unwrap();
+        let entry = shader
+            .source
+            .split("void ms_evaluate_height() {")
+            .nth(1)
+            .expect("a height entry point");
+        // `bump` and, through the helper's body, `relief`; not `tone`, which only the color reads.
+        assert_eq!(entry.matches("  ms_f").count(), 2, "{entry}");
+        assert!(entry.contains("ms_height = "));
+        let whole = shader
+            .source
+            .split("void ms_evaluate() {")
+            .nth(1)
+            .unwrap()
+            .split("void ms_evaluate_height")
+            .next()
+            .unwrap();
+        assert_eq!(whole.matches("  ms_f").count(), 3);
+        assert!(
+            !plan_of(&source(""))
+                .unwrap()
+                .source
+                .contains("ms_evaluate_height")
+        );
     }
 
     /// What the rule cannot place is refused with a reason, not approximated.

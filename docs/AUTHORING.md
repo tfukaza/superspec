@@ -162,11 +162,24 @@ Studio also has two GPU previews, which are approximations and never authoritati
   (a 2048 px PCF soft shadow map fitted to the loaded models, drawn when the models
   change rather than every frame). `?shadows=off` in the page URL turns them off for
   debugging. `?shadowstyle=illustration` tries a stylized look (a prototype, not the
-  default): a wider soft penumbra, a large-scale noise that breaks the shadow's edge and
-  mottles its interior, and a blue tint in the shadow. Overrides: `shadowblur` (penumbra
-  radius, meters), `shadowedge` (edge displacement, meters), `shadownoise` (interior
-  mottle, 0-1), `shadownoisescale` (noise feature size, meters), `shadowtint` (hex color
-  without `#`), `shadowtintstrength` (0-1) and `shadowseed`.
+  default): shadows darker than plain and clearly blue, including faces turned from the
+  sun; an edge gradient that stays tight where the caster touches the receiver and widens
+  with the distance between them; and a large-scale noise that makes the edge wobble and
+  varies darkness and hue inside the shadow. Overrides: `shadowdark` (extra darkness,
+  0-1), `shadowtint` and `shadowtint2` (the hue and the hue the noise drifts to, hex
+  colors without `#`), `shadowtintstrength` (saturation, 0-1), `shadowblur` (penumbra
+  radius at contact, meters), `shadowspread` (radius gained per meter to the caster),
+  `shadowblurmax` (largest radius, meters), `shadowwrap` (how far past the terminator a
+  face starts to shade, as a cosine), `shadowedge` (edge displacement, meters),
+  `shadownoise` (interior variation, 0-1), `shadownoisescale` (noise feature size,
+  meters) and `shadowseed`.
+- **Relief in the shader preview.** A scene project's materials are computed per pixel,
+  and their relief normal comes from the height at the pixel and at the surface points
+  one pixel across and one pixel down (two extra evaluations of only the fields the
+  height reaches), not from screen derivatives of the height, which a GPU shares within
+  each 2x2 pixel block and so step in blocks. The extra height code about doubles the
+  first compile of a scene's programs on a real GPU; `?relief=quad` keeps the cheaper
+  derivative relief.
 ## TypeScript recipes
 
 Materials can also be written as `.material.ts` files: strict TypeScript against a

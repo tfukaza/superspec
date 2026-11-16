@@ -87,12 +87,16 @@ const sourceIds = new Map<string, number>();
 /**
  * A standard material whose channels a MaterialSpec program computes per pixel instead of reading
  * baked maps. `shared` holds the material's parameter, seed and image uniforms, so one update
- * reaches every mesh that shows it. Relief becomes a normal from the height's screen derivatives.
+ * reaches every mesh that shows it. Relief becomes a normal from the height's differences to the
+ * neighbouring pixels' surface points.
  */
 export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
   const shader = shading.shader;
   const features = featureTexture(mesh.features);
+  // The engine emits a height-only entry point when the program has a height output. `?relief=quad`
+  // keeps the cheaper screen-derivative relief, which steps in 2x2 pixel blocks but compiles in half the time.
+  const relief = shader.source.includes("void ms_evaluate_height()") && !new URLSearchParams(globalThis.location?.search ?? "").has("relief", "quad");
   const objectFromWorld = new THREE.Matrix4();
   if (mesh.objectToWorld) objectFromWorld.fromArray(mesh.objectToWorld).invert();
   else objectFromWorld.makeTranslation(-mesh.boundsMin[0], -mesh.boundsMin[1], -mesh.boundsMin[2]);
@@ -104,6 +108,7 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     ms_bounds_max: { value: new THREE.Vector3(...(mesh.boundsMax as [number, number, number])) },
     msObjectFromWorld: { value: objectFromWorld },
     msMapping: { value: ["uv", "object", "world"].indexOf(shading.mapping) },
+    msReliefSamples: { value: 2 },
   };
   material.addEventListener("dispose", () => features.dispose());
   // Live operations read the program's fields directly; they are installed first so the program
@@ -129,33 +134,52 @@ varying vec3 msNormal;
 varying vec2 msUv;
 uniform mat4 msObjectFromWorld;
 uniform int msMapping;
-${shader.source}`)
+uniform int msReliefSamples;
+${shader.source}
+// The height one pixel across and one pixel down on the surface, minus the height here.
+float msHeightAcross = 0.0, msHeightDown = 0.0;
+// Places the program's inputs at a point of the surface; the normal and footprints stay the pixel's.
+void msPlace(vec3 world, vec2 uv) {
+  ms_world = world;
+  ms_object = (msObjectFromWorld * vec4(world, 1.0)).xyz;
+  ms_uv = uv;
+  vec3 at = msMapping == 2 ? ms_world : ms_object;
+  vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * ms_normal : ms_normal);
+  ms_surface = msMapping == 0 ? uv : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
+}`)
       .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>
-  ms_world = msWorld;
-  ms_object = (msObjectFromWorld * vec4(msWorld, 1.0)).xyz;
   ms_normal = normalize(msNormal);
-  ms_uv = msUv;
-  {
-    vec3 at = msMapping == 2 ? ms_world : ms_object;
-    vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * ms_normal : ms_normal);
-    ms_surface = msMapping == 0 ? msUv : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
-  }
   ms_footprint = max(length(dFdx(msWorld)), length(dFdy(msWorld)));
   ms_uv_footprint = max(length(dFdx(msUv)), length(dFdy(msUv)));
+${relief ? `  // Screen derivatives of a computed value are shared by a 2x2 pixel block, so the relief would step in
+  // blocks; the height is evaluated at the neighbouring surface points instead. These run first: they
+  // overwrite the program's fields, which the full evaluation below then sets for this pixel.
+  {
+    vec3 worldAcross = dFdx(msWorld), worldDown = dFdy(msWorld);
+    vec2 uvAcross = dFdx(msUv), uvDown = dFdy(msUv);
+    // A loop whose count the compiler cannot see, so the height code is compiled once, not twice.
+    for (int i = 0; i < msReliefSamples; i++) {
+      msPlace(msWorld + (i == 0 ? worldAcross : worldDown), msUv + (i == 0 ? uvAcross : uvDown));
+      ms_evaluate_height();
+      if (i == 0) msHeightAcross = ms_height; else msHeightDown = ms_height;
+    }
+  }
+` : ""}  msPlace(msWorld, msUv);
   ms_evaluate();
+${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHeightAcross = dFdx(ms_height); msHeightDown = dFdy(ms_height);"}
   diffuseColor = vec4(clamp(ms_base_color, 0.0, 1.0), clamp(ms_opacity, 0.0, 1.0));`)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(ms_roughness, 0.0, 1.0);")
       .replace("#include <metalnessmap_fragment>", "#include <metalnessmap_fragment>\n  metalnessFactor = clamp(ms_metalness, 0.0, 1.0);")
       .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n  totalEmissiveRadiance = ms_emissive;")
       .replace("#include <normal_fragment_maps>", `#include <normal_fragment_maps>
   {
-    // Relief: the height's gradient over the surface, from screen derivatives.
+    // Relief: the height's gradient over the surface, from its differences to the neighbouring pixels.
     vec3 flat_normal = ms_normal;
     vec3 across = dFdx(msWorld), down = dFdy(msWorld);
     vec3 r1 = cross(down, flat_normal), r2 = cross(flat_normal, across);
     float det = dot(across, r1);
     vec3 shaded = abs(det) > 1e-20
-      ? normalize(abs(det) * flat_normal - sign(det) * (dFdx(ms_height) * r1 + dFdy(ms_height) * r2)) : flat_normal;
+      ? normalize(abs(det) * flat_normal - sign(det) * (msHeightAcross * r1 + msHeightDown * r2)) : flat_normal;
     // receiverNormal turns the relief by the smallest rotation from the receiver normal to it.
     vec3 target = normalize(ms_receiver_normal);
     float cosine = dot(flat_normal, target);
@@ -164,8 +188,19 @@ ${shader.source}`)
       vec3 turned = cross(axis, shaded);
       shaded = normalize(shaded + turned + cross(axis, turned) / (1.0 + cosine));
     }
+    // normalOffset bends the result (bend_shaded in the engine): one that would face away from the
+    // receiver is held just above its horizon, and an offset that cancels the normal changes nothing.
     vec3 bent = shaded + ms_normal_offset;
-    if (dot(bent, bent) > 1e-12 && dot(bent, flat_normal) > 0.0) shaded = normalize(bent);
+    if (any(notEqual(ms_normal_offset, vec3(0.0))) && dot(bent, bent) > 1e-24) {
+      bent = normalize(bent);
+      float facing = dot(bent, flat_normal);
+      if (facing > 1e-6) shaded = bent;
+      else {
+        vec3 sideways = bent - facing * flat_normal;
+        float flat_length = length(sideways);
+        if (flat_length >= 1e-12) shaded = sideways * (sqrt(1.0 - 0.02 * 0.02) / flat_length) + 0.02 * flat_normal;
+      }
+    }
     normal = normalize((viewMatrix * vec4(shaded, 0.0)).xyz) * faceDirection;
   }`);
   };

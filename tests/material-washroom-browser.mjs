@@ -115,6 +115,14 @@ try {
   });
   if (draws) console.log(`Draw time (ms, finished on the GPU, 24 draws): ${JSON.stringify(draws)}`);
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
+  // CLOSEUP names a PNG of the tall wall seen close, for judging relief and texture detail.
+  if (process.env.CLOSEUP) {
+    const box = await page.locator("#viewport canvas").boundingBox();
+    await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.4);
+    for (let i = 0; i < 8; i++) { await page.mouse.wheel(0, -240); await waitForFrames(page, 2); }
+    await waitForFrames(page, 6);
+    await writeFile(process.env.CLOSEUP, await page.locator("#viewport canvas").screenshot());
+  }
   console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
 } finally {
   await browser?.close();

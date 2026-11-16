@@ -159,16 +159,25 @@ occluder service.
     *Prototype (Studio viewer, `browser/renderer/shadow-style.ts`,
     `?shadowstyle=illustration`):* one module patches a standard material where three.js
     applies the directional shadow, and composes with the live-operation and per-pixel
-    shader patches and the GPU preview swaps. Settled: a 16-tap PCF kernel on the existing
-    depth-compare map with a penumbra radius in meters (VSM was not needed); a fixed
-    per-texel rotation instead of a screen-space dither; procedural two-octave value noise
-    in the light's shadow-map plane in meters (a gobo: world-stable, no texture unit) that
-    displaces the lookup (edge) and lifts the interior in patches (mottle); a color factor
-    `mix(tint * strength, 1, s)` on the light's color, so lit areas and ambient light are
-    untouched; every parameter a uniform shared by all styled materials; the styled term
-    exposed as the GLSL global `msShadowTerm`. Because the viewer's sun is bright, a tint
-    strength of about 0.06 already reads blue, and a penumbra radius beyond about 3 cm
-    with strong mottle starts to dissolve small shadows. Remaining: the portable contract
+    shader patches and the GPU preview swaps. Settled: the shadow is dark and colored by a
+    multiply on the final shaded color (everything but emission), `mix(shade, 1, s)`, so
+    ambient and environment light in the shadow are colored too and lit areas are
+    untouched; adding tinted light back on the light's color, the first attempt, lightened
+    shadows under the viewer's bright sun. `s` is the cast shadow times a soft facing term,
+    so faces turned from the light share the shade without a terminator line. The penumbra
+    is contact-hardening on the existing depth-compare map: a comparison sampler returns no
+    depth, so the mean occluder distance is integrated from comparisons at four depths in
+    front of the receiver over an 8-tap search disk, and sets the radius of a 32-tap
+    kernel between a contact radius and a maximum (no second texture unit, no VSM). Wide
+    kernels compare against the receiver's own plane (from the shadow coordinate's
+    derivatives); without that a slanted receiver shadows itself. A fixed per-texel
+    rotation instead of a screen-space dither (visible as fine grain in wide penumbras);
+    procedural two-octave value noise in the light's shadow-map plane in meters (a gobo:
+    world-stable, no texture unit) displaces the lookup (edge) and varies darkness and hue
+    inside the shadow, only ever darkening; every parameter a uniform shared by all styled
+    materials; the styled term exposed as the GLSL global `msShadowTerm`. A maximum
+    penumbra beyond about 0.4 m dissolves the washroom's longer shadows. Remaining: the
+    portable contract
     (a scene-lighting record or `LiveOperation` for the style and for reading the shadow
     term as a mask), the game runtime using the same module, more than one shadowed light,
     non-PCF shadow types (they keep plain shadows), and the baked variant (item 27).
