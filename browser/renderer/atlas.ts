@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { MaterialShading } from "./shade.ts";
+import type { MaterialShading, ProgramShader } from "./shade.ts";
 import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
 
 /**
@@ -171,51 +171,146 @@ export interface AtlasProgramLayout {
   unsupported?: string;
 }
 
+/** What a live argument is to a bake, as the engine classifies it (`LiveArgument` in `program/glsl.rs`). */
+type LiveClass = { constant: number } | { parameters: string[]; glsl: string } | { varying: string };
+
 const CONSTANT = /^\(?\s*-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?\s*\)?$/;
 /** What an expression may call and still be a function of its arguments alone. */
 const PURE = new Set(["mix", "clamp", "min", "max", "pow", "sqrt", "abs", "smoothstep", "step", "floor", "fract", "sign", "exp", "log", "sin", "cos", "float"]);
 
+/** What the source assigns a field: the shader assigns every field once (in each of its forms), as `name = expression;`. */
+function assignedIn(source: string, symbol: string): string | undefined {
+  if (!/^\w+$/.test(symbol)) return undefined;
+  const found = new Set([...source.matchAll(new RegExp(`\\b${symbol}\\s*=(?!=)\\s*([^;]+);`, "g"))].map(match => match[1].trim()));
+  return found.size === 1 ? [...found][0] : undefined;
+}
+
+/**
+ * The field a field only repeats (`ms_f20 = ms_f7;`), through any such chain, or the field itself. Arguments that
+ * are one value then share one texture channel. (The record's classes name each argument's own field, so this is still
+ * read from the source; an engine that names the repeated field in `varying` makes it a no-op.)
+ */
+function repeatedField(source: string, symbol: string): string {
+  let value = assignedIn(source, symbol);
+  for (let depth = 0; depth < 8 && value !== undefined && /^ms_f\d+$/.test(value) && assignedIn(source, value) !== undefined; depth++) { symbol = value; value = assignedIn(source, symbol); }
+  return symbol;
+}
+
+/**
+ * The classes of an operation's live arguments for a shader record that does not state them (an engine older than
+ * `live[].classes`), read from the source: the shader assigns every field once, as `name = expression;`, and what a
+ * field is assigned says whether it varies.
+ */
+function sourceLiveClasses(shader: ProgramShader, operation: ProgramShader["live"][number]): Record<string, LiveClass> {
+  const source = shader.source;
+  const assigned = (symbol: string) => assignedIn(source, symbol);
+  const scalars = new Set([...source.matchAll(/uniform\s+float\s+(\w+)\s*;/g)].map(match => match[1]));
+  const parameters = new Set(shader.parameters.map(parameter => parameter.uniform));
+  return Object.fromEntries(Object.entries(operation.arguments).map(([name, expression]): [string, LiveClass] => {
+    const symbol = repeatedField(source, expression.trim()), value = assigned(symbol);
+    const text = value ?? symbol;
+    if (CONSTANT.test(text)) return [name, { constant: Number(text.replace(/[()\s]/g, "")) }];
+    // Computed from scalar parameters and constants alone: the material's shader evaluates it from the parameters' uniforms.
+    const names = [...text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)].map(match => match[0]);
+    if (value !== undefined && names.every(id => PURE.has(id) || (parameters.has(id) && scalars.has(id)))) {
+      return [name, { parameters: [...new Set(names.filter(id => parameters.has(id)))], glsl: text }];
+    }
+    return [name, { varying: symbol }];
+  }));
+}
+
 /** Lays out the evaluate pass of `shading`: the textures it writes and how its live renderer arguments reach a material. */
 export function programLayout(shading: MaterialShading): AtlasProgramLayout {
-  const { outputs, source } = shading.shader;
+  const shader = shading.shader;
+  // A shader record is laid out once: every mesh of its material asks.
+  let layout = layouts.get(shader);
+  if (!layout) layouts.set(shader, layout = layoutOf(shader));
+  return layout;
+}
+
+const layouts = new WeakMap<ProgramShader, AtlasProgramLayout>();
+
+function layoutOf(shader: ProgramShader): AtlasProgramLayout {
+  const { outputs } = shader;
   const orient = outputs.includes("receiver_normal");
   const attachments: AtlasAttachment[] = ["base", "properties", "height"];
   if (outputs.includes("emissive")) attachments.push("emissive");
   if (outputs.includes("normal_offset")) attachments.push("offset");
-  // The engine names each live argument by a field of the program. What the field is assigned says whether it varies:
-  // the shader assigns every field once, as `name = expression;`.
-  const assigned = (symbol: string): string | undefined => {
-    if (!/^\w+$/.test(symbol)) return undefined;
-    const found = new Set([...source.matchAll(new RegExp(`\\b${symbol}\\s*=(?!=)\\s*([^;]+);`, "g"))].map(match => match[1].trim()));
-    return found.size === 1 ? [...found][0] : undefined;
-  };
-  const scalars = new Map([...source.matchAll(/uniform\s+(float|bool|int)\s+(\w+)\s*;/g)].map(match => [match[2], match[1]]));
-  const parameters = new Set(shading.shader.parameters.map(parameter => parameter.uniform));
+  // The GLSL type of each uniform, as the record declares them (a parameter a class names is a scalar: a float).
+  const types = new Map((shader.uniforms ?? []).map(uniform => [uniform.name, uniform.type]));
   const liveChannels: string[] = [];
   const used = new Map<string, string>();
-  const liveOperations: AtlasLiveOperation[] = shading.shader.live.map(operation => ({ id: operation.id,
-    arguments: Object.fromEntries(Object.entries(operation.arguments).map(([name, expression]) => {
-      // A field that only repeats another is that field.
-      let symbol = expression.trim(), value = assigned(symbol);
-      for (let depth = 0; depth < 8 && value !== undefined && /^ms_f\d+$/.test(value) && assigned(value) !== undefined; depth++) { symbol = value; value = assigned(symbol); }
-      const text = value ?? symbol;
-      if (CONSTANT.test(text)) return [name, { value: Number(text.replace(/[()\s]/g, "")) }];
-      // Computed from scalar parameters and constants alone: the material's shader evaluates it from the parameters' uniforms.
-      const names = [...text.matchAll(/(?<![\w.])[A-Za-z_]\w*/g)].map(match => match[0]);
-      if (value !== undefined && names.every(id => PURE.has(id) || (parameters.has(id) && scalars.get(id) === "float"))) {
-        for (const id of names) if (parameters.has(id)) used.set(id, scalars.get(id)!);
-        return [name, { glsl: text }];
+  const liveOperations: AtlasLiveOperation[] = shader.live.map(operation => {
+    // The engine says what each argument is; a record without that (or without it for some argument) is read from its source.
+    const stated = operation.classes;
+    const classes = stated && Object.keys(operation.arguments).every(name => stated[name]) ? stated : sourceLiveClasses(shader, operation);
+    return { id: operation.id, arguments: Object.fromEntries(Object.keys(operation.arguments).map(name => {
+      const found = classes[name];
+      if ("constant" in found) return [name, { value: found.constant }];
+      // Computed from scalar parameters alone: the material's shader evaluates it from the parameters' uniforms.
+      if ("glsl" in found) {
+        for (const uniform of found.parameters) used.set(uniform, types.get(uniform) ?? "float");
+        return [name, { glsl: found.glsl }];
       }
+      const symbol = repeatedField(shader.source, found.varying);
       let channel = liveChannels.indexOf(symbol);
       if (channel < 0) channel = liveChannels.push(symbol) - 1;
       return [name, { texture: `gpu-live-${Math.floor(channel / 4)}`, channel: channel % 4, scale: 1, offset: 0 }];
-    })) }));
+    })) };
+  });
   const liveTextures = Math.ceil(liveChannels.length / 4);
   for (let index = 0; index < liveTextures; index++) attachments.push(`live${index}`);
   const liveParameters = [...used].map(([uniform, type]) => ({ uniform, type }));
   const layout: AtlasProgramLayout = { key: `${attachments.join("+")}${orient ? ":orient" : ""}:${fnv(JSON.stringify([liveChannels, liveOperations]))}`,
     attachments, orient, liveChannels, liveOperations, liveParameters };
   return layout;
+}
+
+/** The outputs each texture of the evaluate pass holds (see `atlasFragment`); the live textures hold the live fields. */
+const ATTACHMENT_OUTPUTS: Record<string, string[]> = {
+  base: ["base_color"], properties: ["roughness", "metalness"], height: ["height", "receiver_normal"], emissive: ["emissive"], offset: ["normal_offset"],
+};
+
+/**
+ * The uniforms of the program (parameters, named seeds, images, CPU fields) that each texture of its evaluate pass
+ * reads, by attachment; an attachment missing from the answer may read any of them. A bake keys each texture by the
+ * values of what it reads (`GpuBaker.atlasNodes`), so a changed parameter draws only the textures it reaches. THE ONE
+ * PLACE that says what an output depends on:
+ *
+ * - `shader.reads`, per-output dependencies stated by the engine, when it emits them (it does not yet);
+ * - else the record's entry points (`shader.entries`): each is the code of some outputs alone, helpers expanded, so
+ *   the uniforms its text names are the ones those outputs can read. (`ms_evaluate_height` is part of the shader's
+ *   source and carries no text; the relief entry covers the height texture.)
+ * - else nothing: every texture is keyed by every value.
+ *
+ * Receiver inputs (features, bounds, gravity, mapping) are not program uniforms and are in every texture's key.
+ */
+export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayout): Partial<Record<AtlasAttachment, ReadonlySet<string>>> {
+  const own = [...shader.parameters, ...shader.seeds, ...shader.images, ...(shader.cpuFields ?? [])].map(entry => entry.uniform);
+  const reads: Partial<Record<AtlasAttachment, ReadonlySet<string>>> = {};
+  const stated = shader.reads;
+  // The uniforms an entry point's text names, found once per entry.
+  const named = new Map<string, Set<string>>();
+  const namedBy = (entry: NonNullable<ProgramShader["entries"]>[number]): Set<string> => {
+    let found = named.get(entry.function);
+    if (!found) {
+      const words = new Set(entry.source.match(/[A-Za-z_]\w*/g) ?? []);
+      named.set(entry.function, found = new Set(own.filter(uniform => words.has(uniform))));
+    }
+    return found;
+  };
+  for (const attachment of layout.attachments) {
+    const live = attachment.startsWith("live");
+    const outputs = live ? ["live"] : ATTACHMENT_OUTPUTS[attachment];
+    if (stated) {
+      // An output the program does not set reads nothing; one the engine does not list may read anything.
+      if (outputs.every(output => stated[output] || (!live && !shader.outputs.includes(output)))) reads[attachment] = new Set(outputs.flatMap(output => stated[output] ?? []));
+      continue;
+    }
+    const entry = shader.entries?.find(entry => entry.source && (live ? entry.live : outputs.every(output => entry.outputs.includes(output))));
+    if (entry) reads[attachment] = namedBy(entry);
+  }
+  return reads;
 }
 
 function fnv(text: string): string {

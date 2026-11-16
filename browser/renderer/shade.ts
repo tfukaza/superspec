@@ -8,8 +8,28 @@ export interface ProgramShader {
   seeds: { name: string; uniform: string }[];
   images: { name: string; uniform: string; linear: boolean }[];
   outputs: string[];
-  live: { id: string; arguments: Record<string, string> }[];
+  /**
+   * `classes` says what each argument is to a host that bakes: a number, an expression of scalar parameter uniforms
+   * alone, or a value that varies over the surface (the symbol of `arguments`).
+   */
+  live: { id: string; arguments: Record<string, string>; classes?: Record<string, { constant: number } | { parameters: string[]; glsl: string } | { varying: string }> }[];
   features: boolean;
+  /** An identity of `source`: equal sources have equal identities. */
+  id?: string;
+  /** Every uniform `source` declares, as GLSL declares it, and how many of them are samplers. */
+  uniforms?: { name: string; type: string }[];
+  samplers?: number;
+  /**
+   * Entry points besides `ms_evaluate()`, each for some of the outputs (and the live fields when `live`). A program
+   * that calls one appends its `source` to the shader's (empty for `ms_evaluate_height`, which the shader's holds).
+   */
+  entries?: { function: string; outputs: string[]; live: boolean; source: string }[];
+  /**
+   * NOT EMITTED YET: the uniforms each output reads (through everything upstream of it), by output name, with `live`
+   * for the fields live renderer operations read. When the engine states them, a bake's textures are keyed by them
+   * (`attachmentReads` in atlas.ts is the one place that reads this); until then that function derives them from `entries`.
+   */
+  reads?: Record<string, string[]>;
   /** Present on a hybrid plan: fields the CPU bakes, read by the shader from float textures. */
   cpuFields?: CpuField[];
   /** Outputs that read a CPU field. */
@@ -84,18 +104,31 @@ function featureTexture(features: number[]): THREE.DataTexture {
   return texture;
 }
 
-/** Program cache identities by shader source, most recently used last; a source that left the list gets a new identity. */
+/**
+ * What names a shader's source in caches of compiled programs and in bake keys: the engine's identity of it
+ * (`ProgramShader.id`), or the source itself from an engine that states none. Equal sources have equal names.
+ */
+export function shaderIdentity(shader: Pick<ProgramShader, "source" | "id">): string {
+  return shader.id ? `#${shader.id}` : shader.source;
+}
+
+/**
+ * Program cache identities by shader source, for sources the engine gives no identity: most recently used last; a
+ * source that left the list gets a new identity.
+ */
 const sourceIds = new Map<string, number>();
 let nextSourceId = 0;
 const KEPT_SOURCE_IDS = 64;
 
-function sourceId(source: string): number {
+function sourceId(shader: ProgramShader): string {
+  if (shader.id) return `#${shader.id}`;
+  const source = shader.source;
   let id = sourceIds.get(source);
   if (id === undefined) id = nextSourceId++;
   else sourceIds.delete(source);
   sourceIds.set(source, id);
   while (sourceIds.size > KEPT_SOURCE_IDS) sourceIds.delete(sourceIds.keys().next().value!);
-  return id;
+  return String(id);
 }
 
 /** Whether a program's relief can be evaluated per pixel: the engine emits a height-only entry point when it has a height output. */
@@ -110,9 +143,14 @@ export function hasPixelRelief(shading: MaterialShading): boolean {
  * neighbouring pixels' surface points (`"pixel"`), or from the height's screen derivatives
  * (`"quad"`): those step in 2x2 pixel blocks, but the program compiles in about half the time, so
  * a viewer shows it first and swaps to the per-pixel program once that is ready.
+ *
+ * `noise` chooses the form of the program the engine emits (see `glsl.rs`): `"looped"` evaluates
+ * the lattice noises in loops, which compiles several times faster and draws several times
+ * slower when a program has many; `"inline"` has each noise where it is used. Both draw the same
+ * picture, so a viewer shows the looped form first and compiles the inline one behind it.
  */
 export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms,
-  mode: "pixel" | "quad" = "pixel"): THREE.MeshStandardMaterial {
+  mode: "pixel" | "quad" = "pixel", noise: "looped" | "inline" = "looped"): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
   const shader = shading.shader;
   const features = featureTexture(mesh.features);
@@ -155,7 +193,7 @@ varying vec2 msUv;
 uniform mat4 msObjectFromWorld;
 uniform int msMapping;
 uniform int msReliefSamples;
-${shader.source}
+${noise === "inline" ? "#define MS_INLINE_NOISE\n" : ""}${shader.source}
 // The height one pixel across and one pixel down on the surface, minus the height here.
 float msHeightAcross = 0.0, msHeightDown = 0.0;
 // Places the program's inputs at a point of the surface; the normal and footprints stay the pixel's.
@@ -224,9 +262,9 @@ ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHe
     normal = normalize((viewMatrix * vec4(shaded, 0.0)).xyz) * faceDirection;
   }`);
   };
-  const id = sourceId(shader.source);
+  const id = sourceId(shader);
   const liveKey = material.customProgramCacheKey();
-  material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${liveKey}`;
+  material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${noise}:${liveKey}`;
   material.userData.liveOperations = live;
   // The program's inputs for this mesh (the shared ones and the receiver's own), for a bake of the same program.
   material.userData.programUniforms = uniforms;

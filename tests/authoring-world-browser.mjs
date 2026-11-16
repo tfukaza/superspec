@@ -64,7 +64,8 @@ fn unused(p:vec2)->vec3 = sample_color("superspec-material:rust.png",p);
 };
 const projectPath = resolve(output, 'world.project.json');
 await writeFile(projectPath, JSON.stringify({ ...project, assets: { 'grime.png': grime.toString('base64') } }, null, 2));
-const { stdout: native } = await promisify(execFile)(studio, ['glb', projectPath], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+// PNG textures on both sides: the native exporter stores KTX2 unless asked, and the session's `export_project` stores PNG.
+const { stdout: native } = await promisify(execFile)(studio, ['glb', projectPath, '--textures', 'png'], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
 await writeFile(resolve(output, 'native.glb'), native);
 
 const expectedCatalog = ['metal.png', 'roofing.png', 'sheet.png', 'timber.png'].map(name => `superspec-material:${name}`).sort();

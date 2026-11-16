@@ -12,6 +12,19 @@ interface Entry {
   users: number;
 }
 
+/**
+ * Disposes a texture for good. three.js uploads a disposed texture again, into a new GPU texture that nothing frees,
+ * whenever a program is still handed it, and its renderer does hand stale textures on: the depth material its shadow
+ * pass shares between meshes keeps the last `map` it was given in the uniform when the next mesh has none
+ * (`WebGLShadowMap`'s `getDepthMaterial`; `refreshUniformsCommon` sets the uniform only for a map), so the next shadow
+ * map drawn after a textured scene was replaced uploaded that scene's last image once more, for good. A texture at
+ * version 0 is never uploaded (`WebGLTextures.setTexture2D`): a stale reference then binds nothing.
+ */
+function retire(texture: THREE.Texture): void {
+  texture.dispose();
+  texture.version = 0;
+}
+
 /** Shares immutable decoded images across active scenes and unpublished replacements. */
 export class TexturePool {
   private readonly entries = new Map<string, Entry>();
@@ -73,7 +86,7 @@ export class TexturePool {
       const entry = this.entries.get(key);
       if (!entry || --entry.users > 0) continue;
       this.entries.delete(key);
-      void entry.texture.then(texture => texture.dispose(), () => {});
+      void entry.texture.then(retire, () => {});
     }
     leases.clear();
   }
@@ -82,7 +95,7 @@ export class TexturePool {
   dispose(): void {
     this.closed = true;
     for (const entry of this.entries.values()) {
-      void entry.texture.then(texture => texture.dispose(), () => {});
+      void entry.texture.then(retire, () => {});
     }
     this.entries.clear();
   }

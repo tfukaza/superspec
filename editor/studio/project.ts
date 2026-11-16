@@ -98,7 +98,6 @@ function checkDocument(value: SerializedProject, kind: StudioProject["kind"]): v
     || !Object.values(value.modules).every(source => typeof source === "string")
     || !Object.hasOwn(value.modules, value.entry) || !value.parameters || typeof value.parameters !== "object"
     || !Number.isInteger(value.seed) || !Number.isInteger(value.resolution) || value.resolution < 16
-    || value.resolution > (value.profile === "production" ? 2048 : 512)
     || (value.profile !== undefined && !["preview", "production"].includes(value.profile))
     || (value.texelDensity !== undefined && !(Number.isFinite(value.texelDensity) && value.texelDensity >= 1 && value.texelDensity <= 100000))
     || !["uv", "object", "world"].includes(value.mapping) || typeof value.inspection !== "string"
@@ -107,6 +106,11 @@ function checkDocument(value: SerializedProject, kind: StudioProject["kind"]): v
     || !value.target || !["mesh", "binding"].includes(value.target.scope) || typeof value.target.enabled !== "boolean"
     || !value.assets || typeof value.assets !== "object" || Array.isArray(value.assets)) {
     throw new Error("This is not a supported version 1 or 2 studio project.");
+  }
+  // Said on its own: a project that only asks for too many texels is otherwise a valid one.
+  const limit = value.profile === "production" ? 2048 : 512;
+  if (value.resolution > limit) {
+    throw new Error(`Project resolution ${value.resolution} is above the ${value.profile ?? "preview"} profile's ${limit} texels${value.profile === "production" ? "" : ' (the "production" profile allows 2048)'}.`);
   }
   if (Object.keys(value.assets).length > MAX_COMPANIONS || Object.keys(value.modules).length > 128) throw new Error("Project contains too many files.");
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { atlasLayouts, bakeGeometry, displayGeometry, programLayout, type ProjectLayouts } from "../../browser/renderer/atlas.ts";
+import { atlasLayouts, attachmentReads, bakeGeometry, displayGeometry, programLayout, type ProjectLayouts } from "../../browser/renderer/atlas.ts";
 import type { MaterialShading } from "../../browser/renderer/shade.ts";
 
 /** One triangle record as `authoring/layout.rs` writes it (38 numbers). */
@@ -69,6 +69,62 @@ function shading(live: Record<string, string>, body: string, outputs = ["base_co
     seedValues: [], parameters: [], mapping: "world",
   };
 }
+
+test("the engine's classes of live arguments lay out the pass without reading the source", () => {
+  // The source says nothing a layout could be read from: only the record's classes and uniform declarations are used.
+  const stated = shading({ spacing: "ms_f1", softness: "ms_f2", mask: "ms_f3", lift: "ms_f4", wide: "ms_f5" }, "");
+  stated.shader.source = "void ms_evaluate() {}";
+  stated.shader.uniforms = [{ name: "ms_p0", type: "float" }, { name: "ms_p1", type: "vec3" }];
+  stated.shader.live[0].classes = { spacing: { constant: 0.25 }, softness: { parameters: ["ms_p0"], glsl: "mix(0.04, 0.48, ms_p0)" },
+    mask: { varying: "ms_f3" }, lift: { varying: "ms_f3" }, wide: { varying: "ms_f5" } };
+  const layout = programLayout(stated);
+  const args = layout.liveOperations[0].arguments;
+  assert.deepEqual(args.spacing, { value: 0.25 });
+  assert.deepEqual(args.softness, { glsl: "mix(0.04, 0.48, ms_p0)" });
+  assert.deepEqual(layout.liveParameters, [{ uniform: "ms_p0", type: "float" }]);
+  assert.deepEqual(layout.liveChannels, ["ms_f3", "ms_f5"], "arguments that are one value share its channel");
+  assert.deepEqual(args.lift, args.mask);
+  assert.deepEqual(args.wide, { texture: "gpu-live-0", channel: 1, scale: 1, offset: 0 });
+  assert.deepEqual(layout.attachments, ["base", "properties", "height", "live0"]);
+  // The same record read from its source (no classes) gives the same layout, key included.
+  const read = shading({ spacing: "ms_f1", softness: "ms_f2", mask: "ms_f3", lift: "ms_f4", wide: "ms_f5" },
+    "  ms_f1 = 0.25;\n  ms_f2 = mix(0.04, 0.48, ms_p0);\n  ms_f3 = ms_noise(ms_world);\n  ms_f4 = ms_f3;\n  ms_f5 = (2.0 * ms_f3);");
+  assert.deepEqual(programLayout(read), layout);
+  // Classes that miss an argument are not trusted for the operation.
+  const partial = structuredClone(stated);
+  delete partial.shader.live[0].classes!.wide;
+  assert.deepEqual(programLayout(partial).liveChannels, ["ms_f1", "ms_f2", "ms_f3", "ms_f4", "ms_f5"], "read from a source that assigns nothing: every argument varies");
+});
+
+test("each texture of the evaluate pass is said to read the uniforms its entry point names", () => {
+  const program = shading({ mask: "ms_f3" }, "", ["base_color", "roughness", "height", "emissive"]);
+  program.shader.seeds = [{ name: "grain", uniform: "ms_seed0" }];
+  program.shader.images = [{ name: "decal", uniform: "ms_image0", linear: false }];
+  program.shader.live[0].classes = { mask: { varying: "ms_f3" } };
+  const layout = programLayout(program);
+  assert.deepEqual(layout.attachments, ["base", "properties", "height", "emissive", "live0"]);
+  // Without entry points (or stated reads) nothing is known: every texture may read anything.
+  assert.deepEqual(attachmentReads(program.shader, layout), {});
+  program.shader.entries = [
+    { function: "ms_evaluate_height", outputs: ["height"], live: false, source: "" },
+    { function: "ms_evaluate_base", outputs: ["base_color", "opacity"], live: false, source: "void ms_evaluate_base() { ms_f1 = ms_p1.x * texture(ms_image0, ms_uv).r; ms_base_color = vec3(ms_f1); }" },
+    { function: "ms_evaluate_properties", outputs: ["roughness", "metalness"], live: false, source: "void ms_evaluate_properties() { ms_roughness = ms_p0; }" },
+    { function: "ms_evaluate_relief", outputs: ["height", "receiver_normal"], live: false, source: "void ms_evaluate_relief() { ms_height = ms_noise(ms_world, ms_seed0); }" },
+    { function: "ms_evaluate_live", outputs: [], live: true, source: "void ms_evaluate_live() { ms_f3 = ms_p0 * ms_noise(ms_world, ms_seed0); }" },
+  ];
+  const sets = (reads: ReturnType<typeof attachmentReads>) => Object.fromEntries(Object.entries(reads).map(([name, uniforms]) => [name, [...uniforms!].sort()]));
+  assert.deepEqual(sets(attachmentReads(program.shader, layout)), {
+    base: ["ms_image0", "ms_p1"], properties: ["ms_p0"], height: ["ms_seed0"], live0: ["ms_p0", "ms_seed0"],
+  }, "the emissive texture has no entry point of its own here, so it stays keyed by everything; the height reads the relief entry, not the empty one");
+  // A name that only begins like a uniform is not that uniform.
+  program.shader.entries[2].source = "void ms_evaluate_properties() { ms_roughness = ms_p10; }";
+  assert.deepEqual([...attachmentReads(program.shader, layout).properties!], []);
+  // Reads the engine states take the place of the entry points' text; an output it does not list may read anything,
+  // and one the program does not set reads nothing.
+  program.shader.reads = { base_color: ["ms_p1"], roughness: ["ms_p0"], height: [], emissive: ["ms_p1", "ms_seed0"] };
+  assert.deepEqual(sets(attachmentReads(program.shader, layout)), { base: ["ms_p1"], properties: ["ms_p0"], height: [], emissive: ["ms_p1", "ms_seed0"] },
+    "the live fields are not listed, so the live texture is keyed by everything");
+});
 
 test("live arguments cost a texture channel only when they vary over the surface", () => {
   const layout = programLayout(shading(

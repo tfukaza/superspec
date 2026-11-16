@@ -1,7 +1,7 @@
 /** Real Three.js material realization and asynchronous image ownership. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile, copyFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, copyFile, cp } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolve, extname, sep } from 'node:path';
@@ -38,6 +38,8 @@ const plain = [...execFileSync(executable, ['scene', 'tests/fixtures/aml/rust-st
 let building;
 if (['all','buildings'].includes(scope)) {
   for (const file of ['superspec_wasm.js','superspec_wasm_bg.wasm']) await copyFile(resolve('generated/wasm',file),resolve(root,file));
+  // The module imports its snippets (the texture encoder's glue) from beside itself.
+  await cp(resolve('generated/wasm/snippets'),resolve(root,'snippets'),{recursive:true});
   const cases=[];
   for(const name of ['dressing','transformed','polygon','shops-open','shops-hole','shops-hidden','multiple-buildings','multiple-buildings-materials','base-wall','base-wall-transformed']) {
     const stem=name.startsWith('multiple-')?`rust-${name}`:`rust-building-${name}`;
@@ -600,7 +602,7 @@ try {
   for (const trade of ['grocer','greengrocer','hardware','herbalist','roast']) if(['all',trade].includes(scope)) {
     assert.equal(await applyFixture(trade+'_scene_packet'),true);
     const state=await snapshot();
-    const expectedSlots={grocer:['shop-timber','grocer-props','snack-packet'],greengrocer:['shop-timber','grocer-props'],hardware:['paint','metal','grocer-props'],herbalist:['shop-timber','paint','pane'],roast:['brushed-metal','restaurant-food','restaurant-tiles','display-glass']}[trade];
+    const expectedSlots={grocer:['shop-timber','grocer-props','snack-packet'],greengrocer:['shop-timber','grocer-props'],hardware:['paint','metal','grocer-props'],herbalist:['shop-timber','paint','pane'],roast:['kitchen-metal','restaurant-food','restaurant-tiles','display-glass']}[trade];
     for(const slot of expectedSlots)assert.ok(Object.keys(state.materials).some(name=>name.endsWith(':'+slot)));
     const props=Object.entries(state.materials).filter(([name])=>name.endsWith(':grocer-props'));
     for(const [,material] of props) {
@@ -609,22 +611,41 @@ try {
     }
     await page.evaluate(()=>window.driver.focus(undefined,[0.15,-1.4,0.8]));
     await waitForFrames(page);await page.screenshot({path:root+'/'+trade+'.png'});
-    await page.evaluate(trade=>window.driver.focus('host/$dressing/grocer:'+(trade==='grocer'?'snack-packet':trade==='roast'?'brushed-metal':'paint'),[0.3,-1.3,0.4]),trade);
+    await page.evaluate(trade=>window.driver.focus('host/$dressing/grocer:'+(trade==='grocer'?'snack-packet':trade==='roast'?'kitchen-metal':'paint'),[0.3,-1.3,0.4]),trade);
     await waitForFrames(page);await page.screenshot({path:root+'/'+(trade==='grocer'?'packet-strings':trade==='greengrocer'?'produce-crates':trade+'-detail')+'.png'});
     assert.equal(await apply(textured),true);
   }
+  // A decode can only be held when one happens: the viewer keeps the displayed scene's decoded images (its texture
+  // pool), so a scene whose images are on screen decodes nothing when it is applied again. Each gated scene therefore
+  // follows the untextured one, whose display released them.
   for (const fail of [false, true]) {
+    // Superseded while its image decodes: the obsolete scene is dropped whether the decode then succeeds or fails. A
+    // failure of a scene nobody waits for any more is not an error of the viewer (`RustScene.apply` answers false).
+    assert.equal(await apply(plain), true);
     await page.evaluate(bytes => window.driver.start(bytes), textured);
     await page.waitForFunction(() => window.driver.gated());
     assert.equal(await apply(plain), true);
     const latest = await snapshot();
     const result = await page.evaluate(fail => window.driver.release(fail), fail);
-    assert.deepEqual(result, { applied: false, error: fail });
+    assert.deepEqual(result, { applied: false, error: false });
     assert.deepEqual(await snapshot(), latest, 'obsolete decode must not replace the latest rendered scene');
     assert.equal(await apply(textured), true, 'textured edits recover after cancelled or failed decoding');
   }
+  {
+    // A late failure of the scene that is still wanted: the apply rejects, the scene on screen stays, and the image is
+    // decoded again (not answered from the failed attempt) the next time it is asked for.
+    assert.equal(await apply(plain), true);
+    const latest = await snapshot();
+    await page.evaluate(bytes => window.driver.start(bytes), textured);
+    await page.waitForFunction(() => window.driver.gated());
+    assert.deepEqual(await page.evaluate(() => window.driver.release(true)), { applied: false, error: true });
+    assert.deepEqual(await snapshot(), latest, 'a scene whose image fails to decode must not replace the rendered scene');
+    assert.equal(await apply(textured), true, 'the same scene applies once its image decodes');
+    assert.deepEqual((await snapshot()).materials.front.colorPixel, pixels.color);
+  }
   for (let i = 0; i < 12; i++) { await apply(i % 2 ? textured : plain); await waitForFrames(page); }
   assert.deepEqual((await snapshot()).memory, baseline.memory, 'repeated textured edits release replaced GPU resources');
+  assert.equal(await apply(plain), true);
   await page.evaluate(bytes => window.driver.start(bytes), textured);
   await page.waitForFunction(() => window.driver.gated());
   await page.evaluate(() => window.driver.close());

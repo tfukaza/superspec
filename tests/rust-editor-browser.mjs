@@ -7,6 +7,7 @@ import { resolve, extname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { launchBrowser, waitForFrames } from '../tools/browser.mjs';
 import { selectiveBakes } from './browser/selective-bakes.mjs';
+import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES } from '../browser/model/limits.ts';
 
 const root = resolve('generated/rust-editor');
 const output = resolve('generated/rust-architecture-acceptance');
@@ -117,7 +118,11 @@ try {
       window.fileReads.completed++;
       return bytes;
     };
-    window.restoreFileReads = () => { File.prototype.arrayBuffer = original; };
+    // A file may report a size of its own (`fileReads.sizes`, by name), so the limits are tested without allocating them.
+    const size = Object.getOwnPropertyDescriptor(Blob.prototype, 'size').get;
+    window.fileReads.sizes = {};
+    Object.defineProperty(File.prototype, 'size', { configurable: true, get() { return window.fileReads.sizes[this.name] ?? size.call(this); } });
+    window.restoreFileReads = () => { File.prototype.arrayBuffer = original; delete File.prototype.size; };
   });
   try {
     const originalMaterials = await readFile('tests/fixtures/aml/rust-materials.aml', 'utf8');
@@ -238,32 +243,42 @@ try {
     await ready();
 
     // A late invalid member must not partially replace the prior valid same-name asset.
-    await page.evaluate(() => {
+    // (The limits are the editor's own, `browser/model/limits.ts`; the files only report the sizes.)
+    await page.evaluate(limit => {
       window.fileReads.count = 0;
+      window.fileReads.sizes = { 'too-large.png': limit + 1 };
       const files = new DataTransfer();
       files.items.add(new File(['invalid replacement'], 'asymmetric-heightmap.png'));
-      files.items.add(new File([new Uint8Array(16 * 1024 * 1024 + 1)], 'too-large.png'));
+      files.items.add(new File(['x'], 'too-large.png'));
       const input = document.querySelector('#assets');
       input.files = files.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    }, MAX_FILE_BYTES);
     await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'error');
+    assert.match(await page.locator('#diagnostics').textContent(), /too-large\.png exceeds/);
     assert.equal(await page.evaluate(() => window.fileReads.count), 0, 'size preflight performs no reads');
     await page.locator('#restart').click();
     await ready();
-    await page.evaluate(() => {
+    await page.evaluate(({ file, total }) => {
       window.fileReads.count = 0;
+      // Each within the file limit, together above the total.
+      const count = Math.floor(total / file) + 1, each = Math.floor(total / count) + 1;
+      window.fileReads.sizes = Object.fromEntries(Array.from({ length: count }, (_, i) => [`large-${i}.png`, each]));
       const files = new DataTransfer();
-      const part = new Blob([new Uint8Array(16 * 1024 * 1024)]);
-      for (let i = 0; i < 9; i++) files.items.add(new File([part], `large-${i}.png`));
+      for (let i = 0; i < count; i++) files.items.add(new File(['x'], `large-${i}.png`));
       const input = document.querySelector('#assets');
       input.files = files.files;
       input.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    }, { file: MAX_FILE_BYTES, total: MAX_COMPANION_BYTES });
     await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'error');
+    assert.match(await page.locator('#diagnostics').textContent(), /Assets exceed/);
     assert.equal(await page.evaluate(() => window.fileReads.count), 0, 'aggregate preflight performs no reads');
-    await assetInput.setInputFiles(Array.from({ length: 257 }, (_, i) => ({ name: `small-${i}.png`, mimeType: 'image/png', buffer: Buffer.from('x') })));
+    await page.evaluate(() => { window.fileReads.sizes = {}; });
+    await page.locator('#restart').click();
+    await ready();
+    await assetInput.setInputFiles(Array.from({ length: MAX_COMPANIONS + 1 }, (_, i) => ({ name: `small-${i}.png`, mimeType: 'image/png', buffer: Buffer.from('x') })));
     await page.waitForFunction(() => document.querySelector('#status').dataset.state === 'error');
+    assert.match(await page.locator('#diagnostics').textContent(), /Assets exceed/);
     assert.equal(await page.evaluate(() => window.fileReads.count), 0, 'count preflight performs no reads');
     await page.locator('#restart').click();
     await ready();
@@ -407,7 +422,7 @@ try {
     }finally{worker.terminate();}
   },{sample,workerFile}),[true,true]);
   const imageBytes=Array.from(await readFile('tests/fixtures/aml/asymmetric-heightmap.png'));
-  const cacheRuns=await page.evaluate(async({workerFile,imageBytes})=>{
+  const cacheRuns=await page.evaluate(async({workerFile,imageBytes,companions})=>{
     let worker=new Worker(`/assets/${workerFile}`,{type:'module'});
     let revision=0;
     const source='<architecture version="1" id="cache"><material id="m" texture="image.png"/><box id="box" material="m" width="2" depth="1" height="1"/></architecture>';
@@ -431,19 +446,21 @@ try {
       const corrupt=bytes.slice();corrupt[20]^=1;
       const invalid=await run(source,{'image.png':corrupt});
       let partialError;
-      try {await run(source,{'image.png':bytes,oversized:new Uint8Array(16*1024*1024+1)});}catch(error){partialError=String(error);}
+      // One companion more than the budget allows (its byte limits are hundreds of megabytes; the count is cheap to exceed).
+      const excess=Object.fromEntries(Array.from({length:companions},(_,i)=>[`extra-${i}.bin`,new Uint8Array(1)]));
+      try {await run(source,{'image.png':bytes,...excess});}catch(error){partialError=String(error);}
       const afterPartial=await run(source,{});
       const recovery=await run(source,assets);
       worker.terminate();worker=new Worker(`/assets/${workerFile}`,{type:'module'});
       const restart=await run(source,assets);
       return {first,edit,missing,invalid,partialError,afterPartial,recovery,restart};
     }finally{worker.terminate();}
-  },{workerFile,imageBytes});
+  },{workerFile,imageBytes,companions:MAX_COMPANIONS});
   assert.equal(cacheRuns.first.stats.misses,1);assert.equal(cacheRuns.first.stats.hits,0);
   assert.equal(cacheRuns.edit.stats.misses,1);assert.equal(cacheRuns.edit.stats.hits,1);
   assert.equal(cacheRuns.edit.bounds[1][0],3);assert.equal(cacheRuns.first.bounds[1][0],2);
   assert.equal(cacheRuns.missing.success,false);assert.equal(cacheRuns.invalid.success,false);
-  assert.match(cacheRuns.partialError,/Asset byte\/count budget/);assert.equal(cacheRuns.afterPartial.success,false);
+  assert.match(cacheRuns.partialError,new RegExp(`More than ${MAX_COMPANIONS} files were supplied`));assert.equal(cacheRuns.afterPartial.success,false);
   assert.equal(cacheRuns.recovery.success,true);assert.equal(cacheRuns.recovery.stats.hits,2);
   assert.equal(cacheRuns.restart.success,true);assert.equal(cacheRuns.restart.stats.hits,0);assert.equal(cacheRuns.restart.stats.misses,1);
   await selectiveBakes(page, workerFile, executable, output);

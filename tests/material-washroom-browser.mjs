@@ -1,7 +1,8 @@
 /**
  * The MaterialSpec benchmark scene (tests/studio/washroom) in the built Material Studio: opens
  * the project through the production Wasm workers, checks every material landed on its meshes
- * and reports how long the scene took to load. RESOLUTION (default 256) sets the texture size;
+ * and reports how long the scene took to load. RESOLUTION (default 256) sets the texture size
+ * (above 512 the project is given the production profile, the only one that allows it);
  * SCREENSHOT names a PNG of the loaded viewport. LIGHTING names a JSON lighting record the project
  * then carries (see docs/plans/lighting-settings.md); without it the scene has the shipped look.
  */
@@ -31,6 +32,8 @@ try {
   // ONLY=id,id keeps just those materials, to see what each costs.
   const only = process.env.ONLY?.split(",");
   if (only) project.materials = project.materials.filter(material => only.includes(material.id));
+  // A preview project holds at most 512 texels a side; above that only the production profile is a valid project.
+  if (resolution > 512) project.profile = "production";
   if (process.env.LIGHTING) project.lighting = JSON.parse(await readFile(process.env.LIGHTING, "utf8"));
   browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
@@ -70,9 +73,13 @@ try {
   await page.locator("#open-project").setInputFiles({ name: "washroom.studio.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(project)) });
   // The first thing shown is the quick draft; the scene is loaded when the full-size build is ready.
   const revision = name => page.waitForFunction(([name, start]) => Number(document.querySelector("#viewport").dataset[name] ?? 0) > start, [name, before], { timeout: 900000 });
-  await Promise.race([revision("draftRevision"), revision("inputRevision")]);
+  // A project the Studio refuses (or fails to build) shows no revision at all: that ends the run at once, with the reason.
+  const refused = page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "error", {}, { timeout: 900000 })
+    .then(async () => { throw new Error(`The Studio did not open the project: ${await page.locator("#status").textContent()}`); });
+  refused.catch(() => { /* reported through the races below, or the page closed first */ });
+  await Promise.race([revision("draftRevision"), revision("inputRevision"), refused]);
   const firstPreview = Date.now() - started;
-  await revision("inputRevision");
+  await Promise.race([revision("inputRevision"), refused]);
   await ready(); await waitForFrames(page);
   const loaded = Date.now() - started;
   // The shader preview shows the fast-compiling relief first and swaps to the per-pixel one in the background.
@@ -80,6 +87,11 @@ try {
   if (await page.evaluate(() => document.querySelector("#viewport").dataset.relief !== undefined) && !/relief=quad/.test(process.env.QUERY ?? "")) {
     await page.waitForFunction(() => document.querySelector("#viewport").dataset.relief === "pixel", {}, { timeout: 900000 });
     perPixel = `, per-pixel relief ${Date.now() - started} ms`;
+    // The programs then settle on the form that draws fastest and compiles slowest; SETTLED=1 waits for it.
+    if (process.env.SETTLED === "1" && !/noise=/.test(process.env.QUERY ?? "")) {
+      await page.waitForFunction(() => document.querySelector("#viewport").dataset.noise === "inline", {}, { timeout: 900000 });
+      perPixel += `, settled programs ${Date.now() - started} ms`;
+    }
   }
   // By default GPU-baked maps follow the first look (scene-bake.ts): the scene is baked when every mesh shows its maps.
   const sceneBake = () => page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null"));
@@ -96,6 +108,11 @@ try {
     console.log(`Scene bake: ${JSON.stringify(firstBake)}`);    if (!/preview=/.test(process.env.QUERY ?? "")) {
       assert.deepEqual(firstBake.unsupported, {}, "every mesh of the washroom shows GPU-baked maps");
       assert.equal(firstBake.baked, firstBake.meshes);
+      // The per-pixel looks shown while a value changes then settle on the form that draws fastest, behind the scene; SETTLED=1 waits for it.
+      if (process.env.SETTLED === "1" && !/noise=/.test(process.env.QUERY ?? "")) {
+        await page.waitForFunction(() => document.querySelector("#viewport").dataset.noise === "inline", {}, { timeout: 900000 });
+        bakedMaps += `, settled edit programs ${Date.now() - started} ms (${await page.evaluate(() => document.querySelector("#viewport").dataset.noiseMs)} ms after the scene was complete)`;
+      }
     }
   }
 
@@ -195,6 +212,47 @@ try {
   });
   if (draws) console.log(`Draw time (ms; draw and one-pixel read, 24 draws; gpuTimerQuery is the GPU's time alone): ${JSON.stringify(draws)}`);
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
+  // Frame time while a value is dragged (with QUERY containing gpuprobe): a scalar parameter of DRAG (default the
+  // concrete walls) changes before every frame, as a slider does, so its meshes show their per-pixel look and no bake
+  // starts. `form` says which form of the per-pixel programs was drawn (`looped` until they settle on `inline`). The
+  // parameter gets its value back afterwards and the maps are baked again.
+  const drag = await page.evaluate(async material => {
+    const scene = window.__scene, entry = scene?.shading.get(material);
+    if (!entry) return null;
+    const host = document.querySelector("#viewport");
+    const gl = scene.renderer.getContext(), timer = gl.getExtension("EXT_disjoint_timer_query_webgl2"), pixel = new Uint8Array(4);
+    const original = JSON.parse(entry.values);
+    const parameter = entry.material.shader.parameters.find(candidate => candidate.type === "scalar");
+    if (!parameter) return null;
+    const base = Number(original[parameter.name] ?? entry.material.parameters.find(candidate => candidate.name === parameter.name)?.default ?? 0);
+    const frames = [], reads = [];
+    let shown = "";
+    for (let i = 0; i < 40; i++) {
+      scene.setShadingParameters(material, { ...original, [parameter.name]: base + 0.0005 * (1 + i % 3) });
+      shown = scene.models.children.filter(mesh => mesh.userData.shaded === material).map(mesh => mesh.material.userData.programUniforms ? "shader" : "maps").join(",");
+      const start = performance.now();
+      const query = timer && gl.createQuery();
+      if (query) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
+      scene.draw();
+      if (query) gl.endQuery(timer.TIME_ELAPSED_EXT);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      // The first frames pay for uniform state and are left out.
+      if (i >= 8) reads.push(performance.now() - start);
+      if (query) {
+        for (let waited = 0; waited < 60 && !gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE); waited++) await new Promise(done => setTimeout(done, 1));
+        if (i >= 8 && gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE) && !gl.getParameter(timer.GPU_DISJOINT_EXT)) frames.push(gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6);
+        gl.deleteQuery(query);
+      }
+    }
+    const form = host.dataset.noise ?? (new URLSearchParams(location.search).get("noise") === "inline" ? "inline" : "looped");
+    scene.setShadingParameters(material, original);
+    const summary = values => { values.sort((a, b) => a - b); return values.length ? { median: +values[values.length >> 1].toFixed(2), min: +values[0].toFixed(2), max: +values.at(-1).toFixed(2), frames: values.length } : null; };
+    return { material, parameter: parameter.name, form, shown, gpuTimerQuery: summary(frames) ?? "timer queries unavailable", drawAndRead: summary(reads) };
+  }, process.env.DRAG ?? "concrete-walls");
+  if (drag) {
+    console.log(`Drag frame time (ms; the GPU's time for a frame while a parameter changes every frame): ${JSON.stringify(drag)}`);
+    await baked();
+  }
   // CLOSEUP names a PNG of the tall wall seen close, for judging relief and texture detail.
   if (process.env.CLOSEUP) {
     const box = await page.locator("#viewport canvas").boundingBox();
@@ -215,7 +273,9 @@ try {
       await ready();
       const status = await baked();
       return { baked: Date.now() - began, drawn: status.drawn, reused: status.reused, nodesDrawn: status.nodesDrawn, nodesReused: status.nodesReused,
-        compileMs: status.compileMs, drawMs: status.drawMs, longTasks: await longTasks(from) };
+        compileMs: status.compileMs, drawMs: status.drawMs, longTasks: await longTasks(from),
+        // The form of the per-pixel programs for edits right after the rebuild: programs the scene before held settled stay `inline`.
+        editPrograms: await page.evaluate(() => document.querySelector("#viewport").dataset.noise ?? "looped") };
     };
     let start = await current();
     await page.locator('#material-list li[data-material="tile"] .scene-choose').click();

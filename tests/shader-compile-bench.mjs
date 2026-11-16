@@ -92,8 +92,9 @@ async function capture() {
           await page.waitForFunction(() => document.querySelector("#viewport").dataset.relief === "pixel", {}, { timeout: 900000 });
         if (await page.evaluate(() => document.querySelector("#viewport").dataset.sceneBake !== undefined))
           await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake).state === "baked", {}, { timeout: 900000 });
-        // The inline programs are the last: linked one after another, each when the one before it has compiled.
-        if (query) await page.waitForFunction(() => document.querySelector("#viewport").dataset.noise === "inline", {}, { timeout: 120000 }).catch(() => {});
+        // The inline programs are the last: linked one after another, each when the one before it has compiled (as shipped,
+        // they are the per-pixel looks shown while a value changes, settled behind the baked scene).
+        await page.waitForFunction(() => document.querySelector("#viewport").dataset.noise === "inline", {}, { timeout: 120000 }).catch(() => {});
         await page.waitForTimeout(2000);
         for (const { vertex, fragment } of await page.evaluate(() => window.__linked)) {
           const what = kind(fragment);

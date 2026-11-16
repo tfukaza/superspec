@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import type { MaterialShading } from "./shade.ts";
+import { shaderIdentity, type MaterialShading, type ProgramShader } from "./shade.ts";
 import { MAP_ANISOTROPY } from "./textures.ts";
 import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
-import { ATLAS_MAPPING_FRAGMENT, ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, atlasFragment, programLayout, type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
+import { ATLAS_MAPPING_FRAGMENT, ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, atlasFragment, attachmentReads, programLayout, type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { BakeGraph, type DrawStep, type GraphInstance, type NodeOp, type NodeSpec, type TargetSpec } from "./bake-graph.ts";
 
 /**
@@ -175,7 +175,7 @@ export interface IntrinsicDomain {
   density: number;
 }
 
-const atlasPassKey = (source: string, layout: AtlasProgramLayout): string => `atlas:${layout.key}:${source}`;
+const atlasPassKey = (shader: ProgramShader, layout: AtlasProgramLayout): string => `atlas:${layout.key}:${shaderIdentity(shader)}`;
 
 const VERTEX = `void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
@@ -610,7 +610,8 @@ export class GpuBaker {
 
   /** The shader's bake material, compiled on first use of its source (asynchronously where the driver allows). */
   private async pass(shading: MaterialShading): Promise<Pass> {
-    const source = shading.shader.source;
+    // Programs are kept by the identity of their source (the engine's, where it states one).
+    const source = shaderIdentity(shading.shader);
     const cached = this.passes.get(source);
     if (cached) { this.passes.delete(source); this.passes.set(source, cached); return cached; }
     // One compile per source, however many bakes (a late first preview and the next edit) wait for it.
@@ -620,7 +621,7 @@ export class GpuBaker {
       glslVersion: THREE.GLSL3,
       vertexShader: VERTEX,
       // The program's live renderer arguments are further outputs of the same program (a shader's source fixes them).
-      fragmentShader: GpuBaker.pass1Source(source, liveArguments(shading).map(argument => argument.expression)),
+      fragmentShader: GpuBaker.pass1Source(shading.shader.source, liveArguments(shading).map(argument => argument.expression)),
       uniforms: {},
       depthTest: false, depthWrite: false, blending: THREE.NoBlending,
     });
@@ -641,7 +642,7 @@ export class GpuBaker {
   private drawn = new Set<string>();
 
   /** Whether the program has been compiled and drawn once, so the next bake pays only for its pixels. */
-  hasDrawn(shading: MaterialShading): boolean { return this.drawn.has(shading.shader.source); }
+  hasDrawn(shading: MaterialShading): boolean { return this.drawn.has(shaderIdentity(shading.shader)); }
 
   /**
    * Compiles and draws a program once at a tiny size, off the critical path: the first draw is where drivers finish the
@@ -749,7 +750,7 @@ export class GpuBaker {
 
   /** Whether the shader source is already compiled, so a parameter or seed edit needs no recompile. */
   compiledFor(shading: MaterialShading): boolean {
-    return this.passes.has(shading.shader.source);
+    return this.passes.has(shaderIdentity(shading.shader));
   }
 
   /**
@@ -918,7 +919,7 @@ export class GpuBaker {
     if (!result) return null;
     swatch.instance = result.instance;
     const nodes = result.instance;
-    if (this.passes.has(shading.shader.source)) this.drawn.add(shading.shader.source);
+    if (this.passes.has(shaderIdentity(shading.shader))) this.drawn.add(shaderIdentity(shading.shader));
     let liveResult: GpuBake["live"];
     if (liveTextures) {
       const textures: Record<string, THREE.Texture> = {};
@@ -1010,7 +1011,7 @@ export class GpuBaker {
   }
 
   /** Whether the program that bakes `shading` into `layout` is compiled and has drawn once (so a bake costs only its pixels). */
-  atlasWarm(shading: MaterialShading, layout: AtlasProgramLayout): boolean { return this.drawn.has(atlasPassKey(shading.shader.source, layout)); }
+  atlasWarm(shading: MaterialShading, layout: AtlasProgramLayout): boolean { return this.drawn.has(atlasPassKey(shading.shader, layout)); }
 
   /** A target the atlas programs are compiled against before any receiver's maps exist (any render target gives the same program). */
   private atlasCompileTarget?: THREE.WebGLRenderTarget;
@@ -1024,18 +1025,18 @@ export class GpuBaker {
     if (this.unavailable() || gpuBakeUnsupported(shading, true)) return;
     const target = this.atlasCompileTarget ??= new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, stencilBuffer: false });
     const layout = this.atlasProgram(shading);
-    void this.atlasPass(shading.shader.source, layout, target).catch(() => {});
+    void this.atlasPass(shading.shader, layout, target).catch(() => {});
     const flat = !shading.shader.outputs.includes("height") && !layout.orient && !layout.attachments.includes("offset");
     if (!flat) void this.atlasNormals(target).catch(() => {});
   }
 
-  private async atlasPass(source: string, layout: AtlasProgramLayout, target: THREE.WebGLRenderTarget): Promise<Pass> {
-    const key = atlasPassKey(source, layout);
+  private async atlasPass(shader: ProgramShader, layout: AtlasProgramLayout, target: THREE.WebGLRenderTarget): Promise<Pass> {
+    const key = atlasPassKey(shader, layout);
     const cached = this.atlasPasses.get(key);
     if (cached) { this.atlasPasses.delete(key); this.atlasPasses.set(key, cached); return cached; }
     const waiting = this.compiling.get(key);
     if (waiting) return waiting;
-    const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: ATLAS_VERTEX, fragmentShader: atlasFragment(source, layout),
+    const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: ATLAS_VERTEX, fragmentShader: atlasFragment(shader.source, layout),
       uniforms: {}, depthTest: false, depthWrite: false, blending: THREE.NoBlending, side: THREE.DoubleSide });
     const started: Promise<Pass> = this.compiled(material, target, this.atlasPasses, key, this.atlasIdle)
       .finally(() => { if (this.compiling.get(key) === started) this.compiling.delete(key); });
@@ -1073,11 +1074,48 @@ export class GpuBaker {
 
   /** The cache key of an atlas bake: everything that changes a texel. `receiver` names the receiver inputs that are textures (its features). */
   static atlasKey(shading: MaterialShading, uniforms: Uniforms, atlas: AtlasLayout, layout: AtlasProgramLayout, fieldIds: string[], receiver: string): string {
-    const values = Object.entries(uniforms).filter(([, uniform]) => !(uniform.value as { isTexture?: boolean } | null)?.isTexture)
-      .map(([name, uniform]) => [name, JSON.stringify(uniform.value)]).sort();
-    const images = shading.shader.images.map(image => `${image.name}:${image.linear}:${(uniforms[image.uniform]?.value as THREE.Texture | undefined)?.uuid}`);
-    return `${GPU_PREVIEW_PROFILE}:${GPU_PREVIEW_VERSION}:atlas:${factsOf(shading.shader).hash}:${layout.key}:${atlas.key}:${hash(JSON.stringify([values, images, fieldIds, receiver]))}`;
+    return `${GpuBaker.atlasProgramKey(shading, atlas, layout)}:${GpuBaker.atlasInputsKey(shading, uniforms, fieldIds, receiver)}`;
   }
+
+  /** The part of an atlas bake's key that its input values do not change: the profile, the program, its layout and the atlas. */
+  private static atlasProgramKey(shading: MaterialShading, atlas: AtlasLayout, layout: AtlasProgramLayout): string {
+    return `${GPU_PREVIEW_PROFILE}:${GPU_PREVIEW_VERSION}:atlas:${factsOf(shading.shader).hash}:${layout.key}:${atlas.key}`;
+  }
+
+  /**
+   * The part of an atlas bake's key that names its input values: every uniform's value, the images, the CPU fields
+   * (`fieldIds`, one per field of `shader.cpuFields`) and the receiver. With `reads`, the key of one texture that reads
+   * only those of the program's own uniforms (`attachmentReads`): the other parameters, seeds, images and CPU fields
+   * are left out, so a change to them leaves the key, and the texture, as they are. Everything that is not the
+   * program's own (the receiver's inputs) is always in it.
+   */
+  private static atlasInputsKey(shading: MaterialShading, uniforms: Uniforms, fieldIds: string[], receiver: string, reads?: ReadonlySet<string>): string {
+    const shader = shading.shader;
+    const unread = new Set(reads ? [...shader.parameters, ...shader.seeds].map(entry => entry.uniform).filter(uniform => !reads.has(uniform)) : []);
+    const values = Object.entries(uniforms).filter(([name, uniform]) => !unread.has(name) && !(uniform.value as { isTexture?: boolean } | null)?.isTexture)
+      .map(([name, uniform]) => [name, JSON.stringify(uniform.value)]).sort();
+    const images = shader.images.filter(image => !reads || reads.has(image.uniform))
+      .map(image => `${image.name}:${image.linear}:${(uniforms[image.uniform]?.value as THREE.Texture | undefined)?.uuid}`);
+    const fields = reads ? fieldIds.filter((_, index) => reads.has(shader.cpuFields![index].uniform)) : fieldIds;
+    return hash(JSON.stringify([values, images, fields, receiver]));
+  }
+
+  /** What each texture of a program's evaluate pass reads (`attachmentReads`), found once per shader record and layout. */
+  private readonly reads = new WeakMap<ProgramShader, Map<string, ReturnType<typeof attachmentReads>>>();
+  private atlasReads(shader: ProgramShader, layout: AtlasProgramLayout): ReturnType<typeof attachmentReads> {
+    let byLayout = this.reads.get(shader);
+    if (!byLayout) this.reads.set(shader, byLayout = new Map());
+    let found = byLayout.get(layout.key);
+    if (!found) byLayout.set(layout.key, found = attachmentReads(shader, layout));
+    return found;
+  }
+
+  /**
+   * Whether each texture of an atlas bake's evaluate pass is keyed by the inputs it reads alone (`attachmentReads`), so
+   * a changed value draws only the textures it reaches. Off, every texture is keyed by every value (`?bakekeys=whole`
+   * in the viewer, for comparing the two).
+   */
+  nodeKeys = true;
 
   /**
    * The key of an INTRINSIC bake of a program: the program and its own inputs alone (source, parameter and seed values,
@@ -1212,7 +1250,7 @@ export class GpuBaker {
     let pass: Pass | undefined, bound: Uniforms | undefined;
     return {
       label: "evaluate",
-      prepare: async () => { pass = await this.atlasPass(shading.shader.source, layout, this.compileTarget()); this.hold(pass, holds); },
+      prepare: async () => { pass = await this.atlasPass(shading.shader, layout, this.compileTarget()); this.hold(pass, holds); },
       draw: ({ node, output, rows }) => {
         // Assigned at every draw: another bake may have used the program since the last band.
         Object.assign(pass!.material.uniforms, bound ??= bind());
@@ -1248,16 +1286,17 @@ export class GpuBaker {
 
   /**
    * The nodes of an atlas bake of `shading`: one per attachment of the program's layout, drawn by the evaluate
-   * operation, and `normal`. The evaluate nodes share one key (`atlasKey`: any uniform may reach any output, until the
-   * engine says which parameters each output reads); `normal` is keyed by the atlas and how the relief is adjusted, and
-   * otherwise by its inputs, so it is drawn again only when the height or the offset is. A program without relief has
-   * a flat normal, which is one texture for every such receiver of the same atlas size.
+   * operation, and `normal`. Each evaluate node has a key of its own (`keyOf`): the program, the atlas and the values
+   * of the inputs that texture reads, so a parameter that reaches only the roughness draws only the properties
+   * texture. `normal` is keyed by the atlas and how the relief is adjusted, and otherwise by its inputs, so it is drawn
+   * again only when the height or the offset is. A program without relief has a flat normal, which is one texture for
+   * every such receiver of the same atlas size.
    */
-  private atlasNodes(shading: MaterialShading, layout: AtlasProgramLayout, atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry }, key: string,
-    evaluate: NodeOp): NodeSpec[] {
+  private atlasNodes(shading: MaterialShading, layout: AtlasProgramLayout, atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry },
+    keyOf: (attachment: AtlasAttachment) => string, evaluate: NodeOp): NodeSpec[] {
     const { width, height } = atlas.layout;
     const specs: NodeSpec[] = layout.attachments.map((name, output) =>
-      ({ id: name, key: `${key}:${name}`, target: GpuBaker.atlasTarget(name, width, height, layout), op: evaluate, output }));
+      ({ id: name, key: keyOf(name), target: GpuBaker.atlasTarget(name, width, height, layout), op: evaluate, output }));
     const bend = layout.attachments.includes("offset");
     const flat = !shading.shader.outputs.includes("height") && !layout.orient && !bend;
     const target = GpuBaker.atlasTarget("normal", width, height, layout);
@@ -1300,7 +1339,7 @@ export class GpuBaker {
     const unitLimit = this.renderer.capabilities.maxTextures;
     const bakeUnits = factsOf(shading.shader).samplers;
     if (bakeUnits > unitLimit) throw new Error(`GPU preview needs ${bakeUnits} texture units to bake; this device has ${unitLimit}.`);
-    const passKey = atlasPassKey(shading.shader.source, layout);
+    const passKey = atlasPassKey(shading.shader, layout);
     const hadPass = this.atlasPasses.has(passKey);
     const fieldIds: string[] = [];
     for (const wanted of shading.shader.cpuFields ?? []) {
@@ -1317,7 +1356,12 @@ export class GpuBaker {
       return bound;
     };
     const key = GpuBaker.atlasKey(shading, uniforms, atlas.layout, layout, fieldIds, atlas.receiver);
-    const specs = this.atlasNodes(shading, layout, atlas, key, this.atlasEvaluateOp(shading, layout, atlas.geometry, bind, holds));
+    // Each texture's key: the bake's, with the input values narrowed to what the texture reads where that is known.
+    const reads = this.nodeKeys ? this.atlasReads(shading.shader, layout) : {};
+    const program = GpuBaker.atlasProgramKey(shading, atlas.layout, layout);
+    const keyOf = (name: AtlasAttachment): string =>
+      `${program}:${GpuBaker.atlasInputsKey(shading, uniforms, fieldIds, atlas.receiver, reads[name])}:${name}`;
+    const specs = this.atlasNodes(shading, layout, atlas, keyOf, this.atlasEvaluateOp(shading, layout, atlas.geometry, bind, holds));
     // Atlas bakes run one at a time (the scene's baker awaits each), so a program's geometry and uniforms stay one
     // receiver's between the bands of a level.
     const result = await this.graph.realize(specs, previous?.nodes, {
@@ -1403,10 +1447,13 @@ export class GpuBaker {
  * (Both walk the whole source, tens of kilobytes for a heavy program, and every bake asks for them several times.)
  */
 const sourceFacts = new WeakMap<object, { source: string; hash: string; samplers: number }>();
-function factsOf(shader: { source: string }): { hash: string; samplers: number } {
+function factsOf(shader: Pick<ProgramShader, "source" | "id" | "samplers">): { hash: string; samplers: number } {
+  // The engine states both (`Shader::id`, `Shader::samplers`); a record without them is read from its source.
+  if (shader.id && Number.isInteger(shader.samplers)) return { hash: shader.id, samplers: shader.samplers! };
   let facts = sourceFacts.get(shader);
   if (!facts || facts.source !== shader.source) {
-    facts = { source: shader.source, hash: hash(shader.source), samplers: (shader.source.match(/uniform\s+(?:highp\s+)?sampler2D/g) ?? []).length };
+    facts = { source: shader.source, hash: shader.id || hash(shader.source),
+      samplers: Number.isInteger(shader.samplers) ? shader.samplers! : (shader.source.match(/uniform\s+(?:highp\s+)?sampler2D/g) ?? []).length };
     sourceFacts.set(shader, facts);
   }
   return facts;

@@ -241,6 +241,35 @@ export class SceneBaker {
     this.report(this.current);
   }
 
+  /** Whether the displayed scene has nothing to bake and no change settling: every mesh that can show maps shows current ones. */
+  settled(): boolean {
+    const run = this.current;
+    return !!run && !run.pumping && !run.fieldsInFlight && performance.now() >= run.settleAt
+      && run.entries.every(entry => entry.unsupported || (entry.done === entry.wanted && entry.showing === "baked"));
+  }
+
+  /**
+   * Gives a mesh of the displayed scene another per-pixel look: the same program in another form (one that draws
+   * faster, compiled behind the scene), so its picture is the same. `receiver` holds the new look's own receiver
+   * uniforms, which the mesh's bakes read from then on (the look they came from is the caller's to dispose). The mesh
+   * shows the new look at once if it is showing the old one. Returns the look replaced, or undefined when nothing was
+   * done: the mesh is not one this scene bakes, or a bake is under way with the old look's uniforms (ask again later).
+   */
+  replaceShader(mesh: THREE.Mesh, shader: THREE.Material, receiver: Uniforms): THREE.Material | undefined {
+    const run = this.current;
+    if (!run || run.closed || run.pumping) return undefined;
+    const entry = run.entries.find(candidate => candidate.target.mesh === mesh);
+    if (!entry || entry.unsupported) return undefined;
+    const replaced = entry.target.shader;
+    entry.target.shader = shader;
+    Object.assign(entry.target.uniforms, receiver);
+    if (entry.showing === "shader" && run.attached) {
+      mesh.material = shader;
+      mesh.userData.liveOperations = shader.userData.liveOperations;
+    }
+    return replaced;
+  }
+
   /**
    * A material's values changed: its meshes go back to the per-pixel look at once (which follows the change through its
    * uniforms; while those looks still compile, the maps stay) and are baked again when no further change arrives for a

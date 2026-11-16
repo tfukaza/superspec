@@ -110,7 +110,7 @@ try {
     const cpuReady = await cold.evaluate(t => performance.now() - t, t0);
     const firstGpu = await cold.evaluate(() => window.__events.find(event => event.preview));
     // The GPU program is warm once it has been drawn (a late first preview is dropped, but the program is kept and drawn once).
-    await cold.waitForFunction(() => { const s = window.__scene, source = s.gpuUniforms?.material?.shader?.source; return Boolean(source && s.bakerInstance?.drawn.has(source)); }, {}, { timeout: 120000 });
+    await cold.waitForFunction(() => { const s = window.__scene, material = s.gpuUniforms?.material; return Boolean(material && s.bakerInstance?.hasDrawn(material)); }, {}, { timeout: 120000 });
     const warmAt = await cold.evaluate(t => performance.now() - t, t0);
     await cold.waitForTimeout(300);
     await cold.evaluate(() => { window.__events.length = 0; });

@@ -24,6 +24,8 @@
     "test:recipe:browser": "node tests/material-ts-browser.mjs",
     "test:scene:browser": "node tests/material-scene-browser.mjs",
     "test:washroom:browser": "node tests/material-washroom-browser.mjs",
+    "test:bake-keys:browser": "node tests/material-bake-keys-browser.mjs",
+    "bench:shader-compile": "node tests/shader-compile-bench.mjs",
     "test:world:browser": "node tests/authoring-world-browser.mjs"
   },
   "dependencies": {

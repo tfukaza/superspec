@@ -5,7 +5,7 @@ import type { SceneMesh, ScenePacket } from "../model/packet.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
-import { hasPixelRelief, programMaterial, programTexture, setParameters, setSeeds, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
+import { hasPixelRelief, programMaterial, programTexture, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
 import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
@@ -108,8 +108,22 @@ function hashNumbers(values: number[]): string {
   return (value >>> 0).toString(16);
 }
 
-/** One shaded mesh waiting for its per-pixel relief program: the first-look material it shows and how to make the other. */
-interface ReliefRefinement { mesh: THREE.Mesh; first: THREE.Material; source: string; make: () => THREE.MeshStandardMaterial }
+/**
+ * One shaded mesh and the programs that follow its first look: the material it shows now (`first`), how to make the one
+ * with per-pixel relief (`pixel`, where the program has a height) and how to make the one it settles on (`settled`: the
+ * same relief with every noise inline, which compiles slowest and draws fastest; see `programMaterial`).
+ */
+interface ReliefRefinement { mesh: THREE.Mesh; first: THREE.Material; source: string; pixel?: () => THREE.MeshStandardMaterial; settled?: () => THREE.MeshStandardMaterial }
+
+/**
+ * One mesh that shows GPU-baked maps and the per-pixel look it shows while a value changes: `settled` makes that look
+ * in the form that draws fastest and compiles slowest (see `programMaterial`), which takes the first one's place once
+ * the scene is up and nothing else wants the GPU (`settleEditLooks`). `source` names the program.
+ */
+interface EditLook { mesh: THREE.Mesh; source: string; settled: () => THREE.MeshStandardMaterial }
+
+/** How long the baked scene must have been at rest before a per-pixel look for edits starts compiling in its settled form. */
+const EDIT_LOOK_REST_MS = 250;
 
 /** Minimal Z-up scene adapter. Owns GPU resources; all model geometry and materials arrive from Rust. */
 export class RustScene {
@@ -467,8 +481,8 @@ export class RustScene {
       }
       prepared.set(id, entry);
     }
-    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad") => {
-      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode);
+    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline") => {
+      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise);
       this.shadowStyle?.apply(material);
       material.wireframe = this.view.wireframe;
       material.side = THREE.DoubleSide;
@@ -478,6 +492,9 @@ export class RustScene {
       // The first look uses the relief that compiles fast. With baking, GPU-baked maps follow (scene-bake.ts); without
       // it the per-pixel relief programs do, in the background (`refineRelief`).
       const refine: ReliefRefinement[] = [];
+      const editLooks: EditLook[] = [];
+      const keptInline = new Set<string>();
+      const keptLooks: { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material }[] = [];
       const targets: SceneBakeTarget[] = [];
       const made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[] = [];
       // The programs the bakes will draw with start compiling at once (the driver compiles them off the page's thread).
@@ -489,12 +506,22 @@ export class RustScene {
         const spec = shading.meshes[mesh.name];
         const entry = spec && prepared.get(spec.material);
         if (!spec || !entry) continue;
-        const material = make(entry, spec, "quad");
-        made.push({ mesh, material, shaded: spec.material });
-        if (this.pixelRelief && hasPixelRelief(entry.material)) {
-          refine.push({ mesh, first: material, source: entry.material.shader.source, make: () => make(entry, spec, "pixel") });
-        }
         const layout = layouts?.get(mesh.name);
+        // The first look is the program that compiles fastest: derivative relief, noises in loops (`?noise=inline`: inline
+        // from the start). A program whose settled look for edits the displayed scene holds compiled starts with that.
+        const identity = shaderIdentity(entry.material.shader);
+        const kept = layout !== undefined && this.noise === "settle" && this.inlineLooks.has(identity);
+        if (kept) keptInline.add(identity);
+        const first = this.noise === "inline" || kept ? "inline" : "looped";
+        const material = make(entry, spec, "quad", first);
+        if (kept) keptLooks.push({ mesh, geometry: sourceGeometry(mesh), material });
+        made.push({ mesh, material, shaded: spec.material });
+        const pixel = this.pixelRelief && hasPixelRelief(entry.material);
+        if (pixel || this.noise === "settle") {
+          refine.push({ mesh, first: material, source: shaderIdentity(entry.material.shader),
+            pixel: pixel ? () => make(entry, spec, "pixel", first) : undefined,
+            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline") : undefined });
+        }
         if (layout) {
           const use = entry.plan ?? entry;
           const own = material.userData.programUniforms as Record<string, THREE.IUniform>;
@@ -502,11 +529,16 @@ export class RustScene {
           const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
           targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
             receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1] });
+          // What the mesh shows while a value changes keeps the relief that compiles fast and settles on the noise form that draws fast.
+          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline") });
         }
       }
       // The per-pixel looks, compiled as the meshes that will show them and without blocking the page: drawn
       // uncompiled, each program would stall a frame for as long as it compiles (seconds for a heavy one).
       const looks = made.map(item => ({ mesh: item.mesh, geometry: sourceGeometry(item.mesh), material: item.material as THREE.Material }));
+      // Looks made in the settled form the displayed scene holds take their share of its compiled programs now, while
+      // that scene's materials still hold them (they are disposed when this one is committed). Not waited for.
+      if (keptLooks.length) void this.compileLooks(keptLooks).catch(() => { /* compiled with the rest instead */ });
       let shaders: Promise<void> | undefined, discarded = false;
       const compileShaders = () => shaders ??= discarded ? Promise.resolve() : this.compileLooks(looks).catch(() => { /* compiled at the first draw instead */ });
       delete this.host.dataset.firstLook;
@@ -539,7 +571,7 @@ export class RustScene {
       return {
         discard: () => { discarded = true; baked?.discard(); for (const item of made) item.material.dispose(); },
         commit: () => {
-          const run = this.commitShading(prepared, made, refine, baked, shaderReady);
+          const run = this.commitShading(prepared, made, refine, baked, shaderReady, editLooks, keptInline);
           if (!shaderReady) void compileShaders().then(() => { if (run === this.reliefRun && !this.closed) this.sceneBaker?.shadersReady(); });
         },
       };
@@ -565,7 +597,7 @@ export class RustScene {
 
   /** Puts prepared per-pixel materials on their meshes and starts what follows them: baked maps, or the per-pixel relief. Returns the run it started. */
   private commitShading(prepared: Map<string, ShadedMaterial>, made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[],
-    refine: ReliefRefinement[], baked: PreparedScene | undefined, shaderReady: boolean): number {
+    refine: ReliefRefinement[], baked: PreparedScene | undefined, shaderReady: boolean, editLooks: EditLook[] = [], keptInline = new Set<string>()): number {
     {
       // Meshes kept from the scene before may show baked looks; they get their per-pixel ones back before those are replaced.
       this.sceneBaker?.reset();
@@ -577,7 +609,11 @@ export class RustScene {
         mesh.userData.shaded = shaded;
       }
       const run = ++this.reliefRun;
+      // The settled looks this scene's meshes were made with are the ones it holds from here on.
+      this.inlineLooks = keptInline;
       delete this.host.dataset.reliefMs;
+      delete this.host.dataset.noise;
+      delete this.host.dataset.noiseMs;
       if (baked) {
         delete this.host.dataset.relief;
         // Meshes that cannot be baked keep the per-pixel look and get its better relief once the others show their maps.
@@ -587,12 +623,19 @@ export class RustScene {
           const left = refine.filter(item => unbaked.has(item.mesh));
           if (left.length && run === this.reliefRun) void this.refineRelief(left, run);
         };
+        // The looks shown while a value changes settle on their faster form last of all: once every map is on screen
+        // and the first per-pixel looks are compiled (`data-noise` then says `inline`, as in the shader preview).
+        this.editLookSettling = editLooks.length ? () => {
+          this.editLookSettling = undefined;
+          if (run === this.reliefRun) void this.settleEditLooks(editLooks, run);
+        } : undefined;
+        if (keptInline.size && !editLooks.length) { this.host.dataset.noise = "inline"; this.host.dataset.noiseMs = "0"; }
         // The scene prepared for these meshes takes the place of the one before it: maps that are ready show at once.
         baked.commit(shaderReady);
         return run;
       }
       delete this.host.dataset.sceneBake;
-      this.host.dataset.relief = refine.length ? "quad" : this.pixelRelief ? "pixel" : "quad";
+      this.host.dataset.relief = refine.some(item => item.pixel) ? "quad" : this.pixelRelief ? "pixel" : "quad";
       // After `apply` has drawn the first look.
       if (refine.length) setTimeout(() => void this.refineRelief(refine, run), 0);
       return run;
@@ -612,31 +655,118 @@ export class RustScene {
       report: status => {
         this.host.dataset.sceneBake = JSON.stringify(status);
         if (status.state === "baked") this.unbakedRefinement?.();
+        if (status.state === "baked" && status.shaderReady) this.editLookSettling?.();
       },
     });
   }
 
+  private editLookSettling?: () => void;
+  /**
+   * Programs (by `shaderIdentity`) whose settled per-pixel look for edits is compiled and held by the displayed scene.
+   * The next scene's materials are made while that scene is still displayed, so one of the same program made in the
+   * same form shares its compiled program instead of going through the looped form again.
+   */
+  private inlineLooks = new Set<string>();
+
+  /**
+   * Replaces the per-pixel looks of meshes that show baked maps (what they show while a value changes) by the same
+   * programs in the form that draws fastest, a program at a time and after everything else: nothing here delays the
+   * first picture or the maps, since it starts only when the scene is baked and at rest, and nothing blocks an edit,
+   * since each program compiles off the page's thread while the first look stays in use, and a program is only begun
+   * while the scene is at rest. `data-noise` turns to `inline` when the last one is in place, `data-noise-ms` says how
+   * long after the scene was first complete. A newer scene abandons the run.
+   */
+  private async settleEditLooks(items: EditLook[], run: number): Promise<void> {
+    const started = performance.now();
+    const current = () => run === this.reliefRun && !this.closed && !this.renderer.getContext().isContextLost();
+    const pause = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+    /** Waits until the baked scene has been at rest for a moment (no bake, no change settling); false when the run is over. */
+    const rest = async (): Promise<boolean> => {
+      for (let since = performance.now(); current();) {
+        if (!this.sceneBaker?.settled()) since = performance.now();
+        else if (performance.now() - since >= EDIT_LOOK_REST_MS) { await this.gpuFinished(); return current(); }
+        await pause(50);
+      }
+      return false;
+    };
+    // Meshes that got no maps keep their per-pixel look on screen; `refineRelief` settles those.
+    const unbaked = new Set(this.sceneBaker?.unbaked());
+    const programs = new Map<string, EditLook[]>();
+    for (const item of items) if (!unbaked.has(item.mesh)) programs.set(item.source, [...programs.get(item.source) ?? [], item]);
+    let replaced = 0;
+    for (const [source, group] of programs) {
+      if (!await rest()) return;
+      const made = group.map(item => ({ item, material: item.settled() }));
+      try { await this.compileLooks(made.map(({ item, material }) => ({ mesh: item.mesh, geometry: sourceGeometry(item.mesh), material }))); }
+      catch { for (const entry of made) entry.material.dispose(); continue; }
+      // The swap itself is a few assignments; it waits for a moment when no bake holds the old looks' uniforms.
+      for (let tries = 0; current() && this.sceneBaker && made.length; tries++) {
+        for (const entry of [...made]) {
+          const old = this.sceneBaker.replaceShader(entry.item.mesh, entry.material,
+            Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, (entry.material.userData.programUniforms as Record<string, THREE.IUniform>)[name]])));
+          if (!old) continue;
+          old.dispose(); replaced++;
+          made.splice(made.indexOf(entry), 1);
+        }
+        // A mesh this scene does not bake after all (it stays on its first look), or a bake under way: asked again, a few times.
+        if (!made.length || tries >= 40) break;
+        await pause(50);
+      }
+      // A scene built again while this program is still in use finds it compiled, and starts with it (`prepareShading`).
+      if (!made.length) this.inlineLooks.add(source);
+      for (const entry of made) entry.material.dispose();
+      if (!current()) return;
+      this.invalidate();
+    }
+    if (!replaced) return;
+    this.host.dataset.noise = "inline";
+    this.host.dataset.noiseMs = String(Math.round(performance.now() - started));
+  }
+
   /** Per-pixel relief in the shader preview unless the page asks for the cheaper one alone (`?relief=quad`). */
   private readonly pixelRelief = new URLSearchParams(location.search).get("relief") !== "quad";
+  /**
+   * The form of the per-pixel programs (see `programMaterial`): by default the looped form first and the inline one
+   * once it has compiled behind it (`settle`); `?noise=looped` keeps the looped form and `?noise=inline` uses the
+   * inline one from the first look, as before the looped form existed.
+   */
+  private readonly noise = (value => value === "looped" || value === "inline" ? value : "settle")(new URLSearchParams(location.search).get("noise"));
   private reliefRun = 0;
 
   /**
-   * Swaps shaded meshes from the first-look relief to the per-pixel one, a program at a time and off the critical
-   * path: each program is compiled without blocking, then put on its meshes and drawn once, which is where the
-   * driver finishes compiling it. A newer scene abandons the run. `data-relief` turns to `pixel` when the GPU has
-   * drawn the last of them, and `data-relief-ms` says how long that took after the first look.
+   * Swaps shaded meshes from the first-look program to the ones that follow it, a program at a time and off the
+   * critical path: each program is compiled without blocking, then put on its meshes and drawn once, which is where
+   * the driver finishes compiling it. First the per-pixel relief: `data-relief` turns to `pixel` when the GPU has drawn
+   * the last of them, and `data-relief-ms` says how long that took after the first look. Then the programs the meshes
+   * settle on, which draw the same picture in less time: `data-noise` turns to `inline` and `data-noise-ms` says when.
+   * A newer scene abandons the run.
    */
   private async refineRelief(items: ReliefRefinement[], run: number): Promise<void> {
     const started = performance.now();
-    const current = () => run === this.reliefRun && !this.closed && !this.renderer.getContext().isContextLost();
     // The first look must reach the screen before anything competes with it: its own programs finish compiling at their first draw.
     await this.gpuFinished();
     await new Promise(done => requestAnimationFrame(done));
+    const pixel = items.filter(item => item.pixel);
+    if (!await this.swapLooks(pixel, run, item => item.pixel!())) return;
+    if (pixel.length) {
+      this.host.dataset.relief = "pixel";
+      this.host.dataset.reliefMs = String(Math.round(performance.now() - started));
+    }
+    const settled = items.filter(item => item.settled);
+    delete this.host.dataset.noise;
+    if (!settled.length || !await this.swapLooks(settled, run, item => item.settled!())) return;
+    this.host.dataset.noise = "inline";
+    this.host.dataset.noiseMs = String(Math.round(performance.now() - started));
+  }
+
+  /** Gives each of `items` the material `make` makes for it, a program at a time; false when a newer scene abandoned the run. */
+  private async swapLooks(items: ReliefRefinement[], run: number, make: (item: ReliefRefinement) => THREE.MeshStandardMaterial): Promise<boolean> {
+    const current = () => run === this.reliefRun && !this.closed && !this.renderer.getContext().isContextLost();
     const programs = new Map<string, ReliefRefinement[]>();
     for (const item of items) programs.set(item.source, [...programs.get(item.source) ?? [], item]);
     for (const group of programs.values()) {
-      if (!current()) return;
-      const made = group.map(item => ({ item, material: item.make() }));
+      if (!current()) return false;
+      const made = group.map(item => ({ item, material: make(item) }));
       const discard = () => { for (const entry of made) if (entry.item.mesh.material !== entry.material) entry.material.dispose(); };
       // Compiled as the meshes that will show them, with the displayed scene's lights, shadows and environment.
       const stage = new THREE.Group();
@@ -648,21 +778,22 @@ export class RustScene {
       // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
       const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
       try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { discard(); continue; }
-      if (!current()) { discard(); return; }
-      for (const { item, material } of made) {
+      if (!current()) { discard(); return false; }
+      for (const entry of made) {
+        const { item, material } = entry;
         // A mesh that left the scene or was given another material keeps what it has.
         if (item.mesh.material !== item.first || !this.models.children.includes(item.mesh)) continue;
         item.first.dispose();
         item.mesh.material = material;
         item.mesh.userData.liveOperations = material.userData.liveOperations;
+        // What the mesh shows now is what a later swap replaces.
+        item.first = material;
       }
       discard();
       this.draw();
       await this.gpuFinished();
     }
-    if (!current()) return;
-    this.host.dataset.relief = "pixel";
-    this.host.dataset.reliefMs = String(Math.round(performance.now() - started));
+    return current();
   }
 
   /** Resolves when the GPU has executed everything issued so far, without blocking the page (a fence, polled). */
@@ -718,7 +849,9 @@ export class RustScene {
 
   private newBaker(): GpuBaker {
     const baker = new GpuBaker(this.renderer);
-    baker.onLost = () => { this.gpuUniforms = undefined; this.sceneBaker?.lost(); this.clearBakedPreview(); };
+    // `?bakekeys=whole`: every texture of a bake is keyed by every value, as before textures were keyed by what they read.
+    baker.nodeKeys = new URLSearchParams(location.search).get("bakekeys") !== "whole";
+    baker.onLost = () => { this.gpuUniforms = undefined; this.inlineLooks.clear(); this.sceneBaker?.lost(); this.clearBakedPreview(); };
     return baker;
   }
 
@@ -727,7 +860,7 @@ export class RustScene {
    * `images` identifies the contents of the images the program samples: the same source with another image binds again.
    */
   gpuPreviewReady(shading: MaterialShading, images = ""): boolean {
-    return this.bakerInstance?.compiledFor(shading) === true && this.gpuUniforms?.material.shader.source === shading.shader.source
+    return this.bakerInstance?.compiledFor(shading) === true && this.gpuUniforms !== undefined && shaderIdentity(this.gpuUniforms.material.shader) === shaderIdentity(shading.shader)
       && this.gpuUniforms.material.seedValues.join() === shading.seedValues.join() && this.gpuUniforms.images === images;
   }
 
