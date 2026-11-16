@@ -486,6 +486,7 @@ export class RustScene {
    */
   private showLive(mesh: THREE.Mesh, material: THREE.MeshStandardMaterial, bake: GpuBake): void {
     const live = bake.live;
+    mesh.userData.bakedLiveSource = live;
     if (!live) { this.restoreLive(mesh, material); return; }
     const textures = new Map(Object.entries(live.textures));
     if (mesh.userData.bakedLive?.key === live.key && material.userData.liveUniforms) {

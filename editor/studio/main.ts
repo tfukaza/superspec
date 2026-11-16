@@ -44,7 +44,8 @@ function gpuStats(texels: { baseColor: Uint8Array; normal: Uint8Array; height: F
   };
   const color = channel(texels.baseColor, 0, 4), normal = channel(texels.normal, 0, 4), height = channel(texels.height, 0, 1);
   const roughness = channel(texels.properties, 1, 4), metalness = channel(texels.properties, 2, 4);
-  return { roughnessMean: roughness.mean, metalnessMean: metalness.mean, colorMean: color.mean, colorLow: color.low, colorHigh: color.high, colorDistinct: color.distinct,
+  const green = channel(texels.baseColor, 1, 4), blue = channel(texels.baseColor, 2, 4);
+  return { colorMeanG: green.mean, colorMeanB: blue.mean, roughnessMean: roughness.mean, metalnessMean: metalness.mean, colorMean: color.mean, colorLow: color.low, colorHigh: color.high, colorDistinct: color.distinct,
     normalXLow: normal.low, normalXHigh: normal.high, normalXDistinct: normal.distinct,
     heightLow: height.low, heightHigh: height.high, heightDistinct: height.distinct };
 }
@@ -105,6 +106,8 @@ class Studio {
   constructor(private readonly kind: StudioProject["kind"]) {
     this.project = initialProject(kind); this.module = this.project.entry;
     this.scene = new RustScene(element("viewport"), mesh => this.selection(mesh));
+    // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
+    if (new URLSearchParams(location.search).has("gpuprobe")) (window as unknown as { __scene: RustScene }).__scene = this.scene;
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
       // A shaded scene takes a parameter as a uniform: nothing to wait for.
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));

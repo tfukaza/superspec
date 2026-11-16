@@ -453,8 +453,9 @@ rusted steel starters) the draft appears after about 0.20, 0.31 and 0.22 s and t
 after about 0.28, 0.65 and 0.40 s. Treat these as orders of magnitude, not benchmarks. A build rebakes only the maps an edit can reach: the color, normal,
 properties, emissive and live maps are each keyed by the parameters, seed and source edges of the outputs
 they are baked from (`program/deps.rs`), so changing a roughness parameter keeps the color and normal maps.
-Samples are also evaluated 64 at a time (`program/lanes.rs`) with bit-identical results. Not done: reusing
-unchanged fields inside a map.
+Samples are also evaluated 64 at a time (`program/lanes.rs`) with bit-identical results. Preview bakes also keep
+the per-texel values of costly fields (a separate 48 MiB partition, keyed by the parameters, seed and
+edges the field reads), so a map that an edit does reach recomputes only the fields that edit can change.
 
 For a swatch, Studio shows a **GPU preview** (`browser/renderer/bake.ts`) before the draft
 when the browser supports float render targets: the program's GLSL

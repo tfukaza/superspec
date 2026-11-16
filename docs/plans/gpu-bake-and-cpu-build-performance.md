@@ -112,10 +112,18 @@ replaced by the CPU result; a GPU-side edit bakes no field; an edge edit bakes o
 Live renderer operations: the program's live arguments (fields the shader already computes) are evaluated on
 the GPU into half-float textures (four arguments per texel), and the viewer's lighting effects read them, so
 a preview no longer shows the last CPU build's arguments. Arguments packed in one texture share one sampler
-(a 30-argument program had exceeded the 32 texture units). Unresolved: the rusted-steel preview is much
-darker than its CPU result (mean center RGB about 31/36/37 against 105/110/114 in one screenshot pair, with all seven
-operations applied and plausible argument values); the cause is not found, and that screenshot comparison is the only
-evidence.
+(a 30-argument program had exceeded the 32 texture units). The rusted-steel preview had looked much darker than
+its CPU result (mean center RGB about 31/36/37 against 105/110/114); the cause was in the viewer, not the GPU
+preview. `live.ts` decoded each texture argument as `dot(texel, channel)` with a `THREE.Vector4` whose default `w`
+is 1, so every argument also added the texel's alpha, which holds another packed argument. In the steel study the
+`lightFloor` mask (zero at the center, from the 8 mm rim) picked up the gloss spread packed beside it (about 0.95),
+saturated, and lit the whole swatch. Arguments are now read as one channel (a swizzle). With that, the baked maps
+already agreed (GPU and CPU mean base color 86.2/89.9/89.8, roughness 101.8, metalness 184.9 of 255, flat normals),
+the GPU live arguments matched the CPU fields' values (a native bake of `polishedRim` has mean 0.03 and center 0),
+and both previews show the same center color: steel 31.2/36.4/37.3 (GPU) against 31.2/36.3/37.3 (CPU), concrete
+178.3/173.9/167.5 against 178.1/173.8/167.4. The CPU result of steel is therefore darker than it used to be in Studio;
+the recipe's masks are now applied as written. Screenshots: `generated/verification/steel-*-before-fix.png` and
+`*-after-fix.png`, `concrete-*-after-fix.png`.
 
 Software-rendering numbers (headless Chromium, 256 px swatch, seed edit so every map rebakes, 180 ms
 debounce included, three runs each). CPU only, after the CPU-side speedups: chipped concrete draft about 0.20 s and

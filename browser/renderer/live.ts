@@ -59,7 +59,11 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
         }
         uniforms[`${symbol}Range`] = { value: new THREE.Vector2(argument.scale, argument.offset) };
         declarations.push(`uniform vec2 ${symbol}Range;`);
-        reads.push(`${symbol} = msLiveTex${slot}[${argument.channel}] * ${symbol}Range.x + ${symbol}Range.y;`);
+        // A swizzle, not an index: indexing a vec4 with a literal misreads on some drivers (ANGLE on SwiftShader returned
+        // values that left every live effect with no visible effect).
+        // The argument is one channel of the packed texel. (It used to be a dot product with a THREE.Vector4 whose default
+        // w of 1 also added the texture's alpha to every argument, which saturated masks packed in opaque textures.)
+        reads.push(`${symbol} = msLiveTex${slot}.${"xyzw"[argument.channel]} * ${symbol}Range.x + ${symbol}Range.y;`);
       }
     }
     return (name: string, fallback: string) => named[name] ?? fallback;
