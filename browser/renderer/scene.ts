@@ -355,6 +355,23 @@ export class RustScene {
       }
       // Shaded materials are made and compiled while the scene before this one stays on screen, untouched.
       const look = await decorate?.(ordered);
+      // A scene of baked maps: its new materials are compiled the same way, as the meshes that will show them and
+      // without blocking the page. Drawn uncompiled, the frame that first shows them waits for every program (measured
+      // on the washroom: 1.5 s of one task for a first build, where this leaves the page responsive).
+      if (!decorate) {
+        const fresh = (next.children as THREE.Mesh[]).filter(mesh => mesh.visible);
+        let compiled = false;
+        const gl = this.renderer.getContext();
+        await Promise.race([
+          this.compileLooks(fresh.map(mesh => ({ mesh, geometry: mesh.geometry, material: mesh.material as THREE.Material }))).catch(() => { /* compiled at the first draw instead */ }),
+          // A lost context never reports its programs complete, and a superseded scene need not wait for them.
+          new Promise<void>(done => {
+            const poll = (): void => { if (compiled || this.closed || gl.isContextLost() || !current()) done(); else setTimeout(poll, 50); };
+            poll();
+          }),
+        ]);
+        compiled = true;
+      }
       if (!current() || this.closed) { look?.discard(); this.release(next); this.texturePool.release(leases); return false; }
       for (const item of reused) {
         item.mesh.userData.source = item.source;

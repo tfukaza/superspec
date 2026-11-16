@@ -21,6 +21,7 @@
     "editor/**/*.ts",
     "browser/**/*.ts",
     "tests/browser/rust*.ts",
+    "tests/browser/bake-graph*.ts",
     "vite.rust.config.ts"
   ]
 }

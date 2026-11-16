@@ -154,6 +154,13 @@ The scene view is what authors look at, and it is the slowest path.
 - **Pass graph (shared mechanism).** Materialized intermediate textures serve three
   needs at once: blur and edge-distance of shadow masks, splitting heavy programs
   into smaller shaders for cold compile, and the live-argument passes.
+  The mechanism exists (`browser/renderer/bake-graph.ts`): every GPU preview bake,
+  atlas and swatch, is a list of named nodes with keys; a node is drawn only when
+  no texture holds its key, and nodes are shared and kept by the graph. A separable
+  blur node and the intrinsic-plus-mapping node shape are built and tested
+  (`tests/browser/bake-graph.test.ts`, `tests/bake-graph-browser.mjs`) but not used
+  by any material yet: that waits for the engine to emit an intrinsic domain,
+  layer composition inputs and per-output dependencies.
 - **With Phase 3: baked stylized shadows for static scenes.** Bake the styled shadow
   (blur, noise) into a per-receiver shadow mask through the pass graph, applied in the
   material by one texture fetch. A static level then needs no shadow-map pass and no

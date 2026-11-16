@@ -45,6 +45,13 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", 
   return node;
 }
 
+/** Makes `children` the children of `parent`, in order, touching only what differs: a child already in place is not moved. */
+function place(parent: HTMLElement, children: HTMLElement[]): void {
+  const wanted = new Set<Node>(children);
+  for (const child of [...parent.childNodes]) if (!wanted.has(child)) child.remove();
+  children.forEach((child, index) => { if (parent.childNodes[index] !== child) parent.insertBefore(child, parent.childNodes[index] ?? null); });
+}
+
 /**
  * Structured recipe editing for `.material.ts` modules. Every control issues the same edit
  * operation the command line offers; Rust returns minimal patches or the diagnostics that blocked it,
@@ -127,13 +134,39 @@ export class RecipePanel {
     const children: HTMLElement[] = [];
     if (failure) children.push(element("p", "recipe-hint", `The recipe cannot be inspected yet (${failure.line}:${failure.column} ${failure.message}). Showing the last readable structure.`));
     if (inspection) {
-      this.controls = element("fieldset", "recipe-edit-controls");
+      this.controls ??= element("fieldset", "recipe-edit-controls");
       this.controls.disabled = !this.inspected;
-      this.controls.append(this.parameters(inspection), this.layers(inspection), this.groups(inspection), this.fields(inspection));
+      // A section is built again only when what it shows changed, and only what changed is put into the page: a
+      // parameter value changed in the parameter panel replaces the parameter rows, while the layers, groups and field
+      // uses (thousands of elements for a large recipe) are neither built nor laid out again.
+      const overrides = inspection.parameters.map(parameter => this.io.override(parameter.name));
+      place(this.controls, [
+        this.kept("parameters", [inspection.parameters, overrides], () => this.parameters(inspection)),
+        this.kept("layers", inspection.layers, () => this.layers(inspection)),
+        this.kept("groups", inspection.groups, () => this.groups(inspection)),
+        // Field uses are placed by line and column, which the text before them decides.
+        this.kept("fields", [inspection.fields, inspection.groups.map(group => [group.name, group.outputs]), this.io.source()], () => this.fields(inspection)),
+      ]);
       children.push(this.controls);
-    }
-    children.push(this.reference(), this.message);
-    this.host.replaceChildren(...children);
+    } else this.sections.clear();
+    children.push(this.operations ??= this.reference(), this.message);
+    place(this.host, children);
+  }
+
+  /** The operation catalog's section: it keeps itself current, so it is made once. */
+  private operations?: HTMLElement;
+
+  /** The sections on display by name, with what each was built from. */
+  private readonly sections = new Map<string, { signature: string; node: HTMLElement }>();
+
+  /** The section built from `content`: the one on display when its content is unchanged (its controls keep what was typed into them). */
+  private kept(name: string, content: unknown, build: () => HTMLElement): HTMLElement {
+    const signature = JSON.stringify(content);
+    const held = this.sections.get(name);
+    if (held?.signature === signature) return held.node;
+    const node = build();
+    this.sections.set(name, { signature, node });
+    return node;
   }
 
   private fail(text: string): void { this.message.textContent = text; }
@@ -321,6 +354,11 @@ export class RecipePanel {
       const before = source.slice(0, span.start).split("\n");
       return `${before.length}:${before[before.length - 1].length + 1}`;
     };
+    // Every use lists every choice: the list is made once and copied (a copy is one native call, where making
+    // each option is several), then the use's own field is moved to the front.
+    const list = element("select");
+    for (const choice of choices) list.add(new Option(choice, choice));
+    const position = new Map(choices.map((choice, index) => [choice, index] as const));
     for (const field of inspection.fields.filter(item => item.references.length)) {
       const card = element("div", "recipe-field");
       card.dataset.field = field.name;
@@ -328,10 +366,18 @@ export class RecipePanel {
       field.references.forEach((use, index) => {
         const row = element("label", "recipe-use");
         row.append(element("span", "", `use ${index + 1} at ${place(use)}`));
-        const select = element("select");
+        let select: HTMLSelectElement;
+        if (position.size === choices.length) {
+          select = list.cloneNode(true) as HTMLSelectElement;
+          select.prepend(select.options[position.get(field.name)!]);
+          select.selectedIndex = 0;
+        } else {
+          // (Two choices of one name: listed as before, the field first and then every other name.)
+          select = element("select");
+          select.add(new Option(field.name, field.name));
+          for (const choice of choices.filter(name => name !== field.name)) select.add(new Option(choice, choice));
+        }
         select.setAttribute("aria-label", `Reconnect ${field.name} use ${index + 1}`);
-        select.add(new Option(field.name, field.name));
-        for (const choice of choices.filter(name => name !== field.name)) select.add(new Option(choice, choice));
         select.addEventListener("change", () => {
           const expression = select.value;
           if (expression === field.name) return;

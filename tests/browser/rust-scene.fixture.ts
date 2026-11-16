@@ -8,24 +8,26 @@ const scene = new RustScene(host, () => {});
 const renderer = (scene as unknown as { renderer: THREE.WebGLRenderer }).renderer;
 const originalRender = renderer.render;
 let rendered: THREE.Scene;
+// The viewer's own scene: its screen-space passes (ambient occlusion) render others through the same renderer.
+const viewed = (scene as unknown as { scene: THREE.Scene }).scene;
 renderer.render = function(scene, camera): void {
-  rendered = scene as THREE.Scene;
+  if (scene === viewed) rendered = scene as THREE.Scene;
   originalRender.call(this, scene, camera);
 };
 let revision = 0;
 let pending: Promise<boolean> | undefined;
 let release: ((fail: boolean) => void) | undefined;
-const imageSource = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src")!;
+const decodeImage = window.createImageBitmap;
 
-/** Holds the next actual browser image decode, optionally rejecting it with an invalid image. */
+/** Holds the next actual browser image decode (the viewer decodes with `createImageBitmap`), optionally rejecting it with an invalid image. */
 function gate(): void {
-  Object.defineProperty(HTMLImageElement.prototype, "src", {
-    ...imageSource,
-    set(this: HTMLImageElement, value: string) {
-      Object.defineProperty(HTMLImageElement.prototype, "src", imageSource);
-      release = fail => imageSource.set!.call(this, fail ? "data:image/png;base64,bm90LWFuLWltYWdl" : value);
-    },
-  });
+  window.createImageBitmap = ((source: ImageBitmapSource, ...rest: unknown[]) => {
+    window.createImageBitmap = decodeImage;
+    return new Promise<ImageBitmap>((resolve, reject) => {
+      release = fail => (decodeImage as (...args: unknown[]) => Promise<ImageBitmap>)
+        .call(window, fail ? new Blob(["not-an-image"], { type: "image/png" }) : source, ...rest).then(resolve, reject);
+    });
+  }) as typeof window.createImageBitmap;
 }
 
 /** Captures publicly observable Three material settings and rendered resource counts. */
@@ -35,7 +37,10 @@ function snapshot() {
     if (!texture) return undefined;
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
     const context = canvas.getContext("2d")!;
-    context.drawImage(texture.image as HTMLImageElement, 0, 0);
+    // The viewer's bitmaps hold their rows in upload order (the image's last row first; the texture does not flip):
+    // the image's first pixel is the first of the bitmap's last row.
+    const image = texture.image as ImageBitmap | HTMLImageElement;
+    context.drawImage(image, 0, texture.flipY ? 0 : image.height - 1, 1, 1, 0, 0, 1, 1);
     return [...context.getImageData(0, 0, 1, 1).data];
   };
   const materials: Record<string, unknown> = {};
@@ -106,5 +111,5 @@ Object.assign(window, { driver });
 window.addEventListener("pagehide", () => {
   scene.dispose();
   renderer.render = originalRender;
-  Object.defineProperty(HTMLImageElement.prototype, "src", imageSource);
+  window.createImageBitmap = decodeImage;
 }, { once: true });

@@ -37,6 +37,21 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+  // Main-thread long tasks (over 50 ms), so jank on load and on an edit is recorded with the timings.
+  await page.addInitScript(() => {
+    window.__longTasks = [];
+    try {
+      new PerformanceObserver(list => { for (const entry of list.getEntries()) window.__longTasks.push([Math.round(entry.startTime), Math.round(entry.duration)]); })
+        .observe({ entryTypes: ["longtask"] });
+    } catch { /* not offered by this browser */ }
+  });
+  const pageNow = () => page.evaluate(() => performance.now());
+  /** Long tasks that began in a span of page time: how many, their sum and the longest, milliseconds. */
+  const longTasks = async (from, to = Infinity) => {
+    const tasks = (await page.evaluate(() => window.__longTasks ?? [])).filter(([start]) => start >= from && start < to);
+    return { count: tasks.length, total: tasks.reduce((sum, [, duration]) => sum + duration, 0), longest: Math.max(0, ...tasks.map(([, duration]) => duration)),
+      tasks: tasks.map(([start, duration]) => `${Math.round(start - from)}+${duration}`).join(" ") };
+  };
   const state = () => page.locator("#status").getAttribute("data-state");
   const ready = async () => {
     await page.waitForFunction(() => ["ready", "error"].includes(document.querySelector("#status")?.dataset.state), {}, { timeout: 900000 });
@@ -47,7 +62,11 @@ try {
   await ready();
 
   const before = Number(await page.locator("#viewport").getAttribute("data-input-revision") ?? 0);
-  const started = Date.now();
+  // PROFILE names a .cpuprofile of the page's main thread from here to the end of the edits (open it in DevTools), for
+  // saying what a long task was.
+  const profiler = process.env.PROFILE ? await page.context().newCDPSession(page) : null;
+  if (profiler) { await profiler.send("Profiler.enable"); await profiler.send("Profiler.setSamplingInterval", { interval: 500 }); await profiler.send("Profiler.start"); }
+  const started = Date.now(), loadFrom = await pageNow();
   await page.locator("#open-project").setInputFiles({ name: "washroom.studio.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(project)) });
   // The first thing shown is the quick draft; the scene is loaded when the full-size build is ready.
   const revision = name => page.waitForFunction(([name, start]) => Number(document.querySelector("#viewport").dataset[name] ?? 0) > start, [name, before], { timeout: 900000 });
@@ -74,13 +93,13 @@ try {
   const firstBake = await baked();
   if (firstBake) {
     bakedMaps = `, GPU-baked maps ${Date.now() - started} ms`;
-    console.log(`Scene bake: ${JSON.stringify(firstBake)}`);
-    if (!/preview=/.test(process.env.QUERY ?? "")) {
+    console.log(`Scene bake: ${JSON.stringify(firstBake)}`);    if (!/preview=/.test(process.env.QUERY ?? "")) {
       assert.deepEqual(firstBake.unsupported, {}, "every mesh of the washroom shows GPU-baked maps");
       assert.equal(firstBake.baked, firstBake.meshes);
     }
   }
 
+  console.log(`Long tasks on load (ms after opening the project, start+duration): ${JSON.stringify(await longTasks(loadFrom))}`);
   const bindings = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.bindings ?? "{}"));
   const expected = Object.fromEntries(project.materials.flatMap(material => material.meshes.map(mesh => [mesh, material.id])));
   assert.deepEqual(bindings, expected, "every mesh shows its material");
@@ -110,7 +129,7 @@ try {
     await ready();
     const control = page.getByRole("spinbutton", { name: label, exact: true });
     start = await current();
-    const began = Date.now();
+    const began = Date.now(), editFrom = await pageNow();
     await control.fill(value); await control.press("Tab");
     const shown = name => page.waitForFunction(([name, from]) => Number(document.querySelector("#viewport").dataset[name] ?? 0) > from, [name, start], { timeout: 900000 });
     await Promise.race([shown("draftRevision"), shown("inputRevision")]);
@@ -119,9 +138,12 @@ try {
     edits[material] = { draft, full: Date.now() - began };
     // With GPU-baked maps the edit shows per pixel at once and is baked again when it settles.
     const rebaked = await baked();
-    if (rebaked) Object.assign(edits[material], { baked: Date.now() - began, drawn: rebaked.drawn, reused: rebaked.reused, drawMs: rebaked.drawMs, fieldMs: rebaked.fieldMs });
+    if (rebaked) Object.assign(edits[material], { baked: Date.now() - began, drawn: rebaked.drawn, reused: rebaked.reused, drawMs: rebaked.drawMs, fieldMs: rebaked.fieldMs,
+      nodesDrawn: rebaked.nodesDrawn, nodesReused: rebaked.nodesReused, details: rebaked.details.join("; ") });
+    edits[material].longTasks = await longTasks(editFrom);
   }
   console.log(`Edit latency (ms): ${JSON.stringify(edits)}`);
+  if (profiler) await writeFile(process.env.PROFILE, JSON.stringify((await profiler.send("Profiler.stop")).profile));
   // Frame time: redraw the loaded scene several times and wait for the GPU to finish each frame.
   const frame = await page.evaluate(async () => {
     const exposure = document.querySelector("#exposure");
@@ -180,6 +202,30 @@ try {
     for (let i = 0; i < 8; i++) { await page.mouse.wheel(0, -240); await waitForFrames(page, 2); }
     await waitForFrames(page, 6);
     await writeFile(process.env.CLOSEUP, await page.locator("#viewport canvas").screenshot());
+  }
+  // Source edits (after the screenshots: they change the scene). A source edit rebuilds the scene; what the GPU bake
+  // then draws again says how much of the baked maps a rebuild reuses. First an edit that leaves every program as it
+  // was (a trailing line), then one that changes the tile's program (a constant).
+  if (firstBake && project.materials.some(material => material.id === "tile")) {
+    const current = () => page.evaluate(() => Number(document.querySelector("#viewport").dataset.inputRevision ?? 0));
+    const sourceEdit = async text => {
+      const start = await current(), began = Date.now(), from = await pageNow();
+      await page.locator("#code").fill(text);
+      await page.waitForFunction(from => Number(document.querySelector("#viewport").dataset.inputRevision ?? 0) > from, start, { timeout: 900000 });
+      await ready();
+      const status = await baked();
+      return { baked: Date.now() - began, drawn: status.drawn, reused: status.reused, nodesDrawn: status.nodesDrawn, nodesReused: status.nodesReused,
+        compileMs: status.compileMs, drawMs: status.drawMs, longTasks: await longTasks(from) };
+    };
+    let start = await current();
+    await page.locator('#material-list li[data-material="tile"] .scene-choose').click();
+    await page.waitForFunction(from => Number(document.querySelector("#viewport").dataset.inputRevision ?? 0) > from, start, { timeout: 900000 });
+    await ready(); await baked();
+    const code = await page.locator("#code").inputValue();
+    const sourceEdits = { sameProgram: await sourceEdit(`${code}\n`) };
+    if (code.includes("roughness: 0.8")) sourceEdits.tileProgram = await sourceEdit(code.replace("roughness: 0.8", "roughness: 0.7"));
+    console.log(`Source edits (ms; bakes and graph nodes drawn and reused): ${JSON.stringify(sourceEdits)}`);
+    assert.equal(errors.length, 0, errors.join("\n"));
   }
   console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms${perPixel}${bakedMaps} (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
 } finally {

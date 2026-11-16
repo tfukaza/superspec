@@ -335,7 +335,11 @@ try {
     scene.bakerInstance.inject = "\n#error injected failure\n";
     window.__compiles = 0;
     const compile = scene.renderer.compileAsync;
-    scene.renderer.compileAsync = function(...values) { window.__compiles++; return compile.apply(this, values); };
+    // Bake programs only (shader materials): the viewer also compiles each build's own materials before showing them.
+    scene.renderer.compileAsync = function(...values) {
+      if (values[0]?.children?.some(child => child.material?.isShaderMaterial)) window.__compiles++;
+      return compile.apply(this, values);
+    };
   });
   const rejected = await tryProgram(grain("11.0"));
   assert.equal(rejected.state, "ready", "the CPU build alone follows a rejected shader");

@@ -41,8 +41,17 @@ export class TexturePool {
           return value;
         });
       } else {
-        const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
-        texture = new THREE.TextureLoader().loadAsync(url).then(configure).finally(() => URL.revokeObjectURL(url));
+        // Decoded off the page's thread: an image element is decoded again inside its upload, on the page's thread
+        // (WebGL wants the pixels unpremultiplied and unconverted, which is not the decode the element keeps), and
+        // that grows with the image. The bitmap is the same pixels, already in the row order of the upload (what
+        // `flipY` asks of an image element), so the texture itself must not flip.
+        texture = createImageBitmap(new Blob([bytes], { type: mime }), { imageOrientation: "flipY", premultiplyAlpha: "none", colorSpaceConversion: "none" }).then(bitmap => {
+          const value = new THREE.Texture(bitmap);
+          value.flipY = false;
+          value.needsUpdate = true;
+          value.addEventListener("dispose", () => bitmap.close());
+          return configure(value);
+        });
       }
       entry = { texture, users: 0 };
       this.entries.set(key, entry);

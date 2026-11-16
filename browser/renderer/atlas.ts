@@ -9,10 +9,11 @@ import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
  * geometry a baked mesh is displayed with and the geometry its atlas is drawn with, and holds the shaders that turn a
  * record into the program's inputs at a texel (`Atlas::texel` and `Atlas::sample` in `authoring/receiver.rs`).
  *
- * A bake is a short list of passes over one receiver's atlas, each writing textures the next may read:
- * `evaluate` (the program: base color, properties, height and, by program, emissive, normal offset and live renderer
- * arguments) and `normals` (height to tangent-space normals). The textures of the first stay with the bake, so a later
- * pass (a weathering layer, a recomputed normal) can read them without evaluating the program again.
+ * A bake is a pass graph over one receiver's atlas (bake-graph.ts; `GpuBaker.atlasNodes` lists its nodes): each
+ * texture is a node drawn by an operation and may read other nodes. `evaluate` (the program) draws base color,
+ * properties, height and, by program, emissive, normal offset and live renderer arguments; `normals` reads the height
+ * (and offset) node. Every node stays materialized and named, so a later pass (a weathering layer, a blur, a mapping
+ * of a shared intrinsic bake: `ATLAS_MAPPING_FRAGMENT`) reads them without evaluating the program again.
  */
 
 /** One receiver's atlas as the engine describes it (`ReceiverLayout` in `authoring/layout.rs`). */
@@ -348,6 +349,44 @@ ${assigns}
 }
 `;
 }
+
+/**
+ * A mapping pass: every texel of a receiver's atlas reads a shared INTRINSIC texture (an appearance baked once, over a
+ * rectangle of surface coordinates, with no receiver in its key) at the surface coordinate the evaluate pass would
+ * give the program there (`ms_surface`). The intrinsic texture is addressed in meters: `msIntrinsicOrigin` is the
+ * surface coordinate of its UV origin and `msIntrinsicSize` what it covers; its wrap mode says what lies beyond. The
+ * mip is chosen from the texel's footprint, not from screen derivatives, which break at chart borders.
+ */
+export const ATLAS_MAPPING_FRAGMENT = `
+${RECORD_INPUTS}
+flat in vec3 vN0;
+flat in vec3 vN1;
+flat in vec3 vN2;
+flat in vec4 vUv01;
+flat in vec4 vUv2Footprints;
+uniform mat4 msObjectFromWorld;
+uniform vec2 msExtent;
+uniform int msMapping;
+${TEXEL_LEGS}
+uniform sampler2D msIntrinsic;
+uniform vec2 msIntrinsicOrigin;
+uniform vec2 msIntrinsicSize;
+uniform float msIntrinsicDensity;
+layout(location = 0) out vec4 msOut;
+void main() {
+  vec2 legs = msLegs(msAtlasTexel());
+  float corner = 1.0 - legs.x - legs.y;
+  vec3 world = vP0 * corner + vP1 * legs.x + vP2 * legs.y;
+  vec3 normal = normalize(vN0 * corner + vN1 * legs.x + vN2 * legs.y);
+  vec2 uv = vUv01.xy * corner + vUv01.zw * legs.x + vUv2Footprints.xy * legs.y;
+  vec3 at = msMapping == 2 ? world : (msObjectFromWorld * vec4(world, 1.0)).xyz;
+  vec3 facing = abs(msMapping == 1 ? mat3(msObjectFromWorld) * normal : normal);
+  vec2 surface = msMapping == 0 ? uv * msExtent
+    : (facing.z >= max(facing.x, facing.y) ? at.xy : (facing.y >= facing.x ? at.xz : at.yz));
+  float lod = max(0.0, log2(max(vUv2Footprints.z * msIntrinsicDensity, 1e-6)));
+  msOut = textureLod(msIntrinsic, (surface - msIntrinsicOrigin) / msIntrinsicSize, lod);
+}
+`;
 
 /**
  * The normals pass: the height's differences one sample along each leg (\`bake_rows\` in \`authoring/material.rs\`),

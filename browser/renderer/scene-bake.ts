@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import type { MaterialShading } from "./shade.ts";
-import { GpuBaker, gpuBakeUnsupported, type AtlasBakeTimings, type AtlasMaps, type FieldTexels } from "./bake.ts";
+import { GpuBaker, gpuBakeUnsupported, type AtlasMaps, type FieldTexels } from "./bake.ts";
 import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 
 /**
@@ -15,12 +15,14 @@ import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayou
  * drawn while the scene before it stays on screen; `commit` then puts the looks on the meshes.
  *
  * Ownership and keys (what later stages build on):
- * - A bake is named by `GpuBaker.atlasKey`: the program, its uniform values and images, the receiver layout's content,
- *   the receiver's features and the CPU fields it read. Baked maps are shared by every mesh with the same key and kept
- *   for a while after their last user, so going back to a value, or rebuilding the scene for an edit to another
- *   material, shows them again without drawing.
+ * - A mesh's maps are the nodes of a pass graph (bake-graph.ts), each a texture named by what it holds. The evaluate
+ *   nodes are named by `GpuBaker.atlasKey`: the program, its uniform values and images, the receiver layout's content,
+ *   the receiver's features and the CPU fields it read; the normal by the height it was made from. The graph owns the
+ *   textures: a node is shared by every mesh that wants the same texels and kept for a while after its last user, so
+ *   going back to a scene, or rebuilding the scene for an edit to another material, shows them again without drawing.
+ *   This module only holds each mesh's use of its nodes and the allowance for what is on screen.
  * - A mesh keeps both looks alive (two materials, two geometries), so switching between them compiles nothing.
- * - Only meshes whose material's values changed are baked again.
+ * - Only nodes whose key changed are drawn again: the meshes of a changed material, and of those only what the change reaches.
  */
 
 type Uniforms = Record<string, THREE.IUniform>;
@@ -75,6 +77,9 @@ export interface SceneBakeStatus {
   /** Bakes drawn in the run, and bakes answered from maps already held. */
   drawn: number;
   reused: number;
+  /** The same by node of the bakes' pass graphs: textures drawn, and textures that already held what was wanted. */
+  nodesDrawn: number;
+  nodesReused: number;
   /** GPU memory of the maps on screen. */
   bytes: number;
   /** Whether the per-pixel looks are compiled, so a changed value shows per pixel at once (it is baked on settle either way). */
@@ -102,8 +107,6 @@ export interface PreparedScene {
   discard(): void;
 }
 
-interface Shared { maps: AtlasMaps; users: number }
-
 interface Entry {
   target: SceneBakeTarget;
   program: AtlasProgramLayout;
@@ -112,7 +115,8 @@ interface Entry {
   bake?: THREE.BufferGeometry;
   /** The standard material of the baked look; its maps are placeholders until the first bake. */
   material?: THREE.MeshStandardMaterial;
-  shared?: Shared;
+  /** The entry's use of its bake's nodes; incomplete while a bake draws over them. */
+  maps?: AtlasMaps;
   /** Edits asked for and edits baked: equal when the maps are up to date. */
   wanted: number;
   done: number;
@@ -137,7 +141,7 @@ interface Run {
   settleAt: number;
   timer?: ReturnType<typeof setTimeout>;
   started: number;
-  totals: { compileMs: number; drawMs: number; fieldMs: number; drawn: number; reused: number };
+  totals: { compileMs: number; drawMs: number; fieldMs: number; drawn: number; reused: number; nodesDrawn: number; nodesReused: number };
   details: string[];
   /** Compiles of the baked looks' materials still under way. */
   materials: Promise<void>;
@@ -147,19 +151,16 @@ interface Run {
 
 /** Pause after the last parameter change before its materials are baked again. */
 const SETTLE_MS = 160;
-/** GPU memory the maps on screen may take; meshes beyond it stay on the per-pixel look. */
+/**
+ * GPU memory the maps on screen may take; meshes beyond it stay on the per-pixel look. (What the graph keeps after
+ * a node's last user has its own allowance: `GraphLimits`.)
+ */
 const SCENE_BAKE_BYTES = 512 * 1024 * 1024;
-/** Map sets kept after their last user (least recently used dropped first), and the memory they may take together. */
-const KEPT_IDLE_MAPS = 16;
-const IDLE_BAKE_BYTES = 128 * 1024 * 1024;
+const NO_TOTALS = { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0, nodesDrawn: 0, nodesReused: 0 };
 
 export class SceneBaker {
   private current?: Run;
   private pending?: Run;
-  /** Complete maps by bake key: those on screen and those kept idle. */
-  private readonly byKey = new Map<string, Shared>();
-  /** Keys of maps without a user, least recently used first. */
-  private readonly idle = new Set<string>();
   /** Stand-ins for a baked look's maps while its material compiles, by color role. */
   private placeholders?: { color: THREE.Texture; data: THREE.Texture };
   private closed = false;
@@ -179,7 +180,7 @@ export class SceneBaker {
     this.discard();
     const baker = this.host.baker();
     const run: Run = { entries: [], fields, fieldsInFlight: false, fieldRetries: 0, attached: false, shaderReady: false, closed: false, pumping: false,
-      settleAt: 0, started: performance.now(), totals: { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0 }, details: [], materials: Promise.resolve() };
+      settleAt: 0, started: performance.now(), totals: { ...NO_TOTALS }, details: [], materials: Promise.resolve() };
     for (const target of targets) {
       const program = baker.atlasProgram(target.shading);
       // A mesh kept from the scene on screen may be showing that scene's baked look: its own geometry is beside it.
@@ -267,7 +268,7 @@ export class SceneBaker {
   private restart(run: Run): void {
     run.details = [];
     run.started = performance.now();
-    run.totals = { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0 };
+    run.totals = { ...NO_TOTALS };
   }
 
   /** Bakes every mesh again (after a restored context). */
@@ -283,10 +284,10 @@ export class SceneBaker {
   lost(): void {
     this.discard();
     const run = this.current;
-    this.byKey.clear(); this.idle.clear();
     this.placeholders = undefined;
     if (!run) return;
-    for (const entry of run.entries) { this.showShader(run, entry); entry.shared = undefined; entry.done = 0; }
+    // The graph forgot its nodes with the context; nothing is left to release.
+    for (const entry of run.entries) { this.showShader(run, entry); entry.maps = undefined; entry.done = 0; }
     this.report(run);
   }
 
@@ -316,9 +317,7 @@ export class SceneBaker {
     this.closed = true;
     this.discard();
     this.reset();
-    const baker = this.host.baker();
-    for (const shared of this.byKey.values()) baker.disposeAtlasMaps(shared.maps);
-    this.byKey.clear(); this.idle.clear();
+    // Nodes without a user stay with the baker's graph, which frees them when the baker is disposed.
     this.placeholders?.color.dispose(); this.placeholders?.data.dispose();
   }
 
@@ -341,30 +340,17 @@ export class SceneBaker {
     entry.showing = "baked";
   }
 
-  /** Gives up an entry's maps: complete ones wait for another user, others are freed. */
+  /** Gives up an entry's maps: complete nodes wait in the graph for another user, others are freed. */
   private release(entry: Entry): void {
-    const shared = entry.shared;
-    if (!shared) return;
-    entry.shared = undefined;
-    if (--shared.users > 0) return;
-    const baker = this.host.baker();
-    if (!shared.maps.key || this.byKey.get(shared.maps.key) !== shared || !baker.atlasMapsAlive(shared.maps)) { baker.disposeAtlasMaps(shared.maps); return; }
-    this.idle.add(shared.maps.key);
-    let bytes = 0;
-    for (const key of this.idle) bytes += this.byKey.get(key)!.maps.bytes;
-    for (const key of [...this.idle]) {
-      if (this.idle.size <= KEPT_IDLE_MAPS && bytes <= IDLE_BAKE_BYTES) break;
-      const dropped = this.byKey.get(key)!;
-      bytes -= dropped.maps.bytes;
-      baker.disposeAtlasMaps(dropped.maps);
-      this.byKey.delete(key); this.idle.delete(key);
-    }
+    const maps = entry.maps;
+    if (!maps) return;
+    entry.maps = undefined;
+    this.host.baker().releaseAtlasMaps(maps);
   }
 
+  /** GPU memory of the distinct textures the run's meshes hold. */
   private bytesHeld(run: Run): number {
-    let bytes = 0;
-    for (const shared of new Set(run.entries.map(entry => entry.shared))) if (shared) bytes += shared.maps.bytes;
-    return bytes;
+    return this.host.baker().atlasBytes(run.entries.map(entry => entry.maps));
   }
 
   private report(run: Run): void {
@@ -468,52 +454,33 @@ export class SceneBaker {
     const baker = this.host.baker();
     const { target, program } = entry;
     const version = entry.wanted;
-    const fieldIds = (target.shading.shader.cpuFields ?? []).map(field => `${field.name}=${entry.fields?.[field.uniform]?.id}`);
-    const key = GpuBaker.atlasKey(target.shading, target.uniforms, target.layout, program, fieldIds, target.receiver);
-    const held = this.byKey.get(key);
-    if (held && baker.atlasMapsAlive(held.maps)) {
-      // These exact maps exist: on this mesh already, on another mesh, or kept from before.
-      if (entry.shared !== held) { this.release(entry); held.users++; this.idle.delete(key); entry.shared = held; }
-      run.totals.reused++;
-    } else {
-      // Maps only this mesh holds are drawn over, unless they are on screen with no per-pixel look to show meanwhile;
-      // shared or missing ones are replaced.
-      let shared = entry.shared;
-      const onScreen = run.attached && entry.showing === "baked" && !run.shaderReady;
-      if (shared && (shared.users > 1 || onScreen || shared.maps.layout.key !== program.key || !baker.atlasMapsAlive(shared.maps))) shared = undefined;
-      if (shared) { if (this.byKey.get(shared.maps.key) === shared) this.byKey.delete(shared.maps.key); }
-      else {
-        const maps = baker.createAtlasMaps(target.layout.width, target.layout.height, program);
-        if (this.bytesHeld(run) + maps.bytes > SCENE_BAKE_BYTES) {
-          baker.disposeAtlasMaps(maps);
-          throw new Error("the scene's baked maps would exceed the preview's memory allowance");
-        }
-        shared = { maps, users: 0 };
-      }
-      entry.bake ??= bakeGeometry(target.layout);
-      if (shared === entry.shared) this.showShader(run, entry);
-      let timings: AtlasBakeTimings | null = null;
-      try {
-        timings = await baker.bakeAtlas(target.shading, target.uniforms,
-          { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver }, shared.maps, { fields: entry.fields, current });
-      } finally {
-        // New maps take the place of the entry's old ones only when they are complete.
-        if (shared !== entry.shared) {
-          if (timings && shared.maps.key === key && !run.closed) { this.release(entry); shared.users = 1; entry.shared = shared; }
-          else baker.disposeAtlasMaps(shared.maps);
-        }
-      }
-      if (!timings || run.closed) return;
+    entry.bake ??= bakeGeometry(target.layout);
+    // Every node a texture already holds (on this mesh, on another mesh, or kept from before) is taken as it is. The
+    // others are drawn: over this mesh's own textures where only it holds them, unless they are on screen with no
+    // per-pixel look to show meanwhile; into new textures otherwise, which replace the old ones when all are complete.
+    const onScreen = run.attached && entry.showing === "baked" && !run.shaderReady;
+    const baked = await baker.bakeAtlas(target.shading, target.uniforms,
+      { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver, program }, entry.maps, {
+        fields: entry.fields, current, inPlace: !onScreen,
+        allocate: bytes => {
+          if (this.bytesHeld(run) + bytes > SCENE_BAKE_BYTES) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
+        },
+        beforeOverwrite: () => this.showShader(run, entry),
+      });
+    if (!baked) return;
+    // The bake released the maps it replaced. A run closed meanwhile has no use for the new ones.
+    if (run.closed) { baker.releaseAtlasMaps(baked.maps); return; }
+    const { maps, timings } = baked;
+    entry.maps = maps;
+    run.totals.nodesDrawn += timings.drawn.length; run.totals.nodesReused += timings.reused;
+    if (timings.drawn.length) {
       run.totals.compileMs += timings.compile; run.totals.drawMs += timings.total - timings.compile; run.totals.drawn++;
-      run.details.push(`${target.mesh.name.replace(/^.*node\/(\d+).*$/, "$1")}:${target.material} c${Math.round(timings.compile)} e${timings.evaluate.toFixed(1)} n${timings.normals.toFixed(1)} m${timings.mips.toFixed(1)}`);
-      // A value that changed while the bands were drawn is in some texels and not others.
-      if (shared.maps.key !== key) { shared.maps.key = ""; return; }
-      this.byKey.set(key, shared);
-    }
+      run.details.push(`${target.mesh.name.replace(/^.*node\/(\d+).*$/, "$1")}:${target.material} c${Math.round(timings.compile)} e${timings.evaluate.toFixed(1)} n${timings.normals.toFixed(1)} m${timings.mips.toFixed(1)} d${timings.drawn.length} r${timings.reused}`);
+    } else run.totals.reused++;
     if (!current()) return;
     // The material is compiled before its mesh shows it, so the switch does not stall a frame.
     await run.materials;
-    if (!current() || entry.shared?.maps.key !== key) return;
+    if (!current() || entry.maps !== maps || !baker.atlasMapsComplete(maps)) return;
     this.show(entry);
     entry.done = version;
     if (run.attached) { this.display(entry); this.host.draw(); }
@@ -570,7 +537,7 @@ export class SceneBaker {
 
   /** Points an entry's baked-look material at its maps. Textures only: the program stays the one compiled on stand-ins. */
   private show(entry: Entry): void {
-    const maps = entry.shared!.maps;
+    const maps = entry.maps!;
     const material = entry.material!;
     material.map = maps.baseColor;
     material.normalMap = maps.normal;
