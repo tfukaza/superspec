@@ -61,7 +61,12 @@ export function buildMeshes() {
 
   // One large rusted pipe: up from the floor beside the tile and into the tall wall. Detailed
   // plumbing (valves, taps, a sink) is left to ItemSpec.
-  mesh("pipe", [0.5, 0.33, 0.22]).tube([[0.14, 2.12, 0], [0.14, 2.12, 2.3], [0, 2.12, 2.3]], 0.09, { bend: 0.2, segments: 24, steps: 8 });
+  const pipe = mesh("pipe", [0.5, 0.33, 0.22]);
+  pipe.tube([[0.14, 2.12, 0], [0.14, 2.12, 2.3], [0, 2.12, 2.3]], 0.09, { bend: 0.2, segments: 24, steps: 8 });
+  // Rings: a floor flange, three couplings up the riser and a flange where it enters the wall.
+  pipe.tube([[0.14, 2.12, 0], [0.14, 2.12, 0.03]], 0.13, { segments: 24 });
+  for (const z of [0.55, 1.1, 1.65]) pipe.tube([[0.14, 2.12, z - 0.035], [0.14, 2.12, z + 0.035]], 0.108, { segments: 24 });
+  pipe.tube([[0, 2.12, 2.3], [0.03, 2.12, 2.3]], 0.13, { segments: 24 });
 
   // The floor drain's grate: a rim and bars cut to the circle.
   const drain = mesh("drain", [0.35, 0.35, 0.36]);
