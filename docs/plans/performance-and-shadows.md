@@ -109,8 +109,11 @@ The scene view is what authors look at, and it is the slowest path.
 
 - **With Phase 0-1 (now): runtime illustration style.** Finish the darker, bluer
   style with a distance-dependent penumbra and visible noise. Fix the texture-unit
-  count first, since every shadowed material spends a unit on the shadow map. Then
-  define the portable contract: a scene-level `shadowStyle` in the model packet,
+  count first, since every shadowed material spends a unit on the shadow map. The
+  style is a global rendering setting of the scene, not part of any material: it is
+  not a `LiveOperation` or a MaterialSpec construct, and no material turns it on or
+  parameterizes it. Then define the portable contract: a scene-level rendering record
+  (`shadowStyle`) stored with the project or scene and delivered in the model packet,
   implemented by the same module in Studio and the game runtime.
 - **With Phase 1: instant preview of baked shadow fields.** The UV-space bake has each
   texel's world position, and the viewer already renders a sun shadow map. Sampling

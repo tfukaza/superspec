@@ -150,12 +150,14 @@ occluder service.
     already works on any field. Blur and edge distance are neighborhood operations and
     need the pass graph (item 9): materialize, filter in meters using each chart's
     texel density, never bleed across chart boundaries.
-29. **Runtime shadow styling (important).** Renderer-side live operations behind the
-    portable `LiveOperation` contract: shadow softness (shadow-map radius or variance
-    shadow maps), noise-jittered shadow edges, shadow tint, and the light's shadow term
-    exposed as a mask for other live effects. Dynamic lights only; implemented
-    identically in Studio and the three.js game runtime; not representable in a plain
-    GLB. Builds on the Studio viewer's default-on shadows.
+29. **Runtime shadow styling (important).** A **global rendering setting of the scene,
+    not part of any material** (decided by the user, 2026-11-16): shadow softness,
+    noise-shaped shadow edges and interior, and shadow tint and darkness apply to every
+    surface the styled light shadows. It is not a `LiveOperation` and not a
+    MaterialSpec construct; no material enables, disables or parameterizes it. A
+    material may at most read the resulting shadow term as an input. Dynamic lights
+    only; implemented identically in Studio and the three.js game runtime; not
+    representable in a plain GLB. Builds on the Studio viewer's default-on shadows.
     *Prototype (Studio viewer, `browser/renderer/shadow-style.ts`,
     `?shadowstyle=illustration`):* one module patches a standard material where three.js
     applies the directional shadow, and composes with the live-operation and per-pixel
@@ -177,9 +179,10 @@ occluder service.
     inside the shadow, only ever darkening; every parameter a uniform shared by all styled
     materials; the styled term exposed as the GLSL global `msShadowTerm`. A maximum
     penumbra beyond about 0.4 m dissolves the washroom's longer shadows. Remaining: the
-    portable contract
-    (a scene-lighting record or `LiveOperation` for the style and for reading the shadow
-    term as a mask), the game runtime using the same module, more than one shadowed light,
+    portable contract (a scene-level rendering record carrying the style, stored with
+    the project or scene and delivered in the model packet, never per material; reading
+    the shadow term as a mask from a material is a separate, later question), the game
+    runtime using the same module, more than one shadowed light,
     non-PCF shadow types (they keep plain shadows), and the baked variant (item 27).
 30. **Placement by shadow (least important, later).** A light survey over ground and
     wall samples exposing `shadowAt(point)` / `sunExposure(point)` as placement
