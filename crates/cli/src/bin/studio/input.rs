@@ -93,7 +93,7 @@ fn companions(value: &Value) -> Result<BTreeMap<String, Arc<[u8]>>, String> {
     let values = value
         .as_object()
         .ok_or("A studio bundle must contain an assets object.")?;
-    if values.len() > 256 {
+    if values.len() > superspec_types::limits::MAX_COMPANIONS {
         return Err("Bundle contains too many companions.".into());
     }
     let mut result = BTreeMap::new();
@@ -186,20 +186,28 @@ impl Input {
                 "target":{"scope":"mesh","enabled":false}});
             embedded = None;
         } else {
-            value = serde_json::from_slice::<Value>(&read(
-                &path,
-                superspec_types::limits::MAX_PROJECT_FILE_BYTES,
-            )?)
-            .map_err(|error| format!("Invalid studio project JSON: {error}"))?;
-            if let Some(profile) = arguments.profile {
-                value["profile"] = json!(profile);
+            let bytes = read(&path, superspec_types::limits::MAX_PROJECT_FILE_BYTES)?;
+            if super::archive::is_archive(&bytes) {
+                let assets;
+                (value, assets) = super::archive::read(&bytes)?;
+                if let Some(profile) = arguments.profile {
+                    value["profile"] = json!(profile);
+                }
+                validate_bundle(&value)?;
+                embedded = Some(assets);
+            } else {
+                value = serde_json::from_slice::<Value>(&bytes)
+                    .map_err(|error| format!("Invalid studio project JSON: {error}"))?;
+                if let Some(profile) = arguments.profile {
+                    value["profile"] = json!(profile);
+                }
+                validate_bundle(&value)?;
+                embedded = Some(companions(&value["assets"])?);
+                value
+                    .as_object_mut()
+                    .ok_or("Studio project must be an object.")?
+                    .remove("assets");
             }
-            validate_bundle(&value)?;
-            embedded = Some(companions(&value["assets"])?);
-            value
-                .as_object_mut()
-                .ok_or("Studio project must be an object.")?
-                .remove("assets");
         }
         if let Some(profile) = arguments.profile {
             value["profile"] = json!(profile);

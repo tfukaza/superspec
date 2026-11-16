@@ -33,14 +33,20 @@ compressed in GPU memory; the 8 x 3.2 m Kowloon study scene at 2048 px is 16.3 M
 - Material Studio and the AML editor have a **KTX2 textures** checkbox beside **Download GLB**,
   checked by default. The browser loads the encoder (a separate 2 MB module) on the first KTX2
   export or GLB import only.
+- Browser Wasm has no threads, so browser KTX2 exports run in three steps: the export worker
+  bakes and stages the scene (`stage_project` / `stage_glb`), up to four short-lived workers
+  (`browser/runtime/texture-encoder.ts`) encode the listed textures with `encodeTexture`, and
+  `finish_project` / `finish_glb` write the GLB. The status line counts encoded textures.
+  Native exports encode on up to 8 threads inside `glb`.
 - Encoding is deterministic, and native and browser exports are byte-identical
   (`tests/material-ktx2-browser.mjs` with `NATIVE_STUDIO`); KTX2 adds encoding time (about 36 s
   for the 24 maps of the study scene natively, on 8 threads).
 - Loaders need a KTX2 transcoder. With Three.js use `createGltfLoader(renderer)` from
   `browser/renderer/ktx2.ts`, which serves Three's `basis_transcoder.js` and `.wasm` from `basis/`
   beside the page (`setTranscoderPath` changes it); the SuperSpec Vite build copies them there.
-  Viewers built on a plain `GLTFLoader` (for example LevelSpec's study viewers) need this before
-  they can load default exports, or export with `--textures png`.
+  LevelSpec viewers use their own `src/viewer/gltf-loader.mjs`, which imports the transcoder as
+  Vite asset URLs; other viewers built on a plain `GLTFLoader` need one of these before they can
+  load default exports, or export with `--textures png`.
 - Imported KTX2 GLBs keep their compressed textures: Studio uploads them as compressed GPU
   textures, a KTX2 re-export passes them through and a PNG export transcodes them.
 
@@ -52,9 +58,9 @@ a C++17 compiler; no other tools are required.
 Shared allowances (`superspec_types::limits`, mirrored in `browser/model/limits.ts`): 512 MiB per
 model or companion file, 64 MiB per encoded image, 1 GiB of companions per project, 1 GiB of
 images per scene and 2 GiB per exported GLB. KTX2 images are validated structurally rather than
-decoded. In the browser, a saved project embeds its companions as base64 in one JSON string, which
-JavaScript limits to about 512 M characters: projects with more than about 380 MB of companions
-cannot be saved or reopened in Studio yet, although their GLBs open directly.
+decoded. JSON projects embed companions as base64 in one string, which JavaScript limits to about
+512 M characters, so Studio saves projects with more than 64 MiB of companions as `.studio.zip`
+archives (see `docs/AUTHORING.md`).
 
 ## Text formats
 

@@ -12,7 +12,7 @@ import { RecipeTools, type Patch } from "../../browser/runtime/recipe.ts";
 import { RecipePanel } from "./recipe.ts";
 import { TypeChecker } from "../../browser/runtime/typecheck.ts";
 import { mergeReceivers, receivers } from "./packets.ts";
-import { copyProject, download, mergeAssets, parseEnvironment, parseProject, serializeProject, type StudioProject } from "./project.ts";
+import { copyProject, download, mergeAssets, openProject, parseEnvironment, projectFile, type StudioProject } from "./project.ts";
 import { initialProject, itemSource, kowloonYard, loadKowloonTextures, needsKowloonTextures } from "./starters.ts";
 
 /** A model or material identity: letters, digits, '.', '_' or '-', at most 64 characters. */
@@ -87,7 +87,7 @@ class Studio {
     });
     element("compile").addEventListener("click", () => this.edit(true));
     if (this.kind === "material") element("check-types").addEventListener("click", () => void this.checkTypes());
-    element("save-project").addEventListener("click", () => download(`${this.kind}.project.json`, serializeProject(this.project)));
+    element("save-project").addEventListener("click", () => { const file = projectFile(this.project); download(file.name, file.content); });
     element("save-source").addEventListener("click", () => download(this.module.split("/").at(-1)!, this.project.modules[this.module], "text/plain"));
     element("export-glb").addEventListener("click", () => void this.exportGlb());
     element<HTMLInputElement>("exposure").addEventListener("input", event => this.scene.setExposure((event.target as HTMLInputElement).valueAsNumber));
@@ -340,7 +340,7 @@ class Studio {
     });
     this.files("open-material", async files => {
       const revision = this.begin("Opening material project…");
-      const material = parseProject(await files[0].text(), "material");
+      const material = await openProject(files[0], "material");
       if (revision !== this.revision) return;
       const candidate = copyProject(this.project);
       for (const [name, source] of Object.entries(material.modules)) {
@@ -474,17 +474,20 @@ class Studio {
   private async exportGlb(): Promise<void> {
     if (this.status.dataset.state !== "ready" || !this.accepted || !this.environmentValid) return;
     const candidate = copyProject(this.accepted);
-    const revision = this.begin("Exporting GLB…");
+    const textures = element<HTMLInputElement>("export-ktx2").checked ? "ktx2" : "png";
+    const revision = this.begin(textures === "ktx2" ? "Exporting GLB: baking…" : "Exporting GLB…");
+    const started = performance.now();
     try {
-      const textures = element<HTMLInputElement>("export-ktx2").checked ? "ktx2" : "png";
-      const result = await this.authoring.exportProject(candidate, revision, textures);
+      const result = await this.authoring.exportProject(candidate, revision, textures, progress => {
+        if (revision !== this.revision) return;
+        this.status.textContent = `Exporting GLB: encoding KTX2 textures ${progress.encoded} of ${progress.textures}…`;      });
       if (revision !== this.revision) return;
       if (result.error || !result.download || result.diagnostics?.length) {
         this.diagnostics(result.diagnostics ?? [], candidate);
         throw new Error(result.error || "Project could not be exported.");
       }
       download(`${this.kind}.glb`, result.download, "model/gltf-binary");
-      this.ready(`GLB downloaded from the current project (${textures === "ktx2" ? "KTX2" : "PNG"} textures, ${(result.download.byteLength / 1048576).toFixed(1)} MB).`);
+      this.ready(`GLB downloaded from the current project (${textures === "ktx2" ? "KTX2" : "PNG"} textures, ${(result.download.byteLength / 1048576).toFixed(1)} MB, ${((performance.now() - started) / 1000).toFixed(1)} s).`);
     } catch (error) { if (revision === this.revision) this.failure(error); }
   }
 
@@ -547,7 +550,7 @@ class Studio {
     const revision = this.begin("Opening project…");
     this.documentRevision++;
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error(`${file.name} exceeds the ${megabytes(MAX_PROJECT_FILE_BYTES)} project file limit.`);
-    const candidate = parseProject(await file.text(), this.kind);
+    const candidate = await openProject(file, this.kind);
     if (revision !== this.revision) return;
     await this.compileOpenedInputs(candidate, revision, true);
   }

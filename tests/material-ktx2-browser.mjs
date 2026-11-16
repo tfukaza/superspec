@@ -13,6 +13,7 @@ import { execFileSync } from "node:child_process";
 import { resolve, extname, sep } from "node:path";
 import validator from "gltf-validator";
 import { launchBrowser, waitForFrames } from "../tools/browser.mjs";
+import { openProject, projectFile } from "../editor/studio/project.ts";
 
 const root = resolve(process.env.STUDIO_UI_ROOT ?? "generated/rust-editor");
 const out = resolve("generated/material-ktx2-browser");
@@ -71,10 +72,20 @@ try {
 
   // 1. KTX2 by default, PNG when unchecked; both valid glTF.
   assert.equal(await page.locator("#export-ktx2").isChecked(), true);
+  // Records every status message, to check that texture encoding reports its progress.
+  await page.evaluate(() => {
+    const status = document.querySelector("#status");
+    window.statusLog = [];
+    new MutationObserver(() => window.statusLog.push(status.textContent)).observe(status, { childList: true, characterData: true, subtree: true });
+  });
   let started = Date.now();
   const ktx2 = await download("#export-glb");
   timings.ktx2Export = Date.now() - started;
   await ready();
+  const log = await page.evaluate(() => window.statusLog);
+  const encoding = log.filter(text => /encoding KTX2 textures \d+ of \d+/.test(text));
+  assert.ok(encoding.length >= 2 && encoding.at(-1).match(/(\d+) of \1/), `export progress: ${JSON.stringify(log)}`);
+  timings.ktx2Progress = encoding.at(-1);
   await page.locator("#export-ktx2").uncheck();
   started = Date.now();
   const png = await download("#export-glb");
@@ -93,6 +104,14 @@ try {
   await writeFile(resolve(out, "studio-png.glb"), png);
   const project = await download("#save-project");
   await writeFile(resolve(out, "yard.studio.json"), project);
+  // Studio saves projects with large companions as .studio.zip archives; this one is written with
+  // the archive threshold at zero, then reopened through Open project and exported again.
+  const archive = Buffer.from(await projectFile(await openProject(new Blob([project]), "material"), 0).content.arrayBuffer());
+  await writeFile(resolve(out, "yard.studio.zip"), archive);
+  await rebuilt(() => page.locator("#open-project").setInputFiles({ name: "yard.studio.zip", mimeType: "application/zip", buffer: archive }));
+  await page.waitForTimeout(4000); await ready();
+  assert.ok(Buffer.compare(await download("#export-glb"), ktx2) === 0, "GLB from the reopened archive differs");
+  await ready();
 
   // 2. Native parity: the same saved project, built natively, gives the same bytes.
   if (process.env.NATIVE_STUDIO) {
@@ -101,6 +120,11 @@ try {
       { maxBuffer: 1024 * 1024 * 1024 });
     assert.ok(Buffer.compare(native("png"), png) === 0, "native PNG GLB differs from the browser's");
     assert.ok(Buffer.compare(native("ktx2"), ktx2) === 0, "native KTX2 GLB differs from the browser's");
+    // The same project as a .studio.zip archive (how Studio saves large projects) builds the same GLB.
+    const archived = execFileSync(process.env.NATIVE_STUDIO_SHELL ?? process.env.NATIVE_STUDIO,
+      [...(process.env.NATIVE_STUDIO_SHELL ? [process.env.NATIVE_STUDIO] : []), "glb", process.env.NATIVE_ARCHIVE ?? resolve(out, "yard.studio.zip"), "--textures", "ktx2"],
+      { maxBuffer: 1024 * 1024 * 1024 });
+    assert.ok(Buffer.compare(archived, ktx2) === 0, "native KTX2 GLB from the project archive differs");
     timings.nativeParity = true;
   }
 

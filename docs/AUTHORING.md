@@ -41,8 +41,12 @@ chips remain visible on the one-meter swatch.
 Source errors identify the module and source range. A failed or superseded edit
 keeps the last valid preview, selection and camera. Correcting the inputs resumes
 publication. **Save project** writes source modules, parameter presets, original
-scene input and companion bytes into a versioned `.studio.json` bundle. **Save
-source** writes only the selected module. **Download GLB** exports the accepted
+scene input and companion bytes into a versioned `.studio.json` bundle. When the
+companions exceed 64 MiB it writes a `.studio.zip` archive instead: `project.json`
+plus one uncompressed entry per companion under `assets/`, with each `assets` value
+in `project.json` naming its entry rather than holding base64. Open project and
+`superspec-studio` read both forms, including archives re-zipped with deflate.
+**Save source** writes only the selected module. **Download GLB** exports the accepted
 project through the same Rust build used by the native command. It does not
 export a failing draft or silently apply a newly inspected surface.
 

@@ -1,4 +1,6 @@
 //! Native host for the same portable material/item projects accepted by the browser studios.
+#[path = "studio/archive.rs"]
+mod archive;
 #[path = "studio/arguments.rs"]
 mod arguments;
 #[path = "../assets.rs"]
