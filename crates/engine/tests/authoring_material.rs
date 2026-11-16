@@ -137,6 +137,28 @@ fn object_projection_is_rigid_transform_invariant_and_world_projection_is_not() 
             }))
             .collect::<Vec<_>>()
     );
+    // Independently of each other, both meshes are their receiver's own triangles, each listed
+    // from its right-angle corner with the winding kept: (0, 1, 2) from vertex 1 and (0, 2, 3)
+    // from vertex 3 of the unit panel.
+    for (output, receiver) in [(&a, &original), (&b, &placed)] {
+        assert_eq!(
+            output
+                .model
+                .meshes
+                .values()
+                .next()
+                .unwrap()
+                .positions
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>(),
+            [1usize, 2, 0, 3, 0, 2]
+                .iter()
+                .flat_map(|i| receiver.positions[i * 3..i * 3 + 3].iter().copied())
+                .collect::<Vec<_>>()
+        );
+    }
     let world = Request {
         mapping: Mapping::World,
         ..request(source, placed)

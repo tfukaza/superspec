@@ -151,8 +151,12 @@ const FIELD_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
 #[derive(Default)]
 struct FieldPlan {
     injected: Vec<Arc<BakedReceiver>>,
-    /// Field index, components of its value (0 for a boolean) and the key its plane is kept under.
+    /// Fields with no plane yet, costliest first: field index, components of its value (0 for a
+    /// boolean) and the key its plane is kept under. A bake keeps as many as the run's budget allows.
     capture: Vec<(usize, usize, ContentKey)>,
+    /// Kept planes that lack texels some earlier sample did not fill, with their keys: a bake that
+    /// computes the field there completes a copy, which replaces the plane.
+    completing: Vec<(ContentKey, Arc<BakedReceiver>)>,
 }
 
 /// The key of a field's plane: the layout whose samples it covers, the program and decoded images,
@@ -377,6 +381,7 @@ impl Session {
         if !enabled {
             self.distribution.pending.clear();
             self.distribution.provided.clear();
+            self.distribution.reported.clear();
         }
     }
 
@@ -433,19 +438,33 @@ impl Session {
     /// Accepts rows computed by [`Self::bake_share`] for a bake this session reported.
     pub fn provide_bake_share(&mut self, bytes: &[u8]) -> Result<(), String> {
         for (key, groups, total, rows) in read_shares(bytes)? {
+            // Rows of a bake this session is not waiting for (a superseded edit, or one already
+            // built) are dropped: no later build would ask for them.
+            if !self.distribution.reported.contains_key(&key) {
+                continue;
+            }
             let provided = self.distribution.provided.entry(key).or_default();
             // Rows of another mask do not mix with these: they hold other data.
             if provided.slots.len() != total || provided.groups != groups {
                 provided.groups = groups;
                 provided.slots.clear();
                 provided.slots.resize_with(total, || None);
+                provided.bytes = 0;
             }
             for (ordinal, row) in rows {
-                *provided
+                let slot = provided
                     .slots
                     .get_mut(ordinal)
-                    .ok_or("A provided row is outside its bake.")? = Some(row);
+                    .ok_or("A provided row is outside its bake.")?;
+                provided.bytes += row.bytes();
+                if let Some(old) = slot.replace(row) {
+                    provided.bytes -= old.bytes();
+                }
             }
+            // Over the budget, the rows of the oldest other reports go first.
+            while self.distribution.provided_bytes() > PROVIDED_BYTES
+                && self.distribution.forget_oldest(Some(&key))
+            {}
         }
         Ok(())
     }
@@ -663,12 +682,18 @@ impl Session {
                 self.distribution
                     .pending
                     .retain(|pending| pending.keys != keys || pending.groups != groups);
+                for key in keys.iter().filter_map(|key| parse_key(key)) {
+                    self.distribution.report(key);
+                }
                 self.distribution.pending.push(PendingBake {
                     request: request.clone(),
                     keys,
                     images: image_bytes.keys().cloned().collect(),
                     groups,
                 });
+                // A host that never takes them does not grow the list without bound.
+                let excess = self.distribution.pending.len().saturating_sub(MAX_PENDING);
+                self.distribution.pending.drain(..excess);
                 return Err(vec![Diagnostic {
                     code: "BAKE_PENDING".into(),
                     ..Diagnostic::message(&request.entry, "Material bake is being distributed.")
@@ -679,6 +704,8 @@ impl Session {
         let mut provided: BTreeMap<usize, (Groups, Vec<Row>)> = BTreeMap::new();
         if share.is_none() {
             for (i, key) in bake_keys.iter().enumerate() {
+                // This build bakes it, from these rows or here: it is no longer waited for.
+                self.distribution.reported.remove(key);
                 if let Some(rows) = self.distribution.provided.remove(key) {
                     if !rows.groups.contains_all(dirty[i].rows()) {
                         continue;
@@ -719,8 +746,6 @@ impl Session {
                 candidates.retain(|field| steps.get(*field).is_some_and(|s| *s >= MIN_FIELD_STEPS));
                 let layout_key = plan.key(&format!("layout/{i}")).expect("planned layout");
                 let mut chosen = FieldPlan::default();
-                let mut budget = FIELD_CAPTURE_BYTES;
-                let plane_bytes = request.resolution * request.resolution * 32;
                 let mut missing = Vec::new();
                 for field in candidates {
                     let key = field_plane_key(
@@ -733,21 +758,21 @@ impl Session {
                     match self.runtime.lookup(FIELD_PLANES, &key) {
                         Some(found) => {
                             if let Artifact::Material(baked) = found.as_ref() {
-                                if matches!(baked.as_ref(), BakedReceiver::Plane(_)) {
+                                if let BakedReceiver::Plane(plane) = baked.as_ref() {
                                     chosen.injected.push(baked.clone());
+                                    if plane.incomplete() {
+                                        chosen.completing.push((key, baked.clone()));
+                                    }
                                 }
                             }
                         }
                         None => missing.push((steps[field], field, key)),
                     }
                 }
-                // The costliest fields first, while the budget lasts.
+                // The costliest fields first; the bake takes as many as the run's budget allows
+                // once it knows the atlas the planes cover.
                 missing.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
                 for (_, field, key) in missing {
-                    if plane_bytes > budget {
-                        break;
-                    }
-                    budget -= plane_bytes;
                     let components = match compiled.metadata().fields[field].kind {
                         program::Type::Scalar => 1,
                         program::Type::Vec2 => 2,
@@ -759,7 +784,9 @@ impl Session {
                 field_plans.push(chosen);
             }
         }
-        let mut captured_planes: Vec<(ContentKey, program::FieldPlane)> = Vec::new();
+        // What every receiver of this run may still add to the plane partition.
+        let mut capture_budget = FIELD_CAPTURE_BYTES;
+        let mut captured_planes: Vec<(ContentKey, program::FieldPlane, bool)> = Vec::new();
         let run_plan = match &dependencies_only {
             Some(plan) => plan.as_ref().map_err(|e| fail(e.to_string()))?,
             None => &plan,
@@ -919,14 +946,11 @@ impl Session {
                             wanted,
                             provided.remove(&index),
                             field_plans.get(index),
+                            &mut capture_budget,
                             stopped,
                         ) {
                             Ok((results, planes)) => {
-                                if let Some(plan) = field_plans.get(index) {
-                                    for ((_, _, key), plane) in plan.capture.iter().zip(planes) {
-                                        captured_planes.push((*key, plane));
-                                    }
-                                }
+                                captured_planes.extend(planes);
                                 let mut requested = None;
                                 for (made, value) in results {
                                     let value = Arc::new(value);
@@ -957,14 +981,20 @@ impl Session {
                     .unwrap_or_else(|| fail(e))
             })?;
         // Only a finished build keeps what it computed: a failed or cancelled one never reaches here.
-        for (key, plane) in captured_planes {
+        // A plane that holds nothing (its rows were evaluated one sample at a time, or nothing read
+        // the field) is not kept, so a later bake tries again; a completed copy replaces its plane
+        // only when it gained texels.
+        for (key, plane, completes) in captured_planes {
+            if plane.stored() == 0 || (completes && plane.added() == 0) {
+                continue;
+            }
             let bytes = plane.bytes();
             self.runtime.retain(
                 FIELD_PLANES,
                 key,
                 Artifact::Material(Arc::new(BakedReceiver::Plane(plane))),
                 bytes,
-                false,
+                completes,
             );
         }
         if let Some(share) = share {
@@ -1089,6 +1119,52 @@ pub(crate) struct Distribution {
     pending: Vec<PendingBake>,
     /// Rows received so far for a reported bake, by row ordinal.
     provided: BTreeMap<ContentKey, ProvidedRows>,
+    /// The bakes this session reported and has not built since, with when each was reported.
+    /// Rows are accepted only for these, so nothing can be parked under a key no build will ask for.
+    reported: BTreeMap<ContentKey, u64>,
+    /// Counts reports, to tell the oldest.
+    clock: u64,
+}
+
+/// Bakes reported and waiting at most; reporting more forgets the oldest and their rows.
+const MAX_REPORTED: usize = 512;
+/// Pending descriptions kept for a host that does not take them; more drop the oldest.
+const MAX_PENDING: usize = 256;
+/// Bytes of provided rows kept at most; more drop the rows of the oldest reported bakes. One 2048 px
+/// bake's rows are about 40 MiB.
+const PROVIDED_BYTES: usize = 256 * 1024 * 1024;
+
+impl Distribution {
+    /// Notes that `key` was reported now, forgetting the oldest reports beyond the bound.
+    fn report(&mut self, key: ContentKey) {
+        self.clock += 1;
+        self.reported.insert(key, self.clock);
+        while self.reported.len() > MAX_REPORTED {
+            self.forget_oldest(None);
+        }
+    }
+
+    /// Forgets the oldest reported bake other than `keep`, with its rows; false when there is none.
+    fn forget_oldest(&mut self, keep: Option<&ContentKey>) -> bool {
+        let oldest = self
+            .reported
+            .iter()
+            .filter(|(key, _)| Some(*key) != keep)
+            .min_by_key(|(_, stamp)| **stamp)
+            .map(|(key, _)| *key);
+        match oldest {
+            Some(key) => {
+                self.reported.remove(&key);
+                self.provided.remove(&key);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn provided_bytes(&self) -> usize {
+        self.provided.values().map(|rows| rows.bytes).sum()
+    }
 }
 
 /// Rows other sessions evaluated for one bake, with the data they carry.
@@ -1096,6 +1172,8 @@ pub(crate) struct Distribution {
 struct ProvidedRows {
     groups: Groups,
     slots: Vec<Option<Row>>,
+    /// Bytes the rows received so far hold.
+    bytes: usize,
 }
 
 /// A bake other sessions can share: the material request, the content keys of its receivers'
@@ -1206,7 +1284,13 @@ fn read_shares(mut bytes: &[u8]) -> Result<Shares, String> {
         }
         let total = word(&mut bytes)?;
         let count = word(&mut bytes)?;
-        if total > 1 << 20 || count > total {
+        // A row takes at least 21 bytes, and a share is one of at most 64 equal runs of a bake's
+        // rows, so neither count can ask for more memory than the bytes received account for.
+        if total > 1 << 20
+            || count > total
+            || count > bytes.len() / 21
+            || total > 64 * (count + 1) + 64
+        {
             return Err("Invalid bake share row count.".into());
         }
         let mut rows = Vec::with_capacity(count);
@@ -1219,6 +1303,10 @@ fn read_shares(mut bytes: &[u8]) -> Result<Shares, String> {
             }
             let flags = take(&mut bytes, 1)?[0];
             let strength = floats(&mut bytes, 1)?[0];
+            // Evaluated rows hold finite values only; anything else would reach the encoders.
+            if !(strength.is_finite() && strength >= 1.) {
+                return Err("Invalid bake share emission strength.".into());
+            }
             let mut bytes_of = |wanted: bool, count: usize| -> Result<Vec<u8>, String> {
                 Ok(if wanted {
                     take(&mut bytes, count)?.to_vec()
@@ -1242,6 +1330,14 @@ fn read_shares(mut bytes: &[u8]) -> Result<Shares, String> {
             let live = (0..live)
                 .map(|_| floats(&mut bytes, cell))
                 .collect::<Result<Vec<_>, _>>()?;
+            if emitted
+                .iter()
+                .flatten()
+                .any(|v: &f64| !(v.is_finite() && *v >= 0. && *v <= strength))
+                || live.iter().flatten().any(|v| !v.is_finite())
+            {
+                return Err("Invalid bake share values.".into());
+            }
             rows.push((
                 ordinal,
                 Row {
@@ -1403,6 +1499,23 @@ struct Row {
     blend: bool,
     emits: bool,
     strength: f64,
+}
+
+impl Row {
+    /// Bytes this row holds.
+    fn bytes(&self) -> usize {
+        self.color.len()
+            + self.normal.len()
+            + self.roughness.len()
+            + self.metalness.len()
+            + self.emitted.len() * 24
+            + self
+                .live
+                .iter()
+                .map(|values| values.len() * 8)
+                .sum::<usize>()
+            + 128
+    }
 }
 
 /// Rows a block evaluates together. Larger blocks reuse more neighbor heights; smaller ones bound
@@ -2025,8 +2138,15 @@ fn bake_groups(
     wanted: Groups,
     provided: Option<(Groups, Vec<Row>)>,
     field_plan: Option<&FieldPlan>,
+    capture_budget: &mut usize,
     cancelled: &dyn Fn() -> bool,
-) -> Result<(Vec<(Group, BakedReceiver)>, Vec<program::FieldPlane>), Diagnostic> {
+) -> Result<
+    (
+        Vec<(Group, BakedReceiver)>,
+        Vec<(ContentKey, program::FieldPlane, bool)>,
+    ),
+    Diagnostic,
+> {
     #[cfg(test)]
     BAKED.with(|baked| baked.borrow_mut().push(wanted));
     let failure = |message: String| Diagnostic::message(&program.metadata().entry, message);
@@ -2125,14 +2245,35 @@ fn bake_groups(
                 .collect()
         })
         .unwrap_or_default();
-    let mut captured: Vec<program::FieldPlane> = match (&serial, field_plan) {
-        (Some(_), Some(plan)) => plan
-            .capture
-            .iter()
-            .map(|(field, components, _)| program::FieldPlane::new(*field, *components, pixels))
-            .collect(),
-        _ => Vec::new(),
-    };
+    // Planes are sized by this atlas. As many are filled as the run's budget still allows, and
+    // none when a plane could not be kept or the rows cannot be evaluated together (only that
+    // path fills planes).
+    let mut captured: Vec<program::FieldPlane> = Vec::new();
+    let mut captured_keys: Vec<(ContentKey, bool)> = Vec::new();
+    if let (Some(evaluator), Some(plan)) = (&serial, field_plan) {
+        let plane_bytes = pixels * 32;
+        if plane_bytes + 64 <= FIELD_PLANES.bytes && evaluator.rows_evaluate_together() {
+            for (field, components, key) in &plan.capture {
+                if plane_bytes > *capture_budget {
+                    break;
+                }
+                *capture_budget -= plane_bytes;
+                captured.push(program::FieldPlane::new(*field, *components, pixels));
+                captured_keys.push((*key, false));
+            }
+            for (key, kept) in &plan.completing {
+                let BakedReceiver::Plane(plane) = kept.as_ref() else {
+                    continue;
+                };
+                if plane_bytes > *capture_budget {
+                    break;
+                }
+                *capture_budget -= plane_bytes;
+                captured.push(plane.completing());
+                captured_keys.push((*key, true));
+            }
+        }
+    }
     #[cfg(test)]
     PLANES.with(|planes| {
         planes
@@ -2335,8 +2476,18 @@ fn bake_groups(
             encodings.push((group, encoding));
         }
     }
-    Ok((encode_maps(encodings, threads, cancelled)?, captured))
+    let planes = captured_keys
+        .into_iter()
+        .zip(captured)
+        .map(|((key, completes), plane)| (key, plane, completes))
+        .collect();
+    Ok((encode_maps(encodings, threads, cancelled)?, planes))
 }
+
+/// Fields one field bake returns at most.
+const MAX_BAKED_FIELDS: usize = 16;
+/// Bytes one field bake returns at most (16 per texel and field).
+const BAKED_FIELD_BYTES: usize = 128 * 1024 * 1024;
 
 /// Named fields evaluated over a receiver's atlas: the data a GPU preview binds as textures for the
 /// parts of a program only the CPU can evaluate (see `Program::shader_plan`).
@@ -2363,9 +2514,14 @@ impl Session {
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<FieldBake, Vec<Diagnostic>> {
-        let program = self.program(request)?;
         self.begin_authoring(revision, &request.entry)?;
+        let program = self.program(request)?;
         let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
+        if names.len() > MAX_BAKED_FIELDS {
+            return Err(fail(format!(
+                "A field bake covers at most {MAX_BAKED_FIELDS} fields."
+            )));
+        }
         if request.receivers.len() > 1 {
             return Err(fail("A field bake covers one receiver.".into()));
         }
@@ -2417,6 +2573,12 @@ impl Session {
             .evaluator_with_features(&inputs, &features)
             .map_err(|e| vec![Diagnostic::from(e)])?;
         let slots = selection.len();
+        if slots.saturating_mul(atlas.width * atlas.height * 16) > BAKED_FIELD_BYTES {
+            return Err(fail(format!(
+                "These fields over this atlas exceed the {} MiB a field bake may return.",
+                BAKED_FIELD_BYTES >> 20
+            )));
+        }
         let mut fields = vec![vec![0f32; atlas.width * atlas.height * 4]; slots];
         let mut values = vec![FieldValue::Scalar(0.); slots];
         for chart in &atlas.charts {
@@ -2906,5 +3068,219 @@ output metalness = 0;";
                 .expect("an unknown parameter fails");
             assert_eq!(errors[0].code, "MS_PARAMETER", "{errors:?}");
         }
+    }
+
+    fn quad(id: &str, width: f64, height: f64) -> crate::authoring::Receiver {
+        crate::authoring::Receiver {
+            id: id.into(),
+            object_id: id.into(),
+            positions: vec![0., 0., 0., width, 0., 0., width, 0., height, 0., 0., height],
+            normals: vec![0., -1., 0., 0., -1., 0., 0., -1., 0., 0., -1., 0.],
+            uvs: vec![0., 0., 1., 0., 1., 1., 0., 1.],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            object_to_world: None,
+            contacts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn kept_planes_share_one_budget_per_run_sized_by_the_atlases() {
+        // Four square 512 px atlases: a plane of each is 8 MiB, and a run adds 24 MiB at most.
+        let request = Request {
+            source: HEAVY.into(),
+            receivers: vec![
+                quad("a", 1., 1.),
+                quad("b", 2., 2.),
+                quad("c", 3., 3.),
+                quad("d", 4., 4.),
+            ],
+            ..request(json!({}), 0, 512)
+        };
+        let mut session = Session::default();
+        let (_, planes) = planes_of(&mut session, 1, &request);
+        assert_eq!(planes.iter().map(|p| p.1).sum::<usize>(), 3, "{planes:?}");
+        let (entries, bytes) = session.runtime.retained(FIELD_PLANES);
+        assert_eq!(entries, 3);
+        assert!(bytes <= FIELD_CAPTURE_BYTES + 3 * 64, "{bytes}");
+    }
+
+    #[test]
+    fn a_program_whose_rows_cannot_be_evaluated_together_keeps_no_planes() {
+        // The untaken branch makes the cost bound too large for rows; nothing would fill a plane.
+        let source = "material 1;
+fn l1(x: scalar) -> scalar = x + x + x + x + x + x + x + x + x + x;
+fn l2(x: scalar) -> scalar = l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x);
+fn l3(x: scalar) -> scalar = l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x);
+fn l4(x: scalar) -> scalar = l3(x) + l3(x) + l3(x) + l3(x) + l3(x) + l3(x) + l3(x) + l3(x) + l3(x) + l3(x);
+param tint: scalar = 0.5 range(0, 1);
+let heavy = fbm(surface * 12, seed(\"g\"), 3) + noise(surface * 5, seed(\"h\")) * 0.5 + sin(surface.x * 9) * cos(surface.y * 7) * 0.1;
+output base_color = vec3(clamp(heavy * tint, 0, 1), select(surface.x > 100, l4(surface.x), 0.25), 0.2);
+output roughness = 0.5;";
+        let with = |tint: f64| Request {
+            source: source.into(),
+            ..request(json!({ "tint": tint }), 0, 32)
+        };
+        let mut session = Session::default();
+        for (revision, tint) in [(1, 0.5), (2, 0.7), (3, 0.9)] {
+            let (output, planes) = planes_of(&mut session, revision, &with(tint));
+            assert_eq!(planes, [(0, 0)], "tint {tint}");
+            assert_same(&output, &fresh(&with(tint)), "unbounded rows");
+        }
+        assert_eq!(session.runtime.retained(FIELD_PLANES).0, 0);
+    }
+
+    #[test]
+    fn a_plane_some_samples_did_not_fill_is_completed_by_a_later_bake() {
+        // Color reads `heavy` on half the swatch; roughness reads it everywhere once `wide` is set.
+        let source = "material 1;
+param wide: bool = false;
+param shine: scalar = 0.2 range(0, 1);
+let heavy = fbm(surface * 12, seed(\"g\"), 3) + noise(surface * 5, seed(\"h\")) * 0.5 + sin(surface.x * 9) * cos(surface.y * 7) * 0.1;
+output base_color = vec3(clamp(select(surface.x < 0.5, heavy, 0.3), 0, 1), 0.4, 0.2);
+output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
+        let with = |parameters: serde_json::Value| Request {
+            source: source.into(),
+            ..request(parameters, 0, 48)
+        };
+        let mut session = Session::default();
+        let (_, planes) = planes_of(&mut session, 1, &with(json!({})));
+        assert_eq!(planes, [(0, 1)]);
+        // The half-filled plane is read and a copy completed with the other half.
+        let wide = with(json!({ "wide": true }));
+        let (output, planes) = planes_of(&mut session, 2, &wide);
+        assert_eq!(planes, [(1, 1)]);
+        assert_same(&output, &fresh(&wide), "completing bake");
+        // The completed plane replaced it: the next edit only reads.
+        let edited = with(json!({ "wide": true, "shine": 0.6 }));
+        let (output, planes) = planes_of(&mut session, 3, &edited);
+        assert_eq!(planes, [(1, 0)]);
+        assert_same(&output, &fresh(&edited), "after completion");
+        assert_eq!(session.runtime.retained(FIELD_PLANES).0, 1);
+    }
+
+    #[test]
+    fn shares_are_kept_only_for_reported_bakes_and_within_bounds() {
+        let mut session = Session::default();
+        session.distribute_bakes(true);
+        let first = request(json!({}), 0, 96);
+        assert!(session.build(&first, 1, &no_assets, &|| false).is_err());
+        let pending = session.take_pending_bake().unwrap();
+        let share = Session::default()
+            .bake_share(&pending, 0, 2, &no_assets, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        // A session that reported nothing keeps nothing of it.
+        let mut stranger = Session::default();
+        stranger.distribute_bakes(true);
+        stranger.provide_bake_share(&share).unwrap();
+        assert!(stranger.distribution.provided.is_empty());
+        // The reporting session keeps it until a build takes it.
+        session.provide_bake_share(&share).unwrap();
+        assert_eq!(session.distribution.provided.len(), 1);
+        // Many superseded edits: reports, descriptions and rows stay bounded.
+        for edit in 0..(MAX_REPORTED + 40) {
+            let edited = request(json!({ "tint": edit as f64 / 2000. }), 1, 96);
+            assert!(
+                session
+                    .build(&edited, 2 + edit as u64, &no_assets, &|| false)
+                    .is_err()
+            );
+        }
+        assert!(session.distribution.reported.len() <= MAX_REPORTED);
+        assert!(session.distribution.pending.len() <= MAX_PENDING);
+        assert!(
+            session.distribution.provided.is_empty(),
+            "the rows of the forgotten first report went with it"
+        );
+        session.provide_bake_share(&share).unwrap();
+        assert!(
+            session.distribution.provided.is_empty(),
+            "a forgotten bake's rows are dropped"
+        );
+        // Disabling drops everything.
+        session.distribute_bakes(false);
+        assert!(
+            session.distribution.reported.is_empty() && session.distribution.pending.is_empty()
+        );
+    }
+
+    #[test]
+    fn malformed_shares_are_refused_without_reserving_what_they_claim() {
+        let key = [7u8; 32];
+        // A header claiming a million rows in a few bytes.
+        let mut claim = Vec::new();
+        claim.extend(SHARE_MAGIC);
+        claim.extend(key);
+        claim.push(Groups::MAPS.0);
+        claim.extend((1u32 << 20).to_le_bytes());
+        claim.extend((1u32 << 20).to_le_bytes());
+        assert!(read_shares(&claim).is_err());
+        // A total far beyond what the share's own rows imply.
+        let row = |emitted: f64, strength: f64| Row {
+            cell: 1,
+            color: vec![0; 4],
+            normal: vec![0; 4],
+            roughness: vec![0],
+            metalness: vec![0],
+            emitted: vec![[emitted, 0., 0.]],
+            live: Vec::new(),
+            blend: false,
+            emits: true,
+            strength,
+        };
+        let mut sparse = Vec::new();
+        write_share(
+            &mut sparse,
+            &key,
+            Groups::MAPS,
+            1 << 20,
+            &[(0, row(0.5, 1.))],
+        );
+        assert!(read_shares(&sparse).is_err());
+        // Values no evaluation produces.
+        for (emitted, strength) in [
+            (f64::NAN, 1.),
+            (f64::INFINITY, 1.),
+            (0.5, f64::NAN),
+            (-1., 1.),
+            (0.5, 0.),
+        ] {
+            let mut bytes = Vec::new();
+            write_share(
+                &mut bytes,
+                &key,
+                Groups::MAPS,
+                1,
+                &[(0, row(emitted, strength))],
+            );
+            assert!(read_shares(&bytes).is_err(), "{emitted} {strength}");
+        }
+        let mut fine = Vec::new();
+        write_share(&mut fine, &key, Groups::MAPS, 1, &[(0, row(0.5, 1.))]);
+        assert_eq!(read_shares(&fine).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_field_bake_is_bounded() {
+        let mut session = Session::default();
+        let names: Vec<String> = (0..MAX_BAKED_FIELDS + 1)
+            .map(|_| "heavy".to_owned())
+            .collect();
+        let errors = session
+            .bake_fields(&heavy_request(json!({}), 0), 1, &names, &no_assets, &|| {
+                false
+            })
+            .err()
+            .expect("too many fields");
+        assert!(errors[0].message.contains("at most"), "{errors:?}");
+        let baked = session
+            .bake_fields(
+                &heavy_request(json!({}), 0),
+                2,
+                &names[..2],
+                &no_assets,
+                &|| false,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(baked.fields.len(), 2);
     }
 }

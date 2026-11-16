@@ -123,6 +123,8 @@ fn cached_admission_still_counts_every_used_image_against_bundle_limits() {
     };
     // As many distinct images as the scene pixel allowance admits, then one more.
     let fits = superspec_model::MAX_SCENE_IMAGE_PIXELS / (2048 * 2048);
+    // Independently of the constant: the allowance is 512 Mi pixels, 128 images of 2048 by 2048.
+    assert_eq!(fits, 128);
     cache
         .compile(&source(fits), 0, &|_| Ok(bytes.clone()))
         .unwrap();

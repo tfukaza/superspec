@@ -240,6 +240,51 @@ fn rows_match_per_sample_evaluation_on_the_example_programs() {
         let samples = samples(150);
         eprintln!("{name}");
         assert_same(&program, &inputs, &features, &samples, OutputSet::ALL, true);
+        let with_features = Inputs {
+            features: features.clone(),
+            ..inputs.clone()
+        };
+        for count in [1, 40, 64, 150] {
+            assert!(agree(
+                &program,
+                &with_features,
+                &ordered(count),
+                OutputSet::ALL,
+                name
+            ));
+        }
+        // An allowance one short of what the row takes declines, and one sample at a time fails.
+        let row = ordered(70);
+        let selection = FieldSelection::default();
+        let mut unused = Vec::new();
+        let mut full = program.evaluator(&with_features).unwrap();
+        full.evaluate_row_together(&row, OutputSet::ALL, &selection, &mut unused)
+            .unwrap();
+        let taken = 64_000_000 - full.allowance();
+        let mut exact = program
+            .evaluator_with_budget(&with_features, taken)
+            .unwrap();
+        assert!(
+            exact
+                .evaluate_row_together(&row, OutputSet::ALL, &selection, &mut unused)
+                .is_some()
+        );
+        assert_eq!(exact.allowance(), 0);
+        let mut short = program
+            .evaluator_with_budget(&with_features, taken - 1)
+            .unwrap();
+        assert!(
+            short
+                .evaluate_row_together(&row, OutputSet::ALL, &selection, &mut unused)
+                .is_none()
+        );
+        assert_eq!(
+            short
+                .evaluate_row(&row, OutputSet::ALL, &selection, &mut unused)
+                .unwrap_err()
+                .code,
+            "MS_LIMIT"
+        );
         // A subset of outputs, as a map's bake asks for.
         assert_same(
             &program,
@@ -613,4 +658,323 @@ fn generated_programs_give_the_same_results_together_and_alone() {
         "too few generated programs evaluate: {agreed}"
     );
     assert!(together > 100, "too few rows evaluate together: {together}");
+}
+
+/// Samples in order along a chart row: `uv.x`, `world.x` and `surface.x` rise with the index.
+fn ordered(count: usize) -> Vec<Sample> {
+    (0..count)
+        .map(|i| {
+            let x = (i as f64 + 0.5) / count as f64;
+            let world = [x * 1.2 - 0.6, 0.05, 0.3 + 0.4 * x];
+            Sample {
+                uv: [x, 0.25 + 0.5 * x],
+                surface: [world[0], world[2]],
+                object: world,
+                world,
+                normal: [0., 0., 1.],
+                footprint: 0.004,
+                uv_footprint: Some(0.004),
+                gravity: [0., 0., -1.],
+                bounds_min: [-0.6, -0.11, 0.],
+                bounds_max: [0.6, 0.11, 1.1],
+            }
+        })
+        .collect()
+}
+
+/// Evaluates the row both ways and requires equal results, or the same error. Returns whether
+/// the row was evaluated together.
+fn agree(
+    program: &Program,
+    inputs: &Inputs,
+    samples: &[Sample],
+    outputs: OutputSet,
+    what: &str,
+) -> bool {
+    let names: Vec<&str> = program
+        .metadata()
+        .fields
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    let selection = program.select_fields(&names).unwrap();
+    let slots = selection.len();
+    let mut row_fields = Vec::new();
+    let attempted = program
+        .evaluator(inputs)
+        .unwrap()
+        .evaluate_row_together(samples, outputs, &selection, &mut row_fields)
+        .is_some();
+    let mut row = program.evaluator(inputs).unwrap();
+    let result = row.evaluate_row(samples, outputs, &selection, &mut row_fields);
+    let mut alone = program.evaluator(inputs).unwrap();
+    let mut expected = Vec::new();
+    let mut expected_fields = Vec::new();
+    let mut failure = None;
+    for sample in samples {
+        let mut values = vec![FieldValue::Scalar(0.); slots];
+        match alone.evaluate_outputs(sample, outputs, &selection, &mut values) {
+            Ok(found) => {
+                expected.push(found);
+                expected_fields.extend(values);
+            }
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+    match (result, failure) {
+        (Ok(found), None) => {
+            for (i, (a, b)) in found.iter().zip(&expected).enumerate() {
+                assert_eq!(bits(a), bits(b), "{what}: outputs of sample {i}");
+            }
+            assert_eq!(
+                field_bits(&row_fields),
+                field_bits(&expected_fields),
+                "{what}: fields"
+            );
+            // Both ways take the same from the batch allowance, so where it runs out is the same.
+            assert_eq!(row.allowance(), alone.allowance(), "{what}: allowance left");
+        }
+        (Err(a), Some(b)) => {
+            assert_eq!(a.to_string(), b.to_string(), "{what}");
+            assert!(!attempted, "{what}: a failing row must decline");
+        }
+        (Ok(_), Some(b)) => panic!("{what}: together succeeded, alone failed with {b}"),
+        (Err(a), None) => panic!("{what}: together failed with {a}, alone succeeded"),
+    }
+    attempted
+}
+
+const SUBSETS: [OutputSet; 5] = [
+    OutputSet::ALL,
+    OutputSet::ROUGHNESS,
+    OutputSet::HEIGHT,
+    OutputSet::BASE_COLOR,
+    OutputSet::BASE_COLOR.union(OutputSet::HEIGHT),
+];
+
+#[test]
+fn a_field_some_samples_read_first_is_not_taken_for_the_same_everywhere() {
+    // `f` steps at uv.x = 0.5. Color reads it only below 0.25, where every sample takes one
+    // branch; roughness and height read it everywhere afterwards.
+    let program = source(
+        "material 1;
+         let f = select(uv.x < 0.5, 1.0, 2.0);
+         let g = select(uv.x < 0.75 && uv.x > 0.1, f, 3.0);
+         output base_color = vec3(select(uv.x < 0.25, f, 0.0) * 0.1, select(uv.x > 0.9, g, 0.0) * 0.1, 0.2);
+         output roughness = f * 0.25;
+         output metalness = g * 0.1;
+         output height = f * 0.001 + g * 0.002;",
+    );
+    let inputs = Inputs::default();
+    for count in [1, 3, 8, 63, 64, 65, 128, 200] {
+        let samples = ordered(count);
+        for outputs in SUBSETS {
+            assert!(agree(
+                &program,
+                &inputs,
+                &samples,
+                outputs,
+                &format!("{count} samples")
+            ));
+        }
+        // The value of one output does not depend on which others were evaluated with it.
+        let mut evaluator = program.evaluator(&inputs).unwrap();
+        let selection = FieldSelection::default();
+        let mut unused = Vec::new();
+        let all = evaluator
+            .evaluate_row(&samples, OutputSet::ALL, &selection, &mut unused)
+            .unwrap();
+        let only = evaluator
+            .evaluate_row(&samples, OutputSet::HEIGHT, &selection, &mut unused)
+            .unwrap();
+        for (i, (a, b)) in all.iter().zip(&only).enumerate() {
+            assert_eq!(
+                a.height.to_bits(),
+                b.height.to_bits(),
+                "height of sample {i} of {count}"
+            );
+            assert_eq!(a.roughness, if samples[i].uv[0] < 0.5 { 0.25 } else { 0.5 });
+        }
+    }
+}
+
+#[test]
+fn kept_planes_hold_each_sample_s_own_value_and_only_change_what_is_computed() {
+    let program = source(
+        "material 1;
+         let f = select(uv.x < 0.5, 1.0, 2.0);
+         let n = noise(vec2(uv.x * 9, uv.y * 7), seed(\"n\")) * f;
+         output base_color = vec3(select(uv.x < 0.25, f, 0.0) * 0.1, select(uv.x < 0.6, n, 0.0) * 0.1, 0.2);
+         output roughness = f * 0.25 + n * 0.1;",
+    );
+    let inputs = Inputs::default();
+    let index = |name: &str| {
+        program
+            .metadata()
+            .fields
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap()
+    };
+    let selection = FieldSelection::default();
+    for count in [5, 64, 150] {
+        let samples = ordered(count);
+        let texels: Vec<usize> = (0..count).map(|i| i * 2 + 1).collect();
+        let mut evaluator = program.evaluator(&inputs).unwrap();
+        let mut unused = Vec::new();
+        // Color reads each field for only some samples; the planes keep exactly those.
+        let mut planes = vec![
+            program::FieldPlane::new(index("f"), 1, count * 2 + 1),
+            program::FieldPlane::new(index("n"), 1, count * 2 + 1),
+        ];
+        evaluator
+            .evaluate_row_with_planes(
+                &samples,
+                &texels,
+                OutputSet::BASE_COLOR,
+                &selection,
+                &mut unused,
+                &[],
+                &mut planes,
+            )
+            .unwrap();
+        // Reading them back, every output equals the one computed without planes.
+        let kept: Vec<&program::FieldPlane> = planes.iter().collect();
+        for outputs in [OutputSet::ROUGHNESS, OutputSet::ALL, OutputSet::BASE_COLOR] {
+            let with = evaluator
+                .evaluate_row_with_planes(
+                    &samples,
+                    &texels,
+                    outputs,
+                    &selection,
+                    &mut unused,
+                    &kept,
+                    &mut [],
+                )
+                .unwrap();
+            let mut alone = program.evaluator(&inputs).unwrap();
+            for (i, sample) in samples.iter().enumerate() {
+                let expected = alone
+                    .evaluate_outputs(sample, outputs, &selection, &mut [])
+                    .unwrap();
+                assert_eq!(bits(&with[i]), bits(&expected), "sample {i} of {count}");
+            }
+        }
+    }
+}
+
+impl Generator {
+    /// A value in [0, 1.5]: a number, a parameter, an earlier field or arithmetic that stays bounded.
+    fn step_value(&mut self, fields: usize, depth: u32) -> String {
+        match self.below(if depth == 0 { 4 } else { 8 }) {
+            0 | 1 if fields > 0 => format!("f{}", self.below(fields as u64)),
+            0..=2 => format!("{:.2}", self.below(100) as f64 / 100.),
+            3 => "p0".into(),
+            4 => format!(
+                "min({}, {})",
+                self.step_value(fields, depth - 1),
+                self.step_value(fields, depth - 1)
+            ),
+            5 => format!(
+                "({} * 0.5 + {} * 0.5)",
+                self.step_value(fields, depth - 1),
+                self.step_value(fields, depth - 1)
+            ),
+            _ => self.step(fields, depth - 1),
+        }
+    }
+    fn threshold(&mut self) -> String {
+        let axis = ["uv.x", "uv.x", "uv.x", "uv.y", "world.x"][self.below(5) as usize];
+        let operator = ["<", ">", "<=", ">="][self.below(4) as usize];
+        let limit = (self.below(17) as f64 - 2.) / 12.;
+        match self.below(6) {
+            0 => format!(
+                "{axis} {operator} {limit:.3} && uv.x > {:.3}",
+                self.below(10) as f64 / 10.
+            ),
+            1 => format!(
+                "{axis} {operator} {limit:.3} || uv.x > {:.3}",
+                self.below(10) as f64 / 10.
+            ),
+            2 if true => format!("!({axis} {operator} {limit:.3})"),
+            _ => format!("{axis} {operator} {limit:.3}"),
+        }
+    }
+    /// A `select` on a threshold of the sample, over values that may be shared fields or selects.
+    fn step(&mut self, fields: usize, depth: u32) -> String {
+        format!(
+            "select({}, {}, {})",
+            self.threshold(),
+            self.step_value(fields, depth),
+            self.step_value(fields, depth)
+        )
+    }
+    fn stepped_program(&mut self) -> String {
+        let mut text = String::from(
+            "material 1;\nparam p0: scalar = 0.3 range(-1, 2);\nfn pick(x: scalar, y: scalar) -> scalar = select(x > y, x, y * 0.5);\n",
+        );
+        let fields = 5;
+        for i in 0..fields {
+            let body = if self.below(4) == 0 && i > 0 {
+                format!("pick({}, {})", self.step_value(i, 1), self.step_value(i, 1))
+            } else {
+                self.step(i, 2)
+            };
+            text += &format!("let f{i} = {body};\n");
+        }
+        let r = self.step(fields, 1);
+        let g = self.step(fields, 2);
+        text += &format!(
+            "output base_color = vec3(clamp({r} * 0.5, 0, 1), clamp({g} * 0.5, 0, 1), 0.2);\n"
+        );
+        text += &format!(
+            "output roughness = clamp({} * 0.5, 0, 1);\n",
+            self.step(fields, 1)
+        );
+        text += &format!(
+            "output metalness = clamp({} * 0.5, 0, 1);\n",
+            self.step_value(fields, 2)
+        );
+        text += &format!("output height = {} * 0.001;\n", self.step(fields, 2));
+        text
+    }
+}
+
+#[test]
+fn generated_steps_over_shared_fields_agree_on_ordered_rows_of_every_size() {
+    let mut generator = Generator(0x1234_5678_9ABC_DEF1);
+    let mut together = 0;
+    for case in 0..300 {
+        let text = generator.stepped_program();
+        let program = program::compile(&Sources {
+            entry: "main.ms".into(),
+            modules: [("main.ms".to_owned(), text.clone())].into(),
+        })
+        .unwrap_or_else(|e| panic!("case {case}: {e:?}\n{text}"));
+        let inputs = Inputs::default();
+        for count in [1, 6, 33, 64, 65, 190] {
+            let samples = ordered(count);
+            for outputs in SUBSETS {
+                together += usize::from(agree(
+                    &program,
+                    &inputs,
+                    &samples,
+                    outputs,
+                    &format!("case {case}, {count} samples\n{text}"),
+                ));
+            }
+        }
+        // Unordered samples of the earlier generator too.
+        agree(
+            &program,
+            &inputs,
+            &samples(70),
+            OutputSet::ALL,
+            &format!("case {case} unordered\n{text}"),
+        );
+    }
+    assert!(together > 8000, "rows must evaluate together: {together}");
 }

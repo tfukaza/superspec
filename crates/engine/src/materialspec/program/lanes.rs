@@ -35,6 +35,13 @@ pub struct FieldPlane {
     kind: u8,
     /// Four numbers per texel: the components (padding included) and the footprint estimate.
     data: Vec<f64>,
+    /// Texels holding a value.
+    stored: usize,
+    /// Texels given a value since the plane was made or last taken up for completion.
+    added: usize,
+    /// Samples evaluated while this plane was being filled that left no value in it: the field
+    /// was not read there, or the row was evaluated one sample at a time.
+    missed: usize,
 }
 
 impl FieldPlane {
@@ -45,6 +52,30 @@ impl FieldPlane {
             field,
             kind: if components == 0 { 4 } else { components as u8 },
             data: [0., 0., 0., f64::NAN].repeat(texels),
+            stored: 0,
+            added: 0,
+            missed: 0,
+        }
+    }
+    /// Texels that hold a value.
+    pub fn stored(&self) -> usize {
+        self.stored
+    }
+    /// Texels given a value since the plane was made or copied by [Self::completing].
+    pub fn added(&self) -> usize {
+        self.added
+    }
+    /// Whether some evaluated sample left no value, so a later evaluation may add texels.
+    pub fn incomplete(&self) -> bool {
+        self.missed > 0
+    }
+    /// A copy to fill further: an evaluation that computes the field where this plane lacks it
+    /// adds those texels to the copy.
+    pub fn completing(&self) -> Self {
+        Self {
+            added: 0,
+            missed: 0,
+            ..self.clone()
         }
     }
     pub fn field(&self) -> usize {
@@ -67,6 +98,10 @@ impl FieldPlane {
     }
     fn store(&mut self, texel: usize, value: &Value<'_>) {
         let at = &mut self.data[texel * 4..texel * 4 + 4];
+        if at[3].is_nan() {
+            self.stored += 1;
+            self.added += 1;
+        }
         if self.kind == 4 {
             at.copy_from_slice(&[f64::from(u8::from(value.boolean())), 0., 0., 0.]);
         } else {
@@ -102,8 +137,17 @@ type Lane<T> = Result<T, Declined>;
 
 enum FieldLanes<'a> {
     Pending,
-    Uniform(Value<'a>),
-    Lanes { buf: usize, done: u64 },
+    /// A value no sample can change. Computing it costs every sample the same (each); the lanes
+    /// in `paid` have been charged for it, the others are when they first read it.
+    Uniform {
+        value: Value<'a>,
+        paid: u64,
+        each: usize,
+    },
+    Lanes {
+        buf: usize,
+        done: u64,
+    },
 }
 
 struct Lanes<'a, 'b> {
@@ -125,6 +169,9 @@ struct Lanes<'a, 'b> {
     /// Helper arguments of the calls being evaluated; a helper's own arguments start at `base`.
     locals: Vec<Src<'a>>,
     base: usize,
+    /// Operations the per-sample evaluator would have charged the batch allowance for the work
+    /// done so far: one per node visit of each active lane, plus the extra charges of builtins.
+    consumed: usize,
 }
 
 /// Read access to a node's values by lane.
@@ -211,6 +258,8 @@ impl<'a, 'b> Lanes<'a, 'b> {
     }
 
     fn eval(&mut self, node: &'a Node, mask: u64) -> Lane<Res<'a>> {
+        // The per-sample evaluator visits this node once for every active lane.
+        self.consumed = self.consumed.saturating_add(mask.count_ones() as usize);
         match &node.kind {
             Kind::Number(n) => {
                 let value = Value::scalar(*n);
@@ -291,14 +340,30 @@ impl<'a, 'b> Lanes<'a, 'b> {
                         taken |= 1 << lane;
                     }
                 }
+                let invariant = matches!(chosen.src, Src::One(_));
                 self.release(&chosen);
                 let (yes_mask, no_mask) = (taken, mask & !taken);
-                // One side everywhere: that side's value as it is.
-                if no_mask == 0 {
-                    return self.eval(yes, yes_mask);
-                }
-                if yes_mask == 0 {
-                    return self.eval(no, no_mask);
+                // One side for every active lane: that side's value. `Src::One` promises a value
+                // that no sample can change, and callers (fields above all) keep it for lanes
+                // outside this mask. A condition that varies by sample only happened to agree on
+                // these lanes, so a branch value that is the same everywhere becomes one per lane.
+                if no_mask == 0 || yes_mask == 0 {
+                    let value = self.eval(if no_mask == 0 { yes } else { no }, mask)?;
+                    return Ok(match value.src {
+                        Src::One(same) if !invariant => {
+                            let out = self.alloc();
+                            let mut buf = self.bufs[out].take().expect("a free buffer");
+                            for lane in active(mask) {
+                                buf[lane] = same;
+                            }
+                            self.bufs[out] = Some(buf);
+                            Res {
+                                src: Src::Buf(out),
+                                owned: true,
+                            }
+                        }
+                        _ => value,
+                    });
                 }
                 let out = self.alloc();
                 for (branch, branch_mask) in [(yes, yes_mask), (no, no_mask)] {
@@ -502,7 +567,8 @@ impl<'a, 'b> Lanes<'a, 'b> {
         let operands = &operands[..args.len()];
         let first = mask.trailing_zeros() as usize;
         let uniform = !reads_sample(name) && operands.iter().all(|r| matches!(r.src, Src::One(_)));
-        let mut remaining = usize::MAX / 2;
+        const AMPLE: usize = usize::MAX / 2;
+        let mut remaining = AMPLE;
         let mut gathered = [Value::EMPTY; 8];
         let (program, compiled, inputs) = (self.program, self.compiled, self.inputs);
         let (features, index, parameters, samples) =
@@ -531,6 +597,10 @@ impl<'a, 'b> Lanes<'a, 'b> {
             if value.unsound() {
                 return Err(Declined);
             }
+            // Computed once here; charged for every lane that would have computed it.
+            self.consumed = self
+                .consumed
+                .saturating_add((AMPLE - remaining).saturating_mul(mask.count_ones() as usize));
             one(value)
         } else {
             let out = self.alloc();
@@ -572,6 +642,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
             if failed {
                 return Err(Declined);
             }
+            self.consumed = self.consumed.saturating_add(AMPLE - remaining);
             Res {
                 src: Src::Buf(out),
                 owned: true,
@@ -588,7 +659,19 @@ impl<'a, 'b> Lanes<'a, 'b> {
             return Err(Declined);
         }
         let need = match self.fields[index] {
-            FieldLanes::Uniform(value) => return Ok(one(value)),
+            FieldLanes::Uniform { value, paid, each } => {
+                // A lane reading it for the first time computes it, as far as the allowance goes.
+                let unpaid = mask & !paid;
+                self.consumed = self
+                    .consumed
+                    .saturating_add(each.saturating_mul(unpaid.count_ones() as usize));
+                self.fields[index] = FieldLanes::Uniform {
+                    value,
+                    paid: paid | mask,
+                    each,
+                };
+                return Ok(one(value));
+            }
             FieldLanes::Lanes { buf, done } => {
                 if mask & !done == 0 {
                     return Ok(Res {
@@ -601,19 +684,23 @@ impl<'a, 'b> Lanes<'a, 'b> {
             FieldLanes::Pending => mask,
         };
         let compiled = self.compiled;
+        let before = self.consumed;
         let value = self.eval(&compiled.fields[index], need)?;
         match value.src {
             Src::One(one_value) => {
-                if matches!(self.fields[index], FieldLanes::Lanes { .. }) {
-                    return Err(Declined);
-                }
-                self.fields[index] = FieldLanes::Uniform(one_value);
+                // `Src::One` is a value no sample can change (see `Kind::Select`), so it stands
+                // for every lane, including lanes a kept plane already supplied.
+                self.fields[index] = FieldLanes::Uniform {
+                    value: one_value,
+                    paid: need,
+                    each: (self.consumed - before) / (need.count_ones() as usize).max(1),
+                };
                 Ok(one(one_value))
             }
             Src::Buf(id) => {
                 let (buf, done) = match self.fields[index] {
                     FieldLanes::Lanes { buf, done } => (buf, done),
-                    FieldLanes::Uniform(_) => return Err(Declined),
+                    FieldLanes::Uniform { .. } => return Err(Declined),
                     FieldLanes::Pending => {
                         let buf = self.alloc();
                         self.field_bufs.push(buf);
@@ -643,8 +730,12 @@ impl<'a, 'b> Lanes<'a, 'b> {
 
 /// Evaluates `outputs` (and the fields chosen by `selection`) for every sample, or declines.
 /// Results are those of evaluating each sample alone: `fields` receives the selected fields in
-/// sample-major order. `remaining` is the allowance the caller has left; the lanes leave it as
-/// they found it.
+/// sample-major order. `remaining` is the batch allowance the caller has left. A finished call
+/// takes from it exactly what evaluating the samples one at a time takes (see `Lanes::consumed`),
+/// and a call that would take more declines, so where an allowance runs out never depends on how
+/// rows are grouped. Fields read from `injected` planes are not computed and so not charged.
+/// [`evaluate_together`], noting on the planes being filled the samples a declined call leaves
+/// them without.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate<'a>(
     program: &'a Program,
@@ -654,7 +745,7 @@ pub(super) fn evaluate<'a>(
     index: &features::Index,
     samples: &[Sample],
     parameters: &[Value<'a>],
-    remaining: usize,
+    remaining: &mut usize,
     scratch: &mut Scratch<'a>,
     outputs: OutputSet,
     selected: &[(usize, usize)],
@@ -663,12 +754,49 @@ pub(super) fn evaluate<'a>(
     injected: &[&FieldPlane],
     capture: &mut [FieldPlane],
 ) -> Option<Vec<Outputs>> {
+    let done = evaluate_together(
+        program, compiled, inputs, features, index, samples, parameters, remaining, scratch,
+        outputs, selected, fields, texels, injected, capture,
+    );
+    if done.is_none() {
+        for plane in capture.iter_mut() {
+            plane.missed += samples.len();
+        }
+    }
+    done
+}
+
+/// Whether a program's cost bounds let its rows be evaluated together, given how many source
+/// edges and receiver features its queries may visit.
+pub(super) fn bounded(compiled: &Compiled, edges: usize, features: usize) -> bool {
     let cost = &compiled.cost;
-    let queries = cost.queries * (1 + features.len() / 16);
-    let steps = cost.steps + cost.runoffs * inputs.edges.len() * 16 + queries;
-    let allowance =
-        cost.steps + cost.runoffs * inputs.edges.len() * 16 + cost.queries * features.len() * 8;
-    if steps > 16_000 || cost.depth > 120 || allowance.saturating_mul(samples.len()) > remaining {
+    let queries = cost.queries.saturating_mul(1 + features / 16);
+    let steps = cost
+        .steps
+        .saturating_add(cost.runoffs.saturating_mul(edges).saturating_mul(16))
+        .saturating_add(queries);
+    steps <= 16_000 && cost.depth <= 120
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_together<'a>(
+    program: &'a Program,
+    compiled: &'a Compiled,
+    inputs: &'a Inputs,
+    features: &[Feature],
+    index: &features::Index,
+    samples: &[Sample],
+    parameters: &[Value<'a>],
+    remaining: &mut usize,
+    scratch: &mut Scratch<'a>,
+    outputs: OutputSet,
+    selected: &[(usize, usize)],
+    fields: &mut [FieldValue],
+    texels: &[usize],
+    injected: &[&FieldPlane],
+    capture: &mut [FieldPlane],
+) -> Option<Vec<Outputs>> {
+    if !bounded(compiled, inputs.edges.len(), features.len()) {
         return None;
     }
     let mut lanes = Lanes {
@@ -689,6 +817,7 @@ pub(super) fn evaluate<'a>(
         owned: Vec::new(),
         locals: Vec::new(),
         base: 0,
+        consumed: 0,
     };
     let mut results = Vec::with_capacity(samples.len());
     for (start, chunk) in samples
@@ -761,8 +890,12 @@ pub(super) fn evaluate<'a>(
             }
         }
         for plane in capture.iter_mut() {
+            let before = plane.stored;
+            let had = (0..chunk.len())
+                .filter(|lane| !plane.data[texels[start + lane] * 4 + 3].is_nan())
+                .count();
             match lanes.fields.get(plane.field) {
-                Some(FieldLanes::Uniform(value)) => {
+                Some(FieldLanes::Uniform { value, .. }) => {
                     for lane in 0..chunk.len() {
                         plane.store(texels[start + lane], value);
                     }
@@ -776,8 +909,14 @@ pub(super) fn evaluate<'a>(
                 }
                 _ => {}
             }
+            plane.missed += chunk.len() - had - (plane.stored - before);
         }
         results.extend(done);
+        // More than the allowance: one sample at a time fails at the sample that exhausts it.
+        if lanes.consumed > *remaining {
+            return None;
+        }
     }
+    *remaining -= lanes.consumed;
     Some(results)
 }

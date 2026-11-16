@@ -463,7 +463,7 @@ impl<'a> Evaluator<'a> {
             &self.index,
             samples,
             &self.parameters,
-            self.remaining,
+            &mut self.remaining,
             &mut self.scratch,
             outputs,
             &selection.0,
@@ -476,6 +476,19 @@ impl<'a> Evaluator<'a> {
     /// Only the height output, for derivative samples; identical to [`Self::evaluate`]'s height.
     pub fn evaluate_height(&mut self, sample: &Sample) -> Result<f64, ProgramDiagnostic> {
         Ok(self.wanted(sample, eval::Want::Height)?.height)
+    }
+    /// Whether [Self::evaluate_row] can evaluate this program's samples together: its cost
+    /// bounds stay under the per-sample limits for these inputs and features.
+    pub fn rows_evaluate_together(&self) -> bool {
+        lanes::bounded(
+            &self.program.compiled,
+            self.inputs.edges.len(),
+            self.features.len(),
+        )
+    }
+    /// The operation allowance left for this batch.
+    pub fn allowance(&self) -> usize {
+        self.remaining
     }
     /// Grants a fresh operation allowance (at most 64,000,000), for hosts that bound work per
     /// row of a bake; each sample keeps its own step and depth budget.
