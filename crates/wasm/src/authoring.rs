@@ -377,8 +377,10 @@ impl Authoring {
                 },
                 &|| cancelled_by_host(self.cancellable),
             )?;
-            let scene = output
+            let mut scene = output
                 .scene(revision)
+                .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
+            add_batches(&mut scene, source)
                 .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
             Ok((output.metadata, scene.packet()))
         })();
@@ -416,8 +418,10 @@ impl Authoring {
                 },
                 &|| cancelled_by_host(self.cancellable),
             )?;
-            let scene = output
+            let mut scene = output
                 .scene(revision)
+                .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
+            add_batches(&mut scene, source)
                 .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
             Ok((output.metadata, scene.packet()))
         })();
@@ -442,9 +446,11 @@ impl Authoring {
     ) -> Result<Vec<u8>, JsValue> {
         let output = self.export_build(source, revision)?;
         let lighting = export_lighting(source)?;
+        let batches = export_batches(source)?;
         let options = superspec_export::Options {
             textures: crate::textures(ktx2),
             lighting: lighting.as_ref(),
+            batches: &batches,
             ..Default::default()
         };
         superspec_export::world_glb(&output.model, revision, &options)
@@ -510,6 +516,7 @@ impl Authoring {
         if let Some(lighting) = export_lighting(source)? {
             scene.manifest.lighting = Some(lighting);
         }
+        add_batches(&mut scene, source).map_err(|error| JsValue::from_str(&error))?;
         self.staged.stage(scene)
     }
     pub fn staged_texture(&self, index: usize) -> Result<Vec<u8>, JsValue> {
@@ -532,6 +539,22 @@ fn export_lighting(source: &str) -> Result<Option<superspec_export::Lighting>, J
             findings.join("; ")
         ))
     })
+}
+
+/// The instanced batches the project document carries (its optional `batches` field, which the
+/// engine's project ignores as it does `lighting`), for the export to deliver.
+fn export_batches(source: &str) -> Result<Vec<superspec_export::ProjectBatch>, JsValue> {
+    let document: serde_json::Value =
+        serde_json::from_str(source).map_err(|error| JsValue::from_str(&error.to_string()))?;
+    superspec_export::project_batches(&document).map_err(|error| JsValue::from_str(&error))
+}
+
+/// Adds the project document's instanced batches to the scene delivered for it, so the preview
+/// packet and the native `scene` command hold the same batches.
+fn add_batches(scene: &mut superspec_model::Scene, source: &str) -> Result<(), String> {
+    let document: serde_json::Value =
+        serde_json::from_str(source).map_err(|error| error.to_string())?;
+    superspec_model::batches::add_project(scene, &document)
 }
 
 impl Authoring {

@@ -9,7 +9,7 @@ fixtures (a sink, valves, taps) are left out on purpose: they are a job for Item
 | File | Purpose |
 | --- | --- |
 | `geometry.mjs` | Mesh helpers (boxes, bars, tubes, ducts, tori) and a GLB writer. |
-| `model.mjs` | The scene: 11 meshes, one per material receiver, in meters with Z up. |
+| `model.mjs` | The scene: 11 meshes, one per material receiver, in meters with Z up, and the bolts: one instanced batch of a twelfth mesh, the bolt template. |
 | `build.mjs` | Writes `generated/washroom/washroom.glb` and `washroom.studio.json`, a version 2 project. |
 | `materials/` | The one recipe the examples lack: bench wood. |
 | `../../material-washroom-browser.mjs` | Opens the project in the built Material Studio and times it. |
@@ -23,6 +23,22 @@ standing water are left to the materials rather than modeled:
 - `kowloon-rusted-steel` for the galvanized duct, the rusted pipe, the flat steel brackets and
   drain, and the dark openings: four parameter sets of one recipe.
 - `tiled-courtyard` for the wall and floor tile.
+
+## Instanced batch
+
+Every bolt of the scene (the pipe's two flanges, the bracket anchors, the vent's screws: 32) is an instance of one
+mesh, `bolt`, listed in the project's `batches` (see `superspec_model::batches::of_project`). The template is an
+ordinary mesh with the flat steel material, standing 5 m below the slab where it touches and shades nothing; the
+project bakes its material once, there, and the delivered scene holds the batch in its place: one mesh, one material,
+32 placements with a tint and an `instance` value each. `buildProject(resolution, density, { batches: false })`, or
+`BATCHES=0` for the browser benchmark, builds the scene without them, as it was before.
+
+On an RTX 5060 Ti at 256 px (2026-11-16, three runs each): the batch adds one draw call per pass (27 to 29 with
+ambient occlusion, 11 to 12 without), 2,112 triangles per pass and nothing measurable to the frame's GPU time with
+ambient occlusion (fastest frames 0.86 to 0.88 ms either way; run medians 0.87 to 2.0 ms without the batch and 0.87 to
+1.33 ms with it); without ambient occlusion the median went from 0.34 to 0.42 ms in one run each. `?batchstress=10000` (tests only) draws the batch
+with 10,000 instances on a lattice through the room: 2.2 ms of GPU time a frame with ambient occlusion (1.3 million
+triangles in two passes), 1.5 ms without, still 29 and 12 draw calls.
 
 ## Running it
 

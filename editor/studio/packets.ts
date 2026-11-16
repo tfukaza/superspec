@@ -62,5 +62,7 @@ export function mergeReceivers(base: ScenePacket, replacement: ScenePacket, ids:
       meshTangents: Object.keys(meshTangents).length ? meshTangents : undefined },
     positions: new Float32Array(positions), normals: new Float32Array(normals), uvs: new Float32Array(uvs),
     colors: new Float32Array(colors), indices: new Uint32Array(indices), assets,
+    // Instanced batches are not receivers: the base's stay as they are.
+    ...(base.batches ? { batches: base.batches } : {}),
   });
 }

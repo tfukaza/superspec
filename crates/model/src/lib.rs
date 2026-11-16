@@ -1,5 +1,6 @@
 //! Portable scene and typed delivery metadata shared by producers, preview and exporters.
 pub mod architecture;
+pub mod batches;
 pub mod composition;
 pub mod instances;
 pub mod lighting;
@@ -85,6 +86,12 @@ pub struct Manifest {
     pub ground_plans: Vec<theme::ground::Plan>,
     pub materials: Vec<Material>,
     pub meshes: Vec<Mesh>,
+    /// Instanced batches, ascending by identity; their data is in `Scene::batches`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub batches: Vec<batches::Batch>,
+    /// Lengths of the batch buffers; present exactly when the scene has batches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch_counts: Option<batches::Counts>,
     /// Optional authored tangent bases for imported meshes; image-space conversion does not alter them.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub mesh_tangents: std::collections::BTreeMap<String, Vec<[f32; 4]>>,
@@ -126,6 +133,8 @@ pub struct Scene {
     pub asset_bytes: Vec<u8>,
     /// Indices are local to each mesh's vertex range.
     pub indices: Vec<u32>,
+    /// Meshes, placements and per-instance attributes of `Manifest::batches`, kept unexpanded.
+    pub batches: batches::Buffers,
     /// Retained only by explicit brush delivery compilation.
     pub export_solids: Vec<ExportSolid>,
     visual_identity_bytes: usize,
@@ -175,6 +184,8 @@ impl Scene {
                 ground_plans: vec![],
                 materials: vec![],
                 meshes: vec![],
+                batches: vec![],
+                batch_counts: None,
                 mesh_tangents: Default::default(),
                 colliders: vec![],
                 openings: vec![],
@@ -191,6 +202,7 @@ impl Scene {
             colors: vec![],
             asset_bytes: vec![],
             indices: vec![],
+            batches: Default::default(),
             export_solids: vec![],
             visual_identity_bytes: 0,
             visual_ancestry_bytes: 0,
@@ -202,6 +214,11 @@ impl Scene {
     /// LSP3: magic, LE u32 padded JSON byte count, UTF-8 JSON padded with spaces;
     /// XYZ f32 positions/normals, XY f32 UVs, RGB f32 linear colors, u32 indices, encoded assets.
     /// Counts in the manifest determine each contiguous payload length; no numeric JSON arrays.
+    /// A scene with instanced batches (`Manifest::batches`, lengths in `batchCounts`) carries their
+    /// data between the indices and the assets: batch positions, normals, UVs and colors (f32, the
+    /// mesh layouts), batch indices (u32), then per instance ten f32 of placement (translation,
+    /// rotation x y z w, scale), four f32 per `instance` value and three per tint. A scene without
+    /// batches has the bytes it always had.
     pub fn packet(&self) -> Vec<u8> {
         let mut json = serde_json::to_vec(&self.manifest).expect("finite manifest");
         while !json.len().is_multiple_of(4) {
@@ -213,6 +230,7 @@ impl Scene {
                 + self.uvs.len() * 4
                 + self.colors.len() * 4
                 + self.indices.len() * 4
+                + self.batches.byte_length()
                 + self.asset_bytes.len(),
         );
         bytes.extend_from_slice(b"LSP3");
@@ -230,6 +248,7 @@ impl Scene {
         for value in &self.indices {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        self.batches.write(&mut bytes);
         bytes.extend(&self.asset_bytes);
         bytes
     }

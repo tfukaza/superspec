@@ -7,6 +7,66 @@ export interface SceneMesh {
   vertexStart: number; vertexCount: number; indexStart: number; indexCount: number;
   bounds: [number[], number[]];
 }
+/**
+ * An instanced batch (`superspec_model::batches::Batch`): one mesh drawn `instanceCount` times. Its ranges index the
+ * packet's batch buffers (`ScenePacket.batches`), never the scene's own vertex and index arrays. `material` is a scene
+ * material. `template` names the scene mesh the batch's mesh was taken from, when it was one: per-mesh metadata kept
+ * beside the scene (a receiver's atlas layout, its shading inputs) is found under it; the mesh itself is not in the scene.
+ * A batch is render-only unless `collision` is `instances`; it is never listed in `Manifest.colliders`.
+ */
+export interface SceneBatch {
+  id: string; objectId: string; source: SourceLocation; material: string | null; template?: string; visible: boolean;
+  collision: "none" | "instances";
+  vertexStart: number; vertexCount: number; indexStart: number; indexCount: number;
+  instanceStart: number; instanceCount: number;
+  /** Where the batch's `instance` values and tints start, in instances; absent without them. */
+  valueStart?: number; tintStart?: number;
+  /**
+   * Named attributes beyond those: scalars (`components` 1) or vectors (3), one per instance or per vertex of the
+   * batch's mesh, from float `start` of `BatchBuffers.attributes`. In a fixed order: instance scalars, instance
+   * vectors, vertex scalars, vertex vectors, each ascending by name.
+   */
+  attributes?: BatchAttribute[];
+  /** Bounds of the mesh in its own space, and of every instance in the scene. */
+  localBounds: [number[], number[]]; bounds: [number[], number[]];
+}
+export interface BatchAttribute { name: string; domain: "instance" | "vertex"; components: number; start: number }
+/** `attributes` counts the floats of named attributes. */
+export interface BatchCounts { vertices: number; indices: number; instances: number; values: number; tints: number; attributes?: number }
+/** Numbers per placement: translation (3), rotation quaternion x y z w (4), scale (3). */
+export const PLACEMENT_FLOATS = 10;
+/** The data of every batch, in `Manifest.batches` order (`superspec_model::batches::Buffers`). */
+export interface BatchBuffers {
+  positions: Float32Array; normals: Float32Array; uvs: Float32Array; colors: Float32Array; indices: Uint32Array;
+  placements: Float32Array; values: Float32Array; tints: Float32Array;
+  /** Named attributes of every batch, end to end. */
+  attributes: Float32Array;
+}
+/** The values of one named attribute of a batch. */
+export function batchAttribute(buffers: BatchBuffers, batch: SceneBatch, attribute: BatchAttribute): Float32Array {
+  const count = attribute.domain === "instance" ? batch.instanceCount : batch.vertexCount;
+  return buffers.attributes.subarray(attribute.start, attribute.start + count * attribute.components);
+}
+/** Bytes of a packet's batch section for these counts. */
+export function batchByteLength(counts: BatchCounts | undefined): number {
+  return counts ? 4 * (counts.vertices * 11 + counts.indices + counts.instances * PLACEMENT_FLOATS + counts.values * 4 + counts.tints * 3 + (counts.attributes ?? 0)) : 0;
+}
+/** Reads a batch section (little-endian, as `Scene::packet` writes it) starting at `offset`. */
+export function readBatches(view: DataView, offset: number, counts: BatchCounts): BatchBuffers {
+  let cursor = offset;
+  const floats = (count: number): Float32Array => {
+    const values = new Float32Array(count);
+    for (let i = 0; i < count; i++) values[i] = view.getFloat32(cursor + i * 4, true);
+    cursor += count * 4;
+    return values;
+  };
+  const positions = floats(counts.vertices * 3), normals = floats(counts.vertices * 3), uvs = floats(counts.vertices * 2), colors = floats(counts.vertices * 3);
+  const indices = new Uint32Array(counts.indices);
+  for (let i = 0; i < indices.length; i++) indices[i] = view.getUint32(cursor + i * 4, true);
+  cursor += indices.byteLength;
+  return { positions, normals, uvs, colors, indices, placements: floats(counts.instances * PLACEMENT_FLOATS), values: floats(counts.values * 4), tints: floats(counts.tints * 3),
+    attributes: floats(counts.attributes ?? 0) };
+}
 export interface Manifest {
   architecture?: { metadata?: { kind: string; attributes: Record<string, unknown> }[] };
   schemaVersion: 3; revision: number; success: boolean; id: string; name: string;
@@ -18,6 +78,8 @@ export interface Manifest {
   assets: { id: string; mime: "image/png" | "image/jpeg" | "image/ktx2"; byteStart: number; byteLength: number }[];
   assetByteCount: number;
   meshes: SceneMesh[]; colliders: string[];
+  /** Instanced batches, ascending by identity, with the lengths of their buffers; both absent without batches. */
+  batches?: SceneBatch[]; batchCounts?: BatchCounts;
   meshTangents?: Record<string, number[][]>;
   vertexCount: number; indexCount: number;
 }
@@ -40,6 +102,8 @@ export interface LiveOperation { id: string; stage: string; requires: string[]; 
 export interface ScenePacket {
   manifest: Manifest; positions: Float32Array; normals: Float32Array; uvs: Float32Array; colors: Float32Array; indices: Uint32Array; assets: Uint8Array;
   assetIdentities?: Map<string, Promise<string>>;
+  /** Present exactly when the manifest has batches. */
+  batches?: BatchBuffers;
 }
 
 /** Checks metadata and allocation limits before decoding either complete packets or updates. */
@@ -53,6 +117,12 @@ export function validateManifestHeader(manifest: Manifest): void {
     || !Array.isArray(manifest.diagnostics)) throw new Error("Unsupported scene manifest.");
   if (manifest.vertexCount > 16_000_000 || manifest.indexCount > 48_000_000 || manifest.assetByteCount > MAX_SCENE_IMAGE_BYTES
     || manifest.meshes.length > 100_000 || manifest.assets.length > 16_384) throw new Error("Scene exceeds preview allocation limits.");
+  const counts = manifest.batchCounts;
+  if ((manifest.batches !== undefined && !Array.isArray(manifest.batches)) || Boolean(manifest.batches?.length) !== (counts !== undefined)
+    || (counts !== undefined && (![counts.vertices, counts.indices, counts.instances, counts.values, counts.tints].every(integer)
+      || manifest.batches!.length > 4096 || counts.vertices > 1_500_000 || counts.indices > 9_000_000 || counts.instances > 1_000_000
+      || counts.values > counts.instances || counts.tints > counts.instances
+      || (counts.attributes !== undefined && (!integer(counts.attributes) || counts.attributes > 64_000_000))))) throw new Error("Unsupported scene batches.");
 }
 
 /** Rejects malformed or unsupported packets before any renderer allocations. */
@@ -64,7 +134,8 @@ export function decodePacket(buffer: ArrayBuffer): ScenePacket {
   const manifest: Manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(buffer, 8, jsonLength)));
   validateManifestHeader(manifest);
   const payload = 8 + jsonLength;
-  if (payload + manifest.vertexCount * 44 + manifest.indexCount * 4 + manifest.assetByteCount !== buffer.byteLength) throw new Error("Scene buffer lengths do not match the manifest.");
+  const batchBytes = batchByteLength(manifest.batchCounts);
+  if (payload + manifest.vertexCount * 44 + manifest.indexCount * 4 + batchBytes + manifest.assetByteCount !== buffer.byteLength) throw new Error("Scene buffer lengths do not match the manifest.");
   const positions = new Float32Array(manifest.vertexCount * 3);
   const normals = new Float32Array(manifest.vertexCount * 3);
   const uvs = new Float32Array(manifest.vertexCount * 2);
@@ -87,8 +158,11 @@ export function decodePacket(buffer: ArrayBuffer): ScenePacket {
   }
   const indexOffset = colorOffset + colors.byteLength;
   for (let i = 0; i < indices.length; i++) indices[i] = view.getUint32(indexOffset + i * 4, true);
-  const assets = new Uint8Array(buffer.slice(indexOffset + indices.byteLength));
-  return validatePacket({ manifest, positions, normals, uvs, colors, indices, assets });
+  // Instanced batches lie between the indices and the assets.
+  const batchOffset = indexOffset + indices.byteLength;
+  const batches = manifest.batchCounts ? readBatches(view, batchOffset, manifest.batchCounts) : undefined;
+  const assets = new Uint8Array(buffer.slice(batchOffset + batchBytes));
+  return validatePacket({ manifest, positions, normals, uvs, colors, indices, assets, ...(batches ? { batches } : {}) });
 }
 
 /** Applies the same identity, range and channel admission to reconstructed updates. */
@@ -143,6 +217,7 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
   if (vertices !== manifest.vertexCount || elements !== manifest.indexCount
     || manifest.colliders.some(id => !meshIds.has(id)) || new Set(manifest.colliders).size !== manifest.colliders.length
     || (!manifest.success && (vertices !== 0 || elements !== 0 || manifest.diagnostics.length === 0))) throw new Error("Incomplete scene manifest.");
+  validateBatches(packet, meshIds, materialIds);
   if (manifest.meshTangents !== undefined) {
     if (!manifest.meshTangents || typeof manifest.meshTangents !== "object" || Array.isArray(manifest.meshTangents)) throw new Error("Invalid tangent metadata.");
     const counts = new Map(manifest.meshes.map(mesh => [mesh.id, mesh.vertexCount]));
@@ -157,6 +232,53 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
       || !Array.isArray(diagnostic.objects) || !diagnostic.objects.every(id => typeof id === "string")) throw new Error("Invalid source diagnostic.");
   }
   return packet;
+}
+
+/** Batch records and buffers must agree as `superspec_model::batches::check` requires, with valid placements. */
+function validateBatches(packet: ScenePacket, meshIds: ReadonlySet<string>, materialIds: ReadonlySet<string>): void {
+  const { manifest, batches } = packet;
+  const counts = manifest.batchCounts;
+  if (!counts) { if (batches) throw new Error("Scene batch data has no manifest."); return; }
+  if (!batches || batches.positions.length !== counts.vertices * 3 || batches.normals.length !== counts.vertices * 3
+    || batches.uvs.length !== counts.vertices * 2 || batches.colors.length !== counts.vertices * 3 || batches.indices.length !== counts.indices
+    || batches.placements.length !== counts.instances * PLACEMENT_FLOATS || batches.values.length !== counts.values * 4
+    || batches.tints.length !== counts.tints * 3 || batches.attributes.length !== (counts.attributes ?? 0)) throw new Error("Scene batch arrays do not match their manifest.");
+  if (![batches.positions, batches.normals, batches.uvs, batches.colors, batches.placements, batches.values, batches.tints, batches.attributes].every(array => array.every(Number.isFinite))
+    || batches.colors.some(value => value < 0) || batches.tints.some(value => value < 0)) throw new Error("Invalid batch numeric data.");
+  let vertices = 0, elements = 0, instances = 0, values = 0, tints = 0, named = 0, previous: string | undefined;
+  const bounds = (value: unknown): boolean => Array.isArray(value) && value.length === 2
+    && value.every(point => Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
+  for (const batch of manifest.batches!) {
+    if (typeof batch.id !== "string" || !batch.id || meshIds.has(batch.id) || (previous !== undefined && !(previous < batch.id))
+      || typeof batch.objectId !== "string" || !batch.objectId || typeof batch.visible !== "boolean" || !location(batch.source)
+      || !["none", "instances"].includes(batch.collision) || (batch.material !== null && !materialIds.has(batch.material))
+      || (batch.template !== undefined && (typeof batch.template !== "string" || !batch.template))
+      || batch.vertexStart !== vertices || batch.indexStart !== elements || batch.instanceStart !== instances
+      || !integer(batch.vertexCount) || !integer(batch.indexCount) || !integer(batch.instanceCount)
+      || batch.vertexCount === 0 || batch.indexCount === 0 || batch.indexCount % 3 || batch.instanceCount === 0
+      || vertices + batch.vertexCount > counts.vertices || elements + batch.indexCount > counts.indices || instances + batch.instanceCount > counts.instances
+      || (batch.valueStart !== undefined && batch.valueStart !== values) || (batch.tintStart !== undefined && batch.tintStart !== tints)
+      || !bounds(batch.localBounds) || !bounds(batch.bounds)) throw new Error("Invalid batch range or identity.");
+    for (let i = elements; i < elements + batch.indexCount; i++) if (batches.indices[i] >= batch.vertexCount) throw new Error("Batch index exceeds its mesh.");
+    for (let i = instances; i < instances + batch.instanceCount; i++) {
+      const at = i * PLACEMENT_FLOATS, p = batches.placements;
+      if (Math.abs(Math.hypot(p[at + 3], p[at + 4], p[at + 5], p[at + 6]) - 1) > 1e-3 || !(p[at + 7] > 0 && p[at + 8] > 0 && p[at + 9] > 0)) throw new Error("Invalid batch placement.");
+    }
+    if (batch.attributes !== undefined && (!Array.isArray(batch.attributes) || batch.attributes.length > 24)) throw new Error("Invalid batch attributes.");
+    const names = new Set<string>();
+    for (const attribute of batch.attributes ?? []) {
+      const key = `${attribute.domain}:${attribute.name}`;
+      if (typeof attribute.name !== "string" || !/^[A-Za-z][A-Za-z0-9]{0,31}$/.test(attribute.name) || names.has(key)
+        || !["instance", "vertex"].includes(attribute.domain) || ![1, 3].includes(attribute.components) || attribute.start !== named) throw new Error("Invalid batch attributes.");
+      names.add(key);
+      named += attribute.components * (attribute.domain === "instance" ? batch.instanceCount : batch.vertexCount);
+    }
+    previous = batch.id;
+    vertices += batch.vertexCount; elements += batch.indexCount; instances += batch.instanceCount;
+    if (batch.valueStart !== undefined) values += batch.instanceCount;
+    if (batch.tintStart !== undefined) tints += batch.instanceCount;
+  }
+  if (vertices !== counts.vertices || elements !== counts.indices || instances !== counts.instances || values !== counts.values || tints !== counts.tints || named !== (counts.attributes ?? 0)) throw new Error("Batch records do not cover their buffers.");
 }
 
 /** Counts and revisions are unsigned, exactly representable integers. */

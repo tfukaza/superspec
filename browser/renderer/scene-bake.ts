@@ -3,6 +3,7 @@ import { applyLiveOperations } from "./live.ts";
 import type { MaterialShading } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, type AtlasMaps, type FieldTexels } from "./bake.ts";
 import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
+import { shareInstanceAttributes } from "./batch.ts";
 
 /**
  * GPU-baked maps for the meshes of a shaded scene (the scene view's default look). Each mesh has two looks: the
@@ -23,6 +24,9 @@ import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayou
  *   This module only holds each mesh's use of its nodes and the allowance for what is on screen.
  * - A mesh keeps both looks alive (two materials, two geometries), so switching between them compiles nothing.
  * - Only nodes whose key changed are drawn again: the meshes of a changed material, and of those only what the change reaches.
+ * - An instanced batch (batch.ts) is one mesh here, with one atlas: its template's. Its maps are baked once, in the
+ *   batch's own space, and every instance shows them; nothing in the key names a placement. The baked look's geometry
+ *   takes the per-instance attributes of the geometry the batch came with.
  */
 
 type Uniforms = Record<string, THREE.IUniform>;
@@ -42,6 +46,8 @@ export interface SceneBakeTarget {
   receiver: string;
   /** Physical size of the UV square for `uv` mapping, meters. */
   extent: [number, number];
+  /** The receiver the CPU bakes this mesh's fields for, when it is not named as the mesh is (an instanced batch's template). */
+  fieldsId?: string;
 }
 
 /** CPU-baked fields for hybrid programs, by mesh: one entry per requested name, on the mesh's atlas grid. Null when superseded. */
@@ -193,7 +199,10 @@ export class SceneBaker {
     this.pending = run;
     // The baked looks' materials compile beside the bake programs, on stand-in maps: the first bake only swaps textures in.
     const fresh = run.entries.filter(entry => !entry.unsupported);
-    for (const entry of fresh) { entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout); }
+    for (const entry of fresh) {
+      entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout);
+      shareInstanceAttributes(entry.shaderGeometry, entry.display);
+    }
     run.materials = this.host.compile(fresh.map(entry => ({ mesh: entry.target.mesh, geometry: entry.display!, material: entry.material! }))).catch(() => {});
     const settled = new Promise<void>(resolve => {
       run.idle = () => {
@@ -412,7 +421,7 @@ export class SceneBaker {
     const keys = new Map(needy.map(entry => [entry, this.fieldsKey(entry)]));
     const started = performance.now();
     try {
-      const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.mesh.name, names: entry.target.shading.shader.cpuFields!.map(field => field.name) })));
+      const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.fieldsId ?? entry.target.mesh.name, names: entry.target.shading.shader.cpuFields!.map(field => field.name) })));
       if (run.closed) return;
       if (!baked) {
         // Superseded by a newer request of the page; asked again, a few times at most.
@@ -422,7 +431,7 @@ export class SceneBaker {
       run.fieldRetries = 0;
       run.totals.fieldMs += performance.now() - started;
       for (const entry of needy) {
-        const found = baked.get(entry.target.mesh.name);
+        const found = baked.get(entry.target.fieldsId ?? entry.target.mesh.name);
         const wanted = entry.target.shading.shader.cpuFields!;
         const { width, height } = entry.target.layout;
         if (!found || found.fields.length !== wanted.length || found.width !== width || found.height !== height) {

@@ -183,7 +183,8 @@ export function copyProject(project: StudioProject): StudioProject {
     assets: { ...project.assets }, base: { ...project.base }, target: { ...project.target }, domain: [...project.domain],
     edges: structuredClone(project.edges), gravity: [...project.gravity],
     ...(project.models ? { models: project.models.map(model => ({ ...model })) } : {}),
-    ...(project.materials ? { materials: structuredClone(project.materials) } : {}) };
+    ...(project.materials ? { materials: structuredClone(project.materials) } : {}),
+    ...(project.batches ? { batches: structuredClone(project.batches) } : {}) };
 }
 
 /** Combines inputs without allowing a new scene to silently replace a recipe's existing image. */

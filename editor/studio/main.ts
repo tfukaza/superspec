@@ -118,7 +118,7 @@ class Studio {
 
   constructor(private readonly kind: StudioProject["kind"]) {
     this.project = initialProject(kind); this.module = this.project.entry;
-    this.scene = new RustScene(element("viewport"), mesh => this.selection(mesh));
+    this.scene = new RustScene(element("viewport"), (mesh, instance) => this.selection(mesh, instance));
     // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
     if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE });
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
@@ -759,7 +759,7 @@ class Studio {
    */
   private async compileLive(candidate: StudioProject, revision: number, opened: boolean, fit: boolean): Promise<boolean> {
     const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
-    const key = JSON.stringify([candidate.modules, candidate.models, candidate.mapping, candidate.gravity, candidate.domain,
+    const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.gravity, candidate.domain,
       (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
       Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
       // Baked maps follow the receivers' atlases, which these size.
@@ -1038,8 +1038,17 @@ class Studio {
   }
 
   /** Keeps UI and ray-picked selection bound to stable mesh and original material identities. */
-  private selection(mesh?: SceneMesh): void {
+  private selection(mesh?: SceneMesh, instance?: number): void {
     if (!mesh) return;
+    // A picked instance of an instanced batch: the batch's record stands for the mesh, bound as its template is.
+    const template = (mesh as SceneMesh & { template?: string }).template;
+    if (instance !== undefined || template) {
+      this.selected = mesh.id;
+      const assigned = this.project.materials?.find(material => material.meshes.includes(template ?? mesh.id));
+      element("selection").textContent = `${mesh.id}${instance === undefined ? "" : ` · instance ${instance}`} · ${assigned ? `material ${assigned.id}` : "Original material"}`;
+      element("selection").title = `Instanced batch${template ? ` of ${template}` : ""}`;
+      return;
+    }
     this.selected = mesh.id;
     const originalMesh = this.base?.manifest.meshes.find(item => item.id === mesh.id);
     element<HTMLSelectElement>("mesh").value = mesh.id;

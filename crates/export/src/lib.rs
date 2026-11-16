@@ -11,6 +11,10 @@ mod text;
 pub use gltf::{TextureJob, encode_texture, glb, texture_jobs};
 pub use lightmap::{prepare_lightmap, prepare_lightmap_sized};
 pub use superspec_geometry::ktx2::Kind as TextureKind;
+/// The instanced batches a project document carries, for `Options::batches`.
+pub use superspec_model::batches::{
+    ProjectBatch, add_project_batches, of_project as project_batches,
+};
 /// The lighting record a project document carries, for `Options::lighting` or a staged scene's
 /// `Manifest::lighting`.
 pub use superspec_model::lighting::{Lighting, of_project as project_lighting};
@@ -23,7 +27,7 @@ pub fn instance_glb(
 ) -> Result<Vec<u8>, String> {
     options.check(0)?;
     let mut scene = model.scene(0)?;
-    lit(&mut scene, options);
+    lit(&mut scene, options)?;
     glb(&scene, options)
 }
 
@@ -35,15 +39,17 @@ pub fn world_glb(
 ) -> Result<Vec<u8>, String> {
     options.check(0)?;
     let mut scene = model.scene_cancellable(revision, options.cancelled)?;
-    lit(&mut scene, options);
+    lit(&mut scene, options)?;
     glb(&scene, options)
 }
 
-/// The delivered scene states the lighting record it is exported with (`Manifest::lighting`).
-fn lit(scene: &mut superspec_model::Scene, options: &Options<'_>) {
+/// The delivered scene states the lighting record it is exported with (`Manifest::lighting`) and
+/// holds the batches handed over with the export (`Options::batches`).
+fn lit(scene: &mut superspec_model::Scene, options: &Options<'_>) -> Result<(), String> {
     if let Some(lighting) = options.lighting {
         scene.manifest.lighting = Some(lighting.clone());
     }
+    superspec_model::batches::add_project_batches(scene, options.batches)
 }
 
 /// Splits the portable GLB into a JSON document and its referenced binary buffer.
@@ -66,10 +72,19 @@ pub fn gltf_files(glb: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
 }
 
 /// Runtime JSON references a sibling scene.assets blob using the manifest's encoded byte ranges.
+/// Instanced batches (`manifest.batches`) come with their buffers under `batches`, unexpanded.
 pub fn runtime_json(scene: &superspec_model::Scene) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(&serde_json::json!({"schemaVersion":1,"manifest":scene.manifest,
+    let mut document = serde_json::json!({"schemaVersion":1,"manifest":scene.manifest,
         "positions":scene.positions,"normals":scene.normals,"uvs":scene.uvs,"lightmapUvs":scene.lightmap_uvs,
-        "colors":scene.colors,"indices":scene.indices,"assetsUri":"scene.assets"})).map_err(|e|e.to_string())
+        "colors":scene.colors,"indices":scene.indices,"assetsUri":"scene.assets"});
+    if !scene.batches.is_empty() {
+        let batches = &scene.batches;
+        document["batches"] = serde_json::json!({"positions":batches.positions,"normals":batches.normals,
+            "uvs":batches.uvs,"colors":batches.colors,"indices":batches.indices,
+            "placements":batches.placements,"values":batches.values,"tints":batches.tints,
+            "attributes":batches.attributes});
+    }
+    serde_json::to_vec(&document).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -90,8 +105,24 @@ pub enum Textures {
     Ktx2,
 }
 
+/// How a visual glTF stores instanced batches (`superspec_model::batches`). Collision exports
+/// always write one node per colliding instance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Instancing {
+    /// `EXT_mesh_gpu_instancing`, required: one node per batch, its placements and per-instance
+    /// attributes as accessors. Loaders without the extension must refuse the file.
+    #[default]
+    Extension,
+    /// The fallback without the extension: one node per instance, every one referencing the
+    /// batch's single mesh. Read everywhere; a consumer draws each instance on its own unless it
+    /// batches equal meshes itself.
+    Nodes,
+}
+
 pub struct Options<'a> {
     pub purpose: Purpose,
+    /// How instanced batches are stored in a visual glTF.
+    pub instancing: Instancing,
     /// Texture image format. The library default is PNG; user-facing exports choose KTX2.
     pub textures: Textures,
     /// Bounds the entire owned result, including embedded images and JSON metadata.
@@ -104,16 +135,21 @@ pub struct Options<'a> {
     /// (`Manifest::lighting`). A visual GLB carries it as `KHR_lights_punctual` lights and whole
     /// under `extras.superspec.lighting`; without one the output has neither.
     pub lighting: Option<&'a Lighting>,
+    /// Instanced batches `instance_glb` and `world_glb` add to the scene they deliver: a project
+    /// document's (`project_batches`), which the authoring engine's project does not hold.
+    pub batches: &'a [ProjectBatch],
 }
 impl Default for Options<'static> {
     fn default() -> Self {
         Self {
             purpose: Purpose::Visual,
+            instancing: Instancing::Extension,
             textures: Textures::Png,
             maximum_bytes: superspec_types::limits::MAX_EXPORT_BYTES,
             cancelled: &|| false,
             encoded: None,
             lighting: None,
+            batches: &[],
         }
     }
 }

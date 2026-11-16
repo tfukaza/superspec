@@ -1,4 +1,4 @@
-import { type Manifest, type ScenePacket, validateManifestHeader, validatePacket } from "./packet.ts";
+import { type Manifest, type ScenePacket, batchByteLength, readBatches, validateManifestHeader, validatePacket } from "./packet.ts";
 
 interface Header { manifest: Manifest; baseRevision: number | null; meshes: (number | null)[]; assets: (number | null)[] }
 
@@ -63,6 +63,13 @@ export class SceneUpdates {
         const identity = prior!.assetIdentities?.get(old.id);
         if (identity) packet.assetIdentities!.set(asset.id, identity);
       }
+    }
+    // Instanced batches come whole with every update, after everything else.
+    if (manifest.batchCounts) {
+      const length = batchByteLength(manifest.batchCounts);
+      if (cursor + length > buffer.byteLength) throw new Error("Scene update batches exceed their payload.");
+      packet.batches = readBatches(view, cursor, manifest.batchCounts);
+      cursor += length;
     }
     if (cursor !== buffer.byteLength) throw new Error("Scene update has trailing data.");
     validatePacket(packet);

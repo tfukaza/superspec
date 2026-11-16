@@ -1,5 +1,13 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
+import { INSTANCE_ATTRIBUTE } from "./batch.ts";
+
+/**
+ * Seconds of the viewer's time-driven render mode (`RustScene.setContinuous`), shared by every program material as
+ * the uniform `msTime`. It stands still while the viewer renders on demand. No program reads it yet: the engine's
+ * shader has no `time` input, and when it declares `ms_time` the material assigns it from this uniform.
+ */
+export const programTime: THREE.IUniform<number> = { value: 0 };
 
 /** A MaterialSpec program as GLSL (`Program::shader` in the engine), with what it needs bound. */
 export interface ProgramShader {
@@ -148,10 +156,19 @@ export function hasPixelRelief(shading: MaterialShading): boolean {
  * the lattice noises in loops, which compiles several times faster and draws several times
  * slower when a program has many; `"inline"` has each noise where it is used. Both draw the same
  * picture, so a viewer shows the looped form first and compiles the inline one behind it.
+ *
+ * `instanced` makes the material for an instanced batch (batch.ts). The program is then evaluated in the batch's own
+ * space, the space its maps are baked in: `ms_world`, `ms_object`, the normal and the footprints are those of the
+ * batch's mesh, the same for every instance, so the per-pixel look and the one bake agree and nothing in the program
+ * depends on where an instance stands. Only the finished normal is turned by the instance's placement, for lighting.
+ * Per-instance values reach the fragment shader as `msInstanceValue` (the `instance` input, zero without one); a
+ * program that declares `ms_instance` gets it assigned.
  */
 export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms,
-  mode: "pixel" | "quad" = "pixel", noise: "looped" | "inline" = "looped"): THREE.MeshStandardMaterial {
+  mode: "pixel" | "quad" = "pixel", noise: "looped" | "inline" = "looped", instanced = false): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
+  // Both shaders read the define; three.js names instancing to the vertex shader alone.
+  if (instanced) material.defines = { ...material.defines, MS_INSTANCED: "" };
   const shader = shading.shader;
   const features = featureTexture(mesh.features);
   const relief = mode === "pixel" && hasPixelRelief(shading);
@@ -167,6 +184,7 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     msObjectFromWorld: { value: objectFromWorld },
     msMapping: { value: ["uv", "object", "world"].indexOf(shading.mapping) },
     msReliefSamples: { value: 2 },
+    msTime: programTime,
   };
   material.addEventListener("dispose", () => features.dispose());
   // Live operations read the program's fields directly; they are installed first so the program
@@ -180,11 +198,28 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     previous.call(material, program, renderer);
     Object.assign(program.uniforms, uniforms);
     program.vertexShader = program.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 msWorld;\nvarying vec3 msNormal;\nvarying vec2 msUv;")
+      .replace("#include <common>", `#include <common>
+varying vec3 msWorld;
+varying vec3 msNormal;
+varying vec2 msUv;
+#ifdef MS_INSTANCED
+attribute vec4 ${INSTANCE_ATTRIBUTE};
+varying vec4 msInstanceValue;
+varying mat3 msInstanceTurn;
+#endif`)
       .replace("#include <project_vertex>", `#include <project_vertex>
   msWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
   msNormal = mat3(modelMatrix) * objectNormal;
-  msUv = uv;`);
+  msUv = uv;
+#ifdef MS_INSTANCED
+  {
+    // What takes a normal of the batch's mesh to the instance: the placement's rotation over its scale (its columns
+    // are perpendicular, so each is divided by its squared length).
+    mat3 placed = mat3(instanceMatrix);
+    msInstanceTurn = mat3(placed[0] / dot(placed[0], placed[0]), placed[1] / dot(placed[1], placed[1]), placed[2] / dot(placed[2], placed[2]));
+    msInstanceValue = ${INSTANCE_ATTRIBUTE};
+  }
+#endif`);
     program.fragmentShader = program.fragmentShader
       .replace("#include <common>", `#include <common>
 varying vec3 msWorld;
@@ -193,6 +228,11 @@ varying vec2 msUv;
 uniform mat4 msObjectFromWorld;
 uniform int msMapping;
 uniform int msReliefSamples;
+uniform float msTime;
+#ifdef MS_INSTANCED
+varying vec4 msInstanceValue;
+varying mat3 msInstanceTurn;
+#endif
 ${noise === "inline" ? "#define MS_INLINE_NOISE\n" : ""}${shader.source}
 // The height one pixel across and one pixel down on the surface, minus the height here.
 float msHeightAcross = 0.0, msHeightDown = 0.0;
@@ -223,7 +263,7 @@ ${relief ? `  // Screen derivatives of a computed value are shared by a 2x2 pixe
     }
   }
 ` : ""}  msPlace(msWorld, msUv);
-  ms_evaluate();
+${/\bms_time\b/.test(shader.source) ? "  ms_time = msTime;\n" : ""}${/\bms_instance\b/.test(shader.source) ? "#ifdef MS_INSTANCED\n  ms_instance = msInstanceValue;\n#endif\n" : ""}  ms_evaluate();
 ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHeightAcross = dFdx(ms_height); msHeightDown = dFdy(ms_height);"}
   diffuseColor = vec4(clamp(ms_base_color, 0.0, 1.0), clamp(ms_opacity, 0.0, 1.0));`)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(ms_roughness, 0.0, 1.0);")
@@ -259,6 +299,9 @@ ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHe
         if (flat_length >= 1e-12) shaded = sideways * (sqrt(1.0 - 0.02 * 0.02) / flat_length) + 0.02 * flat_normal;
       }
     }
+#ifdef MS_INSTANCED
+    shaded = normalize(msInstanceTurn * shaded);
+#endif
     normal = normalize((viewMatrix * vec4(shaded, 0.0)).xyz) * faceDirection;
   }`);
   };

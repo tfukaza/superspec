@@ -136,5 +136,8 @@ pub fn encode(scene: &Scene, previous: Option<&Scene>) -> Vec<u8> {
             bytes.extend_from_slice(&scene.asset_bytes[a.byte_start..a.byte_start + a.byte_length]);
         }
     }
+    // Instanced batches are small beside what they draw and are sent whole with every update,
+    // after everything else (as `Scene::packet` lays them out).
+    scene.batches.write(&mut bytes);
     bytes
 }

@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use superspec_geometry::math::unit;
 use superspec_geometry::{image, ktx2};
-use superspec_model::{Mesh, Scene};
+use superspec_model::{
+    Mesh, Scene,
+    batches::{Batch, Collision},
+};
 use superspec_types::material::Material;
 
 #[derive(Serialize)]
@@ -62,6 +65,16 @@ impl Buffer<'_, '_> {
         Ok(self.views.len() - 1)
     }
     fn floats(&mut self, values: &[f32], components: usize, bounds: bool) -> Result<usize, String> {
+        self.attribute(values, components, bounds, Some(34962))
+    }
+    /// A float accessor; per-instance data is no vertex attribute, so its view has no target.
+    fn attribute(
+        &mut self,
+        values: &[f32],
+        components: usize,
+        bounds: bool,
+        target: Option<u32>,
+    ) -> Result<usize, String> {
         self.options.check(
             self.bytes
                 .len()
@@ -69,8 +82,8 @@ impl Buffer<'_, '_> {
                 .ok_or("Export size overflow.")?,
         )?;
         let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let view = self.view(&bytes, Some(34962))?;
-        let mut accessor = json!({"bufferView":view,"componentType":5126,"count":values.len()/components,"type":match components {2=>"VEC2",3=>"VEC3",4=>"VEC4",_=>unreachable!()}});
+        let view = self.view(&bytes, target)?;
+        let mut accessor = json!({"bufferView":view,"componentType":5126,"count":values.len()/components,"type":match components {1=>"SCALAR",2=>"VEC2",3=>"VEC3",4=>"VEC4",_=>unreachable!()}});
         if bounds {
             let mut minimum = vec![f32::INFINITY; components];
             let mut maximum = vec![f32::NEG_INFINITY; components];
@@ -237,9 +250,6 @@ fn selected<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Vec<&'a Mesh>
     }
     if colliders.iter().any(|id| !ids.contains(id)) {
         return Err("Collision references an unknown mesh.".into());
-    }
-    if selected.is_empty() {
-        return Err("Cannot export an empty model.".into());
     }
     Ok(selected)
 }
@@ -428,6 +438,8 @@ fn texture_payloads<'a>(
 /// identity, the materials those meshes use and, for visual exports, each used texture's role.
 struct Plan<'a> {
     selected: Vec<&'a Mesh>,
+    /// Instanced batches the export writes: visible ones, or for collision those that collide.
+    batches: Vec<&'a Batch>,
     assets: BTreeMap<&'a str, &'a superspec_model::Asset>,
     materials: BTreeMap<&'a str, &'a Material>,
     used: BTreeSet<&'a str>,
@@ -436,6 +448,22 @@ struct Plan<'a> {
 
 fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String> {
     let selected = selected(scene, options)?;
+    superspec_model::batches::check(scene)?;
+    let batches: Vec<&Batch> = scene
+        .manifest
+        .batches
+        .iter()
+        .filter(|batch| {
+            if options.purpose == Purpose::Collision {
+                batch.collision == Collision::Instances
+            } else {
+                batch.visible
+            }
+        })
+        .collect();
+    if selected.is_empty() && batches.is_empty() {
+        return Err("Cannot export an empty model.".into());
+    }
     let mut assets = BTreeMap::new();
     for asset in &scene.manifest.assets {
         if assets.insert(asset.id.as_str(), asset).is_some() {
@@ -454,6 +482,7 @@ fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String>
     let used: BTreeSet<_> = selected
         .iter()
         .filter_map(|m| m.material.as_deref())
+        .chain(batches.iter().filter_map(|b| b.material.as_deref()))
         .collect();
     let roles = if options.purpose == Purpose::Visual {
         texture_roles(&used, &materials)
@@ -462,6 +491,7 @@ fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String>
     };
     Ok(Plan {
         selected,
+        batches,
         assets,
         materials,
         used,
@@ -502,10 +532,197 @@ pub fn encode_texture(source: &[u8], kind: ktx2::Kind) -> Result<Vec<u8>, String
     ktx2::encode(&image::decode(source)?, kind)
 }
 
+/// https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_mesh_gpu_instancing
+const INSTANCING: &str = "EXT_mesh_gpu_instancing";
+
+/// Writes the selected instanced batches: each batch's mesh once, then its instances. A visual
+/// export with `Instancing::Extension` gives a batch one node with `EXT_mesh_gpu_instancing`
+/// (TRANSLATION, ROTATION and SCALE accessors; the `instance` values as `_INSTANCE` and the tints
+/// as `_TINT`). With `Instancing::Nodes`, and always for collision, every instance is a node of
+/// its own that references the same mesh, placed by the node's translation, rotation and scale:
+/// plain glTF every loader reads, with the per-instance attributes in the node's extras. Either
+/// way the placements are under the root node and so stay in the domain's Z-up frame, and the
+/// authored numbers are written as they are. Returns whether the extension was used.
+fn write_batches(
+    scene: &Scene,
+    batches: &[&Batch],
+    material_indices: &BTreeMap<&str, usize>,
+    buffer: &mut Buffer<'_, '_>,
+    meshes: &mut Vec<Value>,
+    nodes: &mut Vec<Value>,
+) -> Result<bool, String> {
+    let options = buffer.options;
+    let visual = options.purpose == Purpose::Visual;
+    let extension = visual && options.instancing == crate::Instancing::Extension;
+    for batch in batches {
+        options.check(0)?;
+        let view = scene.batches.view(batch);
+        if view
+            .positions
+            .iter()
+            .chain(view.normals)
+            .chain(view.uvs)
+            .chain(view.placements)
+            .any(|v| !v.is_finite())
+        {
+            return Err(format!("Invalid export batch attributes: {}", batch.id));
+        }
+        let position = buffer.floats(view.positions, 3, true)?;
+        let normals = view
+            .normals
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|n| unit(n.map(f64::from)).map(|n| n.map(|v| v as f32)))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let normal = buffer.floats(&normals, 3, false)?;
+        let mut attributes = json!({"POSITION":position,"NORMAL":normal});
+        if visual {
+            let uv = view
+                .uvs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| if i % 2 == 0 { *v } else { 1. - v })
+                .collect::<Vec<_>>();
+            attributes["TEXCOORD_0"] = json!(buffer.floats(&uv, 2, false)?);
+            if view.colors.iter().any(|v| !v.is_finite() || *v < 0.) {
+                return Err(format!(
+                    "glTF vertex colors require finite nonnegative values; {} contains invalid color.",
+                    batch.id
+                ));
+            }
+            if view.colors.iter().any(|v| *v > 1.) {
+                attributes["_SUPERSPEC_HDR_COLOR"] = json!(buffer.floats(view.colors, 3, false)?);
+                attributes["COLOR_0"] = json!(buffer.floats(
+                    &view.colors.iter().map(|v| v.min(1.)).collect::<Vec<_>>(),
+                    3,
+                    false
+                )?);
+            } else {
+                attributes["COLOR_0"] = json!(buffer.floats(view.colors, 3, false)?);
+            }
+        }
+        use superspec_model::batches::Domain;
+        // Named attributes are custom attributes: `shadeNormal` is written as `_SHADE_NORMAL`.
+        let custom = |name: &str| {
+            let mut out = String::from("_");
+            for character in name.chars() {
+                if character.is_ascii_uppercase() {
+                    out.push('_');
+                }
+                out.push(character.to_ascii_uppercase());
+            }
+            out
+        };
+        if visual {
+            for attribute in batch
+                .attributes
+                .iter()
+                .filter(|a| a.domain == Domain::Vertex)
+            {
+                let values = scene.batches.attribute(batch, attribute);
+                attributes[custom(&attribute.name)] =
+                    json!(buffer.floats(values, attribute.components, false)?);
+            }
+        }
+        let indices = buffer.indices(view.indices)?;
+        let mut primitive = json!({"attributes":attributes,"indices":indices,"mode":4});
+        if let Some(index) = batch
+            .material
+            .as_deref()
+            .and_then(|id| material_indices.get(id))
+        {
+            primitive["material"] = json!(index);
+        }
+        let mesh = meshes.len();
+        meshes.push(json!({"name":batch.id,"primitives":[primitive]}));
+        let count = batch.instance_count;
+        let collidable = batch.collision == Collision::Instances;
+        if extension {
+            let column = |buffer: &mut Buffer<'_, '_>, start: usize, components: usize| {
+                let values: Vec<f32> = view
+                    .placements
+                    .chunks_exact(superspec_model::batches::PLACEMENT_FLOATS)
+                    .flat_map(|placement| placement[start..start + components].iter().copied())
+                    .collect();
+                buffer.attribute(&values, components, false, None)
+            };
+            let mut instance = json!({
+                "TRANSLATION": column(buffer, 0, 3)?,
+                "ROTATION": column(buffer, 3, 4)?,
+                "SCALE": column(buffer, 7, 3)?,
+            });
+            if let Some(values) = view.values {
+                instance["_INSTANCE"] = json!(buffer.attribute(values, 4, false, None)?);
+            }
+            if let Some(tints) = view.tints {
+                instance["_TINT"] = json!(buffer.attribute(tints, 3, false, None)?);
+            }
+            for attribute in batch
+                .attributes
+                .iter()
+                .filter(|a| a.domain == Domain::Instance)
+            {
+                let values = scene.batches.attribute(batch, attribute);
+                instance[custom(&attribute.name)] =
+                    json!(buffer.attribute(values, attribute.components, false, None)?);
+            }
+            nodes.push(json!({"name":batch.id,"mesh":mesh,
+                "extensions":{(INSTANCING):{"attributes":instance}},
+                "extras":{"batchId":batch.id,"objectId":batch.object_id,"source":batch.source,
+                    "instances":count,"collidable":collidable}}));
+        } else {
+            for (index, placement) in view
+                .placements
+                .chunks_exact(superspec_model::batches::PLACEMENT_FLOATS)
+                .enumerate()
+            {
+                if index % 1024 == 0 {
+                    options.check(0)?;
+                }
+                let mut extras = json!({"batchId":batch.id,"instance":index,
+                    "objectId":batch.object_id,"collidable":collidable});
+                if index == 0 {
+                    extras["source"] = json!(batch.source);
+                }
+                if let Some(values) = view.values.filter(|_| visual) {
+                    extras["value"] = json!(values[index * 4..index * 4 + 4]);
+                }
+                if let Some(tints) = view.tints.filter(|_| visual) {
+                    extras["tint"] = json!(tints[index * 3..index * 3 + 3]);
+                }
+                if visual {
+                    for attribute in batch
+                        .attributes
+                        .iter()
+                        .filter(|a| a.domain == Domain::Instance)
+                    {
+                        let values = scene.batches.attribute(batch, attribute);
+                        let n = attribute.components;
+                        extras[&attribute.name] = if n == 1 {
+                            json!(values[index])
+                        } else {
+                            json!(values[index * n..index * n + n])
+                        };
+                    }
+                }
+                nodes.push(json!({"name":format!("{}/{index}", batch.id),"mesh":mesh,
+                    "translation":placement[..3],"rotation":placement[3..7],"scale":placement[7..],
+                    "extras":extras}));
+            }
+        }
+    }
+    Ok(extension && !batches.is_empty())
+}
+
 /// Navigation/geometry audit statuses remain explicit metadata; export success is not validation.
 pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
     let Plan {
         selected,
+        batches,
         assets,
         materials: source_materials,
         used,
@@ -712,6 +929,14 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         meshes.push(json!({"name":mesh.id,"primitives":[primitive]}));
         nodes.push(json!({"name":mesh.id,"mesh":index,"extras":{"meshId":mesh.id,"objectId":mesh.object_id,"source":mesh.source,"collidable":scene.manifest.colliders.contains(&mesh.id)}}));
     }
+    let instanced = write_batches(
+        scene,
+        &batches,
+        &material_indices,
+        &mut buffer,
+        &mut meshes,
+        &mut nodes,
+    )?;
     // A visual export carries the scene's lighting record: its lights as nodes under the root,
     // so their directions stay in the domain's Z-up frame, and the whole record in the extras.
     let lighting = if visual {
@@ -741,9 +966,18 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
     if emissive_strength {
         extensions.push("KHR_materials_emissive_strength");
     }
+    let mut required = vec![];
     if ktx2 {
         extensions.push("KHR_texture_basisu");
-        document["extensionsRequired"] = json!(["KHR_texture_basisu"]);
+        required.push("KHR_texture_basisu");
+    }
+    if instanced {
+        // Required: a loader without it would draw each batch once, at the origin.
+        extensions.push(INSTANCING);
+        required.push(INSTANCING);
+    }
+    if !required.is_empty() {
+        document["extensionsRequired"] = json!(required);
     }
     if !lights.is_empty() {
         extensions.push(crate::lighting::EXTENSION);

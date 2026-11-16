@@ -4,7 +4,7 @@
  * wall's face on y = 0, then turned a quarter turn about Z, so the room opens toward (+x, -y):
  * the corner Material Studio's camera starts from. The tall wall faces -y and the low wall +x.
  */
-import { Mesh, add, mul, writeGlb } from "./geometry.mjs";
+import { Mesh, add, cross, dot, mul, unit, writeGlb } from "./geometry.mjs";
 
 const X = [1, 0, 0], Y = [0, 1, 0], Z = [0, 0, 1];
 
@@ -17,7 +17,81 @@ function bracket(mesh, origin, out, along, reach, drop, width = 0.04, thickness 
   mesh.bar(at(reach * 0.9, thickness), at(thickness, drop * 0.92), along, width * 0.7, thickness);
 }
 
-export function buildMeshes() {
+/**
+ * Where the bolt template stands: the one mesh every bolt of the scene is an instance of (an instanced batch, see
+ * `buildBatches`). It is an ordinary mesh with a material, so the project bakes its material once, here; it stands
+ * well below the slab so that it touches and shades nothing, and it is not drawn where it stands.
+ */
+const BOLT_ORIGIN = [0, 0, -5];
+
+/** A hex-head bolt on a washer, its axis along +Z from `origin`: about 3 cm across. */
+function bolt(mesh, origin) {
+  const at = (x, y, z) => add(origin, [x, y, z]);
+  // The washer: a low smooth cylinder.
+  mesh.tube([at(0, 0, 0), at(0, 0, 0.003)], 0.016, { segments: 12 });
+  // The head: six flat sides and a top.
+  const radius = 0.011, low = 0.003, high = 0.012;
+  const corner = index => [Math.cos(index * Math.PI / 3) * radius, Math.sin(index * Math.PI / 3) * radius];
+  for (let side = 0; side < 6; side++) {
+    const [a, b] = [corner(side), corner(side + 1)];
+    mesh.quad(at(a[0], a[1], low), at(b[0], b[1], low), at(b[0], b[1], high), at(a[0], a[1], high), [a[0] + b[0], a[1] + b[1], 0]);
+  }
+  mesh.cap(Array.from({ length: 6 }, (_, index) => at(...corner(index), high)), Z);
+  return mesh;
+}
+
+/** The scene's parts turned to face the camera: (x, y) becomes (y, -x). */
+const turned = ([x, y, z]) => [y, -x, z];
+
+/**
+ * Every bolt of the scene as one instanced batch of the `bolt` mesh: the pipe's two flanges, the anchor bolts of the
+ * four wall brackets and the screws of the vent's frame. Each instance is a point on a surface and the surface's
+ * normal (in the layout's coordinates, before the turn), a size and a turn about its own axis. A placement moves the
+ * template from where it stands, so its translation undoes the template's own offset: p - R (s O).
+ */
+export function buildBatches() {
+  const bolts = [];
+  const ring = (center, normal, radius, count, scale) => {
+    const u = unit(cross(normal, Math.abs(normal[2]) < 0.9 ? Z : X)), v = cross(normal, u);
+    for (let index = 0; index < count; index++) {
+      const angle = (index + 0.5) / count * Math.PI * 2;
+      bolts.push({ point: add(center, add(mul(u, radius * Math.cos(angle)), mul(v, radius * Math.sin(angle)))), normal, scale });
+    }
+  };
+  // The pipe's floor flange and the flange where it enters the tall wall: eight bolts each, between pipe and rim.
+  ring([0.14, 2.12, 0.03], Z, 0.11, 8, 1);
+  ring([0.03, 2.12, 2.3], X, 0.11, 8, 1);
+  // Anchor bolts through each bracket's leg: the duct's two on the tall wall, the bench's two on the low wall.
+  for (const y of [0.5, 1.15]) for (const drop of [0.06, 0.19]) bolts.push({ point: [0.006, y, 1.97 - drop], normal: X, scale: 0.8 });
+  for (const x of [0.7, 1.6]) for (const drop of [0.08, 0.25]) bolts.push({ point: [x, 0.006, 0.425 - drop], normal: Y, scale: 0.8 });
+  // Screws at the corners and the middles of the vent's frame.
+  for (const y of [1.555, 1.725, 1.895]) for (const z of [1.975, 2.12, 2.265]) {
+    if (y === 1.725 && z === 2.12) continue;
+    bolts.push({ point: [0.436, y, z], normal: X, scale: 0.5 });
+  }
+  const instances = bolts.map(({ point, normal, scale }, index) => {
+    const n = turned(normal), p = turned(point);
+    // The shortest turn from +Z to the normal, after a turn about +Z that differs per bolt (a hex head rarely lines up).
+    const spin = index * 2.399963, half = [0, 0, Math.sin(spin / 2), Math.cos(spin / 2)];
+    const axis = cross(Z, n), w = 1 + dot(Z, n);
+    const length = Math.hypot(...axis, w);
+    const align = [...mul(axis, 1 / length), w / length];
+    const multiply = (a, b) => [
+      a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+      a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2]];
+    // A number per bolt in [0, 1) that repeats from build to build.
+    const random = (index * 0.6180339887 + 0.137) % 1;
+    return {
+      // The template's origin is on its axis, so R (s O) is s |O| along the normal.
+      translation: add(p, mul(n, -scale * BOLT_ORIGIN[2])), rotation: multiply(align, half), scale: [scale, scale, scale],
+      value: [random, index / bolts.length, 0, 1], tint: [0.8 + 0.3 * random, 0.8 + 0.3 * random, 0.8 + 0.3 * random],
+    };
+  });
+  return [{ id: "bolts", mesh: "bolt", collision: "none", instances }];
+}
+
+/** `batches: false` leaves out the bolt template, for the scene as it was before it had instanced batches. */
+export function buildMeshes({ batches = true } = {}) {
   const meshes = [];
   const mesh = (name, color) => { const created = new Mesh(name, color); meshes.push(created); return created; };
 
@@ -77,11 +151,13 @@ export function buildMeshes() {
   }
 
   // Turn the layout to face the camera: (x, y) becomes (y, -x).
-  for (const turned of meshes) {
-    for (const values of [turned.positions, turned.normals]) {
+  for (const part of meshes) {
+    for (const values of [part.positions, part.normals]) {
       for (let i = 0; i < values.length; i += 3) [values[i], values[i + 1]] = [values[i + 1], -values[i]];
     }
   }
+  // The bolt template, last, so every other mesh keeps its place in the model.
+  if (batches) bolt(mesh("bolt", [0.4, 0.4, 0.4]), BOLT_ORIGIN);
   return meshes;
 }
 

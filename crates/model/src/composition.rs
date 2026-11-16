@@ -72,7 +72,7 @@ fn ranges(scene: &Scene) -> Result<(), String> {
             return Err("Invalid scene composition asset range.".into());
         }
     }
-    Ok(())
+    crate::batches::check(scene)
 }
 
 fn image_pixels(scene: &Scene, asset: &Asset) -> Result<usize, String> {
@@ -179,11 +179,18 @@ pub fn replace_receivers(
             base.manifest.materials.push(material.clone());
         }
     }
+    // Batches are not receivers: they stay as the base has them, with the materials they use.
     let used: BTreeSet<_> = output
         .manifest
         .meshes
         .iter()
         .filter_map(|mesh| mesh.material.clone())
+        .chain(
+            base.manifest
+                .batches
+                .iter()
+                .filter_map(|batch| batch.material.clone()),
+        )
         .collect();
     base.manifest
         .materials
@@ -231,6 +238,7 @@ pub fn replace_receivers(
     }
     let meshes = std::mem::take(&mut output.manifest.meshes);
     let assets = std::mem::take(&mut output.manifest.assets);
+    output.batches = std::mem::take(&mut base.batches);
     output.manifest = base.manifest;
     output.manifest.revision = replacement.manifest.revision;
     output.manifest.meshes = meshes;
@@ -256,6 +264,10 @@ pub fn prefixed(mut scene: Scene, prefix: &str) -> Scene {
     for mesh in &mut scene.manifest.meshes {
         rename(&mut mesh.id);
         rename(&mut mesh.object_id);
+    }
+    for batch in &mut scene.manifest.batches {
+        rename(&mut batch.id);
+        rename(&mut batch.object_id);
     }
     scene.manifest.colliders.iter_mut().for_each(rename);
     scene.manifest.mesh_tangents = std::mem::take(&mut scene.manifest.mesh_tangents)
@@ -300,6 +312,22 @@ pub fn append(mut base: Scene, addition: Scene) -> Result<Scene, String> {
     {
         return Err("Composed scenes contain duplicate mesh identities.".into());
     }
+    if addition
+        .manifest
+        .batches
+        .iter()
+        .any(|added| base.manifest.meshes.iter().any(|mesh| mesh.id == added.id))
+        || base.manifest.batches.iter().any(|batch| {
+            addition
+                .manifest
+                .meshes
+                .iter()
+                .any(|mesh| mesh.id == batch.id)
+        })
+    {
+        return Err("Composed scenes use one identity for a mesh and a batch.".into());
+    }
+    base.append_batches(&addition)?;
     if base.positions.len() / 3 + addition.positions.len() / 3 > 6_000_000
         || base.indices.len() + addition.indices.len() > 18_000_000
     {

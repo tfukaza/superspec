@@ -1,5 +1,6 @@
 //! Shared typed source, provenance and material values, independent of parsing and generation.
 pub mod architecture;
+pub mod batch;
 pub mod diagnostic;
 pub mod lighting;
 pub mod material;

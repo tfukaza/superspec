@@ -39,6 +39,26 @@ export interface AuthoringProject {
    * and the GLB export read it. The engine's project ignores the field: no build or bake depends on it.
    */
   lighting?: LightingInput;
+  /**
+   * Instanced batches (`superspec_model::batches::of_project`): each draws a mesh of the composed scene, its template,
+   * once per placement, or states its geometry inline. The engine's project ignores the field; the delivered scene
+   * (the preview packet and exports) holds the batches in their templates' place.
+   */
+  batches?: ProjectBatch[];
+}
+/** One instanced batch of a project; `value` and `tint` are given for every instance or for none. */
+export interface ProjectBatch {
+  id: string;
+  objectId?: string;
+  /** A mesh of the composed scene, or geometry stated here. */
+  mesh: string | { positions: number[]; normals: number[]; uvs?: number[]; colors?: number[]; indices: number[];
+    scalars?: Record<string, number[]>; vectors?: Record<string, number[]> };
+  /** Named per-instance scalars, and vectors as three numbers per instance. */
+  scalars?: Record<string, number[]>;
+  vectors?: Record<string, number[]>;
+  collision?: "none" | "instances";
+  visible?: boolean;
+  instances: { translation: number[]; rotation?: number[]; scale?: number[]; value?: number[]; tint?: number[] }[];
 }
 export interface Parameter {
   name: string;

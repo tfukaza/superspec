@@ -4,7 +4,9 @@
  * and reports how long the scene took to load. RESOLUTION (default 256) sets the texture size
  * (above 512 the project is given the production profile, the only one that allows it);
  * SCREENSHOT names a PNG of the loaded viewport. LIGHTING names a JSON lighting record the project
- * then carries (see docs/plans/lighting-settings.md); without it the scene has the shipped look.
+ * then carries (see docs/plans/lighting-settings.md); without it the scene has the shipped look. BATCHES=0 builds the
+ * scene without its instanced batch (the bolts), as it was before it had one; with QUERY containing gpuprobe the frame's
+ * draw calls and triangles are reported, and with `animate=1` the time-driven mode's frame budget.
  */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -28,7 +30,8 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 
 let browser;
 try {
-  const { project } = buildProject(resolution);
+  const withBatches = process.env.BATCHES !== "0";
+  const { project } = buildProject(resolution, undefined, { batches: withBatches });
   // ONLY=id,id keeps just those materials, to see what each costs.
   const only = process.env.ONLY?.split(",");
   if (only) project.materials = project.materials.filter(material => only.includes(material.id));
@@ -120,7 +123,21 @@ try {
   const bindings = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.bindings ?? "{}"));
   const expected = Object.fromEntries(project.materials.flatMap(material => material.meshes.map(mesh => [mesh, material.id])));
   assert.deepEqual(bindings, expected, "every mesh shows its material");
-  if (!only) assert.equal(Object.keys(expected).length, materials.reduce((sum, material) => sum + material.meshes.length, 0));
+  if (!only) assert.equal(Object.keys(expected).length, materials.reduce((sum, material) => sum + material.meshes.length, 0) - (withBatches ? 0 : 1));
+  // The scene's instanced batch: one instanced mesh for every bolt, drawn from the template's one bake.
+  const drawnBatches = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.batches ?? "[]"));
+  if (withBatches && !only) {
+    const stress = Number(new URLSearchParams(process.env.QUERY ?? "").get("batchstress")) || 0;
+    assert.equal(drawnBatches.length, 1, "the bolts are one instanced batch");
+    assert.equal(drawnBatches[0].id, "bolts");
+    assert.equal(drawnBatches[0].instances, stress || project.batches[0].instances.length);
+    assert.ok(drawnBatches[0].tints && drawnBatches[0].values, "per-instance tints and values are bound");
+    if (firstBake && !/preview=/.test(process.env.QUERY ?? "")) {
+      assert.equal(firstBake.meshes, project.materials.reduce((sum, material) => sum + material.meshes.length, 0), "the batch is one mesh of the scene bake, as its template");
+      assert.ok(firstBake.atlases.bolts, "the batch shows maps baked over its template's atlas");
+    }
+    console.log(`Instanced batches: ${JSON.stringify(drawnBatches)}`);
+  } else assert.equal(drawnBatches.length, 0);
   assert.equal(errors.length, 0, errors.join("\n"));
   // The view is lit by the project's record (the shipped look without one), under the page's overrides.
   {
@@ -213,9 +230,17 @@ try {
       frames.sort((a, b) => a - b);
       gpu = frames.length ? { median: +frames[frames.length >> 1].toFixed(2), min: +frames[0].toFixed(2), max: +frames.at(-1).toFixed(2), frames: frames.length } : "no timer query completed";
     }
-    return { median: +times[12].toFixed(2), min: +times[0].toFixed(2), max: +times[23].toFixed(2), gpuTimerQuery: gpu, shadowExtentMeters: scene.shadowStyle?.uniforms.msShadowExtent.value };
+    return { median: +times[12].toFixed(2), min: +times[0].toFixed(2), max: +times[23].toFixed(2), gpuTimerQuery: gpu, shadowExtentMeters: scene.shadowStyle?.uniforms.msShadowExtent.value,
+      // Draw calls and triangles of one frame, every pass counted (shadow map, scene, ambient occlusion).
+      frame: scene.measureFrame() };
   });
   if (draws) console.log(`Draw time (ms; draw and one-pixel read, 24 draws; gpuTimerQuery is the GPU's time alone): ${JSON.stringify(draws)}`);
+  // The time-driven mode (`?animate=1`): frames keep coming and its readout states them against the budget.
+  if (/animate=1/.test(process.env.QUERY ?? "")) {
+    await page.waitForFunction(() => document.querySelector("#viewport").dataset.frameBudget !== undefined, {}, { timeout: 30000 });
+    await page.waitForTimeout(1500);
+    console.log(`Frame budget (time-driven mode): ${await page.evaluate(() => document.querySelector("#viewport").dataset.frameBudget)}`);
+  }
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
   // Frame time while a value is dragged (with QUERY containing gpuprobe): a scalar parameter of DRAG (default the
   // concrete walls) changes before every frame, as a slider does, so its meshes show their per-pixel look and no bake

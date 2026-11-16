@@ -1,10 +1,11 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { SceneMesh, ScenePacket } from "../model/packet.ts";
+import type { SceneBatch, SceneMesh, ScenePacket } from "../model/packet.ts";
+import { SHADE_NORMAL, batchGeometry, batchInstances, compileTwin, instancedBatch, lightByShadeNormal, stressInstances } from "./batch.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
-import { hasPixelRelief, programMaterial, programTexture, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
+import { hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
 import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
@@ -153,8 +154,19 @@ export class RustScene {
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
+    // Draw calls and triangles of the whole frame: the shadow pass, the scene and any passes after it.
+    this.renderer.info.reset();
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);
+    this.frameStats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
+  }
+
+  /** Draw calls and triangles of the frame last drawn, every pass counted. */
+  private frameStats = { calls: 0, triangles: 0 };
+  /** Draws a frame now and says what it took (tests and measurements). */
+  measureFrame(): { calls: number; triangles: number } {
+    this.draw();
+    return { ...this.frameStats };
   }
 
   /** Fits the sun's shadow camera to the models' bounds and asks for one new shadow map; the light direction is unchanged. */
@@ -187,7 +199,13 @@ export class RustScene {
     this.host.dataset.lighting = JSON.stringify(this.lights.lighting);
   }
 
-  constructor(private readonly host: HTMLElement, private readonly inspect: (mesh?: SceneMesh) => void) {
+  /**
+   * `inspect` hears what is selected: a mesh, or an instanced batch (its record, which has a mesh's fields) with the
+   * index of the instance picked.
+   */
+  constructor(private readonly host: HTMLElement, private readonly inspect: (mesh?: SceneMesh, instance?: number) => void) {
+    // Frame statistics are reset by `draw`, once for all the passes of a frame.
+    this.renderer.info.autoReset = false;
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color("#d5d7ce");
@@ -225,6 +243,8 @@ export class RustScene {
       this.invalidate();
     });
     this.resize.observe(host);
+    document.addEventListener("visibilitychange", this.visibilityChanged);
+    if (new URLSearchParams(location.search).get("animate") === "1") this.setContinuous(true);
     this.render();
   }
 
@@ -264,7 +284,9 @@ export class RustScene {
     };
     try {
       const requests = new Map<string, { id: string; color: boolean }>();
-      for (const descriptor of packet.manifest.meshes) {
+      // Instanced batches are drawn beside the meshes: a batch's record has a mesh's fields, and its data is its own.
+      const batches = packet.manifest.batches ?? [];
+      for (const descriptor of [...packet.manifest.meshes, ...batches]) {
         const definition = descriptor.visible && descriptor.material !== null ? materials.get(descriptor.material) : undefined;
         if (!definition) continue;
         for (const [id, color] of [[definition.texture, true], [definition.normalTexture, false], [definition.metallicRoughnessTexture, false], [definition.emissiveTexture ?? null, true], [definition.occlusionTexture ?? null, false]] as const) {
@@ -286,8 +308,13 @@ export class RustScene {
       checkCurrent();
       // A scene without shaded materials replaces one that may show GPU-baked looks: its meshes get their own back first.
       if (!decorate) this.sceneBaker?.reset();
-      for (const descriptor of packet.manifest.meshes) {
+      // `?batchstress=N` (tests only) draws every batch with N instances on a lattice through the scene's bounds.
+      const stress = batches.length ? this.batchStress : 0;
+      const volume = new THREE.Box3();
+      if (stress) for (const mesh of packet.manifest.meshes) if (mesh.visible) volume.union(new THREE.Box3(new THREE.Vector3(...mesh.bounds[0]), new THREE.Vector3(...mesh.bounds[1])));
+      for (const descriptor of [...packet.manifest.meshes, ...batches] as (SceneMesh & Partial<SceneBatch>)[]) {
         checkCurrent();
+        const batch = descriptor.instanceCount === undefined ? undefined : descriptor as SceneBatch;
         const definition = descriptor.material === null ? undefined : materials.get(descriptor.material);
         const signature = JSON.stringify(definition ? {
           ...definition, id: undefined,
@@ -298,34 +325,44 @@ export class RustScene {
           occlusionTexture: definition.occlusionTexture == null ? null : textures.get(definition.occlusionTexture + ":false")?.uuid,
         } : null);
         const previous = previousMeshes.get(descriptor.id);
-        if (previous && previous.visible === descriptor.visible && previous.userData.materialSignature === signature && sameGeometry(previous, packet, descriptor)) {
+        if (!batch && previous && !(previous as THREE.InstancedMesh).isInstancedMesh && previous.visible === descriptor.visible && previous.userData.materialSignature === signature && sameGeometry(previous, packet, descriptor)) {
           reused.push({ mesh: previous, source: descriptor });
           ordered.push(previous);
           continue;
         }
-        const geometry = new THREE.BufferGeometry();
+        const geometry = batch ? batchGeometry(packet, batch) : new THREE.BufferGeometry();
         const material = new THREE.MeshStandardMaterial();
         // The shadow style goes on first; live operations and GPU previews chain onto it.
         this.shadowStyle?.apply(material);
-        const mesh = new THREE.Mesh(geometry, material);
+        let mesh: THREE.Mesh;
+        if (batch) {
+          const own = batchInstances(packet, batch);
+          const center = new THREE.Vector3(...batch.localBounds[0]).add(new THREE.Vector3(...batch.localBounds[1])).multiplyScalar(0.5);
+          mesh = instancedBatch(geometry, material, stress && !volume.isEmpty() ? stressInstances(own, stress, volume, center) : own);
+          // A batch shown as it is (no material) is lit by its instances' shade normals where it has them.
+          if (!definition && !stress && own.named?.some(attribute => attribute.name === SHADE_NORMAL && attribute.components === 3)) lightByShadeNormal(material);
+        } else mesh = new THREE.Mesh(geometry, material);
         // Every displayed mesh casts and receives; textures, GPU previews and live operations only change its material.
         mesh.castShadow = mesh.receiveShadow = this.shadows;
         ordered.push(mesh);
         next.add(mesh);
-        geometry.setAttribute("position", new THREE.BufferAttribute(packet.positions.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
-        geometry.setAttribute("normal", new THREE.BufferAttribute(packet.normals.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
-        geometry.setAttribute("uv", new THREE.BufferAttribute(packet.uvs.slice(descriptor.vertexStart * 2, (descriptor.vertexStart + descriptor.vertexCount) * 2), 2));
-        geometry.setAttribute("color", new THREE.BufferAttribute(packet.colors.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
-        const tangents = packet.manifest.meshTangents?.[descriptor.id];
-        if (tangents) geometry.setAttribute("tangent", new THREE.Float32BufferAttribute(tangents.flat(), 4));
+        if (!batch) {
+          geometry.setAttribute("position", new THREE.BufferAttribute(packet.positions.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
+          geometry.setAttribute("normal", new THREE.BufferAttribute(packet.normals.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
+          geometry.setAttribute("uv", new THREE.BufferAttribute(packet.uvs.slice(descriptor.vertexStart * 2, (descriptor.vertexStart + descriptor.vertexCount) * 2), 2));
+          geometry.setAttribute("color", new THREE.BufferAttribute(packet.colors.slice(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
+          const tangents = packet.manifest.meshTangents?.[descriptor.id];
+          if (tangents) geometry.setAttribute("tangent", new THREE.Float32BufferAttribute(tangents.flat(), 4));
+          geometry.setIndex(new THREE.BufferAttribute(packet.indices.slice(descriptor.indexStart, descriptor.indexStart + descriptor.indexCount), 1));
+          geometry.computeBoundingBox();
+          geometry.computeBoundingSphere();
+        }
         material.vertexColors = true;
         material.wireframe = this.view.wireframe;
-        geometry.setIndex(new THREE.BufferAttribute(packet.indices.slice(descriptor.indexStart, descriptor.indexStart + descriptor.indexCount), 1));
-        geometry.computeBoundingBox();
-        geometry.computeBoundingSphere();
         if (definition?.baseColorFactor) material.color.fromArray(definition.baseColorFactor);
-        else material.color.set(definition?.color ?? "#b9c7d1");
-        material.roughness = definition?.roughness ?? 0.8;
+        // A batch without a material shows its vertex colors and tints as they are.
+        else material.color.set(definition?.color ?? (batch ? "#ffffff" : "#b9c7d1"));
+        material.roughness = definition?.roughness ?? (batch ? 0.9 : 0.8);
         material.metalness = definition?.metalness ?? 0;
         if (definition && descriptor.visible) {
           if (definition.emissiveFactor) material.emissive.fromArray(definition.emissiveFactor);
@@ -438,10 +475,18 @@ export class RustScene {
       this.inspect(selection);
       this.draw();
       // Public inspection data reflects uploaded geometry, not author-supplied manifest bounds.
-      this.host.dataset.meshes = JSON.stringify(next.children.map(object => {
+      const instanced = (object: THREE.Object3D): object is THREE.InstancedMesh => (object as THREE.InstancedMesh).isInstancedMesh === true;
+      this.host.dataset.meshes = JSON.stringify(next.children.filter(object => !instanced(object)).map(object => {
         const mesh = object as THREE.Mesh;
         return { id: mesh.name, bounds: [mesh.geometry.boundingBox!.min.toArray(), mesh.geometry.boundingBox!.max.toArray()], vertices: mesh.geometry.getAttribute("position").count };
       }));
+      // Instanced batches as uploaded: the bounds are the ones culling and shadow fitting use (every instance's).
+      const drawn = next.children.filter(instanced);
+      if (drawn.length) this.host.dataset.batches = JSON.stringify(drawn.map(mesh => ({ id: mesh.name, instances: mesh.count,
+        bounds: [mesh.boundingBox!.min.toArray(), mesh.boundingBox!.max.toArray()], vertices: sourceGeometry(mesh).getAttribute("position").count,
+        tints: mesh.instanceColor !== null, values: sourceGeometry(mesh).hasAttribute("msInstance"),
+        attributes: Object.keys(sourceGeometry(mesh).attributes).filter(name => /^ms(Instance|Vertex)_/.test(name)).sort() })));
+      else delete this.host.dataset.batches;
       this.host.dataset.revision = String(packet.manifest.revision);
       this.collisionIds = new Set(packet.manifest.colliders);
       this.clearItemGuides();
@@ -474,8 +519,8 @@ export class RustScene {
       }
       prepared.set(id, entry);
     }
-    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline") => {
-      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise);
+    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline", instanced: boolean) => {
+      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise, instanced);
       this.shadowStyle?.apply(material);
       material.wireframe = this.view.wireframe;
       material.side = THREE.DoubleSide;
@@ -496,24 +541,29 @@ export class RustScene {
         for (const entry of prepared.values()) baker.precompileAtlas((entry.plan ?? entry).material);
       }
       for (const mesh of meshes) {
-        const spec = shading.meshes[mesh.name];
+        // An instanced batch is shaded and baked as its template: the mesh it was made from, where that mesh stood.
+        // The engine describes the template as it does every receiver, so the batch's one bake is the template's.
+        const template = (mesh.userData.source as SceneBatch | undefined)?.template;
+        const instanced = (mesh as THREE.InstancedMesh).isInstancedMesh === true;
+        const receiverId = instanced && template ? template : mesh.name;
+        const spec = shading.meshes[receiverId];
         const entry = spec && prepared.get(spec.material);
         if (!spec || !entry) continue;
-        const layout = layouts?.get(mesh.name);
+        const layout = layouts?.get(receiverId);
         // The first look is the program that compiles fastest: derivative relief, noises in loops (`?noise=inline`: inline
         // from the start). A program whose settled look for edits the displayed scene holds compiled starts with that.
         const identity = shaderIdentity(entry.material.shader);
         const kept = layout !== undefined && this.noise === "settle" && this.inlineLooks.has(identity);
         if (kept) keptInline.add(identity);
         const first = this.noise === "inline" || kept ? "inline" : "looped";
-        const material = make(entry, spec, "quad", first);
+        const material = make(entry, spec, "quad", first, instanced);
         if (kept) keptLooks.push({ mesh, geometry: sourceGeometry(mesh), material });
         made.push({ mesh, material, shaded: spec.material });
         const pixel = this.pixelRelief && hasPixelRelief(entry.material);
         if (pixel || this.noise === "settle") {
           refine.push({ mesh, first: material, source: shaderIdentity(entry.material.shader),
-            pixel: pixel ? () => make(entry, spec, "pixel", first) : undefined,
-            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline") : undefined });
+            pixel: pixel ? () => make(entry, spec, "pixel", first, instanced) : undefined,
+            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline", instanced) : undefined });
         }
         if (layout) {
           const use = entry.plan ?? entry;
@@ -521,9 +571,10 @@ export class RustScene {
           // The program's shared uniforms (the plan's, when it bakes from one) with this receiver's own.
           const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
           targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
-            receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1] });
+            receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1],
+            ...(receiverId === mesh.name ? {} : { fieldsId: receiverId }) });
           // What the mesh shows while a value changes keeps the relief that compiles fast and settles on the noise form that draws fast.
-          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline") });
+          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline", instanced) });
         }
       }
       // The per-pixel looks, compiled as the meshes that will show them and without blocking the page: drawn
@@ -578,11 +629,7 @@ export class RustScene {
   private async compileLooks(items: { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material }[]): Promise<void> {
     if (!items.length) return;
     const stage = new THREE.Group();
-    for (const { mesh, geometry, material } of items) {
-      const twin = new THREE.Mesh(geometry, material);
-      twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
-      stage.add(twin);
-    }
+    for (const { mesh, geometry, material } of items) stage.add(compileTwin(mesh, geometry, material));
     // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
     const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
     await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile());
@@ -763,11 +810,7 @@ export class RustScene {
       const discard = () => { for (const entry of made) if (entry.item.mesh.material !== entry.material) entry.material.dispose(); };
       // Compiled as the meshes that will show them, with the displayed scene's lights, shadows and environment.
       const stage = new THREE.Group();
-      for (const { item, material } of made) {
-        const twin = new THREE.Mesh(item.mesh.geometry, material);
-        twin.castShadow = item.mesh.castShadow; twin.receiveShadow = item.mesh.receiveShadow;
-        stage.add(twin);
-      }
+      for (const { item, material } of made) stage.add(compileTwin(item.mesh, item.mesh.geometry, material));
       // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
       const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
       try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { discard(); continue; }
@@ -1174,7 +1217,11 @@ export class RustScene {
     if (hit && this.walk.pick(hit.point)) return;
     const mesh: SceneMesh | undefined = hit?.object.userData.source;
     this.selected = mesh?.id;
-    this.inspect(mesh);
+    // A batch reports the instance hit, by its index in the batch.
+    const instance = mesh && (hit!.object as THREE.InstancedMesh).isInstancedMesh ? hit!.instanceId : undefined;
+    if (mesh) this.host.dataset.picked = JSON.stringify({ id: mesh.id, ...(instance === undefined ? {} : { instance }) });
+    else delete this.host.dataset.picked;
+    this.inspect(mesh, instance);
   };
 
   toggleWalk(): void { this.walk.toggle(); }
@@ -1193,12 +1240,112 @@ export class RustScene {
     if (!this.closed && this.frame === 0) this.frame = requestAnimationFrame(this.render);
   };
 
-  /** Static procedural scenes remain idle between interaction frames. */
-  private render = (): void => {
+  /** Static procedural scenes remain idle between interaction frames; the time-driven mode draws every frame. */
+  private render = (now?: number): void => {
     if (this.closed) return;
-    if (!this.walking) this.controls.update();
-    this.draw();
     this.frame = 0;
+    if (!this.walking) this.controls.update();
+    if (!this.continuous || document.hidden) { this.draw(); return; }
+    this.animatedFrame(now ?? performance.now());
+    this.frame = requestAnimationFrame(this.render);
+  };
+
+  /** Whether `?batchstress=N` asks for N instances of every batch (tests only; see `stressInstances`). */
+  private readonly batchStress = Math.max(0, Math.min(1_000_000, Math.floor(Number(new URLSearchParams(location.search).get("batchstress")) || 0)));
+
+  private continuous = false;
+  /** Timing of the time-driven mode: the frame before, the frames of the window being summed and the GPU's timer queries in flight. */
+  private clock: { last?: number; frames: number; interval: number; longest: number; cpu: number; over: number; gpu: number[]; pending: WebGLQuery[]; shown: number } =
+    { frames: 0, interval: 0, longest: 0, cpu: 0, over: 0, gpu: [], pending: [], shown: 0 };
+  private budgetReadout?: HTMLOutputElement;
+  /** A frame's share of a second at 60 frames a second, which the readout measures against (milliseconds). */
+  private static readonly FRAME_BUDGET_MS = 1000 / 60;
+
+  /**
+   * The time-driven render mode: off by default, when the viewer draws only what changed (`invalidate`). On, it draws
+   * every animation frame and advances `msTime`, the seconds that program materials have as a uniform (shade.ts), by
+   * the time that passed, so a material that reads time moves. It stops while the page is hidden and resumes where the
+   * time stood. A readout in the viewport's corner and `data-frame-budget` say how the frames compare with the budget
+   * of 16.7 ms: the interval between frames, the page's own time to issue one, the GPU's time for one (where the
+   * browser offers timer queries), and the frame's draw calls and triangles. `?animate=1` turns it on from the start.
+   */
+  setContinuous(on: boolean): void {
+    if (on === this.continuous) return;
+    this.continuous = on;
+    this.host.dataset.continuous = String(on);
+    this.clock = { frames: 0, interval: 0, longest: 0, cpu: 0, over: 0, gpu: [], pending: this.clock.pending, shown: performance.now() };
+    if (on) {
+      if (!this.budgetReadout) {
+        const readout = this.budgetReadout = document.createElement("output");
+        readout.className = "frame-budget";
+        Object.assign(readout.style, { position: "absolute", right: "8px", top: "8px", zIndex: "2", padding: "2px 6px", font: "11px/1.4 ui-monospace, monospace",
+          color: "#fff", background: "rgba(20, 22, 24, 0.72)", borderRadius: "3px", pointerEvents: "none", whiteSpace: "pre" });
+        if (getComputedStyle(this.host).position === "static") this.host.style.position = "relative";
+        this.host.append(readout);
+      }
+      this.invalidate();
+    } else {
+      this.budgetReadout?.remove(); this.budgetReadout = undefined;
+      delete this.host.dataset.frameBudget;
+    }
+  }
+
+  /** Seconds the time-driven mode has run, the value of `msTime`. */
+  get time(): number { return programTime.value; }
+
+  /** One frame of the time-driven mode: advances the time, draws, and accounts for the frame. */
+  private animatedFrame(now: number): void {
+    const clock = this.clock;
+    // The first frame, and the first after the page was hidden, advance nothing.
+    const interval = clock.last === undefined ? 0 : now - clock.last;
+    clock.last = now;
+    // A long stall (a breakpoint, a busy page) moves the time by at most a tenth of a second.
+    programTime.value += Math.min(interval, 100) / 1000;
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    const timer = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    // One query at a time may be open; results arrive a few frames later.
+    const query = timer && clock.pending.length < 4 ? gl.createQuery() : null;
+    if (timer && query) gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
+    const started = performance.now();
+    this.draw();
+    const cpu = performance.now() - started;
+    if (timer && query) { gl.endQuery(timer.TIME_ELAPSED_EXT); clock.pending.push(query); }
+    if (timer) {
+      const disjoint = gl.getParameter(timer.GPU_DISJOINT_EXT) as boolean;
+      while (clock.pending.length && gl.getQueryParameter(clock.pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+        const done = clock.pending.shift()!;
+        if (!disjoint) clock.gpu.push((gl.getQueryParameter(done, gl.QUERY_RESULT) as number) / 1e6);
+        gl.deleteQuery(done);
+      }
+    }
+    if (interval > 0) {
+      clock.frames++; clock.interval += interval; clock.cpu += cpu;
+      clock.longest = Math.max(clock.longest, interval);
+      // A frame is over budget when it took more than one and a half budgets to arrive (a missed refresh at 60 Hz).
+      if (interval > RustScene.FRAME_BUDGET_MS * 1.5) clock.over++;
+    }
+    if (now - clock.shown < 500 || !clock.frames) return;
+    const gpu = [...clock.gpu].sort((a, b) => a - b);
+    const budget = {
+      budgetMs: +RustScene.FRAME_BUDGET_MS.toFixed(1), frames: clock.frames, intervalMs: +(clock.interval / clock.frames).toFixed(2), longestMs: +clock.longest.toFixed(2),
+      cpuMs: +(clock.cpu / clock.frames).toFixed(2), gpuMs: gpu.length ? +gpu[gpu.length >> 1].toFixed(2) : null, overBudget: clock.over,
+      calls: this.frameStats.calls, triangles: this.frameStats.triangles, time: +programTime.value.toFixed(3),
+    };
+    this.host.dataset.frameBudget = JSON.stringify(budget);
+    if (this.budgetReadout) {
+      this.budgetReadout.value = `${budget.intervalMs.toFixed(1)} ms/frame of ${budget.budgetMs} (longest ${budget.longestMs.toFixed(1)}, ${budget.overBudget} over)\n`
+        + `page ${budget.cpuMs.toFixed(1)} ms, GPU ${budget.gpuMs === null ? "n/a" : `${budget.gpuMs.toFixed(2)} ms`}, ${budget.calls} draws, ${budget.triangles.toLocaleString()} triangles`;
+    }
+    Object.assign(clock, { frames: 0, interval: 0, longest: 0, cpu: 0, over: 0, gpu: [], shown: now });
+  }
+
+  /** The time-driven mode draws nothing while the page is hidden, and the time does not jump when it is shown again. */
+  private readonly visibilityChanged = (): void => {
+    if (!this.continuous) return;
+    this.host.dataset.continuousPaused = String(document.hidden);
+    this.clock.last = undefined;
+    if (document.hidden) { cancelAnimationFrame(this.frame); this.frame = 0; }
+    else this.invalidate();
   };
 
   /** Releases a group's unique geometry and material resources. */
@@ -1206,6 +1353,8 @@ export class RustScene {
     for (const child of group.children) {
       const mesh = child as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
       mesh.geometry.dispose(); mesh.material.dispose();
+      // An instanced batch also holds its instance buffers.
+      if ((child as THREE.InstancedMesh).isInstancedMesh) (child as THREE.InstancedMesh).dispose();
     }
     group.clear();
   }
@@ -1217,6 +1366,8 @@ export class RustScene {
     this.clearNavigation();
     this.clearItemGuides();
     cancelAnimationFrame(this.frame);
+    document.removeEventListener("visibilitychange", this.visibilityChanged);
+    this.budgetReadout?.remove();
     this.resize.disconnect(); this.controls.removeEventListener("change", this.invalidate); this.controls.dispose();
     this.renderer.domElement.removeEventListener("click", this.pick);
     this.renderer.domElement.removeEventListener("webglcontextrestored", this.contextRestored);

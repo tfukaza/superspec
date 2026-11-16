@@ -183,7 +183,11 @@ try {
   await page.locator("#export-ktx2").uncheck();
   exported = await download(page, "#export-glb");
   const gltf = JSON.parse(exported.subarray(20, 20 + exported.readUInt32LE(12)).toString("utf8"));
-  assert.deepEqual(gltf.extensionsUsed, ["KHR_lights_punctual"]);
+  // The washroom's bolts are an instanced batch: saved with the project and exported with the instancing extension.
+  assert.equal(savedProject.batches?.length, 1, "the saved project keeps its instanced batches");
+  assert.deepEqual(gltf.extensionsUsed, ["EXT_mesh_gpu_instancing", "KHR_lights_punctual"]);
+  assert.deepEqual(gltf.extensionsRequired, ["EXT_mesh_gpu_instancing"]);
+  assert.equal(gltf.nodes.filter(node => node.extensions?.EXT_mesh_gpu_instancing).length, 1);
   const [light] = gltf.extensions.KHR_lights_punctual.lights;
   assert.deepEqual([light.type, light.intensity, light.name], ["directional", 4, "sun"]);
   near(light.color, expectedSun.color, 1e-6, "the punctual light's colour");

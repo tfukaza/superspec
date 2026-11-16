@@ -16,6 +16,9 @@ pub struct Input {
     /// The project's optional lighting record, which the engine's project ignores; a GLB export
     /// delivers it.
     pub lighting: Option<superspec_export::Lighting>,
+    /// The project's optional instanced batches, which the engine's project ignores too; they are
+    /// added to the scene a `scene` or `glb` command delivers.
+    pub batches: Vec<superspec_export::ProjectBatch>,
     parent: PathBuf,
     raw_recipe: bool,
     embedded: Option<BTreeMap<String, Arc<[u8]>>>,
@@ -236,11 +239,13 @@ impl Input {
             let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
             format!("Invalid lighting record: {}.", findings.join("; "))
         })?;
+        let batches = superspec_export::project_batches(&value)?;
         let project = serde_json::from_value(value)
             .map_err(|error| format!("Invalid studio project: {error}"))?;
         Ok(Self {
             project,
             lighting,
+            batches,
             parent,
             raw_recipe,
             embedded,

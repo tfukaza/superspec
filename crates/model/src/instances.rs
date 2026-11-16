@@ -50,6 +50,9 @@ pub struct Model {
     /// A repeated identity must represent every attribute exactly, not merely the same shape.
     pub mesh_artifacts: BTreeMap<String, String>,
     pub instances: Vec<Instance>,
+    /// Instanced batches (`crate::batches`): each names a mesh of `meshes` and is delivered
+    /// unexpanded, beside the placements above.
+    pub batches: Vec<crate::batches::InstanceBatch>,
     pub materials: BTreeMap<String, Material>,
     pub images: BTreeMap<String, ImageResource>,
 }
@@ -171,6 +174,7 @@ impl Model {
     pub fn scene(&self, revision: u32) -> Result<Scene, String> {
         if self.meshes.len() > 16_384
             || self.instances.len() > 16_384
+            || self.batches.len() > crate::batches::MAX_BATCHES
             || self.materials.len() > 16_384
             || self.images.len() > 16_384
         {
@@ -333,6 +337,12 @@ impl Model {
         scene.manifest.vertex_count = scene.positions.len() / 3;
         scene.manifest.index_count = scene.indices.len();
         scene.manifest.asset_byte_count = scene.asset_bytes.len();
+        for batch in &self.batches {
+            let mesh = self.meshes.get(&batch.mesh).ok_or_else(|| {
+                format!("Batch {} references missing mesh {}.", batch.id, batch.mesh)
+            })?;
+            scene.add_batch(batch, mesh)?;
+        }
         scene.manifest.success = true;
         let mut objects = BTreeMap::new();
         for instance in &self.instances {
@@ -350,6 +360,22 @@ impl Model {
                         [m[8], m[9], m[10]],
                         [m[12], m[13], m[14]],
                     ],
+                    instances: vec![],
+                    assemblies: vec![],
+                    contributors: vec![],
+                    attributes: Default::default(),
+                });
+        }
+        // A batch's owner stands at the origin: its instances carry their own placements.
+        for batch in &self.batches {
+            objects
+                .entry(batch.object_id.clone())
+                .or_insert_with(|| crate::architecture::Object {
+                    id: batch.object_id.clone(),
+                    source_id: batch.object_id.clone(),
+                    kind: "item".into(),
+                    source: batch.source.clone(),
+                    matrix: [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [0., 0., 0.]],
                     instances: vec![],
                     assemblies: vec![],
                     contributors: vec![],

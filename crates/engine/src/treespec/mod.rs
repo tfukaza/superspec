@@ -2,6 +2,7 @@
 //!
 //! Generic like `materialspec` and `itemspec`: no filesystem, no theme and no world
 //! assembly. A caller supplies the ground and decides where plants go.
+pub mod batches;
 pub mod grass;
 mod output;
 mod random;
