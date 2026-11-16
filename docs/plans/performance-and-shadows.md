@@ -132,7 +132,53 @@ The scene view is what authors look at, and it is the slowest path.
   filter taps at runtime; dynamic objects keep the runtime style.
 - **Placement by shadow** stays last.
 
+## Lighting and rendering settings spec (required before the settings spread)
+
+Shadow style and ambient occlusion are being prototyped as Studio viewer query
+parameters, and the viewer's lights are hard-coded in `browser/renderer/scene.ts`
+(sun direction and intensity, hemisphere light, environment intensity, tone mapping)
+while `tests/studio/washroom/_view.mjs` hard-codes different ones. Before these
+settings are used anywhere else, define one clear specification for lighting and
+rendering settings, shared by MaterialSpec, ItemSpec, WorldSpec, the Studio renderer
+and the three.js game runtime. This is a design task with its own document
+(`docs/plans/lighting-settings.md`) and review; nothing below is decided yet except
+the scoping rule.
+
+The spec must define:
+
+- **Scope.** Which settings are global to a scene (ambient occlusion, exposure and
+  tone mapping, environment light, ambient light) and which belong to a light source
+  (direction or position, color, intensity, whether it casts shadows, and its shadow
+  style: softness and penumbra growth, edge and interior noise, tint, darkness, seed).
+  Shadow style and AO are never part of a material. A material may only read a
+  light's shadow or exposure as an input field.
+- **Records and ownership.** Portable records in `superspec-types` and
+  `superspec-model`, delivered in the model packet and stored with a project or
+  scene; how WorldSpec themes, ItemSpec previews and Material Studio supply or
+  override them; one shipped default (the washroom look) and named presets.
+- **Units and conventions.** Meters, right-handed Z-up, linear color, radians;
+  physically meaningful parameters (penumbra and AO radius in meters) rather than
+  renderer-specific ones (shadow-map texels, kernel taps).
+- **Renderer contract.** What every consumer must implement, what it may approximate,
+  and how an unsupported setting is reported rather than silently dropped (as live
+  operations do). The Studio viewer and the game runtime use the same module.
+- **Agreement between runtime and baked results.** Baked `shadow`, `occlusion` and
+  `sunExposure` fields, GPU previews of them and placement surveys read the same
+  light definitions, so baked and live shadows describe the same sun.
+- **Export.** What a GLB can carry (`KHR_lights_punctual`) and what needs a sidecar
+  or extension for style and AO.
+- **Determinism and versioning.** Seeds for noise, a version on the record, validation
+  with source-linked errors, and which settings affect cache keys (none for runtime
+  style; light definitions do for baked shadow fields).
+
+Until the spec exists, new lighting or shadow settings stay in the Studio viewer
+behind query parameters and one scene-level settings object, and are not added to
+AML, material programs or export.
+
 ## Decisions (made by the user, 2026-11-16)
+
+- Shadow styling and ambient occlusion are global or per-light rendering settings,
+  never part of a material, and need the shared lighting settings spec above.
 
 - The scene view defaults to baked maps from the GPU (item 4); the per-pixel shader
   is only the first look while the bake completes.
