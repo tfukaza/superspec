@@ -504,17 +504,14 @@ fn bake_source_planes(
         }
     }
     let selection = program.select_fields(&field_names).map_err(&failure)?;
-    let features = receiver_features(program, atlas);
-    let mut evaluator = program
-        .evaluator_with_features(&inputs, &features)
-        .map_err(Diagnostic::from)?;
+    let mut evaluator = receiver_evaluator(program, &inputs, atlas).map_err(Diagnostic::from)?;
     let mut values = Vec::new();
     for chart in &atlas.charts {
         for y in 0..chart.height {
             if cancelled() {
                 return Err(failure("Material authoring cancelled.".into()));
             }
-            evaluator.replenish(64_000_000);
+            evaluator.replenish_row(chart.width);
             let mut before: Option<(usize, u64, u64)> = None;
             let mut fresh = Vec::with_capacity(chart.width);
             let mut samples = Vec::new();
@@ -908,17 +905,23 @@ fn layout_node(index: usize, receiver: &super::Receiver, request: &Request) -> N
     let mut identity = receiver.clone();
     identity.id.clear();
     identity.object_id.clear();
+    let mut inputs = json(&(
+        identity,
+        request.resolution,
+        request.mapping,
+        request.domain,
+        request.gravity,
+        request.texel_density,
+    ));
+    // Named features are part of what a bake of the layout reads; a receiver without any keeps
+    // the key it always had.
+    if let Some(named) = request.features.get(&receiver.id).filter(|n| !n.is_empty()) {
+        inputs.extend(json(named));
+    }
     node(
         format!("layout/{index}"),
         "receiver-atlas-v3",
-        json(&(
-            identity,
-            request.resolution,
-            request.mapping,
-            request.domain,
-            request.gravity,
-            request.texel_density,
-        )),
+        inputs,
         vec![],
     )
 }
@@ -1001,18 +1004,11 @@ fn receiver_layout(
     receiver: &super::Receiver,
     request: &Request,
 ) -> Result<(Artifact, usize), String> {
-    let atlas = Atlas::new(
-        receiver.clone(),
-        request.resolution,
-        request.mapping,
-        request.domain,
-        request.gravity,
-        request.profile.max_resolution(),
-        request.texel_density,
-    )?;
+    let atlas = Atlas::for_request(receiver.clone(), request)?;
     let bytes = atlas.mesh.positions.len() * 88
         + atlas.mesh.indices.len() * 4
-        + receiver.positions.len() * 8 * 3;
+        + receiver.positions.len() * 8 * 3
+        + atlas.named.bytes();
     Ok((Artifact::Receiver(Arc::new(atlas)), bytes))
 }
 
@@ -1778,6 +1774,7 @@ impl Session {
             ..Default::default()
         };
         let mut layouts = Vec::with_capacity(receivers.len());
+        let mut dropped = Vec::with_capacity(receivers.len());
         for (i, receiver) in receivers.iter().enumerate() {
             let Artifact::Receiver(atlas) = complete[&format!("layout/{i}")].as_ref() else {
                 unreachable!()
@@ -1801,6 +1798,8 @@ impl Session {
             }
             let (material, images) = assemble(&maps, inspecting).map_err(&fail)?;
             layouts.push([atlas.width as f64, atlas.height as f64, atlas.density]);
+            // A receiver with more features than a bake reads lost some: say so, never silently.
+            dropped.push(queries_features(&compiled) && atlas.features().1);
             let mesh = format!(
                 "studio/mesh/{}",
                 hash(&json(&(
@@ -1836,10 +1835,15 @@ impl Session {
         metadata["atlases"] = receivers
             .iter()
             .zip(&layouts)
-            .map(|(receiver, [width, height, density])| {
-                serde_json::json!({
+            .zip(&dropped)
+            .map(|((receiver, [width, height, density]), dropped)| {
+                let mut atlas = serde_json::json!({
                     "id": receiver.id, "width": width, "height": height, "texelsPerMeter": density,
-                })
+                });
+                if *dropped {
+                    atlas["featuresDropped"] = true.into();
+                }
+                atlas
             })
             .collect();
         Ok(Built::Output(Output { model, metadata }))
@@ -2454,8 +2458,9 @@ fn bake_block(
             emits: false,
             strength: 1.,
         };
-        // Each row of texels has its own operation allowance; every sample keeps its step budget.
-        evaluator.replenish(64_000_000);
+        // Each row of texels has its own operation allowance, sized by its length; every sample
+        // keeps its step budget.
+        evaluator.replenish_row(cell);
         let mut row_centers: Vec<Center> = Vec::with_capacity(cell);
         let mut row_heights = Vec::with_capacity(cell);
         // The row's texels that sample a new point are evaluated together; the others copy a
@@ -2596,7 +2601,8 @@ fn bake_block(
         rows.iter().zip(&mut baked).zip(&centers).enumerate()
     {
         let chart = &atlas.charts[chart_index];
-        evaluator.replenish(64_000_000);
+        // The relief samples up to two more points for each texel, and two neighbor rows.
+        evaluator.replenish_row(chart.width * 4);
         // The heights one step along each leg that no adjacent texel already has, for the texels
         // that need new slopes, are evaluated together; the texels below take them in order.
         let mut direct = Vec::new();
@@ -2759,33 +2765,28 @@ fn bake_block(
     Ok(baked)
 }
 
-/// Feature queries see this receiver's own creases and open edges, from the same world-space
-/// positions the atlas samples; they are part of the receiver layout's cached identity.
-fn receiver_features(program: &Program, atlas: &Atlas) -> Vec<program::Feature> {
-    if !program
-        .metadata()
-        .required_inputs
-        .iter()
-        .any(|input| input == "features")
-    {
-        return Vec::new();
-    }
-    let receiver = &atlas.receiver;
-    let mut features = program::receiver_features(&receiver.positions, &receiver.indices);
-    features.extend(program::receiver_seams(
-        &receiver.positions,
-        &receiver.uvs,
-        &receiver.indices,
-    ));
-    features.extend(receiver.contacts.iter().map(|contact| program::Feature {
-        start: contact.start,
-        end: contact.end,
-        kind: program::FeatureKind::Contact,
-        angle: 0.,
-        normal: None,
-    }));
-    features.truncate(program::MAX_FEATURES);
-    features
+/// Whether a program queries the receiver's own creases, edges, seams and contacts.
+fn queries_features(program: &Program) -> bool {
+    let inputs = &program.metadata().required_inputs;
+    inputs.iter().any(|input| input == "features")
+}
+
+/// An evaluator of `program` over a receiver: feature queries see the receiver's own creases
+/// and open edges, from the same world-space positions the atlas samples, and its named
+/// features. Both are derived and indexed once with the layout (see [`Atlas::features`]), not
+/// for each bake or thread.
+fn receiver_evaluator<'a>(
+    program: &'a Program,
+    inputs: &'a Inputs,
+    atlas: &'a Atlas,
+) -> Result<program::Evaluator<'a>, program::ProgramDiagnostic> {
+    static NONE: std::sync::OnceLock<program::FeatureSet> = std::sync::OnceLock::new();
+    let features = if queries_features(program) {
+        atlas.features().0
+    } else {
+        NONE.get_or_init(program::FeatureSet::default)
+    };
+    program.evaluator_with_feature_sets(inputs, features, &atlas.named)
 }
 
 /// Live renderer arguments are fields; previews of a single field carry no live operations.
@@ -2867,7 +2868,6 @@ fn bake_rows(
 ) -> Result<(usize, Vec<(usize, Row)>), Diagnostic> {
     let entry = program.metadata().entry.as_str();
     let failure = |message: String| Diagnostic::message(entry, message);
-    let features = receiver_features(program, atlas);
     let live_fields = live_field_names(program, inspect);
     let live_selection = if groups.contains(Group::Live) {
         program.select_fields(&live_fields).map_err(&failure)?
@@ -2876,9 +2876,7 @@ fn bake_rows(
     };
     let rows = atlas_rows(atlas);
     let inspected = inspected_fields(program, inspect);
-    let mut evaluator = program
-        .evaluator_with_features(inputs, &features)
-        .map_err(Diagnostic::from)?;
+    let mut evaluator = receiver_evaluator(program, inputs, atlas).map_err(Diagnostic::from)?;
     // Shares are consecutive rows, so only a share's first and last rows look outside it.
     let (first, last) = (
         rows.len() * share.0 / share.1,
@@ -3056,16 +3054,7 @@ fn bake_groups(
     let mut live_values = vec![vec![f64::NAN; pixels]; live_count];
     let rows = atlas_rows(atlas);
     let mut provided = provided.map(|(_, rows)| rows.into_iter());
-    let features = if provided.is_some() || data.is_empty() {
-        Vec::new()
-    } else {
-        receiver_features(program, atlas)
-    };
-    let evaluator = || {
-        program
-            .evaluator_with_features(inputs, &features)
-            .map_err(Diagnostic::from)
-    };
+    let evaluator = || receiver_evaluator(program, inputs, atlas).map_err(Diagnostic::from);
     let entry = program.metadata().entry.as_str();
     let threads = threads.max(1);
     let mut serial = if threads == 1 && provided.is_none() && !data.is_empty() {
@@ -3543,10 +3532,8 @@ impl Session {
             }
         }
         if !missing.is_empty() {
-            let features = receiver_features(&program, atlas);
             let selection = program.select_fields(&missing).map_err(&fail)?;
-            let mut evaluator = program
-                .evaluator_with_features(&inputs, &features)
+            let mut evaluator = receiver_evaluator(&program, &inputs, atlas)
                 .map_err(|e| vec![Diagnostic::from(e)])?;
             let slots = selection.len();
             let mut computed = vec![vec![0f32; pixels * 4]; slots];
@@ -3556,7 +3543,7 @@ impl Session {
                     if cancelled() {
                         return Err(fail("Field bake cancelled.".into()));
                     }
-                    evaluator.replenish(64_000_000);
+                    evaluator.replenish_row(chart.width);
                     // A texel that samples its left neighbor's point repeats its values; the
                     // others are evaluated together, as a bake's rows are.
                     let mut before: Option<(usize, u64, u64)> = None;

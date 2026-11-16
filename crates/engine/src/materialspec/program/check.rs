@@ -39,6 +39,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             required_inputs: Vec::new(),
             live: Vec::new(),
             externals: Vec::new(),
+            named_features: Vec::new(),
         },
         compiled: Default::default(),
     };
@@ -68,6 +69,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
         stack: Vec::new(),
         types: BTreeMap::new(),
         externals: BTreeMap::new(),
+        named_features: BTreeSet::new(),
         depth: 0,
     };
     let mut errors: Vec<ProgramDiagnostic> = Vec::new();
@@ -129,6 +131,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             kind: *kind,
         })
         .collect();
+    let named_features: Vec<String> = types.named_features.iter().cloned().collect();
     let inferred = types.types;
     let mut parameters = Vec::new();
     let mut fields = Vec::new();
@@ -196,6 +199,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
     program.metadata.outputs = program.outputs.keys().cloned().collect();
     program.metadata.required_inputs = required.into_iter().collect();
     program.metadata.externals = externals;
+    program.metadata.named_features = named_features;
     program.metadata.dependencies.sort();
     program.compiled = std::sync::Arc::new(super::compiled::resolve(
         &program.definitions,
@@ -371,12 +375,16 @@ fn builtin(name: &str, args: &[Type]) -> Option<Type> {
 }
 /// External inputs one program reads at most.
 pub(super) const MAX_EXTERNALS: usize = 16;
+/// Feature names one program queries at most.
+pub(super) const MAX_NAMED_QUERIES: usize = 32;
 struct Checker<'a> {
     program: &'a Program,
     stack: Vec<String>,
     types: BTreeMap<String, Type>,
     /// The type each external input is read as.
     externals: BTreeMap<String, Type>,
+    /// The feature names queried.
+    named_features: BTreeSet<String>,
     depth: usize,
 }
 impl Checker<'_> {
@@ -608,6 +616,29 @@ impl Checker<'_> {
                     {
                         self.external(plane, result, &expr.mark)?;
                     }
+                    if let (
+                        "feature_distance" | "feature_tangent",
+                        Some(Expression::Text(feature)),
+                    ) = (name.as_str(), args.first().map(|v| &v.kind))
+                    {
+                        if !super::features::valid_feature_name(feature) {
+                            return Err(self.program.diagnostic(
+                                "MS_TYPE",
+                                "Feature names are at most 64 letters, digits, '.', '_' or '-'.",
+                                &expr.mark,
+                            ));
+                        }
+                        if !self.named_features.contains(feature)
+                            && self.named_features.len() >= MAX_NAMED_QUERIES
+                        {
+                            return Err(self.program.diagnostic(
+                                "MS_LIMIT",
+                                format!("A program queries features of at most {MAX_NAMED_QUERIES} names."),
+                                &expr.mark,
+                            ));
+                        }
+                        self.named_features.insert(feature.clone());
+                    }
                     return Ok(result);
                 }
                 let Some(Definition::Function {
@@ -682,6 +713,15 @@ fn dependencies(
                     }) = args.first()
                     {
                         inputs.insert(format!("image:{image}"));
+                    }
+                }
+                if matches!(operation.id, "feature_distance" | "feature_tangent") {
+                    if let Some(Expr {
+                        kind: Expression::Text(feature),
+                        ..
+                    }) = args.first()
+                    {
+                        inputs.insert(format!("feature:{feature}"));
                     }
                 }
                 if operation.id == "external" {

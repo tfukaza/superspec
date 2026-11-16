@@ -116,6 +116,35 @@ pub struct Request {
     /// and gravity, with its own parameters and seed.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub materials: BTreeMap<String, program::MaterialRequest>,
+    /// The features each receiver's owner named, by receiver id: polylines in world meters that
+    /// programs measure to with `feature_distance(name, limit)` and `feature_tangent`. They are
+    /// part of a receiver's layout, like its geometry.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub features: BTreeMap<String, Vec<program::NamedFeature>>,
+}
+
+/// An item's features (`itemspec::definition::output::Feature`: joint, end, bracket-contact,
+/// opening-edge, sill, base, top) as named receiver features, in world meters: `transform` is
+/// the column-major placement of the space the item's features and bounds are in. Every
+/// receiver of the item may be given all of them; a query finds only those near its samples.
+pub fn item_features(
+    features: &[crate::itemspec::definition::Feature],
+    transform: &[f64; 16],
+) -> Vec<program::NamedFeature> {
+    let place = |p: &[f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|row| {
+            transform[row] * p[0] + transform[4 + row] * p[1] + transform[8 + row] * p[2]
+                + transform[12 + row]
+        })
+    };
+    features
+        .iter()
+        .map(|feature| program::NamedFeature {
+            name: feature.name.clone(),
+            points: feature.points.iter().map(place).collect(),
+            closed: feature.closed,
+        })
+        .collect()
 }
 
 /// Where the plane bound to an external input comes from.
@@ -162,6 +191,7 @@ impl Default for Request {
             texel_density: None,
             planes: BTreeMap::new(),
             materials: BTreeMap::new(),
+            features: BTreeMap::new(),
         }
     }
 }

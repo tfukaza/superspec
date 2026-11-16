@@ -560,6 +560,32 @@ fn build() -> Vec<Operation> {
         },
         literal(
             operation(
+                "feature_distance",
+                "receiver",
+                "Distance in meters from the sample to the nearest segment of the receiver's features of \
+                 this name, at most maxDistance. The geometry's owner names features (a sill, a joint, a \
+                 base); a receiver with none of the name reports maxDistance. Names are at most 64 \
+                 letters, digits, '.', '_' or '-'.",
+                "featureDistance(\"sill\", 0.3)",
+                vec![overload(&[Text, Scalar], Scalar)],
+            ),
+            &["world", "named_features"],
+            false,
+        ),
+        literal(
+            operation(
+                "feature_tangent",
+                "receiver",
+                "World-space unit direction along the nearest segment of the receiver's features of this \
+                 name within maxDistance meters, in the order its points were given; vec3(0) without one.",
+                "featureTangent(\"joint\", 0.05)",
+                vec![overload(&[Text, Scalar], Vec3)],
+            ),
+            &["world", "named_features"],
+            false,
+        ),
+        literal(
+            operation(
                 "external",
                 "mapping",
                 "A value the host supplies for each texel of a receiver under this name: a plane from \

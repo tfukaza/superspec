@@ -170,8 +170,10 @@ vec3 ms_varied(sampler2D image, vec2 uv, uint seed, float rotation, float correc
 
 // Receiver features: one row of three texels each (start + kind, end + angle, middle normal + has normal).
 // Kinds: 0 convex, 1 concave, 2 boundary, 3 seam, 4 contact. Selectors: 0 convex, 1 concave,
-// 2 boundary, 3 exposed, 4 any, 5 seam, 6 contact, 7 nothing.
+// 2 boundary, 3 exposed, 4 any, 5 seam, 6 contact, 7 nothing. A named feature has kind 5 + k and
+// is selected by 8 + k alone, k being its name's place among the names the program queries.
 bool ms_selected(float kind, float angle, int selector, float minimum) {
+  if (selector >= 8) return kind == float(selector - 3);
   bool convex = kind == 0.0 && angle >= minimum, concave = kind == 1.0 && angle >= minimum, boundary = kind == 2.0;
   if (selector == 0) return convex;
   if (selector == 1) return concave;

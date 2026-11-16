@@ -19,7 +19,8 @@ mod ts;
 pub use deps::{Dependencies, DependencyTable, SampleInputs};
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{
-    COPLANAR_DEGREES, MAX_FEATURES, bend_shaded, orient_relief, receiver_features, receiver_seams,
+    COPLANAR_DEGREES, FeatureSet, MAX_FEATURE_NAMES, MAX_FEATURES, MAX_NAMED_SEGMENTS,
+    NamedFeature, NamedFeatures, bend_shaded, orient_relief, receiver_features, receiver_seams,
 };
 pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
 pub use ts::{
@@ -131,6 +132,10 @@ pub struct Metadata {
     /// supply each as a [`Plane`] over a receiver's texels.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub externals: Vec<External>,
+    /// Names of the receiver's features the program queries (`feature_distance`,
+    /// `feature_tangent`), ascending.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub named_features: Vec<String>,
 }
 
 /// A named per-texel input a host may supply; see [`Metadata::externals`].
@@ -201,6 +206,9 @@ pub enum FeatureKind {
     Seam,
     /// An edge where the receiver meets another surface, supplied by a host that knows the scene.
     Contact,
+    /// A segment of a feature its geometry's owner named (see [`NamedFeature`]); selected only
+    /// by that name.
+    Named,
 }
 
 /// A finite receiver edge in world meters.
@@ -345,11 +353,34 @@ pub struct Evaluator<'a> {
     inputs: &'a Inputs,
     features: &'a [Feature],
     /// A grid over `features`, so feature queries visit only the features near a sample.
-    index: features::Index,
+    index: Grid<'a>,
+    /// Segments of the name with the most named features, for the bound on a sample's queries.
+    largest_named: usize,
     parameters: Vec<eval::Value<'static>>,
     remaining: usize,
     scratch: eval::Scratch<'a>,
 }
+
+/// An evaluator's feature grid: its own, or one shared with every evaluator of the same
+/// features ([`FeatureSet`]).
+enum Grid<'a> {
+    Own(features::Index),
+    Shared(&'a features::Index),
+}
+impl std::ops::Deref for Grid<'_> {
+    type Target = features::Index;
+    fn deref(&self) -> &features::Index {
+        match self {
+            Grid::Own(index) => index,
+            Grid::Shared(index) => index,
+        }
+    }
+}
+
+/// Operations a row's allowance grants for each of its samples, and the least and most a row
+/// is granted (see [`Evaluator::replenish_row`]).
+const ROW_OPERATIONS_PER_SAMPLE: usize = 2_200_000;
+const ROW_OPERATIONS: [usize; 2] = [64_000_000, 4_000_000_000];
 impl<'a> Evaluator<'a> {
     pub fn evaluate(&mut self, sample: &Sample) -> Result<Outputs, ProgramDiagnostic> {
         self.wanted(sample, eval::Want::All)
@@ -604,7 +635,7 @@ impl<'a> Evaluator<'a> {
         lanes::bounded(
             &self.program.compiled,
             self.inputs.edges.len(),
-            self.features.len(),
+            self.features.len().max(self.largest_named),
         )
     }
     /// The operation allowance left for this batch.
@@ -615,6 +646,18 @@ impl<'a> Evaluator<'a> {
     /// row of a bake; each sample keeps its own step and depth budget.
     pub fn replenish(&mut self, operations: usize) {
         self.remaining = operations.min(64_000_000);
+    }
+    /// Grants the allowance of a row of `samples` samples: 2,200,000 operations for each, at
+    /// least the 64,000,000 every row has always had and at most 4,000,000,000 (the same on
+    /// every target, 32-bit ones included). A sample's own step budget bounds what it can
+    /// charge: its steps, and eight operations for each feature its queries visit, of which the
+    /// step budget admits about 262,000. So no sample that is within its own budget exhausts a
+    /// row of up to 1,800 samples; a fixed allowance failed long rows of programs with many
+    /// queries by their length alone.
+    pub fn replenish_row(&mut self, samples: usize) {
+        self.remaining = samples
+            .saturating_mul(ROW_OPERATIONS_PER_SAMPLE)
+            .clamp(ROW_OPERATIONS[0], ROW_OPERATIONS[1]);
     }
     fn wanted(
         &mut self,
@@ -721,11 +764,28 @@ impl Program {
             program: self,
             inputs,
             features: &inputs.features,
-            index: features::Index::new(&inputs.features),
+            index: Grid::Own(features::Index::new(&inputs.features)),
+            largest_named: 0,
             parameters,
             remaining: operations,
             scratch: eval::Scratch::default(),
         })
+    }
+    /// An evaluator over a receiver's features and named features, both with grids built once
+    /// and shared: a bake's threads, and every bake of a layout, read the same ones.
+    pub fn evaluator_with_feature_sets<'a>(
+        &'a self,
+        inputs: &'a Inputs,
+        features: &'a FeatureSet,
+        named: &'a NamedFeatures,
+    ) -> Result<Evaluator<'a>, ProgramDiagnostic> {
+        let mut evaluator = self.evaluator(inputs)?;
+        eval::validate_features(self, features.features())?;
+        evaluator.features = features.features();
+        evaluator.index = Grid::Shared(features.index());
+        evaluator.largest_named = named.largest();
+        evaluator.scratch.named = Some(named);
+        Ok(evaluator)
     }
     /// An evaluator whose receiver features replace `inputs.features`, so a host can bake each
     /// receiver against its own geometry while sharing parameters and decoded images.
@@ -737,7 +797,7 @@ impl Program {
         let mut evaluator = self.evaluator(inputs)?;
         eval::validate_features(self, features)?;
         evaluator.features = features;
-        evaluator.index = features::Index::new(features);
+        evaluator.index = Grid::Own(features::Index::new(features));
         Ok(evaluator)
     }
     pub fn bake(&self, request: &BakeRequest, inputs: &Inputs) -> Result<Baked, ProgramDiagnostic> {

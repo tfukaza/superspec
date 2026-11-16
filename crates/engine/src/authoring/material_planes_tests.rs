@@ -794,6 +794,243 @@ fn planes_baked_from_a_material_stay_local_fail_clearly_and_recover() {
     assert_same(&recovered, &expected, "after failures and cancellations");
 }
 
+const GRIMED: &str = "material 1;
+param reach: scalar = 0.2 range(0.01, 1);
+output base_color = vec3(0.5);
+output roughness = feature_distance(\"sill\", reach) / reach;
+output metalness = 0;";
+
+fn sill(height: f64) -> Vec<program::NamedFeature> {
+    vec![program::NamedFeature {
+        name: "sill".into(),
+        points: vec![
+            [0.1, 0., height],
+            [0.5, 0., height],
+            [0.9, 0., height + 0.1],
+        ],
+        closed: false,
+    }]
+}
+
+fn grimed(height: Option<f64>, resolution: usize) -> Request {
+    let mut request = request(GRIMED.into(), resolution);
+    if let Some(height) = height {
+        request
+            .features
+            .insert("studio/swatch".into(), sill(height));
+    }
+    request
+}
+
+#[test]
+fn grime_follows_a_named_feature_where_its_owner_puts_it() {
+    let segment = |p: [f64; 3], a: [f64; 3], b: [f64; 3]| {
+        let ab: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+        let ap: [f64; 3] = std::array::from_fn(|i| p[i] - a[i]);
+        let t = (receiver::dot(ab, ap) / receiver::dot(ab, ab)).clamp(0., 1.);
+        let gap: [f64; 3] = std::array::from_fn(|i| ap[i] - ab[i] * t);
+        receiver::dot(gap, gap).sqrt()
+    };
+    let mut session = Session::default();
+    let mut revision = 0;
+    let mut previous = None;
+    for height in [0.3, 0.6] {
+        let request = grimed(Some(height), 64);
+        revision += 1;
+        let (output, baked) = build(&mut session, revision, &request, &Assets::default());
+        // The features are part of the layout: a moved sill bakes the receiver again.
+        assert_eq!(baked, [Groups::MAPS], "sill at {height}");
+        let atlas = swatch_atlas(&request);
+        assert_eq!(atlas.named.largest(), 2);
+        let properties = &pixels(&output)["properties"];
+        let points = &sill(height)[0].points;
+        let (mut near, mut total) = (0, 0);
+        for chart in &atlas.charts {
+            for y in 0..chart.height {
+                for x in 0..chart.width {
+                    let (triangle, u, v) = atlas.texel(chart, x, y);
+                    let world = atlas.sample(triangle, u, v).unwrap().world;
+                    let distance = segment(world, points[0], points[1])
+                        .min(segment(world, points[1], points[2]))
+                        .min(0.2);
+                    let texel = (chart.y + y) * atlas.width + chart.x + x;
+                    let expected = (distance / 0.2 * 255.).round() as i32;
+                    let baked = i32::from(properties[texel * 4 + 1]);
+                    assert!(
+                        (baked - expected).abs() <= 1,
+                        "texel {x},{y}: {baked} for {expected}"
+                    );
+                    near += usize::from(distance < 0.2);
+                    total += 1;
+                }
+            }
+        }
+        assert!(
+            near * 5 > total && near < total,
+            "{near} of {total} texels are near the sill"
+        );
+        if let Some(previous) = previous.replace(properties.clone()) {
+            assert_ne!(&previous, properties, "the grime moved with the sill");
+        }
+        revision += 1;
+        let (_, baked) = build(&mut session, revision, &request, &Assets::default());
+        assert!(baked.is_empty(), "equal features bake nothing: {baked:?}");
+    }
+    // Without the feature the query reports its limit everywhere.
+    let bare = fresh(&grimed(None, 64), &Assets::default());
+    let atlas = swatch_atlas(&grimed(None, 64));
+    let properties = &pixels(&bare)["properties"];
+    let chart = &atlas.charts[0];
+    assert_eq!(
+        properties[((chart.y + 5) * atlas.width + chart.x + 5) * 4 + 1],
+        255
+    );
+    // A set that is too large, or badly named, fails the build with the reason.
+    let mut request = grimed(Some(0.3), 64);
+    request.features.get_mut("studio/swatch").unwrap()[0].name = "a sill".into();
+    let errors = session
+        .build(&request, 99, &|name| Assets::default().get(name), &|| false)
+        .err()
+        .expect("a bad feature name fails");
+    assert!(errors[0].message.contains("'a sill'"), "{errors:?}");
+    // Threads and other sessions read the same features.
+    let production = Request {
+        profile: Profile::Production,
+        ..grimed(Some(0.3), 96)
+    };
+    let preview = grimed(Some(0.3), 96);
+    let local = fresh(&preview, &Assets::default());
+    assert_eq!(
+        pixels(&fresh(&production, &Assets::default())),
+        pixels(&local)
+    );
+    let mut distributing = Session::default();
+    distributing.distribute_bakes(true);
+    let _ = distributing.build(&preview, 1, &|name| Assets::default().get(name), &|| false);
+    let pending = distributing.take_pending_bake().expect("a pending bake");
+    for index in 0..3 {
+        let share = Session::default()
+            .bake_share(
+                &pending,
+                index,
+                3,
+                &|name| Assets::default().get(name),
+                &|| false,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        distributing.provide_bake_share(&share).unwrap();
+    }
+    let (distributed, _) = build(&mut distributing, 2, &preview, &Assets::default());
+    assert_same(&distributed, &local, "shares");
+}
+
+#[test]
+fn an_item_s_features_become_named_receiver_features_in_world_meters() {
+    use crate::itemspec::definition::Feature;
+    let feature = |name: &str, points: Vec<[f64; 3]>, closed: bool| Feature {
+        name: name.into(),
+        part: "wall".into(),
+        source: None,
+        face: "front".into(),
+        points,
+        closed,
+        normal: [0., -1., 0.],
+        width: 0.,
+    };
+    let features = [
+        feature("sill", vec![[0., 0., 1.], [1., 0., 1.]], false),
+        feature(
+            "opening-edge",
+            vec![[0., 0., 0.], [1., 0., 0.], [1., 0., 1.]],
+            true,
+        ),
+    ];
+    // A quarter turn about Z and a move: x goes to y.
+    let transform = [
+        0., 1., 0., 0., -1., 0., 0., 0., 0., 0., 1., 0., 10., 20., 30., 1.,
+    ];
+    let named = crate::authoring::item_features(&features, &transform);
+    assert_eq!(named.len(), 2);
+    assert_eq!((named[0].name.as_str(), named[0].closed), ("sill", false));
+    assert_eq!(named[0].points, [[10., 20., 31.], [10., 21., 31.]]);
+    assert_eq!(
+        (named[1].name.as_str(), named[1].closed),
+        ("opening-edge", true)
+    );
+    let indexed = program::NamedFeatures::new(&named).unwrap();
+    assert_eq!(indexed.get("opening-edge").unwrap().features().len(), 3);
+    assert_eq!(indexed.get("sill").unwrap().features().len(), 1);
+}
+
+/// Bakes over a receiver with thousands of named features across several names:
+/// `cargo test --release -p superspec-engine --lib bench_named_features -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_named_features() {
+    let text = "material 1;
+let sill = feature_distance(\"sill\", 0.05);
+let joint = feature_distance(\"joint\", 0.03);
+let base = feature_distance(\"base\", 0.1);
+let top = feature_distance(\"top\", 0.1);
+let grain = fbm(surface * 20, seed(\"g\"), 4);
+output base_color = vec3(sill / 0.05, joint / 0.03, grain);
+output roughness = clamp(base / 0.1 * 0.5 + top / 0.1 * 0.5, 0, 1);
+output metalness = 0;
+output height = 0.001 * grain * (1 - joint / 0.03);";
+    let mut state = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for per_name in [0usize, 250, 1000, 4000] {
+        let mut named = Vec::new();
+        for name in [
+            "sill",
+            "joint",
+            "base",
+            "top",
+            "opening-edge",
+            "end",
+            "bracket-contact",
+        ] {
+            for _ in 0..per_name {
+                let start = [next(), 0., next()];
+                named.push(program::NamedFeature {
+                    name: name.into(),
+                    points: vec![start, [start[0] + 0.01, 0., start[2] + 0.004]],
+                    closed: false,
+                });
+            }
+        }
+        for resolution in [256, 512] {
+            let mut request = request(text.into(), resolution);
+            request
+                .features
+                .insert("studio/swatch".into(), named.clone());
+            let atlas = swatch_atlas(&request);
+            let mut seconds = Vec::new();
+            for _ in 0..3 {
+                let start = std::time::Instant::now();
+                std::hint::black_box(fresh(&request, &Assets::default()));
+                seconds.push(start.elapsed().as_secs_f64());
+            }
+            let start = std::time::Instant::now();
+            std::hint::black_box(program::NamedFeatures::new(&named).unwrap());
+            let index = start.elapsed().as_secs_f64();
+            let texels = (atlas.width * atlas.height) as f64;
+            let low = seconds.iter().copied().fold(f64::INFINITY, f64::min);
+            let high = seconds.iter().copied().fold(0., f64::max);
+            eprintln!(
+                "{{\"segments\":{},\"names\":7,\"resolution\":{resolution},\"cold_s\":[{low:.4},{high:.4}],\"ns_per_texel\":{:.0},\"index_s\":{index:.5}}}",
+                named.len(),
+                low * 1e9 / texels
+            );
+        }
+    }
+}
+
 #[test]
 fn a_field_bake_of_a_layer_reads_the_base_s_planes() {
     let names = ["stain".to_owned()];

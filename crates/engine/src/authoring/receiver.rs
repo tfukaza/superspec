@@ -1,5 +1,5 @@
 use super::{Mapping, Receiver};
-use crate::materialspec::program::Sample;
+use crate::materialspec::program::{self, Sample};
 use std::sync::Arc;
 use superspec_model::instances::{LocalMesh, determinant};
 
@@ -54,6 +54,10 @@ pub struct Atlas {
     origin: [f64; 3],
     /// Maximum corner of the receiver's world-space bounds.
     extent: [f64; 3],
+    /// See [`Self::features`].
+    features: std::sync::OnceLock<(program::FeatureSet, bool)>,
+    /// The features the receiver's owner named, each name with its own grid.
+    pub named: program::NamedFeatures,
 }
 pub fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|i| a[i] + b[i])
@@ -119,6 +123,7 @@ impl Atlas {
     /// The atlas a bake of `request` gives `receiver`: the request's resolution, mapping, domain,
     /// gravity, profile allowance and texel density, so every consumer sizes it by one rule.
     pub fn for_request(receiver: Receiver, request: &super::Request) -> Result<Self, String> {
+        let named = request.features.get(&receiver.id).cloned();
         Self::new(
             receiver,
             request.resolution,
@@ -127,7 +132,8 @@ impl Atlas {
             request.gravity,
             request.profile.max_resolution(),
             request.texel_density,
-        )
+        )?
+        .with_named(named.as_deref().unwrap_or(&[]))
     }
 
     /// Receiver vertex indices of a triangle, starting at its chart corner.
@@ -435,7 +441,46 @@ impl Atlas {
             gravity,
             origin,
             extent,
+            features: std::sync::OnceLock::new(),
+            named: program::NamedFeatures::default(),
         })
+    }
+
+    /// This atlas with the receiver's named features, indexed by name once for every bake of
+    /// the layout. Too many segments or names, a bad name or a point that is not finite fail.
+    pub fn with_named(mut self, named: &[program::NamedFeature]) -> Result<Self, String> {
+        self.named = program::NamedFeatures::new(named)?;
+        Ok(self)
+    }
+
+    /// The receiver's own creases, open edges, UV seams and contacts with the grid that finds
+    /// them, derived once for the layout: every bake of it, and every thread of a bake, reads
+    /// these. The second value says whether features were left out. A receiver has at most
+    /// `MAX_FEATURES` of them: creases and open edges come first, in the order of their welded
+    /// vertices, then seams, then contacts, and what does not fit is dropped from the end.
+    pub fn features(&self) -> (&program::FeatureSet, bool) {
+        let (set, dropped) = self.features.get_or_init(|| {
+            let receiver = &self.receiver;
+            let mut features = program::receiver_features(&receiver.positions, &receiver.indices);
+            // Deriving creases stops at the limit, so reaching it may have left some out.
+            let mut dropped = features.len() == program::MAX_FEATURES;
+            features.extend(program::receiver_seams(
+                &receiver.positions,
+                &receiver.uvs,
+                &receiver.indices,
+            ));
+            features.extend(receiver.contacts.iter().map(|contact| program::Feature {
+                start: contact.start,
+                end: contact.end,
+                kind: program::FeatureKind::Contact,
+                angle: 0.,
+                normal: None,
+            }));
+            dropped |= features.len() > program::MAX_FEATURES;
+            features.truncate(program::MAX_FEATURES);
+            (program::FeatureSet::new(features), dropped)
+        });
+        (set, *dropped)
     }
 
     /// The triangle and leg parameters a chart texel samples. Gutter texels clamp to the nearest

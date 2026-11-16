@@ -140,6 +140,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
             "triplanar_weights",
             "varied_color",
             "external",
+            "feature_distance",
+            "feature_tangent",
         ])
     );
     for name in ORIGINAL_BUILTINS {
@@ -161,8 +163,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
 #[test]
 fn catalog_lists_the_documented_builtins_once() {
     let names: Vec<_> = operations().iter().map(|operation| operation.id).collect();
-    assert_eq!(names.len(), 50);
-    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 50);
+    assert_eq!(names.len(), 52);
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 52);
     for operation in operations() {
         assert_eq!(operation.version, 1, "{}", operation.id);
         assert!(!operation.overloads.is_empty(), "{}", operation.id);
@@ -273,7 +275,9 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "crease_adjacent_normal",
             "remap",
             "varied_color",
-            "external"
+            "external",
+            "feature_distance",
+            "feature_tangent"
         ])
     );
     assert_eq!(find("external").unwrap().requires, ["planes"]);

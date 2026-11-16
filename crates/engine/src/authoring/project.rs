@@ -96,6 +96,16 @@ pub struct Project {
     /// receivers then get smaller textures. Unset, every receiver fills `resolution`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texel_density: Option<f64>,
+    /// Planes bound to the external inputs of the materials baked on each mesh, by mesh id and
+    /// then input name (`Request::planes`): the layers over a base, per receiver.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub planes: BTreeMap<String, BTreeMap<String, super::PlaneSource>>,
+    /// The materials planes are baked from (`Request::materials`), by the name `planes` uses.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plane_materials: BTreeMap<String, crate::materialspec::program::MaterialRequest>,
+    /// Named features of each mesh, by mesh id, in world meters (`Request::features`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
 }
 impl Default for Project {
     fn default() -> Self {
@@ -119,6 +129,9 @@ impl Default for Project {
             materials: vec![],
             profile: super::Profile::Preview,
             texel_density: None,
+            planes: BTreeMap::new(),
+            plane_materials: BTreeMap::new(),
+            features: BTreeMap::new(),
         }
     }
 }
@@ -198,6 +211,9 @@ impl Session {
             gravity: project.gravity,
             profile: project.profile,
             texel_density: project.texel_density,
+            planes: project.planes.clone(),
+            materials: project.plane_materials.clone(),
+            features: project.features.clone(),
             ..Default::default()
         };
         let mut transforms = BTreeMap::<String, [f64; 16]>::new();
@@ -534,6 +550,16 @@ pub(super) fn material_request(
     source: &str,
     receivers: Vec<Receiver>,
 ) -> Request {
+    // What the project binds to these receivers: their planes and named features.
+    let of = |receiver: &Receiver| receiver.id.clone();
+    let planes: BTreeMap<_, _> = receivers
+        .iter()
+        .filter_map(|receiver| Some((of(receiver), project.planes.get(&receiver.id)?.clone())))
+        .collect();
+    let features = receivers
+        .iter()
+        .filter_map(|receiver| Some((of(receiver), project.features.get(&receiver.id)?.clone())))
+        .collect();
     Request {
         kind: "material".into(),
         entry: assignment.entry.clone(),
@@ -550,6 +576,13 @@ pub(super) fn material_request(
         profile: project.profile,
         texel_density: project.texel_density,
         receivers,
+        materials: if planes.is_empty() {
+            BTreeMap::new()
+        } else {
+            project.plane_materials.clone()
+        },
+        planes,
+        features,
         ..Default::default()
     }
 }
@@ -685,6 +718,8 @@ impl Session {
                             Kind::Boundary => 2.,
                             Kind::Seam => 3.,
                             Kind::Contact => 4.,
+                            // Derived features are never named.
+                            Kind::Named => continue,
                         };
                         let normal = feature.normal.unwrap_or([0.; 3]);
                         features.extend(feature.start);
@@ -699,6 +734,27 @@ impl Session {
                         features.push(4.);
                         features.extend(contact.end);
                         features.extend([0., 0., 0., 0., 0.]);
+                    }
+                    // The mesh's named features the program queries, with kind 5 plus the
+                    // name's place in the shader's `named_features` (see `Shader`).
+                    let named = project.features.get(&receiver.id);
+                    for feature in named.into_iter().flatten() {
+                        let names = &program.metadata().named_features;
+                        let Some(place) = names.iter().position(|name| *name == feature.name)
+                        else {
+                            continue;
+                        };
+                        let last = feature
+                            .points
+                            .first()
+                            .filter(|_| feature.closed && feature.points.len() > 2);
+                        let ends = feature.points.iter().skip(1).chain(last);
+                        for (start, end) in feature.points.iter().zip(ends) {
+                            features.extend(start);
+                            features.push(5. + place as f64);
+                            features.extend(end);
+                            features.extend([0., 0., 0., 0., 0.]);
+                        }
                     }
                 }
                 meshes.insert(

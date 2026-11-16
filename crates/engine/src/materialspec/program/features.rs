@@ -612,8 +612,164 @@ pub(super) fn selected(feature: &Feature, selector: Selector, min_angle: f64) ->
         }
         Selector::Seam => feature.kind == FeatureKind::Seam,
         Selector::Contact => feature.kind == FeatureKind::Contact,
+        Selector::Every => true,
         Selector::Nothing => false,
     }
+}
+
+/// Features with the grid that finds the ones near a sample, built once and shared by every
+/// evaluator that reads them (each thread of a bake, each bake of a layout).
+#[derive(Default)]
+pub struct FeatureSet {
+    features: Vec<Feature>,
+    index: Index,
+}
+
+impl FeatureSet {
+    pub fn new(features: Vec<Feature>) -> Self {
+        let index = Index::new(&features);
+        Self { features, index }
+    }
+    pub fn features(&self) -> &[Feature] {
+        &self.features
+    }
+    pub(super) fn index(&self) -> &Index {
+        &self.index
+    }
+    /// Bytes the features and their grid hold.
+    pub fn bytes(&self) -> usize {
+        self.features.len() * size_of::<Feature>()
+            + (self.index.starts.len() + self.index.items.len() + self.index.wide.len()) * 4
+            + 128
+    }
+}
+
+/// A polyline a geometry's owner names, in world meters: a sill, a joint, the base of a wall.
+/// Programs measure to it with `feature_distance(name, limit)` and `feature_tangent`.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct NamedFeature {
+    pub name: String,
+    pub points: Vec<[f64; 3]>,
+    /// Whether the last point joins the first.
+    #[serde(default)]
+    pub closed: bool,
+}
+
+/// Segments of every named feature one receiver may hold. More are refused, never dropped.
+pub const MAX_NAMED_SEGMENTS: usize = 65_536;
+/// Names one receiver's features may have.
+pub const MAX_FEATURE_NAMES: usize = 256;
+
+/// A receiver's named features: the segments of each name with their own grid, so a query of
+/// one name never visits another's, however many there are.
+#[derive(Default)]
+pub struct NamedFeatures {
+    /// By name, ascending.
+    sets: Vec<(String, FeatureSet)>,
+}
+
+static NO_NAMED_FEATURES: NamedFeatures = NamedFeatures { sets: Vec::new() };
+
+impl NamedFeatures {
+    /// A receiver with no named feature.
+    pub fn none() -> &'static Self {
+        &NO_NAMED_FEATURES
+    }
+    /// Polylines of one name are one set, in the order given. Names follow the rule for external
+    /// inputs (at most 64 letters, digits, `.`, `_` or `-`); points are finite.
+    pub fn new(named: &[NamedFeature]) -> Result<Self, String> {
+        let mut by_name: BTreeMap<&str, Vec<Feature>> = BTreeMap::new();
+        let mut segments = 0usize;
+        for feature in named {
+            if !valid_feature_name(&feature.name) {
+                return Err(format!(
+                    "Feature name '{}' is not at most 64 letters, digits, '.', '_' or '-'.",
+                    feature.name
+                ));
+            }
+            if feature
+                .points
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || v.abs() > 1e12)
+            {
+                return Err(format!(
+                    "Feature '{}' needs finite world coordinates.",
+                    feature.name
+                ));
+            }
+            let set = by_name.entry(&feature.name).or_default();
+            let ends = feature.points.iter().skip(1).chain(
+                feature
+                    .points
+                    .first()
+                    .filter(|_| feature.closed && feature.points.len() > 2),
+            );
+            for (start, end) in feature.points.iter().zip(ends) {
+                set.push(Feature {
+                    start: *start,
+                    end: *end,
+                    kind: FeatureKind::Named,
+                    angle: 0.,
+                    normal: None,
+                });
+                segments += 1;
+            }
+            if segments > MAX_NAMED_SEGMENTS {
+                return Err(format!(
+                    "A receiver holds at most {MAX_NAMED_SEGMENTS} named feature segments."
+                ));
+            }
+        }
+        if by_name.len() > MAX_FEATURE_NAMES {
+            return Err(format!(
+                "A receiver's features have at most {MAX_FEATURE_NAMES} names."
+            ));
+        }
+        Ok(Self {
+            sets: by_name
+                .into_iter()
+                .map(|(name, features)| (name.to_owned(), FeatureSet::new(features)))
+                .collect(),
+        })
+    }
+    /// The segments of `name`; none for a name the receiver has no feature of.
+    pub fn get(&self, name: &str) -> Option<&FeatureSet> {
+        let at = self
+            .sets
+            .binary_search_by(|(known, _)| known.as_str().cmp(name));
+        at.ok().map(|at| &self.sets[at].1)
+    }
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.sets.iter().map(|(name, _)| name.as_str())
+    }
+    /// Segments of the name that has the most.
+    pub fn largest(&self) -> usize {
+        self.sets
+            .iter()
+            .map(|(_, set)| set.features.len())
+            .max()
+            .unwrap_or(0)
+    }
+    pub fn is_empty(&self) -> bool {
+        self.sets.is_empty()
+    }
+    pub fn bytes(&self) -> usize {
+        self.sets
+            .iter()
+            .map(|(name, set)| name.len() + set.bytes())
+            .sum::<usize>()
+            + 64
+    }
+}
+
+/// Whether `name` can name a feature (the rule for external inputs).
+pub(super) fn valid_feature_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
 }
 
 /// A feature query's selector, read from its name once per query instead of once per feature.
@@ -626,6 +782,8 @@ pub(super) enum Selector {
     Any,
     Seam,
     Contact,
+    /// Every feature of the set queried: the segments of one name.
+    Every,
     /// An unknown name selects no feature.
     Nothing,
 }

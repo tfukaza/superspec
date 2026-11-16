@@ -60,6 +60,37 @@ larger successful programs can still execute without entering that cache.
 | `runoff(width, length)` | Positive meters and caller-supplied finite world-space edges; receiver normal and gravity determine downhill direction. Empty edges or no downhill component produce zero. |
 | `external("name", fallback)` | A scalar or vector the host supplies for each texel of a receiver; the fallback where it supplies none. See "Planes". |
 
+## Named features
+
+A geometry's owner names polylines in world meters (`NamedFeature`: a sill, a joint, a base),
+and a program measures to them with `feature_distance("name", maxDistance)` and
+`feature_tangent("name", maxDistance)`. A material so never assumes where a sill is.
+
+- `NamedFeatures` holds a receiver's segments by name, each name with its own grid
+  (`FeatureSet`), so a query of one name never visits another's. A receiver holds at most
+  65,536 named segments under at most 256 names, and a program queries at most 32 names; more
+  is an error, never a silent cut. A receiver with no feature of a name answers as one whose
+  features are all out of reach.
+- Queries are charged like crease queries (one step, one more per 16 segments visited, eight
+  operations per segment toward the row), and `Dependencies::named_features` and
+  `Metadata::named_features` list the names read. A value that reads one is not intrinsic.
+- `Program::evaluator_with_feature_sets` shares a receiver's derived features and named
+  features, with their grids, between evaluators. A receiver bake derives and indexes both once
+  with the layout (`Atlas::features`, `Atlas::named`): named features are part of the layout's
+  key, so a moved sill bakes the receiver again and an unchanged one keeps everything.
+- A receiver's derived features are at most `MAX_FEATURES` (4,096): creases and open edges
+  first, in the order of their welded vertices, then UV seams, then contacts, and what does not
+  fit is dropped from the end. A bake that reads a receiver which lost features says so
+  (`featuresDropped` on its entry of `metadata.atlases`).
+- `Evaluator::replenish_row` sizes a row's allowance by its samples (2,200,000 operations
+  each, between 64,000,000 and 4,000,000,000), so a long row of a program with many queries is
+  no longer failed by its length.
+- In GLSL a name is a selector of its own: `Shader::named_features[k]` is selector `8 + k`,
+  which reads the segments a host uploads to `ms_features` with kind `5 + k`.
+- `authoring::item_features` turns an item's features (joint, end, bracket-contact,
+  opening-edge, sill, base, top) into named features under the item's placement;
+  `Request::features` and `Project::features` bind them to receivers.
+
 ## Planes
 
 A plane (`planes.rs`, `Plane`) holds one value per texel of a receiver's atlas and is bound to

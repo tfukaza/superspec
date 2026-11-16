@@ -156,6 +156,8 @@ pub(super) struct Scratch<'a> {
     /// Source images already resolved for a naming literal, with their mip pyramid once a
     /// filtered sample needed it. Looking these up per sample costs a map search and a lock.
     images: Vec<ResolvedImage<'a>>,
+    /// The receiver's named features, which `feature_distance` and `feature_tangent` query.
+    pub(super) named: Option<&'a features::NamedFeatures>,
 }
 struct ResolvedImage<'a> {
     id: &'a str,
@@ -1018,6 +1020,54 @@ impl<'a> Context<'a, '_> {
         }
         Ok(())
     }
+    /// `feature_distance(name, limit)` and `feature_tangent(name, limit)`: the nearest segment of
+    /// the receiver's features of that name, found through the name's own grid and charged for
+    /// the segments visited like a crease query. A receiver with no feature of the name answers
+    /// as one whose features are all out of reach: the limit, and no direction.
+    #[inline(never)]
+    fn named_query(
+        &mut self,
+        tangent: bool,
+        a: &[Value<'a>],
+        mark: &Mark,
+        out: &mut Value<'a>,
+    ) -> Done {
+        let limit = a[1].first();
+        if !(limit > 0.) {
+            Err(self.program.diagnostic(
+                "MS_INPUT",
+                "Feature queries need a positive maximum distance in meters.",
+                mark,
+            ))?;
+        }
+        let set = self.scratch.named.and_then(|named| named.get(a[0].text()));
+        let point = self.sample.world;
+        let every = features::Selector::Every;
+        let visited = match (set, tangent) {
+            (Some(set), false) => {
+                let (distance, visited) =
+                    features::crease_distance(set.index(), set.features(), point, every, 0., limit);
+                // Distance changes one meter per meter, so it carries the sample's footprint.
+                *out = Value::Number([distance, 0., 0.], 1, self.sample.footprint);
+                visited
+            }
+            (Some(set), true) => {
+                let (direction, visited) =
+                    features::crease_tangent(set.index(), set.features(), point, every, 0., limit);
+                *out = Value::vector(&direction, 0.);
+                visited
+            }
+            (None, false) => {
+                *out = Value::Number([limit, 0., 0.], 1, self.sample.footprint);
+                0
+            }
+            (None, true) => {
+                *out = Value::vector(&[0.; 3], 0.);
+                0
+            }
+        };
+        self.charge_features(visited, mark)
+    }
     /// Kept out of line: inlined into the recursive evaluator, its many locals would make every
     /// node pay for one large stack frame.
     #[inline(never)]
@@ -1292,6 +1342,9 @@ impl<'a> Context<'a, '_> {
                 }
             }
             B::External => return self.external(a, mark, out),
+            B::FeatureDistance | B::FeatureTangent => {
+                return self.named_query(name == B::FeatureTangent, a, mark, out);
+            }
             B::Runoff => {
                 let work = self.inputs.edges.len() * 16;
                 self.steps += work;

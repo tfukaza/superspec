@@ -147,6 +147,9 @@ pub(super) enum Builtin {
     CreaseNormal,
     CreaseTangent,
     CreaseAdjacentNormal,
+    /// Queries of the receiver's features of one name.
+    FeatureDistance,
+    FeatureTangent,
     AdjustNormal,
     TriplanarWeights,
     VariedColor,
@@ -203,6 +206,8 @@ impl Builtin {
             "crease_normal" => Self::CreaseNormal,
             "crease_tangent" => Self::CreaseTangent,
             "crease_adjacent_normal" => Self::CreaseAdjacentNormal,
+            "feature_distance" => Self::FeatureDistance,
+            "feature_tangent" => Self::FeatureTangent,
             "adjust_normal" => Self::AdjustNormal,
             "triplanar_weights" => Self::TriplanarWeights,
             "varied_color" => Self::VariedColor,
@@ -365,7 +370,9 @@ impl Costing<'_> {
                     Builtin::CreaseDistance
                     | Builtin::CreaseNormal
                     | Builtin::CreaseTangent
-                    | Builtin::CreaseAdjacentNormal => cost.queries += 1,
+                    | Builtin::CreaseAdjacentNormal
+                    | Builtin::FeatureDistance
+                    | Builtin::FeatureTangent => cost.queries += 1,
                     _ => {}
                 }
             }

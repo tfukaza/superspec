@@ -53,6 +53,11 @@ pub struct Shader {
     pub live: Vec<LiveOperation>,
     /// Whether the program queries receiver features (`ms_features`, `ms_feature_count`).
     pub features: bool,
+    /// The feature names the program queries (`feature_distance`, `feature_tangent`), in the
+    /// order of their kinds: a host puts the segments of `named_features[k]` in `ms_features`
+    /// with kind `5 + k`, an angle of zero and no normal.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub named_features: Vec<String>,
     /// Fields the shader reads from textures because they use CPU-only operations (`runoff`), set
     /// only by [`Program::shader_plan`]. Everything they read upstream stays out of the shader;
     /// everything that reads them downstream stays in it.
@@ -99,7 +104,7 @@ pub struct Reads {
     pub images: Vec<String>,
     /// Whether the supplied source edges are read.
     pub edges: bool,
-    /// Whether receiver features are queried.
+    /// Whether receiver features are queried, derived or named.
     pub features: bool,
     /// The parts of a sample read: `uv`, `surface`, `object`, `world`, `normal`, `gravity`,
     /// `footprint`, `uv_footprint`, `bounds`. A position brings its footprint along.
@@ -718,6 +723,7 @@ impl<'a> Emitter<'a> {
                     | B::CreaseNormal
                     | B::CreaseTangent
                     | B::CreaseAdjacentNormal
+                    | B::FeatureTangent
                     | B::AdjustNormal
                     | B::TriplanarWeights
                     | B::VariedColor
@@ -1125,6 +1131,23 @@ impl<'a> Emitter<'a> {
                     selector(&args[0]),
                     a[1],
                     a[2]
+                )
+            }
+            B::FeatureDistance | B::FeatureTangent => {
+                // A name is a selector of its own: 8 plus its place in `Shader::named_features`,
+                // which selects the features a host uploads with kind 5 plus that place.
+                self.features = true;
+                let feature = Self::text(&args[0]);
+                let names = &self.program.metadata.named_features;
+                let place = names.iter().position(|known| known == feature);
+                let query = match name {
+                    B::FeatureTangent => "tangent",
+                    _ => "distance",
+                };
+                format!(
+                    "ms_crease_{query}({}, 0.0, {})",
+                    8 + place.unwrap_or(0),
+                    a[1]
                 )
             }
             B::AdjustNormal => format!("ms_adjust_normal({}, {}, {})", a[0], a[1], a[2]),
@@ -1666,7 +1689,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
         seed: found.seed,
         images: found.images.iter().cloned().collect(),
         edges: found.edges,
-        features: found.features,
+        features: found.features || !found.named_features.is_empty(),
         sample: found.sample.names(),
         cpu_fields: cpu_fields
             .iter()
@@ -1713,6 +1736,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             outputs,
             live,
             features: emitter.features,
+            named_features: program.metadata.named_features.clone(),
             cpu_fields,
             cpu_outputs,
             id: String::new(),

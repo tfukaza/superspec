@@ -84,10 +84,14 @@ pub struct Dependencies {
     /// Names of external inputs read with `external(name, fallback)`. A host supplies each as a
     /// plane over a receiver's texels, so what is baked from one is keyed by the plane's content.
     pub externals: BTreeSet<String>,
+    /// Names of the receiver's features queried with `feature_distance` and `feature_tangent`.
+    pub named_features: BTreeSet<String>,
 }
 
 impl Dependencies {
     fn merge(&mut self, other: &Dependencies) {
+        self.named_features
+            .extend(other.named_features.iter().cloned());
         self.externals.extend(other.externals.iter().cloned());
         self.parameters.extend(&other.parameters);
         self.seed |= other.seed;
@@ -109,6 +113,7 @@ impl Dependencies {
             && !self.features
             && !self.edges
             && self.externals.is_empty()
+            && self.named_features.is_empty()
     }
 
     /// Everything either side reads.
@@ -240,6 +245,13 @@ impl Walk<'_> {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
                             found.images.insert(name.to_string());
                         }
+                    }
+                    Builtin::FeatureDistance | Builtin::FeatureTangent => {
+                        use SampleInputs as S;
+                        if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
+                            found.named_features.insert(name.to_string());
+                        }
+                        found.sample = found.sample.union(S::WORLD).union(S::FOOTPRINT);
                     }
                     Builtin::External => {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
