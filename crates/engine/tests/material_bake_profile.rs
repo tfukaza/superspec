@@ -466,7 +466,7 @@ output height = 0.003 * grain * external(\"lift\", 1.0);";
                 case.receiver.id.clone(),
                 names
                     .iter()
-                    .map(|(input, asset)| ((*input).to_owned(), (*asset).to_owned()))
+                    .map(|(input, asset)| ((*input).to_owned(), (*asset).into()))
                     .collect(),
             );
             request

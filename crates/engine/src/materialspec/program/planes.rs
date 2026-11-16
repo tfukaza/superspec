@@ -107,6 +107,51 @@ impl Plane {
         })
     }
 
+    /// An empty plane for the external input `name` at full precision, to fill with
+    /// [`Self::set`]: `components` (1 to 3) numbers per texel.
+    pub fn empty_external(name: &str, components: usize, texels: usize) -> Result<Self, String> {
+        let mut plane = Self::new(0, components.clamp(1, 3), texels);
+        plane.binding = Binding::External(Arc::from(name));
+        if (1..=3).contains(&components) {
+            Ok(plane)
+        } else {
+            Err(format!("External plane '{name}' needs 1 to 3 components."))
+        }
+    }
+
+    /// Gives `texel` of a full-precision plane the finite numbers `value` (one per component),
+    /// with no filtering estimate. Texels outside the plane and planes of host numbers are left
+    /// alone.
+    pub fn set(&mut self, texel: usize, value: &[f64]) {
+        let mut components = [0.; 3];
+        for (slot, component) in components.iter_mut().zip(value) {
+            *slot = *component;
+        }
+        if self.full_at(texel).is_some() && components.iter().all(|v| v.is_finite()) {
+            self.store(
+                texel,
+                &Value::Number(components, self.kind.clamp(1, 3) as usize, 0.),
+            );
+        }
+    }
+
+    /// Gives texel `to` the value of texel `from` (none, if `from` holds none), for texels that
+    /// repeat another's sample.
+    pub fn repeat(&mut self, from: usize, to: usize) {
+        if self.full_at(to).is_none() {
+            return;
+        }
+        match self.value(from) {
+            Some(value) => self.store(to, &value),
+            None => {
+                if self.has(to) {
+                    self.stored -= 1;
+                }
+                self.full[to * 4 + 3] = f64::NAN;
+            }
+        }
+    }
+
     /// This plane's values as the external input `name`, at full precision and with their
     /// footprint estimates: how one bake's field becomes another program's input. Booleans have
     /// no external form.

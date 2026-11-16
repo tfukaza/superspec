@@ -554,4 +554,51 @@ export default defineMaterial({
         .expect("the field over the plane is baked on the CPU");
     assert_eq!(field.kind, Type::Scalar);
     assert_eq!(plan.cpu_outputs, ["base_color"]);
+    // The record says what each output reads, for a host that redraws one texture per output.
+    let color = &plan.reads.outputs["base_color"];
+    assert_eq!(color.planes, ["occlusion"]);
+    assert_eq!(color.cpu_fields, [field.name.clone()]);
+    assert!(!color.intrinsic && !color.seed && color.sample.is_empty());
+    let roughness = &plan.reads.outputs["roughness"];
+    assert!(roughness.intrinsic && roughness.seed && !roughness.features && !roughness.edges);
+    assert_eq!(roughness.sample, ["surface", "footprint"]);
+    assert!(roughness.cpu_fields.is_empty() && roughness.planes.is_empty());
+    assert!(plan.reads.outputs["metalness"].intrinsic);
+    assert_eq!(
+        plan.reads.outputs.keys().collect::<Vec<_>>(),
+        plan.outputs.iter().collect::<Vec<_>>()
+    );
+    let json = serde_json::to_value(&plan).unwrap();
+    assert_eq!(
+        json["reads"]["outputs"]["base_color"]["cpuFields"][0],
+        field.name
+    );
+    assert_eq!(json["reads"]["outputs"]["roughness"]["intrinsic"], true);
+}
+
+#[test]
+fn the_shader_record_names_the_parameter_uniforms_and_live_arguments_each_value_reads() {
+    let program = source(
+        "material 1;
+         param tint: scalar = 0.5 range(0, 1);
+         param shine: scalar = 0.2 range(0, 1);
+         let worn = crease_distance(\"convex\", 30.0, 0.05);
+         output base_color = vec3(tint * normal.z);
+         output roughness = clamp(shine + worn, 0, 1);
+         output height = runoff(0.1, 0.5) * 0.001;",
+    );
+    let shader = program.shader().unwrap();
+    let uniform = |name: &str| {
+        let found = shader.parameters.iter().find(|p| p.name == name).unwrap();
+        found.uniform.clone()
+    };
+    let reads = &shader.reads.outputs;
+    assert_eq!(reads["base_color"].parameters, [uniform("tint")]);
+    assert_eq!(reads["base_color"].sample, ["normal"]);
+    assert!(!reads["base_color"].intrinsic);
+    assert_eq!(reads["roughness"].parameters, [uniform("shine")]);
+    assert!(reads["roughness"].features && !reads["roughness"].edges);
+    assert_eq!(reads["roughness"].sample, ["world", "normal", "footprint"]);
+    assert!(reads["height"].edges && reads["height"].parameters.is_empty());
+    assert!(shader.reads.live.is_empty());
 }

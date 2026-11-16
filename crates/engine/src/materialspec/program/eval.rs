@@ -323,6 +323,7 @@ pub(super) fn evaluate(
         OutputSet::ALL,
         &[],
         usize::MAX,
+        &mut [],
     )
 }
 /// Which outputs one evaluation computes. A bake of one map evaluates only the outputs that map
@@ -554,6 +555,7 @@ pub(super) fn evaluate_wanted<'a>(
     outputs: OutputSet,
     planes: &[&Plane],
     texel: usize,
+    capture: &mut [Plane],
 ) -> Result<Outputs, ProgramDiagnostic> {
     validate_sample(program, sample)?;
     scratch.fields.clear();
@@ -632,6 +634,17 @@ pub(super) fn evaluate_wanted<'a>(
             }
         }
         Want::Height => {}
+    }
+    // Planes being filled take the fields this sample computed (see `Evaluator::fill_row`).
+    for plane in capture.iter_mut() {
+        if let Some(Some(value)) = plane
+            .field()
+            .and_then(|field| context.scratch.fields.get(field))
+        {
+            if texel < plane.texels() {
+                plane.store(texel, value);
+            }
+        }
     }
     Ok(result)
 }

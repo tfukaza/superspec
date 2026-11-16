@@ -55,7 +55,7 @@ fn swatch_atlas(request: &Request) -> Atlas {
 fn bind(request: &mut Request, names: &[&str], suffix: &str) {
     let bound = request.planes.entry("studio/swatch".into()).or_default();
     for name in names {
-        bound.insert((*name).to_owned(), format!("{name}{suffix}"));
+        bound.insert((*name).to_owned(), format!("{name}{suffix}").into());
     }
 }
 
@@ -541,4 +541,284 @@ fn a_field_bake_reads_planes_and_keeps_fields_by_their_content() {
         .err()
         .expect("a field bake without its plane fails");
     assert!(errors[0].message.contains("shade.other"), "{errors:?}");
+}
+
+// A base material and a layer over it, and the same appearance written as one program.
+const BASE: &str = "material 1;
+param grit: scalar = 0.5 range(0, 1);
+let grain = fbm(surface * 9, seed(\"g\"), 3);
+let speck = noise(surface * 40, seed(\"s\")) * grit;
+let tone = vec3(0.2 + 0.6 * grain, 0.3, 0.1 + speck * 0.5);
+output base_color = tone;
+output roughness = clamp(0.3 + speck, 0, 1);";
+const LAYER: &str = "material 1;
+param wet: scalar = 0.4 range(0, 1);
+let grain = external(\"base.grain\", 0.0);
+let stain = soft_threshold(grain, 0.5, 0.1);
+output base_color = mix(external(\"base.color\", vec3(0.0)), vec3(0.05), stain * wet);
+output roughness = clamp(external(\"base.rough\", 1.0) * (1 - stain * wet), 0, 1);
+output metalness = 0;";
+const WHOLE: &str = "material 1;
+param grit: scalar = 0.5 range(0, 1);
+param wet: scalar = 0.4 range(0, 1);
+let grain = fbm(surface * 9, seed(\"g\"), 3);
+let speck = noise(surface * 40, seed(\"s\")) * grit;
+let tone = vec3(0.2 + 0.6 * grain, 0.3, 0.1 + speck * 0.5);
+let stain = soft_threshold(grain, 0.5, 0.1);
+output base_color = mix(tone, vec3(0.05), stain * wet);
+output roughness = clamp(clamp(0.3 + speck, 0, 1) * (1 - stain * wet), 0, 1);
+output metalness = 0;";
+
+/// The layer over the base, with the base's and the layer's parameters.
+fn layered(grit: f64, wet: f64, resolution: usize) -> Request {
+    let mut request = request(LAYER.into(), resolution);
+    request.seed = 7;
+    request.parameters.insert("wet".into(), wet.into());
+    request.modules.insert("base.ms".into(), BASE.into());
+    request.materials.insert(
+        "base".into(),
+        program::MaterialRequest {
+            entry: "base.ms".into(),
+            parameters: [("grit".to_owned(), grit.into())].into(),
+            seed: 7,
+        },
+    );
+    let bound = request.planes.entry("studio/swatch".into()).or_default();
+    for (input, value) in [
+        ("base.grain", "grain"),
+        ("base.color", "base_color"),
+        ("base.rough", "roughness"),
+    ] {
+        let source = crate::authoring::PlaneSource::Material {
+            material: "base".into(),
+            value: value.into(),
+        };
+        bound.insert(input.into(), source);
+    }
+    request
+}
+
+fn whole(grit: f64, wet: f64, resolution: usize) -> Request {
+    let mut request = request(WHOLE.into(), resolution);
+    request.seed = 7;
+    request.parameters.insert("grit".into(), grit.into());
+    request.parameters.insert("wet".into(), wet.into());
+    request
+}
+
+/// A build with the values each plane bake evaluated.
+fn layered_build(
+    session: &mut Session,
+    revision: u64,
+    request: &Request,
+) -> (Output, Vec<Groups>, Vec<Vec<String>>) {
+    PLANE_BAKES.with(|bakes| bakes.borrow_mut().clear());
+    let (output, baked) = build(session, revision, request, &Assets::default());
+    let planes = PLANE_BAKES.with(|bakes| std::mem::take(&mut *bakes.borrow_mut()));
+    (output, baked, planes)
+}
+
+#[test]
+fn a_layer_over_planes_baked_from_a_base_equals_the_two_written_as_one_program() {
+    for (grit, wet) in [(0.5, 0.4), (0.9, 1.0), (0.0, 0.0)] {
+        let mut session = Session::default();
+        let (output, baked, planes) = layered_build(&mut session, 1, &layered(grit, wet, 64));
+        assert_eq!(baked_once(&baked), Groups::MAPS);
+        // The three values are baked in one pass over the base.
+        assert_eq!(planes.len(), 1, "{planes:?}");
+        assert_eq!(planes[0].len(), 3);
+        let expected = fresh(&whole(grit, wet, 64), &Assets::default());
+        assert_same(&output, &expected, &format!("grit {grit}, wet {wet}"));
+    }
+    // Production threads read the same planes.
+    let production = Request {
+        profile: Profile::Production,
+        ..layered(0.5, 0.4, 96)
+    };
+    let expected = Request {
+        profile: Profile::Production,
+        ..whole(0.5, 0.4, 96)
+    };
+    assert_same(
+        &fresh(&production, &Assets::default()),
+        &fresh(&expected, &Assets::default()),
+        "production",
+    );
+}
+
+#[test]
+fn an_edit_bakes_only_the_planes_and_maps_it_can_change() {
+    let mut session = Session::default();
+    let (first, _, _) = layered_build(&mut session, 1, &layered(0.5, 0.4, 48));
+    // The layer's own parameter: both maps read it, no plane does.
+    let (output, baked, planes) = layered_build(&mut session, 2, &layered(0.5, 0.8, 48));
+    // (They read different planes, so each is evaluated by its own producer.)
+    assert_eq!(
+        baked_once(&baked),
+        groups(&[Group::Color, Group::Properties])
+    );
+    assert!(planes.is_empty(), "the base's planes were kept: {planes:?}");
+    assert_same(
+        &output,
+        &fresh(&whole(0.5, 0.8, 48), &Assets::default()),
+        "wet",
+    );
+    // The base's grit: its color and roughness read it, its grain does not.
+    let (output, baked, planes) = layered_build(&mut session, 3, &layered(0.2, 0.8, 48));
+    assert_eq!(
+        baked_once(&baked),
+        groups(&[Group::Color, Group::Properties])
+    );
+    let mut values: Vec<String> = planes.concat();
+    values.sort();
+    assert_eq!(values, ["base_color", "roughness"], "{planes:?}");
+    assert_same(
+        &output,
+        &fresh(&whole(0.2, 0.8, 48), &Assets::default()),
+        "grit",
+    );
+    // Back to what was built first: nothing is baked.
+    let (back, baked, planes) = layered_build(&mut session, 4, &layered(0.5, 0.4, 48));
+    assert!(
+        baked.is_empty() && planes.is_empty(),
+        "{baked:?} {planes:?}"
+    );
+    assert_same(&back, &first, "the first request again");
+    // Another seed of the base alone changes everything it seeds.
+    let mut reseeded = layered(0.5, 0.4, 48);
+    reseeded.materials.get_mut("base").unwrap().seed = 8;
+    let (output, _, planes) = layered_build(&mut session, 5, &reseeded);
+    assert_eq!(planes.concat().len(), 3);
+    assert_ne!(
+        output.model.materials.keys().collect::<Vec<_>>(),
+        first.model.materials.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn planes_baked_from_a_material_stay_local_fail_clearly_and_recover() {
+    // A distributing session bakes such a request itself.
+    let request = layered(0.5, 0.4, 96);
+    let expected = fresh(&whole(0.5, 0.4, 96), &Assets::default());
+    let mut session = Session::default();
+    session.distribute_bakes(true);
+    let (output, _, _) = layered_build(&mut session, 1, &request);
+    assert_same(&output, &expected, "a distributing session");
+    assert!(session.take_pending_bake().is_none());
+    let mut revision = 1;
+    let mut fails = |session: &mut Session, request: &Request, fragment: &str| {
+        revision += 1;
+        let errors = session
+            .build(
+                request,
+                revision,
+                &|name| Assets::default().get(name),
+                &|| false,
+            )
+            .err()
+            .expect("a bad plane source fails the build");
+        assert!(errors[0].message.contains(fragment), "{errors:?}");
+    };
+    let rebind = |input: &str, material: &str, value: &str| {
+        let mut request = request.clone();
+        let source = crate::authoring::PlaneSource::Material {
+            material: material.into(),
+            value: value.into(),
+        };
+        let bound = request.planes.get_mut("studio/swatch").unwrap();
+        bound.insert(input.into(), source);
+        request
+    };
+    fails(
+        &mut session,
+        &rebind("base.grain", "other", "grain"),
+        "'other', which the request does not list",
+    );
+    fails(
+        &mut session,
+        &rebind("base.grain", "base", "nothing"),
+        "no field 'nothing'",
+    );
+    fails(
+        &mut session,
+        &rebind("base.grain", "base", "receiver_normal"),
+        "no field 'receiver_normal'",
+    );
+    fails(
+        &mut session,
+        &rebind("base.grain", "base", "tone"),
+        "'base.grain' holds 3 components where the program reads 1",
+    );
+    let mut missing = request.clone();
+    missing.modules.clear();
+    fails(&mut session, &missing, "Missing source module base.ms");
+    let mut invalid = request.clone();
+    invalid
+        .materials
+        .get_mut("base")
+        .unwrap()
+        .parameters
+        .insert("grit".into(), 5.into());
+    fails(&mut session, &invalid, "grit");
+    // Cancelling at every poll in turn leaves nothing partial behind.
+    let edited = layered(0.7, 0.6, 96);
+    let expected = fresh(&whole(0.7, 0.6, 96), &Assets::default());
+    let mut cancelled_builds = 0;
+    for limit in 0..30 {
+        revision += 1;
+        let polls = Cell::new(0);
+        let outcome = session.build(
+            &edited,
+            revision,
+            &|name| Assets::default().get(name),
+            &|| {
+                polls.set(polls.get() + 1);
+                polls.get() > limit
+            },
+        );
+        match outcome {
+            Ok(output) => assert_same(&output, &expected, "finished before the cancellation"),
+            Err(errors) => {
+                cancelled_builds += 1;
+                assert!(
+                    errors[0].message.contains("cancel")
+                        || errors[0].message.contains("superseded"),
+                    "{errors:?}"
+                );
+            }
+        }
+    }
+    assert!(cancelled_builds > 0);
+    revision += 1;
+    let (recovered, _) = build(&mut session, revision, &edited, &Assets::default());
+    assert_same(&recovered, &expected, "after failures and cancellations");
+}
+
+#[test]
+fn a_field_bake_of_a_layer_reads_the_base_s_planes() {
+    let names = ["stain".to_owned()];
+    let layer = Session::default()
+        .bake_fields(
+            &layered(0.5, 0.4, 48),
+            1,
+            &names,
+            &|name| Assets::default().get(name),
+            &|| false,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let one = Session::default()
+        .bake_fields(
+            &whole(0.5, 0.4, 48),
+            1,
+            &names,
+            &|name| Assets::default().get(name),
+            &|| false,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!((layer.width, layer.height), (one.width, one.height));
+    assert_eq!(layer.fields, one.fields);
+    assert!(
+        layer.fields[0].iter().any(|value| *value > 0.)
+            && layer.fields[0].iter().any(|value| *value < 1.)
+    );
 }

@@ -494,6 +494,51 @@ impl<'a> Evaluator<'a> {
         }
         Ok(results)
     }
+    /// Evaluates `outputs` and the selected fields for every sample of a row and leaves the
+    /// selected fields' values, exact and with their filtering estimates, in the `fill` planes
+    /// bound to them, at each sample's texel. Unlike the planes [`Self::evaluate_row_with_planes`]
+    /// keeps when it can, these are complete: a row that cannot be evaluated together fills them
+    /// one sample at a time. This is how one program's fields become another's external inputs
+    /// ([`Plane::into_external`]). `externals` are read as there; kept field planes are not.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fill_row(
+        &mut self,
+        samples: &[Sample],
+        texels: &[usize],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut Vec<FieldValue>,
+        externals: &[&Plane],
+        fill: &mut [Plane],
+    ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
+        if texels.len() != samples.len() || externals.iter().any(|plane| plane.field().is_some()) {
+            return Err(self.program.diagnostic(
+                "MS_INPUT",
+                "Filling planes needs a texel for every sample and reads external planes only.",
+                &syntax::Mark::root(&self.program.metadata.entry),
+            ));
+        }
+        // The row evaluator fills planes only where it finishes; a declined row leaves them as
+        // they were, apart from its count of samples without a value.
+        if let Some(done) =
+            self.together(samples, texels, outputs, selection, values, externals, fill)
+        {
+            return Ok(done);
+        }
+        let slots = selection.len();
+        let mut results = Vec::with_capacity(samples.len());
+        for (i, sample) in samples.iter().enumerate() {
+            results.push(self.filling_at(
+                sample,
+                texels[i],
+                externals,
+                eval::Want::Selected(selection, &mut values[i * slots..(i + 1) * slots]),
+                outputs,
+                fill,
+            )?);
+        }
+        Ok(results)
+    }
     /// The planes of `planes` an evaluation reads when it may not read them all: without the
     /// field planes, for a program they do not serve (see [`Self::evaluate_row_with_planes`]).
     fn honored<'p>(&self, planes: &[&'p Plane]) -> Option<Vec<&'p Plane>> {
@@ -594,6 +639,18 @@ impl<'a> Evaluator<'a> {
         want: eval::Want<'_>,
         outputs: OutputSet,
     ) -> Result<Outputs, ProgramDiagnostic> {
+        self.filling_at(sample, texel, planes, want, outputs, &mut [])
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn filling_at(
+        &mut self,
+        sample: &Sample,
+        texel: usize,
+        planes: &[&Plane],
+        want: eval::Want<'_>,
+        outputs: OutputSet,
+        capture: &mut [Plane],
+    ) -> Result<Outputs, ProgramDiagnostic> {
         eval::evaluate_wanted(
             self.program,
             &self.program.compiled,
@@ -608,6 +665,7 @@ impl<'a> Evaluator<'a> {
             outputs,
             planes,
             texel,
+            capture,
         )
     }
 }

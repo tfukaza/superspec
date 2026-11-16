@@ -72,6 +72,45 @@ pub struct Shader {
     /// they need, for a pass that writes one texture. One program of `ms_evaluate` compiles in less
     /// time than its parts do together; the parts are for drawing less per pass.
     pub entries: Vec<EntryPoint>,
+    /// What each output and each live argument reads, so a host that keeps one texture per
+    /// output redraws only those an edit can change.
+    pub reads: ShaderReads,
+}
+
+/// What the outputs and live arguments of a [`Shader`] read.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ShaderReads {
+    /// By output name, for every output the program sets.
+    pub outputs: BTreeMap<String, Reads>,
+    /// By live operation id, then argument name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub live: BTreeMap<String, BTreeMap<String, Reads>>,
+}
+
+/// Everything one value reads, through the fields and helpers upstream of it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reads {
+    /// Parameter uniforms (`Shader::parameters[..].uniform`).
+    pub parameters: Vec<String>,
+    /// Whether any named seed is read, so the request seed matters.
+    pub seed: bool,
+    /// Supplied images, by name.
+    pub images: Vec<String>,
+    /// Whether the supplied source edges are read.
+    pub edges: bool,
+    /// Whether receiver features are queried.
+    pub features: bool,
+    /// The parts of a sample read: `uv`, `surface`, `object`, `world`, `normal`, `gravity`,
+    /// `footprint`, `uv_footprint`, `bounds`. A position brings its footprint along.
+    pub sample: Vec<&'static str>,
+    /// CPU fields read (`Shader::cpu_fields[..].name`); empty outside a plan.
+    pub cpu_fields: Vec<String>,
+    /// External inputs read (`external(name, fallback)`), whose planes belong to one receiver.
+    pub planes: Vec<String>,
+    /// Whether the value is the same at a surface position on every receiver: it reads only
+    /// `surface` and `footprint` of the sample, and no features, edges or planes.
+    pub intrinsic: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1617,6 +1656,54 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
                 .collect()
         })
         .unwrap_or_default();
+    let all = program.dependency_table();
+    let reads_of = |found: &super::Dependencies| Reads {
+        parameters: found
+            .parameters
+            .iter()
+            .map(|i| format!("ms_p{i}"))
+            .collect(),
+        seed: found.seed,
+        images: found.images.iter().cloned().collect(),
+        edges: found.edges,
+        features: found.features,
+        sample: found.sample.names(),
+        cpu_fields: cpu_fields
+            .iter()
+            .filter(|field| {
+                let index = program
+                    .metadata
+                    .fields
+                    .iter()
+                    .position(|known| known.name == field.name);
+                index.is_some_and(|index| found.fields.contains(&index))
+            })
+            .map(|field| field.name.clone())
+            .collect(),
+        planes: found.externals.iter().cloned().collect(),
+        intrinsic: found.intrinsic(),
+    };
+    let reads = ShaderReads {
+        outputs: outputs
+            .iter()
+            .filter_map(|name| Some((name.clone(), reads_of(all.outputs.get(name)?))))
+            .collect(),
+        live: program
+            .metadata
+            .live
+            .iter()
+            .map(|operation| {
+                let arguments = operation
+                    .inputs
+                    .iter()
+                    .filter_map(|(argument, field)| {
+                        Some((argument.clone(), reads_of(all.fields.get(field)?)))
+                    })
+                    .collect();
+                (operation.id.clone(), arguments)
+            })
+            .collect(),
+    };
     Ok((
         Shader {
             source,
@@ -1632,6 +1719,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             uniforms,
             samplers,
             entries,
+            reads,
         },
         functions,
     ))

@@ -216,59 +216,399 @@ fn field_plane_key(
 /// request that binds none holds nothing here, so builds without planes allocate as they always
 /// did.
 #[derive(Default)]
-struct BoundPlanes(Vec<Vec<(String, Arc<[u8]>)>>);
+struct BoundPlanes {
+    receivers: Vec<Vec<(String, Bound)>>,
+    /// The request's other materials that planes are baked from, by their name in the request.
+    sources: BTreeMap<String, Source>,
+}
+
+/// Where a bound plane's values come from.
+enum Bound {
+    /// An encoded plane a host supplied.
+    Asset(Arc<[u8]>),
+    /// A value (field or output) of one of the request's other materials, baked in this build.
+    Material { material: String, value: String },
+}
+
+/// Another material of the request, evaluated over the same receivers to make planes.
+struct Source {
+    program: Arc<Program>,
+    /// The request as that material's own: its entry, source, parameters and seed.
+    request: Request,
+    table: program::DependencyTable,
+}
 
 impl std::ops::Index<usize> for BoundPlanes {
-    type Output = [(String, Arc<[u8]>)];
+    type Output = [(String, Bound)];
     fn index(&self, receiver: usize) -> &Self::Output {
-        self.0.get(receiver).map_or(&[], Vec::as_slice)
+        self.receivers.get(receiver).map_or(&[], Vec::as_slice)
     }
 }
 
-fn bound_planes(
+impl BoundPlanes {
+    fn bound(&self, receiver: usize, name: &str) -> &Bound {
+        let found = self[receiver].iter().find(|(bound, _)| bound == name);
+        &found.expect("a bound plane").1
+    }
+}
+
+/// Values of one material a plane bake holds at most: a plane of exact values is 32 bytes a
+/// texel, so one receiver's planes of one material stay within 16 times that.
+const MAX_SOURCE_VALUES: usize = 16;
+/// Bytes one baked plane may hold: an atlas of the largest admitted size (2048 px square).
+const PLANE_NODE_BYTES: usize = 2048 * 2048 * 32 + 64;
+
+impl Session {
+    fn bound_planes(
+        &mut self,
+        program: &Program,
+        request: &Request,
+        receivers: &[super::Receiver],
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+    ) -> Result<BoundPlanes, Vec<Diagnostic>> {
+        let externals = &program.metadata().externals;
+        if externals.is_empty() || request.planes.is_empty() {
+            return Ok(BoundPlanes::default());
+        }
+        let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
+        let mut bound = BoundPlanes::default();
+        for receiver in receivers {
+            let mut planes = Vec::new();
+            for external in externals {
+                let source = request
+                    .planes
+                    .get(&receiver.id)
+                    .and_then(|named| named.get(&external.name));
+                match source {
+                    None => {}
+                    Some(super::PlaneSource::Asset(asset)) => {
+                        let bytes = assets(asset).map_err(|e| fail(format!("{asset}: {e}")))?;
+                        planes.push((external.name.clone(), Bound::Asset(bytes)));
+                    }
+                    Some(super::PlaneSource::Material { material, value }) => {
+                        if !bound.sources.contains_key(material) {
+                            let wanted = request.materials.get(material).ok_or_else(|| {
+                                fail(format!(
+                                    "External input '{}' names the material '{material}', which the request does not list.",
+                                    external.name
+                                ))
+                            })?;
+                            let text = if wanted.entry == request.entry {
+                                Some(&request.source)
+                            } else {
+                                request.modules.get(&wanted.entry)
+                            };
+                            let own = Request {
+                                entry: wanted.entry.clone(),
+                                source: text
+                                    .ok_or_else(|| {
+                                        fail(format!("Missing source module {}.", wanted.entry))
+                                    })?
+                                    .clone(),
+                                parameters: wanted.parameters.clone(),
+                                seed: wanted.seed,
+                                planes: BTreeMap::new(),
+                                materials: BTreeMap::new(),
+                                ..request.clone()
+                            };
+                            let program = self.program(&own)?;
+                            let table = program.dependency_table();
+                            bound.sources.insert(
+                                material.clone(),
+                                Source {
+                                    program,
+                                    request: own,
+                                    table,
+                                },
+                            );
+                        }
+                        let source = &bound.sources[material];
+                        if source_value(&source.program, &source.table, value).is_none() {
+                            return Err(fail(format!(
+                                "Material '{material}' has no field '{value}', and no such output a plane can hold."
+                            )));
+                        }
+                        planes.push((
+                            external.name.clone(),
+                            Bound::Material {
+                                material: material.clone(),
+                                value: value.clone(),
+                            },
+                        ));
+                    }
+                }
+            }
+            if planes.len() > MAX_SOURCE_VALUES {
+                return Err(fail(format!(
+                    "A receiver binds at most {MAX_SOURCE_VALUES} planes."
+                )));
+            }
+            bound.receivers.push(planes);
+        }
+        Ok(bound)
+    }
+}
+
+/// What a plane baked from `value` of a material holds: the field's index, or the output's
+/// name; the components of a value; and what the value reads.
+fn source_value<'a>(
     program: &Program,
-    request: &Request,
-    receivers: &[super::Receiver],
-    assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
-) -> Result<BoundPlanes, String> {
-    let externals = &program.metadata().externals;
-    if externals.is_empty() || request.planes.is_empty() {
-        return Ok(BoundPlanes::default());
+    table: &'a program::DependencyTable,
+    value: &str,
+) -> Option<(Option<usize>, usize, &'a program::Dependencies)> {
+    let fields = &program.metadata().fields;
+    if let Some(index) = fields.iter().position(|field| field.name == value) {
+        let components = match fields[index].kind {
+            program::Type::Scalar => 1,
+            program::Type::Vec2 => 2,
+            program::Type::Vec3 => 3,
+            _ => return None,
+        };
+        return Some((Some(index), components, table.fields.get(value)?));
     }
-    receivers
-        .iter()
-        .map(|receiver| {
-            let Some(named) = request.planes.get(&receiver.id) else {
-                return Ok(Vec::new());
-            };
-            externals
-                .iter()
-                .filter_map(|external| Some((&external.name, named.get(&external.name)?)))
-                .map(|(name, asset)| {
-                    let bytes = assets(asset).map_err(|e| format!("{asset}: {e}"))?;
-                    Ok((name.clone(), bytes))
-                })
-                .collect()
-        })
-        .collect::<Result<_, String>>()
-        .map(BoundPlanes)
+    let components = match value {
+        "base_color" | "emissive" => 3,
+        "roughness" | "metalness" | "height" | "opacity" => 1,
+        _ => return None,
+    };
+    Some((None, components, table.outputs.get(value)?))
 }
 
-/// The node of the plane bound to external input `name` of receiver `index`: its bytes, for the
-/// atlas it must cover.
-fn plane_node(index: usize, name: &str, bytes: &Arc<[u8]>) -> Node {
-    let mut inputs = name.as_bytes().to_vec();
-    inputs.push(0);
-    inputs.extend(image_digest(bytes));
-    node(
-        format!("plane/{index}/{name}"),
-        "material-plane-v1",
-        inputs,
-        vec![
+/// Adds the nodes of receiver `index`'s bound planes, with the nodes of the materials they are
+/// baked from (program and decoded images, under that material's name) where not planned yet.
+fn plane_nodes(
+    bound: &BoundPlanes,
+    index: usize,
+    assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+    nodes: &mut Vec<Node>,
+    image_bytes: &mut BTreeMap<String, Arc<[u8]>>,
+) -> Result<(), String> {
+    for (name, plane) in &bound[index] {
+        let mut dependencies = vec![
             dependency("mapping", format!("layout/{index}")),
             dependency("program", "program"),
-        ],
-    )
+        ];
+        let mut inputs = name.as_bytes().to_vec();
+        inputs.push(0);
+        let implementation = match plane {
+            Bound::Asset(bytes) => {
+                inputs.extend(image_digest(bytes));
+                "material-plane-v1"
+            }
+            Bound::Material { material, value } => {
+                let source = &bound.sources[material];
+                let (program_id, assets_id) =
+                    (format!("program:{material}"), format!("assets:{material}"));
+                if !nodes.iter().any(|node| node.id == program_id) {
+                    let (planned, images) = source_nodes(&source.program, &source.request, assets)?;
+                    for mut planned in planned {
+                        match planned.id.as_str() {
+                            "program" => planned.id = program_id.clone(),
+                            "assets" => planned.id = assets_id.clone(),
+                            _ => {}
+                        }
+                        if !nodes.iter().any(|node| node.id == planned.id) {
+                            nodes.push(planned);
+                        }
+                    }
+                    image_bytes.extend(images);
+                }
+                // Keyed by what the value reads of that material's request, like a map.
+                let (_, _, read) = source_value(&source.program, &source.table, value)
+                    .expect("a checked source value");
+                inputs.extend(value.as_bytes());
+                inputs.push(0);
+                match source.program.input_fingerprint(
+                    &Inputs {
+                        parameters: source.request.parameters.clone(),
+                        seed: source.request.seed,
+                        edges: source.request.edges.clone(),
+                        ..Inputs::default()
+                    },
+                    read,
+                ) {
+                    Ok(fingerprint) => inputs.extend(fingerprint),
+                    Err(error) => inputs.extend(error.to_string().bytes()),
+                }
+                dependencies.push(dependency("source", program_id));
+                dependencies.push(dependency("source-assets", assets_id));
+                "material-plane-bake-v1"
+            }
+        };
+        nodes.push(node(
+            format!("plane/{index}/{name}"),
+            implementation,
+            inputs,
+            dependencies,
+        ));
+    }
+    Ok(())
+}
+
+/// Bakes values of another material of the request over a receiver's atlas into planes bound to
+/// the external inputs `wanted` names (input name, value), exactly as that material's own bake
+/// evaluates them at each texel: fields keep their filtering estimates, outputs have none. A
+/// texel that samples the point of the texel before it in its row repeats that texel, as the
+/// maps baked from these planes do.
+fn bake_source_planes(
+    source: &Source,
+    decoded: &Inputs,
+    atlas: &Atlas,
+    wanted: &[(&str, &str)],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<program::Plane>, Diagnostic> {
+    #[cfg(test)]
+    PLANE_BAKES.with(|bakes| {
+        let values = wanted.iter().map(|(_, value)| (*value).to_owned());
+        bakes.borrow_mut().push(values.collect())
+    });
+    let program = &source.program;
+    let entry = program.metadata().entry.as_str();
+    let failure = |message: String| Diagnostic::message(entry, message);
+    let pixels = atlas.width * atlas.height;
+    if pixels * 32 + 64 > PLANE_NODE_BYTES {
+        return Err(failure(
+            "The receiver's atlas exceeds what a plane may hold.".into(),
+        ));
+    }
+    let inputs = Inputs {
+        parameters: source.request.parameters.clone(),
+        seed: source.request.seed,
+        images: decoded.images.clone(),
+        edges: source.request.edges.clone(),
+        features: Vec::new(),
+        mips: decoded.mips.clone(),
+    };
+    // Planes of fields are filled by the evaluator; planes of outputs from each sample's result.
+    let mut filled: Vec<program::Plane> = Vec::new();
+    let mut field_names: Vec<&str> = Vec::new();
+    let mut outputs = program::OutputSet::NONE;
+    let mut output_planes: Vec<(usize, &str, program::Plane)> = Vec::new();
+    let mut order: Vec<(bool, usize)> = Vec::new();
+    for (slot, (name, value)) in wanted.iter().enumerate() {
+        let (field, components, _) = source_value(program, &source.table, value)
+            .ok_or_else(|| failure(format!("No field or output '{value}'.")))?;
+        match field {
+            Some(index) => {
+                order.push((true, filled.len()));
+                filled.push(program::Plane::new(index, components, pixels));
+                field_names.push(value);
+            }
+            None => {
+                outputs = outputs.union(program::OutputSet::named(value));
+                let plane =
+                    program::Plane::empty_external(name, components, pixels).map_err(&failure)?;
+                order.push((false, output_planes.len()));
+                output_planes.push((slot, value, plane));
+            }
+        }
+    }
+    let selection = program.select_fields(&field_names).map_err(&failure)?;
+    let features = receiver_features(program, atlas);
+    let mut evaluator = program
+        .evaluator_with_features(&inputs, &features)
+        .map_err(Diagnostic::from)?;
+    let mut values = Vec::new();
+    for chart in &atlas.charts {
+        for y in 0..chart.height {
+            if cancelled() {
+                return Err(failure("Material authoring cancelled.".into()));
+            }
+            evaluator.replenish(64_000_000);
+            let mut before: Option<(usize, u64, u64)> = None;
+            let mut fresh = Vec::with_capacity(chart.width);
+            let mut samples = Vec::new();
+            let mut texels = Vec::new();
+            for x in 0..chart.width {
+                let (triangle, u, v) = atlas.texel(chart, x, y);
+                let key = (triangle, u.to_bits(), v.to_bits());
+                fresh.push(before != Some(key));
+                if before != Some(key) {
+                    samples.push(atlas.sample(triangle, u, v).map_err(&failure)?);
+                    texels.push((chart.y + y) * atlas.width + chart.x + x);
+                }
+                before = Some(key);
+            }
+            let results = evaluator
+                .fill_row(
+                    &samples,
+                    &texels,
+                    outputs,
+                    &selection,
+                    &mut values,
+                    &[],
+                    &mut filled,
+                )
+                .map_err(Diagnostic::from)?;
+            for (result, texel) in results.iter().zip(&texels) {
+                for (_, value, plane) in output_planes.iter_mut() {
+                    match *value {
+                        "base_color" => plane.set(*texel, &result.base_color),
+                        "emissive" => plane.set(*texel, &result.emissive),
+                        "roughness" => plane.set(*texel, &[result.roughness]),
+                        "metalness" => plane.set(*texel, &[result.metalness]),
+                        "height" => plane.set(*texel, &[result.height]),
+                        _ => plane.set(*texel, &[result.opacity]),
+                    }
+                }
+            }
+            for (x, new) in fresh.into_iter().enumerate() {
+                if !new {
+                    let texel = (chart.y + y) * atlas.width + chart.x + x;
+                    let planes = filled
+                        .iter_mut()
+                        .chain(output_planes.iter_mut().map(|(_, _, plane)| plane));
+                    for plane in planes {
+                        plane.repeat(texel - 1, texel);
+                    }
+                }
+            }
+        }
+    }
+    let mut filled: Vec<Option<program::Plane>> = filled.into_iter().map(Some).collect();
+    let mut output_planes: Vec<Option<program::Plane>> = output_planes
+        .into_iter()
+        .map(|(_, _, plane)| Some(plane))
+        .collect();
+    order
+        .into_iter()
+        .zip(wanted)
+        .map(|((field, at), (name, _))| {
+            if field {
+                let plane = filled[at].take().expect("each plane once");
+                plane.into_external(name).map_err(&failure)
+            } else {
+                Ok(output_planes[at].take().expect("each plane once"))
+            }
+        })
+        .collect()
+}
+
+/// A plane baked for the external input `name`, as a `plane/` node's artifact, checked against
+/// the type the program reads it as.
+fn baked_plane(
+    program: &Program,
+    name: &str,
+    plane: program::Plane,
+) -> Result<Arc<BakedReceiver>, String> {
+    let wanted = program
+        .metadata()
+        .externals
+        .iter()
+        .find(|external| external.name == name)
+        .map(|external| match external.kind {
+            program::Type::Scalar => 1,
+            program::Type::Vec2 => 2,
+            _ => 3,
+        });
+    if wanted != Some(plane.components()) {
+        return Err(format!(
+            "External plane '{name}' holds {} components where the program reads {}.",
+            plane.components(),
+            wanted.unwrap_or(0)
+        ));
+    }
+    Ok(Arc::new(BakedReceiver::Plane(plane)))
 }
 
 /// A `plane/` node's artifact: the decoded plane, checked against the atlas it covers and the
@@ -627,6 +967,35 @@ fn decoded_assets(
     ))
 }
 
+/// An `assets:<material>` node's artifact: inputs holding the decoded images among its
+/// dependencies.
+fn source_assets(
+    dependencies: &BTreeMap<String, Arc<Artifact>>,
+    mips: &program::MipCache,
+) -> Result<(Artifact, usize), String> {
+    let mut images = BTreeMap::new();
+    let mut count = 0usize;
+    for (role, artifact) in dependencies {
+        if let (Some(name), Artifact::Image(image)) =
+            (role.strip_prefix("image/"), artifact.as_ref())
+        {
+            count += image.rgba.len();
+            if count > 64 * 1024 * 1024 {
+                return Err("Decoded material images exceed the authoring allowance.".into());
+            }
+            images.insert(name.to_owned(), image.clone());
+        }
+    }
+    Ok((
+        Artifact::Inputs(Arc::new(Inputs {
+            images,
+            mips: mips.clone(),
+            ..Inputs::default()
+        })),
+        1024,
+    ))
+}
+
 /// A `layout/` node's artifact: the receiver's atlas.
 fn receiver_layout(
     receiver: &super::Receiver,
@@ -825,7 +1194,9 @@ impl Session {
         let compact = request.profile == super::Profile::Production;
         // Planes bound to the program's external inputs enter the graph by content: a map is
         // keyed by the planes of only the inputs its outputs read.
-        let planes = bound_planes(&compiled, request, &receivers, assets).map_err(&fail)?;
+        let planes = self.bound_planes(&compiled, request, &receivers, assets)?;
+        // Images only the materials planes are baked from read.
+        let mut source_images: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
         let plane_dependencies = |i: usize, read: Option<&program::Dependencies>| {
             planes[i]
                 .iter()
@@ -838,9 +1209,7 @@ impl Session {
             let layout = format!("layout/{i}");
             let bake = format!("bake/{i}");
             nodes.push(layout_node(i, receiver, request));
-            for (name, bytes) in &planes[i] {
-                nodes.push(plane_node(i, name, bytes));
-            }
+            plane_nodes(&planes, i, assets, &mut nodes, &mut source_images).map_err(&fail)?;
             let mut bake_dependencies = vec![
                 dependency("mapping", layout.clone()),
                 dependency("program", "program"),
@@ -942,7 +1311,9 @@ impl Session {
                     .fold(Groups::NONE, Groups::with)
             })
             .collect();
-        if share.is_none() && self.distribution.enabled {
+        // A bake that reads planes baked from another material stays here: a session that bakes a
+        // share would have to bake those planes over again, or be sent them.
+        if share.is_none() && self.distribution.enabled && planes.sources.is_empty() {
             let complete = |key: &ContentKey, wanted: Groups| {
                 self.distribution.provided.get(key).is_some_and(|provided| {
                     provided.groups.contains_all(wanted.rows())
@@ -970,7 +1341,10 @@ impl Session {
                         let named = request.planes.get(&receiver.id);
                         planes[i]
                             .iter()
-                            .filter_map(move |(name, _)| named?.get(name).cloned())
+                            .filter_map(move |(name, _)| match named?.get(name)? {
+                                super::PlaneSource::Asset(asset) => Some(asset.clone()),
+                                super::PlaneSource::Material { .. } => None,
+                            })
                     })
                     .collect();
                 self.distribution.pending.push(PendingBake {
@@ -1094,6 +1468,16 @@ impl Session {
         // The maps of each receiver still to bake: a producer takes the ones it bakes off the
         // list, so no later producer bakes them again.
         let mut dirty = dirty;
+        // Planes baked alongside the one a producer was asked for, and the planes no retained
+        // artifact holds.
+        let mut baked_planes: BTreeMap<(usize, String), Arc<BakedReceiver>> = BTreeMap::new();
+        let mut plane_dirty: std::collections::BTreeSet<(usize, String)> = (0..receivers.len())
+            .flat_map(|i| planes[i].iter().map(move |(name, _)| (i, name.clone())))
+            .filter(|(i, name)| {
+                let key = plan.key(&format!("plane/{i}/{name}"));
+                !self.runtime.holds(&key.expect("planned plane"))
+            })
+            .collect();
         let mips = self.mips.clone();
         let complete = self
             .runtime
@@ -1107,8 +1491,18 @@ impl Session {
                         compiled.retained_bytes(),
                     )),
                     id if id.starts_with("image/") => {
-                        decoded_image(&image_bytes[&id["image/".len()..]])
+                        let name = &id["image/".len()..];
+                        decoded_image(
+                            image_bytes
+                                .get(name)
+                                .unwrap_or_else(|| &source_images[name]),
+                        )
                     }
+                    id if id.starts_with("program:") => {
+                        let program = &planes.sources[&id["program:".len()..]].program;
+                        Ok((Artifact::Program(program.clone()), program.retained_bytes()))
+                    }
+                    id if id.starts_with("assets:") => source_assets(dependencies, &mips),
                     "inputs" => {
                         let mut images = BTreeMap::new();
                         let mut count = 0usize;
@@ -1155,12 +1549,57 @@ impl Session {
                         let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
                             unreachable!()
                         };
-                        let bytes = planes[index]
-                            .iter()
-                            .find(|(bound, _)| bound == name)
-                            .map(|(_, bytes)| bytes)
-                            .expect("a bound plane");
-                        decoded_plane(&compiled, name, bytes, atlas)
+                        let (material, value) = match planes.bound(index, name) {
+                            Bound::Asset(bytes) => {
+                                return decoded_plane(&compiled, name, bytes, atlas);
+                            }
+                            Bound::Material { material, value } => (material, value),
+                        };
+                        if let Some(done) = baked_planes.remove(&(index, name.to_owned())) {
+                            let bytes = done.bytes();
+                            return Ok((Artifact::Material(done), bytes));
+                        }
+                        // One pass bakes every plane of this material the build still needs
+                        // for the receiver, so what the values share is evaluated once.
+                        let mut wanted = vec![(name, value.as_str())];
+                        for (other, bound) in &planes[index] {
+                            if let Bound::Material {
+                                material: from,
+                                value,
+                            } = bound
+                            {
+                                if from == material
+                                    && other != name
+                                    && plane_dirty.contains(&(index, other.clone()))
+                                {
+                                    wanted.push((other, value));
+                                }
+                            }
+                        }
+                        let Artifact::Inputs(decoded) = dependencies["source-assets"].as_ref()
+                        else {
+                            unreachable!()
+                        };
+                        let source = &planes.sources[material];
+                        let baked = bake_source_planes(source, decoded, atlas, &wanted, stopped)
+                            .map_err(|error| {
+                                let message = error.message.clone();
+                                evaluation_error = Some(error);
+                                message
+                            })?;
+                        let mut requested = None;
+                        for ((made, _), plane) in wanted.iter().zip(baked) {
+                            plane_dirty.remove(&(index, (*made).to_owned()));
+                            let plane = baked_plane(&compiled, made, plane)?;
+                            if *made == name {
+                                requested = Some(plane);
+                            } else {
+                                baked_planes.insert((index, (*made).to_owned()), plane);
+                            }
+                        }
+                        let plane = requested.expect("the requested plane was baked");
+                        let bytes = plane.bytes();
+                        Ok((Artifact::Material(plane), bytes))
                     }
                     id if id.starts_with("bake/") => {
                         let Artifact::Program(program) = dependencies["program"].as_ref() else {
@@ -1413,6 +1852,8 @@ thread_local! {
     static BAKED: std::cell::RefCell<Vec<Groups>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Fields each field bake on this thread had to evaluate (the others were kept).
     static FIELDS_BAKED: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// The values each bake of another material's planes evaluated on this thread.
+    static PLANE_BAKES: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Field planes (read, kept) of each bake that evaluated rows on this thread.
     static PLANES: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -2936,15 +3377,13 @@ impl Session {
         let (mut nodes, image_bytes) = source_nodes(&program, request, assets).map_err(&fail)?;
         nodes.push(layout_node(0, &receiver, request));
         // Planes bound to the program's external inputs, as a build of the request binds them.
-        let bound = bound_planes(&program, request, std::slice::from_ref(&receiver), assets)
-            .map_err(&fail)?;
+        let bound =
+            self.bound_planes(&program, request, std::slice::from_ref(&receiver), assets)?;
         let planes = &bound[0];
         let mut targets: Vec<String> = vec!["program".into(), "assets".into(), "layout/0".into()];
-        for (name, bytes) in planes {
-            let node = plane_node(0, name, bytes);
-            targets.push(node.id.clone());
-            nodes.push(node);
-        }
+        let mut source_images: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        plane_nodes(&bound, 0, assets, &mut nodes, &mut source_images).map_err(&fail)?;
+        targets.extend(planes.iter().map(|(name, _)| format!("plane/0/{name}")));
         let plan = Plan::new(nodes, targets).map_err(|e| fail(e.to_string()))?;
         let mips = self.mips.clone();
         let complete = self
@@ -2956,8 +3395,18 @@ impl Session {
                 |node, dependencies, _| match node.id.as_str() {
                     "program" => Ok((Artifact::Program(program.clone()), program.retained_bytes())),
                     id if id.starts_with("image/") => {
-                        decoded_image(&image_bytes[&id["image/".len()..]])
+                        let name = &id["image/".len()..];
+                        decoded_image(
+                            image_bytes
+                                .get(name)
+                                .unwrap_or_else(|| &source_images[name]),
+                        )
                     }
+                    id if id.starts_with("program:") => {
+                        let program = &bound.sources[&id["program:".len()..]].program;
+                        Ok((Artifact::Program(program.clone()), program.retained_bytes()))
+                    }
+                    id if id.starts_with("assets:") => source_assets(dependencies, &mips),
                     "assets" => decoded_assets(&image_bytes, dependencies, &mips),
                     "layout/0" => receiver_layout(&receiver, request),
                     id if id.starts_with("plane/0/") => {
@@ -2965,12 +3414,27 @@ impl Session {
                         let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
                             unreachable!()
                         };
-                        let bytes = planes
-                            .iter()
-                            .find(|(bound, _)| bound == name)
-                            .map(|(_, bytes)| bytes)
-                            .expect("a bound plane");
-                        decoded_plane(&program, name, bytes, atlas)
+                        match bound.bound(0, name) {
+                            Bound::Asset(bytes) => decoded_plane(&program, name, bytes, atlas),
+                            Bound::Material { material, value } => {
+                                let Artifact::Inputs(decoded) =
+                                    dependencies["source-assets"].as_ref()
+                                else {
+                                    unreachable!()
+                                };
+                                let mut baked = bake_source_planes(
+                                    &bound.sources[material],
+                                    decoded,
+                                    atlas,
+                                    &[(name, value.as_str())],
+                                    cancelled,
+                                )
+                                .map_err(|error| error.message)?;
+                                let plane = baked_plane(&program, name, baked.remove(0))?;
+                                let bytes = plane.bytes();
+                                Ok((Artifact::Material(plane), bytes))
+                            }
+                        }
                     }
                     _ => Ok((Artifact::Source, node.inputs.len())),
                 },

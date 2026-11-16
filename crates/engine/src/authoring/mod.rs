@@ -105,12 +105,40 @@ pub struct Request {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texel_density: Option<f64>,
     /// Planes supplied for the program's external inputs (`external(name, fallback)`), by
-    /// receiver id and then input name: each names an asset holding an encoded plane
-    /// (`program::Plane::encode_external`) over that receiver's atlas. The swatch a request
-    /// without receivers bakes has the id `studio/swatch`. Names the program does not read are
-    /// not fetched.
+    /// receiver id and then input name (see [`PlaneSource`]). The swatch a request without
+    /// receivers bakes has the id `studio/swatch`. Names the program does not read are neither
+    /// fetched nor baked.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub planes: BTreeMap<String, BTreeMap<String, String>>,
+    pub planes: BTreeMap<String, BTreeMap<String, PlaneSource>>,
+    /// Other materials of this request's modules whose values planes are baked from
+    /// ([`PlaneSource::Material`]), by a name of the host's choosing: a base under this
+    /// request's layer, for example. Each is evaluated over the same receivers, mapping, edges
+    /// and gravity, with its own parameters and seed.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub materials: BTreeMap<String, program::MaterialRequest>,
+}
+
+/// Where the plane bound to an external input comes from.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum PlaneSource {
+    /// An asset holding an encoded plane (`program::Plane::encode_external`) over the
+    /// receiver's atlas.
+    Asset(String),
+    /// A value of one of the request's [`Request::materials`], baked over the receiver in the
+    /// same build: a field (exact, with its filtering estimate) or one of the outputs
+    /// `base_color`, `roughness`, `metalness`, `height`, `emissive` and `opacity`.
+    Material { material: String, value: String },
+}
+impl From<&str> for PlaneSource {
+    fn from(asset: &str) -> Self {
+        Self::Asset(asset.to_owned())
+    }
+}
+impl From<String> for PlaneSource {
+    fn from(asset: String) -> Self {
+        Self::Asset(asset)
+    }
 }
 impl Default for Request {
     fn default() -> Self {
@@ -133,6 +161,7 @@ impl Default for Request {
             profile: Profile::Preview,
             texel_density: None,
             planes: BTreeMap::new(),
+            materials: BTreeMap::new(),
         }
     }
 }

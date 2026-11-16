@@ -35,6 +35,24 @@ impl SampleInputs {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+    /// The names of these inputs as programs spell them, in a fixed order.
+    pub fn names(self) -> Vec<&'static str> {
+        [
+            (Self::UV, "uv"),
+            (Self::SURFACE, "surface"),
+            (Self::OBJECT, "object"),
+            (Self::WORLD, "world"),
+            (Self::NORMAL, "normal"),
+            (Self::GRAVITY, "gravity"),
+            (Self::FOOTPRINT, "footprint"),
+            (Self::UV_FOOTPRINT, "uv_footprint"),
+            (Self::BOUNDS, "bounds"),
+        ]
+        .into_iter()
+        .filter(|(part, _)| self.contains(*part))
+        .map(|(_, name)| name)
+        .collect()
+    }
     /// These inputs without `other`.
     pub const fn without(self, other: Self) -> Self {
         Self(self.0 & !other.0)

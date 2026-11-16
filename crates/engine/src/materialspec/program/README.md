@@ -89,6 +89,20 @@ evaluation, and both evaluators read it at the texel a sample is given with.
   of the texel before it in its row that texel's result; with external planes it never repeats
   the row above (which would depend on where a block of rows starts), and the height one step
   along a chart leg that is no texel's center is read at the texel the step starts from.
+- **Planes from another program.** `Evaluator::fill_row` leaves the selected fields of a row in
+  planes that are complete (a row that cannot be evaluated together fills them one sample at a
+  time), so one program's fields become another's external inputs with their exact values and
+  filtering estimates. A receiver bake uses it for `PlaneSource::Material`: a request lists
+  other materials of its modules (`Request::materials`), and a plane node bakes one of their
+  fields or outputs over the receiver, keyed by what that value reads of that material's
+  parameters, seed and images. A layer over planes of a base bakes the bytes the two written
+  as one program bake, for maps whose relief does not come from a plane: a plane has no value
+  between texels, so heights read from one are flat across a chart's edge. Such bakes are not
+  distributed (a session baking a share would bake the planes again), and the materials planes
+  are baked from read no planes themselves.
+- **What a shader's outputs read.** `Shader::reads` lists, for each output and each live
+  argument, the parameter uniforms, seed, images, edges, features, sample inputs, CPU fields
+  and external planes it reads, and whether it is intrinsic.
 - **GPU preview.** `Program::shader_plan` treats a field that reads an external input like any
   CPU field: it is baked by `Session::bake_fields` (which binds the request's planes) and read
   from a texture, and `CpuField::planes` names the inputs it follows. An `external` used
