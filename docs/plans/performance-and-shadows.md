@@ -129,9 +129,11 @@ The scene view is what authors look at, and it is the slowest path.
   filter taps at runtime; dynamic objects keep the runtime style.
 - **Placement by shadow** stays last.
 
-## Decisions needed
+## Decisions (made by the user, 2026-11-16)
 
-- Should the scene view default to baked maps from the GPU (item 4), with the
-  per-pixel shader only as the first look?
-- Is a deliberate byte change for faster PNG/KTX2 encode acceptable (item 13)?
-- Should the illustration style become the default once its look is approved?
+- The scene view defaults to baked maps from the GPU (item 4); the per-pixel shader
+  is only the first look while the bake completes.
+- A deliberate byte change for faster PNG/KTX2 encode is acceptable (item 13). It
+  must come with a cache and identity version bump, be made once, and be recorded
+  with before/after sizes and timings; pixels must not change.
+- The illustration shadow style becomes the default once its look is approved.
