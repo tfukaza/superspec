@@ -558,6 +558,20 @@ fn build() -> Vec<Operation> {
             op.requires = &["world", "normal", "gravity", "edges"];
             op
         },
+        literal(
+            operation(
+                "external",
+                "mapping",
+                "A value the host supplies for each texel of a receiver under this name: a plane from \
+                 another bake or system, such as a base layer's field or the scene's occlusion. Where no \
+                 plane is supplied, or it holds no value at a texel, the result is the fallback. Every \
+                 use of a name has one type; names are at most 64 letters, digits, '.', '_' or '-'.",
+                "external(\"occlusion\", 1)",
+                each(&NUMERIC, |a| overload(&[Text, a], a)),
+            ),
+            &["planes"],
+            false,
+        ),
         {
             let mut op = literal(
                 operation(

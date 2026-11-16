@@ -167,12 +167,14 @@ struct FieldPlan {
 }
 
 /// The key of a field's plane: the layout whose samples it covers, the program and decoded images,
-/// and the effective values of only the parameters, seed and edges the field reads.
+/// the effective values of only the parameters, seed and edges the field reads, and the content
+/// of the external planes it reads (`planes`: the receiver's bound planes by input name).
 fn field_plane_key(
     program: &Program,
     dependencies: &program::Dependencies,
     request: &Request,
     [layout, program_key, assets]: [&ContentKey; 3],
+    planes: &[(String, ContentKey)],
     field: usize,
 ) -> ContentKey {
     let fingerprint = program
@@ -198,7 +200,123 @@ fn field_plane_key(
         digest.update((part.len() as u64).to_le_bytes());
         digest.update(part);
     }
+    // Fields that read no external input keep the key they always had.
+    for (name, key) in planes {
+        if dependencies.externals.contains(name) {
+            digest.update((name.len() as u64).to_le_bytes());
+            digest.update(name.as_bytes());
+            digest.update(key);
+        }
+    }
     digest.finalize().into()
+}
+
+/// The planes a request binds to the external inputs `program` reads, for each receiver: input
+/// name, and the asset's bytes. Inputs the request binds nothing to read their fallback. A
+/// request that binds none holds nothing here, so builds without planes allocate as they always
+/// did.
+#[derive(Default)]
+struct BoundPlanes(Vec<Vec<(String, Arc<[u8]>)>>);
+
+impl std::ops::Index<usize> for BoundPlanes {
+    type Output = [(String, Arc<[u8]>)];
+    fn index(&self, receiver: usize) -> &Self::Output {
+        self.0.get(receiver).map_or(&[], Vec::as_slice)
+    }
+}
+
+fn bound_planes(
+    program: &Program,
+    request: &Request,
+    receivers: &[super::Receiver],
+    assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+) -> Result<BoundPlanes, String> {
+    let externals = &program.metadata().externals;
+    if externals.is_empty() || request.planes.is_empty() {
+        return Ok(BoundPlanes::default());
+    }
+    receivers
+        .iter()
+        .map(|receiver| {
+            let Some(named) = request.planes.get(&receiver.id) else {
+                return Ok(Vec::new());
+            };
+            externals
+                .iter()
+                .filter_map(|external| Some((&external.name, named.get(&external.name)?)))
+                .map(|(name, asset)| {
+                    let bytes = assets(asset).map_err(|e| format!("{asset}: {e}"))?;
+                    Ok((name.clone(), bytes))
+                })
+                .collect()
+        })
+        .collect::<Result<_, String>>()
+        .map(BoundPlanes)
+}
+
+/// The node of the plane bound to external input `name` of receiver `index`: its bytes, for the
+/// atlas it must cover.
+fn plane_node(index: usize, name: &str, bytes: &Arc<[u8]>) -> Node {
+    let mut inputs = name.as_bytes().to_vec();
+    inputs.push(0);
+    inputs.extend(image_digest(bytes));
+    node(
+        format!("plane/{index}/{name}"),
+        "material-plane-v1",
+        inputs,
+        vec![
+            dependency("mapping", format!("layout/{index}")),
+            dependency("program", "program"),
+        ],
+    )
+}
+
+/// A `plane/` node's artifact: the decoded plane, checked against the atlas it covers and the
+/// type the program reads it as.
+fn decoded_plane(
+    program: &Program,
+    name: &str,
+    bytes: &[u8],
+    atlas: &Atlas,
+) -> Result<(Artifact, usize), String> {
+    let plane = program::Plane::decode_external(name, bytes, atlas.width, atlas.height)?;
+    let wanted = program
+        .metadata()
+        .externals
+        .iter()
+        .find(|external| external.name == name)
+        .map(|external| match external.kind {
+            program::Type::Scalar => 1,
+            program::Type::Vec2 => 2,
+            _ => 3,
+        });
+    if wanted != Some(plane.components()) {
+        return Err(format!(
+            "External plane '{name}' holds {} components where the program reads {}.",
+            plane.components(),
+            wanted.unwrap_or(0)
+        ));
+    }
+    let bytes = plane.bytes();
+    Ok((
+        Artifact::Material(Arc::new(BakedReceiver::Plane(plane))),
+        bytes,
+    ))
+}
+
+/// The external planes among a node's dependencies (roles `plane/<name>`).
+fn external_planes(dependencies: &BTreeMap<String, Arc<Artifact>>) -> Vec<&program::Plane> {
+    dependencies
+        .iter()
+        .filter(|(role, _)| role.starts_with("plane/"))
+        .filter_map(|(_, artifact)| match artifact.as_ref() {
+            Artifact::Material(baked) => match baked.as_ref() {
+                BakedReceiver::Plane(plane) => Some(plane),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// An encoded map and its content identity.
@@ -705,11 +823,30 @@ impl Session {
         let dependency_table = compiled.dependency_table();
         let live_fields = live_field_names(&compiled, request.inspection.as_deref());
         let compact = request.profile == super::Profile::Production;
+        // Planes bound to the program's external inputs enter the graph by content: a map is
+        // keyed by the planes of only the inputs its outputs read.
+        let planes = bound_planes(&compiled, request, &receivers, assets).map_err(&fail)?;
+        let plane_dependencies = |i: usize, read: Option<&program::Dependencies>| {
+            planes[i]
+                .iter()
+                .filter(|(name, _)| read.is_none_or(|read| read.externals.contains(name)))
+                .map(|(name, _)| dependency(&format!("plane/{name}"), format!("plane/{i}/{name}")))
+                .collect::<Vec<_>>()
+        };
         let mut targets = vec![];
         for (i, receiver) in receivers.iter().enumerate() {
             let layout = format!("layout/{i}");
             let bake = format!("bake/{i}");
             nodes.push(layout_node(i, receiver, request));
+            for (name, bytes) in &planes[i] {
+                nodes.push(plane_node(i, name, bytes));
+            }
+            let mut bake_dependencies = vec![
+                dependency("mapping", layout.clone()),
+                dependency("program", "program"),
+                dependency("inputs", "inputs"),
+            ];
+            bake_dependencies.extend(plane_dependencies(i, None));
             nodes.push(node(
                 bake.clone(),
                 "material-receiver-v5",
@@ -718,11 +855,7 @@ impl Session {
                     &request.inspection,
                     request.profile == super::Profile::Production,
                 )),
-                vec![
-                    dependency("mapping", layout.clone()),
-                    dependency("program", "program"),
-                    dependency("inputs", "inputs"),
-                ],
+                bake_dependencies,
             ));
             targets.push(layout.clone());
             if inspecting {
@@ -749,28 +882,36 @@ impl Session {
                     Err(error) => inputs_identity.extend(error.to_string().bytes()),
                 }
                 let id = format!("bake/{i}/{}", group.name());
+                let mut group_inputs = vec![
+                    dependency("mapping", layout.clone()),
+                    dependency("program", "program"),
+                    dependency("assets", "assets"),
+                ];
+                group_inputs.extend(plane_dependencies(i, Some(&dependencies)));
                 nodes.push(node(
                     id.clone(),
                     "material-group-v2",
                     inputs_identity,
-                    vec![
-                        dependency("mapping", layout.clone()),
-                        dependency("program", "program"),
-                        dependency("assets", "assets"),
-                    ],
+                    group_inputs,
                 ));
                 targets.push(id);
             }
         }
+        let plane_ids = |i: usize| {
+            planes[i]
+                .iter()
+                .map(move |(name, _)| format!("plane/{i}/{name}"))
+        };
         let dependencies_only = share.is_some().then(|| {
-            // A share needs the program, inputs and layouts, but never bakes or caches a receiver.
+            // A share needs the program, inputs, layouts and bound planes, but never bakes or
+            // caches a receiver.
             let nodes: Vec<Node> = nodes
                 .iter()
                 .filter(|node| !node.id.starts_with("bake/"))
                 .cloned()
                 .collect();
             let targets = (0..receivers.len())
-                .map(|i| format!("layout/{i}"))
+                .flat_map(|i| std::iter::once(format!("layout/{i}")).chain(plane_ids(i)))
                 .chain(["program".to_owned(), "inputs".to_owned()])
                 .collect();
             Plan::new(nodes, targets)
@@ -822,11 +963,22 @@ impl Session {
                 for key in keys.iter().filter_map(|key| parse_key(key)) {
                     self.distribution.report(key);
                 }
+                let plane_assets: std::collections::BTreeSet<String> = receivers
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, receiver)| {
+                        let named = request.planes.get(&receiver.id);
+                        planes[i]
+                            .iter()
+                            .filter_map(move |(name, _)| named?.get(name).cloned())
+                    })
+                    .collect();
                 self.distribution.pending.push(PendingBake {
                     request: request.clone(),
                     keys,
                     images: image_bytes.keys().cloned().collect(),
                     groups,
+                    planes: plane_assets.into_iter().collect(),
                 });
                 // A host that never takes them does not grow the list without bound.
                 let excess = self.distribution.pending.len().saturating_sub(MAX_PENDING);
@@ -882,6 +1034,13 @@ impl Session {
                 }
                 candidates.retain(|field| steps.get(*field).is_some_and(|s| *s >= MIN_FIELD_STEPS));
                 let layout_key = plan.key(&format!("layout/{i}")).expect("planned layout");
+                let plane_keys: Vec<(String, ContentKey)> = planes[i]
+                    .iter()
+                    .map(|(name, _)| {
+                        let key = plan.key(&format!("plane/{i}/{name}"));
+                        (name.clone(), key.expect("planned plane"))
+                    })
+                    .collect();
                 let mut chosen = FieldPlan::default();
                 let mut missing = Vec::new();
                 for field in candidates {
@@ -890,6 +1049,7 @@ impl Session {
                         &dependency_table.fields[field_names[field]],
                         request,
                         [&layout_key, &program_key, &assets_key],
+                        &plane_keys,
                         field,
                     );
                     match self.runtime.lookup(FIELD_PLANES, &key) {
@@ -931,6 +1091,9 @@ impl Session {
         let mut evaluation_error = None;
         // Maps baked alongside the one a producer was asked for, until their own producers run.
         let mut baked_groups: BTreeMap<(usize, Group), Arc<BakedReceiver>> = BTreeMap::new();
+        // The maps of each receiver still to bake: a producer takes the ones it bakes off the
+        // list, so no later producer bakes them again.
+        let mut dirty = dirty;
         let mips = self.mips.clone();
         let complete = self
             .runtime
@@ -984,6 +1147,21 @@ impl Session {
                         receiver_layout(&receivers[index], request)
                     }
                     "assets" => decoded_assets(&image_bytes, dependencies, &mips),
+                    id if id.starts_with("plane/") => {
+                        let (index, name) = id["plane/".len()..]
+                            .split_once('/')
+                            .expect("a planned plane");
+                        let index = index.parse::<usize>().unwrap();
+                        let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
+                            unreachable!()
+                        };
+                        let bytes = planes[index]
+                            .iter()
+                            .find(|(bound, _)| bound == name)
+                            .map(|(_, bytes)| bytes)
+                            .expect("a bound plane");
+                        decoded_plane(&compiled, name, bytes, atlas)
+                    }
                     id if id.starts_with("bake/") => {
                         let Artifact::Program(program) = dependencies["program"].as_ref() else {
                             unreachable!()
@@ -1004,7 +1182,35 @@ impl Session {
                             return Ok((Artifact::Material(done), bytes));
                         }
                         // Evaluate every map this build needs of the receiver in one pass, so
-                        // outputs the maps share are computed once.
+                        // outputs the maps share are computed once. A producer holds the planes
+                        // of the external inputs its own map reads, so maps that read others
+                        // are left to their own producers.
+                        let externals = external_planes(dependencies);
+                        // Rows evaluated elsewhere were evaluated with every plane.
+                        let whole = planes[index].is_empty();
+                        let evaluable = dirty[index]
+                            .iter()
+                            .filter(|other| {
+                                whole || {
+                                    let read = |group: Group| {
+                                        let read = group_dependencies(
+                                            &dependency_table,
+                                            group,
+                                            &live_fields,
+                                        );
+                                        planes[index]
+                                            .iter()
+                                            .map(|(name, _)| name.as_str())
+                                            .filter(|name| read.externals.contains(*name))
+                                            .collect::<Vec<_>>()
+                                    };
+                                    let held = read(group);
+                                    read(*other).iter().all(|name| held.contains(name))
+                                }
+                            })
+                            .fold(Groups::NONE, Groups::with)
+                            .with(group);
+                        // Rows evaluated elsewhere were evaluated with every plane.
                         let wanted = dirty[index].with(group);
                         let inputs = if inspecting {
                             let Artifact::Inputs(inputs) = dependencies["inputs"].as_ref() else {
@@ -1031,9 +1237,10 @@ impl Session {
                             request.inspection.as_deref(),
                             request.profile.threads(),
                             compact,
-                            wanted,
+                            [wanted, evaluable],
                             provided.remove(&index),
                             field_plans.get(index),
+                            &externals,
                             &mut capture_budget,
                             stopped,
                         ) {
@@ -1041,6 +1248,7 @@ impl Session {
                                 captured_planes.extend(planes);
                                 let mut requested = None;
                                 for (made, value) in results {
+                                    dirty[index] = dirty[index].without(made);
                                     let value = Arc::new(value);
                                     if made == group {
                                         requested = Some(value);
@@ -1101,6 +1309,15 @@ impl Session {
                     unreachable!()
                 };
                 let groups = share.groups[position];
+                let externals: Vec<&program::Plane> = plane_ids(i)
+                    .filter_map(|id| match complete[&id].as_ref() {
+                        Artifact::Material(baked) => match baked.as_ref() {
+                            BakedReceiver::Plane(plane) => Some(plane),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect();
                 let (total, rows) = bake_rows(
                     program,
                     inputs,
@@ -1108,6 +1325,7 @@ impl Session {
                     request.inspection.as_deref(),
                     (share.index, share.count),
                     groups,
+                    &externals,
                     cancelled,
                 )
                 .map_err(|error| vec![error])?;
@@ -1278,6 +1496,10 @@ pub struct PendingBake {
     pub images: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<u8>,
+    /// Assets holding the planes the request binds to external inputs the program reads; a
+    /// session that bakes a share needs them like the images.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planes: Vec<String>,
 }
 
 fn format_key(key: &ContentKey) -> String {
@@ -1672,21 +1894,27 @@ fn inspected_fields(program: &Program, inspect: Option<&str>) -> program::FieldS
         .unwrap_or_default()
 }
 
-/// The height output at each sample, evaluated together where the program allows.
+/// The height output at each sample, evaluated together where the program allows. `externals`
+/// are read at `texels`, one per sample (both empty for a bake without external planes).
 fn heights_of(
     evaluator: &mut program::Evaluator<'_>,
     samples: &[program::Sample],
+    texels: &[usize],
+    externals: &[&program::Plane],
 ) -> Result<Vec<f64>, Diagnostic> {
     if samples.is_empty() {
         return Ok(Vec::new());
     }
     let mut unused = Vec::new();
     Ok(evaluator
-        .evaluate_row(
+        .evaluate_row_with_planes(
             samples,
+            texels,
             program::OutputSet::HEIGHT,
             &program::FieldSelection::default(),
             &mut unused,
+            externals,
+            &mut [],
         )
         .map_err(Diagnostic::from)?
         .into_iter()
@@ -1694,11 +1922,27 @@ fn heights_of(
         .collect())
 }
 
-/// Field planes a block of rows reads and fills (see [FieldPlan]); empty for bakes that keep none.
+/// Planes a block of rows reads and fills: the planes of external inputs, and the field planes
+/// bakes keep (see [FieldPlan]); empty for bakes that read and keep none.
 #[derive(Default)]
 struct FieldAccess<'a> {
-    injected: &'a [&'a program::FieldPlane],
+    /// Every plane the rows' samples read: kept fields and external inputs.
+    injected: &'a [&'a program::Plane],
+    /// The external inputs among `injected`. Height samples for the relief read only these, at
+    /// the texel they are taken for.
+    externals: &'a [&'a program::Plane],
     capture: &'a mut [program::FieldPlane],
+}
+
+impl<'a> FieldAccess<'a> {
+    /// Access to the planes of external inputs alone.
+    fn reading(externals: &'a [&'a program::Plane]) -> Self {
+        Self {
+            injected: externals,
+            externals,
+            capture: &mut [],
+        }
+    }
 }
 
 /// Evaluates consecutive atlas rows for the groups in `groups`: the outputs those maps read, the
@@ -1739,7 +1983,14 @@ fn bake_block(
     let mut heights: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
     // Height slopes of each row's texels, for texels that repeat a neighbor's sample.
     let mut slopes: Vec<Vec<[f64; 2]>> = Vec::with_capacity(rows.len());
-    let above = |row: usize| row > 0 && rows[row - 1] == (rows[row].0, rows[row].1.wrapping_sub(1));
+    // A sample that reads an external plane reads it at a texel, so equal sample points no longer
+    // mean equal results. With such planes a texel repeats only the texel before it in its row
+    // (the plane's own value there is not read) and never the row above, which would depend on
+    // where blocks of rows begin.
+    let reads_planes = !fields.externals.is_empty();
+    let above = |row: usize| {
+        !reads_planes && row > 0 && rows[row - 1] == (rows[row].0, rows[row].1.wrapping_sub(1))
+    };
     for (row_number, &(chart_index, y)) in rows.iter().enumerate() {
         let chart = &atlas.charts[chart_index];
         let cell = chart.width;
@@ -1908,6 +2159,9 @@ fn bake_block(
         // The heights one step along each leg that no adjacent texel already has, for the texels
         // that need new slopes, are evaluated together; the texels below take them in order.
         let mut direct = Vec::new();
+        // A plane has no value between texels: a point one step along a leg that is no texel's
+        // center reads external planes at the texel the step starts from.
+        let mut direct_texels = Vec::new();
         // The adjacent texel, if any, at each of those two points, for each such texel in order.
         let mut neighbors: Vec<[Option<[usize; 2]>; 2]> = Vec::new();
         // The sample of a texel of this chart: this block's rows already hold theirs.
@@ -1945,13 +2199,18 @@ fn bake_block(
                                 .sample(triangle, target[0], target[1])
                                 .map_err(&failure)?,
                         );
+                        if reads_planes {
+                            direct_texels.push((chart.y + y) * atlas.width + chart.x + x);
+                        }
                     }
                 }
                 neighbors.push(found);
             }
         }
         let mut neighbors = neighbors.into_iter();
-        let mut direct_heights = heights_of(evaluator, &direct)?.into_iter();
+        let externals = fields.externals;
+        let mut direct_heights =
+            heights_of(evaluator, &direct, &direct_texels, externals)?.into_iter();
         let mut previous: Option<[f64; 3]> = None;
         let mut row_slopes: Vec<[f64; 2]> = Vec::with_capacity(row_centers.len());
         for (x, center) in row_centers.iter().enumerate() {
@@ -1969,6 +2228,7 @@ fn bake_block(
                         let mut row_heights: Vec<f64> = Vec::with_capacity(chart.width);
                         let mut before = None;
                         let mut points = Vec::new();
+                        let mut point_texels = Vec::new();
                         let mut fresh = Vec::new();
                         for other in 0..chart.width {
                             let (triangle, u, v) = atlas.texel(chart, other, ny);
@@ -1977,10 +2237,15 @@ fn bake_block(
                             fresh.push(new);
                             if new {
                                 points.push(atlas.sample(triangle, u, v).map_err(&failure)?);
+                                if reads_planes {
+                                    point_texels
+                                        .push((chart.y + ny) * atlas.width + chart.x + other);
+                                }
                             }
                             before = Some(key);
                         }
-                        let mut computed = heights_of(evaluator, &points)?.into_iter();
+                        let mut computed =
+                            heights_of(evaluator, &points, &point_texels, externals)?.into_iter();
                         for (other, new) in fresh.into_iter().enumerate() {
                             let height = if new {
                                 computed.next().expect("a height for each new point")
@@ -2156,6 +2421,7 @@ fn bake_rows(
     inspect: Option<&str>,
     share: (usize, usize),
     groups: Groups,
+    externals: &[&program::Plane],
     cancelled: &dyn Fn() -> bool,
 ) -> Result<(usize, Vec<(usize, Row)>), Diagnostic> {
     let entry = program.metadata().entry.as_str();
@@ -2191,7 +2457,7 @@ fn bake_rows(
             &live_selection,
             &inspected,
             groups,
-            &mut FieldAccess::default(),
+            &mut FieldAccess::reading(externals),
             entry,
         )?;
         baked.extend(
@@ -2249,9 +2515,10 @@ fn bake_groups(
     inspect: Option<&str>,
     threads: usize,
     compact: bool,
-    wanted: Groups,
+    [wanted, evaluable]: [Groups; 2],
     provided: Option<(Groups, Vec<Row>)>,
     field_plan: Option<&FieldPlan>,
+    externals: &[&program::Plane],
     capture_budget: &mut usize,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<
@@ -2261,8 +2528,6 @@ fn bake_groups(
     ),
     Diagnostic,
 > {
-    #[cfg(test)]
-    BAKED.with(|baked| baked.borrow_mut().push(wanted));
     let failure = |message: String| Diagnostic::message(&program.metadata().entry, message);
     let pixels = atlas.width * atlas.height;
     if pixels > 4 * 1024 * 1024 {
@@ -2271,12 +2536,52 @@ fn bake_groups(
         ));
     }
     let live_fields = live_field_names(program, inspect);
-    // The per-texel data the maps are baked from. Without live operations there is nothing to
+    // The per-texel data maps are baked from. Without live operations there is nothing to
     // evaluate for the live group.
-    let mut data = wanted.rows();
-    if live_fields.is_empty() {
-        data = data.without(Group::Live);
-    }
+    let data_of = |groups: Groups| {
+        if live_fields.is_empty() {
+            groups.rows().without(Group::Live)
+        } else {
+            groups.rows()
+        }
+    };
+    // Rows evaluated elsewhere are merged exactly like rows evaluated here; a set that does not
+    // fit this atlas or lacks data is ignored and the rows are evaluated here instead.
+    let provided = provided.filter(|(have, provided)| {
+        let data = data_of(wanted);
+        let has = |group: Group| data.contains(group);
+        // The width of every chart row, in the order rows are merged (see `atlas_rows`).
+        let cells = || {
+            atlas
+                .charts
+                .iter()
+                .flat_map(|chart| std::iter::repeat_n(chart.width, chart.height))
+        };
+        have.contains_all(data)
+            && provided.len() == cells().count()
+            && provided.iter().zip(cells()).all(|(row, cell)| {
+                row.cell == cell
+                    && (!has(Group::Color) || row.color.len() == cell * 4)
+                    && (!has(Group::Normal) || row.normal.len() == cell * 4)
+                    && (!has(Group::Properties)
+                        || (row.roughness.len() == cell && row.metalness.len() == cell))
+                    && (!has(Group::Live)
+                        || (row.live.len() == live_fields.len()
+                            && row.live.iter().all(|values| values.len() == cell)))
+                    && (!has(Group::Emissive) || !row.emits || row.emitted.len() == cell)
+            })
+    });
+    // Rows evaluated here read only the planes this call was given (`externals`), so they are
+    // evaluated for the maps those planes serve; `evaluable` is every wanted map unless the
+    // request binds planes that only some maps read.
+    let wanted = if provided.is_some() {
+        wanted
+    } else {
+        evaluable
+    };
+    #[cfg(test)]
+    BAKED.with(|baked| baked.borrow_mut().push(wanted));
+    let data = data_of(wanted);
     let live_selection = if data.contains(Group::Live) {
         program.select_fields(&live_fields).map_err(&failure)?
     } else {
@@ -2309,26 +2614,7 @@ fn bake_groups(
     let mut emission_strength = 1f64;
     let mut live_values = vec![vec![f64::NAN; pixels]; live_count];
     let rows = atlas_rows(atlas);
-    // Rows evaluated elsewhere are merged exactly like rows evaluated here; a set that does not
-    // fit this atlas or lacks data is ignored and the rows are evaluated here instead.
-    let mut provided = provided
-        .filter(|(have, provided)| {
-            have.contains_all(data)
-                && provided.len() == rows.len()
-                && provided.iter().zip(&rows).all(|(row, &(chart, _))| {
-                    let cell = atlas.charts[chart].width;
-                    row.cell == cell
-                        && (!has(Group::Color) || row.color.len() == cell * 4)
-                        && (!has(Group::Normal) || row.normal.len() == cell * 4)
-                        && (!has(Group::Properties)
-                            || (row.roughness.len() == cell && row.metalness.len() == cell))
-                        && (!has(Group::Live)
-                            || (row.live.len() == live_count
-                                && row.live.iter().all(|values| values.len() == cell)))
-                        && (!has(Group::Emissive) || !row.emits || row.emitted.len() == cell)
-                })
-        })
-        .map(|(_, rows)| rows.into_iter());
+    let mut provided = provided.map(|(_, rows)| rows.into_iter());
     let features = if provided.is_some() || data.is_empty() {
         Vec::new()
     } else {
@@ -2347,8 +2633,8 @@ fn bake_groups(
         None
     };
     // Planes of fields kept from earlier bakes are read, and planes of fields this bake computes are
-    // filled, by the serial evaluator only.
-    let injected_planes: Vec<&program::FieldPlane> = field_plan
+    // filled, by the serial evaluator only. Planes of external inputs are read by every evaluator.
+    let mut injected_planes: Vec<&program::Plane> = field_plan
         .map(|plan| {
             plan.injected
                 .iter()
@@ -2359,6 +2645,8 @@ fn bake_groups(
                 .collect()
         })
         .unwrap_or_default();
+    let kept_planes = injected_planes.len();
+    injected_planes.extend(externals);
     // Planes are sized by this atlas. As many are filled as the run's budget still allows, and
     // none when a plane could not be kept or the rows cannot be evaluated together (only that
     // path fills planes).
@@ -2389,11 +2677,9 @@ fn bake_groups(
         }
     }
     #[cfg(test)]
-    PLANES.with(|planes| {
-        planes
-            .borrow_mut()
-            .push((injected_planes.len(), captured.len()))
-    });
+    PLANES.with(|planes| planes.borrow_mut().push((kept_planes, captured.len())));
+    #[cfg(not(test))]
+    let _ = kept_planes;
     // Rows are evaluated independently and written back in order, so threads never change bytes.
     let evaluated: &[(usize, usize)] = if data.is_empty() { &[] } else { &rows };
     for batch in evaluated.chunks(threads * BLOCK_ROWS) {
@@ -2418,6 +2704,7 @@ fn bake_groups(
                 data,
                 &mut FieldAccess {
                     injected: &injected_planes,
+                    externals,
                     capture: &mut captured,
                 },
                 entry,
@@ -2447,7 +2734,7 @@ fn bake_groups(
                                 live_selection,
                                 inspected,
                                 data,
-                                &mut FieldAccess::default(),
+                                &mut FieldAccess::reading(externals),
                                 entry,
                             ) {
                                 Ok(rows) => rows.into_iter().map(Ok).collect(),
@@ -2648,11 +2935,17 @@ impl Session {
         // plans, under the same keys: whichever runs first decodes and lays out for both.
         let (mut nodes, image_bytes) = source_nodes(&program, request, assets).map_err(&fail)?;
         nodes.push(layout_node(0, &receiver, request));
-        let plan = Plan::new(
-            nodes,
-            vec!["program".into(), "assets".into(), "layout/0".into()],
-        )
-        .map_err(|e| fail(e.to_string()))?;
+        // Planes bound to the program's external inputs, as a build of the request binds them.
+        let bound = bound_planes(&program, request, std::slice::from_ref(&receiver), assets)
+            .map_err(&fail)?;
+        let planes = &bound[0];
+        let mut targets: Vec<String> = vec!["program".into(), "assets".into(), "layout/0".into()];
+        for (name, bytes) in planes {
+            let node = plane_node(0, name, bytes);
+            targets.push(node.id.clone());
+            nodes.push(node);
+        }
+        let plan = Plan::new(nodes, targets).map_err(|e| fail(e.to_string()))?;
         let mips = self.mips.clone();
         let complete = self
             .runtime
@@ -2667,10 +2960,41 @@ impl Session {
                     }
                     "assets" => decoded_assets(&image_bytes, dependencies, &mips),
                     "layout/0" => receiver_layout(&receiver, request),
+                    id if id.starts_with("plane/0/") => {
+                        let name = &id["plane/0/".len()..];
+                        let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
+                            unreachable!()
+                        };
+                        let bytes = planes
+                            .iter()
+                            .find(|(bound, _)| bound == name)
+                            .map(|(_, bytes)| bytes)
+                            .expect("a bound plane");
+                        decoded_plane(&program, name, bytes, atlas)
+                    }
                     _ => Ok((Artifact::Source, node.inputs.len())),
                 },
             )
             .map_err(&fail)?;
+        let plane_keys: Vec<(String, ContentKey)> = planes
+            .iter()
+            .map(|(name, _)| {
+                let key = plan.key(&format!("plane/0/{name}"));
+                (name.clone(), key.expect("planned plane"))
+            })
+            .collect();
+        let externals: Vec<&program::Plane> = planes
+            .iter()
+            .filter_map(
+                |(name, _)| match complete[&format!("plane/0/{name}")].as_ref() {
+                    Artifact::Material(baked) => match baked.as_ref() {
+                        BakedReceiver::Plane(plane) => Some(plane),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+            )
+            .collect();
         let Artifact::Inputs(decoded) = complete["assets"].as_ref() else {
             unreachable!()
         };
@@ -2717,6 +3041,7 @@ impl Session {
                     ["layout/0", "program", "assets"]
                         .map(|id| plan.key(id).expect("a planned node"))
                         .each_ref(),
+                    &plane_keys,
                     field,
                 );
                 let mut digest = Sha256::new();
@@ -2773,6 +3098,8 @@ impl Session {
                     let mut before: Option<(usize, u64, u64)> = None;
                     let mut fresh = Vec::with_capacity(chart.width);
                     let mut samples = Vec::new();
+                    // Each sample's texel, for the planes of external inputs (none without them).
+                    let mut texels = Vec::new();
                     let mut sample_error = None;
                     for x in 0..chart.width {
                         let (triangle, u, v) = atlas.texel(chart, x, y);
@@ -2782,7 +3109,12 @@ impl Session {
                         fresh.push(new);
                         if new {
                             match atlas.sample(triangle, u, v) {
-                                Ok(sample) => samples.push(sample),
+                                Ok(sample) => {
+                                    samples.push(sample);
+                                    if !externals.is_empty() {
+                                        texels.push((chart.y + y) * atlas.width + chart.x + x);
+                                    }
+                                }
                                 Err(message) => {
                                     sample_error = Some(message);
                                     break;
@@ -2792,7 +3124,15 @@ impl Session {
                     }
                     // Samples before one the atlas cannot place fail first, as in texel order.
                     evaluator
-                        .evaluate_row(&samples, program::OutputSet::NONE, &selection, &mut values)
+                        .evaluate_row_with_planes(
+                            &samples,
+                            &texels,
+                            program::OutputSet::NONE,
+                            &selection,
+                            &mut values,
+                            &externals,
+                            &mut [],
+                        )
                         .map_err(|e| vec![Diagnostic::from(e)])?;
                     if let Some(message) = sample_error {
                         return Err(fail(message));
@@ -3628,3 +3968,7 @@ output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
         assert_same(&output, &fresh(&cancelled), "build after field bakes");
     }
 }
+
+#[cfg(test)]
+#[path = "material_planes_tests.rs"]
+mod plane_tests;

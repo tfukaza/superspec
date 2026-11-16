@@ -13,14 +13,15 @@ pub use glsl::{CpuField, Shader};
 pub use images::MipCache;
 mod memory;
 mod numeric;
+mod planes;
 mod syntax;
 mod ts;
 pub use deps::{Dependencies, DependencyTable, SampleInputs};
-pub use lanes::FieldPlane;
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{
     COPLANAR_DEGREES, MAX_FEATURES, bend_shaded, orient_relief, receiver_features, receiver_seams,
 };
+pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
 pub use ts::{
     EditFailure, EditOp, Edited, Inspection, Patch, Span, apply as apply_edit,
     inspect as inspect_recipe,
@@ -126,6 +127,18 @@ pub struct Metadata {
     /// Live renderer operations declared by a TypeScript recipe. The evaluator never runs them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub live: Vec<LiveOperation>,
+    /// External inputs the program reads with `external(name, fallback)`, by name. A host may
+    /// supply each as a [`Plane`] over a receiver's texels.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub externals: Vec<External>,
+}
+
+/// A named per-texel input a host may supply; see [`Metadata::externals`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct External {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: Type,
 }
 
 /// A renderer operation recorded in the material with the fields that feed it.
@@ -399,10 +412,45 @@ impl<'a> Evaluator<'a> {
     ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
         self.evaluate_row_with_planes(samples, &[], outputs, selection, values, &[], &mut [])
     }
-    /// [`Self::evaluate_row`] that reads the fields of `injected` planes instead of computing
-    /// them where a plane has them, and records the fields of `capture` planes it computes.
-    /// `texels` gives each sample's index into the planes. Planes only change what is computed:
-    /// every result equals the one without them, for planes of the same samples and inputs.
+    /// [`Self::evaluate_outputs`] of a sample that stands for `texel` of `planes`: `external`
+    /// reads its plane there, and a field whose plane holds the texel is read instead of
+    /// computed (see [`Plane`]). Steps are charged exactly as [`Self::evaluate_row_with_planes`]
+    /// charges the same sample, so both fail or finish alike.
+    pub fn evaluate_outputs_at(
+        &mut self,
+        sample: &Sample,
+        texel: usize,
+        planes: &[&Plane],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut [FieldValue],
+    ) -> Result<Outputs, ProgramDiagnostic> {
+        let kept;
+        let planes = match self.honored(planes) {
+            Some(externals) => {
+                kept = externals;
+                &kept[..]
+            }
+            None => planes,
+        };
+        self.outputs_at(
+            sample,
+            texel,
+            planes,
+            eval::Want::Selected(selection, values),
+            outputs,
+        )
+    }
+    /// [`Self::evaluate_row`] with planes (see [`Plane`]): `external` reads the plane bound to
+    /// its name, a field whose `injected` plane holds a sample's texel is read instead of
+    /// computed, and the fields of `capture` planes that are computed are recorded. `texels`
+    /// gives each sample's index into the planes; planes need one for every sample. Field planes
+    /// only change what is computed: every result equals the one without them, for planes of the
+    /// same samples and inputs. They serve only programs whose cost is bounded whatever their
+    /// queries visit ([`Self::rows_evaluate_together`]), because a kept plane spares a sample its
+    /// field's steps and a limit must not depend on what was kept. External planes are inputs
+    /// and are always read.
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate_row_with_planes(
         &mut self,
         samples: &[Sample],
@@ -410,25 +458,53 @@ impl<'a> Evaluator<'a> {
         outputs: OutputSet,
         selection: &FieldSelection,
         values: &mut Vec<FieldValue>,
-        injected: &[&FieldPlane],
+        injected: &[&Plane],
         capture: &mut [FieldPlane],
     ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
+        if !(injected.is_empty() && capture.is_empty()) && texels.len() != samples.len() {
+            return Err(self.program.diagnostic(
+                "MS_INPUT",
+                "Planes need a texel for every sample.",
+                &syntax::Mark::root(&self.program.metadata.entry),
+            ));
+        }
+        let kept;
+        let injected = match self.honored(injected) {
+            Some(externals) => {
+                kept = externals;
+                &kept[..]
+            }
+            None => injected,
+        };
         let slots = selection.len();
-        if let Some(done) =
-            self.together(samples, texels, outputs, selection, values, injected, capture)
-        {
+        if let Some(done) = self.together(
+            samples, texels, outputs, selection, values, injected, capture,
+        ) {
             return Ok(done);
         }
         let mut results = Vec::with_capacity(samples.len());
         for (i, sample) in samples.iter().enumerate() {
-            results.push(self.evaluate_outputs(
+            results.push(self.outputs_at(
                 sample,
+                texels.get(i).copied().unwrap_or(usize::MAX),
+                injected,
+                eval::Want::Selected(selection, &mut values[i * slots..(i + 1) * slots]),
                 outputs,
-                selection,
-                &mut values[i * slots..(i + 1) * slots],
             )?);
         }
         Ok(results)
+    }
+    /// The planes of `planes` an evaluation reads when it may not read them all: without the
+    /// field planes, for a program they do not serve (see [`Self::evaluate_row_with_planes`]).
+    fn honored<'p>(&self, planes: &[&'p Plane]) -> Option<Vec<&'p Plane>> {
+        let kept = planes.iter().any(|plane| plane.field().is_some());
+        (kept && !self.rows_evaluate_together()).then(|| {
+            planes
+                .iter()
+                .copied()
+                .filter(|plane| plane.field().is_none())
+                .collect()
+        })
     }
     /// The part of [`Self::evaluate_row`] that evaluates the samples together: `None` where it
     /// declines (see there), with `values` sized for the samples either way.
@@ -450,7 +526,7 @@ impl<'a> Evaluator<'a> {
         outputs: OutputSet,
         selection: &FieldSelection,
         values: &mut Vec<FieldValue>,
-        injected: &[&FieldPlane],
+        injected: &[&Plane],
         capture: &mut [FieldPlane],
     ) -> Option<Vec<Outputs>> {
         values.clear();
@@ -508,6 +584,16 @@ impl<'a> Evaluator<'a> {
         want: eval::Want<'_>,
         outputs: OutputSet,
     ) -> Result<Outputs, ProgramDiagnostic> {
+        self.outputs_at(sample, usize::MAX, &[], want, outputs)
+    }
+    fn outputs_at(
+        &mut self,
+        sample: &Sample,
+        texel: usize,
+        planes: &[&Plane],
+        want: eval::Want<'_>,
+        outputs: OutputSet,
+    ) -> Result<Outputs, ProgramDiagnostic> {
         eval::evaluate_wanted(
             self.program,
             &self.program.compiled,
@@ -520,6 +606,8 @@ impl<'a> Evaluator<'a> {
             &mut self.scratch,
             want,
             outputs,
+            planes,
+            texel,
         )
     }
 }

@@ -140,6 +140,8 @@ pub(super) enum Builtin {
     SampleColor,
     SampleData,
     SampleAlpha,
+    /// A named per-texel input the host supplies as a plane, with a fallback.
+    External,
     Runoff,
     CreaseDistance,
     CreaseNormal,
@@ -195,6 +197,7 @@ impl Builtin {
             "sample_color" => Self::SampleColor,
             "sample_data" => Self::SampleData,
             "sample_alpha" => Self::SampleAlpha,
+            "external" => Self::External,
             "runoff" => Self::Runoff,
             "crease_distance" => Self::CreaseDistance,
             "crease_normal" => Self::CreaseNormal,

@@ -104,6 +104,13 @@ pub struct Request {
     /// `resolution`; receivers that reach it in a smaller texture get the smaller texture.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texel_density: Option<f64>,
+    /// Planes supplied for the program's external inputs (`external(name, fallback)`), by
+    /// receiver id and then input name: each names an asset holding an encoded plane
+    /// (`program::Plane::encode_external`) over that receiver's atlas. The swatch a request
+    /// without receivers bakes has the id `studio/swatch`. Names the program does not read are
+    /// not fetched.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub planes: BTreeMap<String, BTreeMap<String, String>>,
 }
 impl Default for Request {
     fn default() -> Self {
@@ -125,6 +132,7 @@ impl Default for Request {
             slot_overrides: BTreeMap::new(),
             profile: Profile::Preview,
             texel_density: None,
+            planes: BTreeMap::new(),
         }
     }
 }

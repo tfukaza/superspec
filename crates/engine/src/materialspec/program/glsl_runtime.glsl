@@ -6,6 +6,9 @@ uniform int ms_feature_count;
 uniform vec3 ms_gravity;
 uniform vec3 ms_bounds_min;
 uniform vec3 ms_bounds_max;
+// Always zero: no host sets it. Loops over noise slots add it to their bounds so that a compiler cannot count their
+// iterations and unroll them into one copy of the noise per slot, which is what makes large programs slow to compile.
+uniform int ms_loop;
 vec3 ms_world;
 vec3 ms_object;
 vec3 ms_normal;

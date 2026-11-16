@@ -417,11 +417,109 @@ fn write_parity_fixture() {
             "packetSha256": hashes,
         }));
     }
+    // Planes bound to external inputs: read per texel by the serial, threaded and relief paths.
+    // Their bytes are generated here, so the fixture carries them (`inlineAssets`, hex).
+    let mut inline_assets = serde_json::Map::new();
+    {
+        use superspec_engine::materialspec::program::Plane;
+        let case = &cases()[3];
+        let source = "material 1;
+param tint: scalar = 0.6 range(0, 1);
+let shade = external(\"shade\", 0.5);
+let grain = noise(surface * 14, seed(\"g\"));
+output base_color = external(\"base.color\", vec3(0.4, 0.3, 0.2)) * (tint * shade);
+output roughness = clamp(0.2 + 0.6 * grain * external(\"shade\", 0.5), 0, 1);
+output metalness = 0;
+output height = 0.003 * grain * external(\"lift\", 1.0);";
+        let plain = Request {
+            entry: "planes.ms".into(),
+            source: source.into(),
+            modules: BTreeMap::new(),
+            ..request(case, serde_json::json!({}), resolution)
+        };
+        let mut session = Session::default();
+        let sized = session
+            .build(&plain, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("planes: {e:?}"));
+        let atlas = &sized.metadata["atlases"][0];
+        let (width, height) = (
+            atlas["width"].as_f64().unwrap() as usize,
+            atlas["height"].as_f64().unwrap() as usize,
+        );
+        let mut planes: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+        let mut plane = |name: &str, components: usize, salt: usize| {
+            let values: Vec<f32> = (0..width * height * components)
+                .map(|i| ((i * 2_654_435_761 + salt) % 1009) as f32 / 1009.)
+                .collect();
+            let bytes = Plane::encode_external(width, height, components, &values).unwrap();
+            let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+            inline_assets.insert(name.into(), serde_json::json!(hex));
+            planes.insert(name.into(), bytes.into());
+        };
+        plane("planes/shade", 1, 1);
+        plane("planes/shade-2", 1, 2);
+        plane("planes/color", 3, 3);
+        plane("planes/lift", 1, 4);
+        let bound = |names: &[(&str, &str)]| {
+            let mut request = plain.clone();
+            request.planes.insert(
+                case.receiver.id.clone(),
+                names
+                    .iter()
+                    .map(|(input, asset)| ((*input).to_owned(), (*asset).to_owned()))
+                    .collect(),
+            );
+            request
+        };
+        let all = [
+            ("shade", "planes/shade"),
+            ("base.color", "planes/color"),
+            ("lift", "planes/lift"),
+        ];
+        let mut production = bound(&all);
+        production.profile = Profile::Production;
+        let requests = vec![
+            ("fallbacks", plain.clone()),
+            ("planes", bound(&all)),
+            (
+                "another shade",
+                bound(&[("shade", "planes/shade-2"), all[1], all[2]]),
+            ),
+            ("no relief plane", bound(&all[..2])),
+            ("planes again", bound(&all)),
+            ("production", production),
+        ];
+        let supplied = |name: &str| match planes.get(name) {
+            Some(bytes) => Ok(bytes.clone()),
+            None => asset(name),
+        };
+        let mut session = Session::default();
+        let mut hashes = Vec::new();
+        for (i, (label, request)) in requests.iter().enumerate() {
+            let revision = i as u64 + 1;
+            let output = session
+                .build(request, revision, &supplied, &|| false)
+                .unwrap_or_else(|e| panic!("planes {label}: {e:?}"));
+            let packet = output.scene(revision as u32).unwrap().packet();
+            hashes.push(format!("{:x}", Sha256::digest(&packet)));
+        }
+        assert_ne!(hashes[0], hashes[1], "the planes are read");
+        assert_ne!(hashes[1], hashes[2]);
+        assert_ne!(hashes[1], hashes[3]);
+        sequences.push(serde_json::json!({
+            "name": "external-planes",
+            "requests": requests.iter().map(|(_, r)| serde_json::to_string(r).unwrap()).collect::<Vec<_>>(),
+            "labels": requests.iter().map(|(l, _)| l).collect::<Vec<_>>(),
+            "packetSha256": hashes,
+        }));
+    }
     std::fs::write(
         path,
-        serde_json::to_string_pretty(
-            &serde_json::json!({ "sequences": sequences, "assets": assets }),
-        )
+        serde_json::to_string_pretty(&serde_json::json!({
+            "sequences": sequences,
+            "assets": assets,
+            "inlineAssets": inline_assets,
+        }))
         .unwrap(),
     )
     .unwrap();

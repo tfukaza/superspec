@@ -20,96 +20,9 @@ use super::{
     compiled::{Builtin, Compiled, Kind, Node, Op},
     eval::{Context, OutputSet, Scratch, Value, numeric_binary, store_output, validate_sample},
     features,
+    planes::{FieldPlane, Plane},
 };
 use std::collections::BTreeMap;
-
-/// The values one field took at every texel of an atlas in an earlier evaluation, so a later
-/// evaluation whose inputs cannot change the field reads them instead of computing the field. A
-/// field's value depends only on the sample and the parameters, seed, images and edges it reads, so
-/// the owner keys a plane by those. Texels the field was not computed for hold NaN as their
-/// footprint estimate (an evaluated value never has one) and are computed when needed.
-#[derive(Clone, Debug)]
-pub struct FieldPlane {
-    field: usize,
-    /// Components of the field's value, or 4 for a boolean.
-    kind: u8,
-    /// Four numbers per texel: the components (padding included) and the footprint estimate.
-    data: Vec<f64>,
-    /// Texels holding a value.
-    stored: usize,
-    /// Texels given a value since the plane was made or last taken up for completion.
-    added: usize,
-    /// Samples evaluated while this plane was being filled that left no value in it: the field
-    /// was not read there, or the row was evaluated one sample at a time.
-    missed: usize,
-}
-
-impl FieldPlane {
-    /// An empty plane for `field` (a value of `components` numbers, or a boolean when 0) over
-    /// `texels` texels.
-    pub fn new(field: usize, components: usize, texels: usize) -> Self {
-        Self {
-            field,
-            kind: if components == 0 { 4 } else { components as u8 },
-            data: [0., 0., 0., f64::NAN].repeat(texels),
-            stored: 0,
-            added: 0,
-            missed: 0,
-        }
-    }
-    /// Texels that hold a value.
-    pub fn stored(&self) -> usize {
-        self.stored
-    }
-    /// Texels given a value since the plane was made or copied by [Self::completing].
-    pub fn added(&self) -> usize {
-        self.added
-    }
-    /// Whether some evaluated sample left no value, so a later evaluation may add texels.
-    pub fn incomplete(&self) -> bool {
-        self.missed > 0
-    }
-    /// A copy to fill further: an evaluation that computes the field where this plane lacks it
-    /// adds those texels to the copy.
-    pub fn completing(&self) -> Self {
-        Self {
-            added: 0,
-            missed: 0,
-            ..self.clone()
-        }
-    }
-    pub fn field(&self) -> usize {
-        self.field
-    }
-    /// Bytes this plane holds.
-    pub fn bytes(&self) -> usize {
-        self.data.len() * 8 + 64
-    }
-    fn value<'a>(&self, texel: usize) -> Option<Value<'a>> {
-        let at = &self.data[texel * 4..texel * 4 + 4];
-        if at[3].is_nan() {
-            return None;
-        }
-        Some(if self.kind == 4 {
-            Value::Bool(at[0] != 0.)
-        } else {
-            Value::Number([at[0], at[1], at[2]], self.kind as usize, at[3])
-        })
-    }
-    fn store(&mut self, texel: usize, value: &Value<'_>) {
-        let at = &mut self.data[texel * 4..texel * 4 + 4];
-        if at[3].is_nan() {
-            self.stored += 1;
-            self.added += 1;
-        }
-        if self.kind == 4 {
-            at.copy_from_slice(&[f64::from(u8::from(value.boolean())), 0., 0., 0.]);
-        } else {
-            let (data, _, width) = value.data();
-            at.copy_from_slice(&[data[0], data[1], data[2], width]);
-        }
-    }
-}
 
 /// Samples evaluated together. More amortize dispatch further; fewer keep every node's values in
 /// the first-level cache.
@@ -158,6 +71,10 @@ struct Lanes<'a, 'b> {
     index: &'b features::Index,
     parameters: &'b [Value<'a>],
     samples: &'b [Sample],
+    /// The plane texel of each sample in `samples`; empty when no plane is read.
+    texels: &'b [usize],
+    /// Planes of external inputs and kept fields (see [`super::planes`]).
+    planes: &'b [&'b Plane],
     scratch: &'b mut Scratch<'a>,
     bufs: Vec<Option<Box<Buf<'a>>>>,
     free: Vec<usize>,
@@ -205,10 +122,13 @@ fn active(mask: u64) -> impl Iterator<Item = usize> {
     })
 }
 
-fn one(value: Value<'_>) -> Res<'_> {
-    Res {
-        src: Src::One(value),
-        owned: false,
+impl<'a> Res<'a> {
+    /// A value that is the same for every lane.
+    fn one(value: Value<'a>) -> Self {
+        Self {
+            src: Src::One(value),
+            owned: false,
+        }
     }
 }
 
@@ -271,10 +191,10 @@ impl<'a, 'b> Lanes<'a, 'b> {
                 if value.unsound() {
                     return Err(Declined);
                 }
-                Ok(one(value))
+                Ok(Res::one(value))
             }
-            Kind::Bool(b) => Ok(one(Value::Bool(*b))),
-            Kind::Text(s) => Ok(one(Value::Text(s))),
+            Kind::Bool(b) => Ok(Res::one(Value::Bool(*b))),
+            Kind::Text(s) => Ok(Res::one(Value::Text(s))),
             Kind::Local(index) => Ok(Res {
                 src: self.locals[self.base + *index],
                 owned: false,
@@ -284,7 +204,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                 if value.unsound() {
                     return Err(Declined);
                 }
-                Ok(one(value))
+                Ok(Res::one(value))
             }
             Kind::Input(input) => {
                 use super::compiled::Input as I;
@@ -435,7 +355,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
             if value.unsound() {
                 return Err(Declined);
             }
-            return Ok(one(value));
+            return Ok(Res::one(value));
         }
         let out = self.alloc();
         let mut buf = self.bufs[out].take().expect("a free buffer");
@@ -473,7 +393,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                 }
             }
             let b = if needs == 0 {
-                one(Value::Bool(false))
+                Res::one(Value::Bool(false))
             } else {
                 self.eval(right, needs)?
             };
@@ -520,7 +440,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
             if value.unsound() {
                 return Err(Declined);
             }
-            return Ok(one(value));
+            return Ok(Res::one(value));
         }
         let out = self.alloc();
         let mut buf = self.bufs[out].take().expect("a free buffer");
@@ -565,7 +485,11 @@ impl<'a, 'b> Lanes<'a, 'b> {
         if args.len() > 8 || name == Builtin::Unknown {
             return Err(Declined);
         }
-        let mut operands = [one(Value::EMPTY); 8];
+        // Only `external` reads a plane; it has its own path, so no other operation pays for one.
+        if name == Builtin::External {
+            return self.external(args, mask);
+        }
+        let mut operands = [Res::one(Value::EMPTY); 8];
         for (slot, arg) in operands.iter_mut().zip(args) {
             *slot = self.eval(arg, mask)?;
         }
@@ -613,7 +537,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
             self.consumed = self
                 .consumed
                 .saturating_add((AMPLE - remaining).saturating_mul(mask.count_ones() as usize));
-            one(value)
+            Res::one(value)
         } else {
             let out = self.alloc();
             let mut buf = self.bufs[out].take().expect("a free buffer");
@@ -677,6 +601,52 @@ impl<'a, 'b> Lanes<'a, 'b> {
         Ok(result)
     }
 
+    /// `external(name, fallback)` for the active lanes: each lane's value of the plane bound to
+    /// the name, at the lane's texel, and the fallback where the plane holds none; the fallback
+    /// itself, untouched, when no plane is bound. The arguments are evaluated and charged like
+    /// any operation's, and a plane of another shape declines, so the sample fails one at a time
+    /// with the error that names it (see `Context::external`).
+    #[inline(never)]
+    fn external(&mut self, args: &'a [Node], mask: u64) -> Lane<Res<'a>> {
+        let [name, fallback] = args else {
+            return Err(Declined);
+        };
+        let Src::One(name) = self.eval(name, mask)?.src else {
+            return Err(Declined);
+        };
+        let fallback = self.eval(fallback, mask)?;
+        let name = name.text();
+        let (planes, texels) = (self.planes, self.texels);
+        let Some(plane) = planes.iter().find(|plane| plane.supplies(name)) else {
+            return Ok(fallback);
+        };
+        let out = self.alloc();
+        let mut buf = self.bufs[out].take().expect("a free buffer");
+        let mut fits = true;
+        for lane in active(mask) {
+            let default = self.value(&fallback.src, lane);
+            let texel = texels.get(lane).copied().unwrap_or(usize::MAX);
+            buf[lane] = match plane.value(texel) {
+                Some(value) if value.data().1 == default.data().1 => value,
+                Some(_) => {
+                    fits = false;
+                    break;
+                }
+                None => default,
+            };
+        }
+        self.bufs[out] = Some(buf);
+        self.release(&fallback);
+        if !fits {
+            self.free.push(out);
+            return Err(Declined);
+        }
+        Ok(Res {
+            src: Src::Buf(out),
+            owned: true,
+        })
+    }
+
     fn field(&mut self, index: usize, mask: u64) -> Lane<Res<'a>> {
         if index >= self.fields.len() {
             return Err(Declined);
@@ -693,7 +663,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                     paid: paid | mask,
                     each,
                 };
-                return Ok(one(value));
+                return Ok(Res::one(value));
             }
             FieldLanes::Lanes { buf, done } => {
                 if mask & !done == 0 {
@@ -718,7 +688,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                     paid: need,
                     each: (self.consumed - before) / (need.count_ones() as usize).max(1),
                 };
-                Ok(one(one_value))
+                Ok(Res::one(one_value))
             }
             Src::Buf(id) => {
                 let (buf, done) = match self.fields[index] {
@@ -756,9 +726,10 @@ impl<'a, 'b> Lanes<'a, 'b> {
 /// sample-major order. `remaining` is the batch allowance the caller has left. A finished call
 /// takes from it exactly what evaluating the samples one at a time takes (see `Lanes::consumed`),
 /// and a call that would take more declines, so where an allowance runs out never depends on how
-/// rows are grouped. Fields read from `injected` planes are not computed and so not charged.
-/// [`evaluate_together`], noting on the planes being filled the samples a declined call leaves
-/// them without.
+/// rows are grouped. Fields read from `injected` planes are not computed and so not charged, and
+/// `external` reads its plane at each sample's texel, exactly as evaluating one sample at a time
+/// with the same planes does. This is [`evaluate_together`], noting on the planes being filled
+/// the samples a declined call leaves them without.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn evaluate<'a>(
     program: &'a Program,
@@ -835,12 +806,11 @@ fn evaluate_together<'a>(
     capture: &mut [FieldPlane],
 ) -> Option<Vec<Outputs>> {
     let room = room(compiled, inputs.edges.len())?;
-    // A kept plane spares a sample the queries of its field, so the steps counted here would
-    // depend on what was kept: planes serve only programs bounded whatever their queries visit.
-    let injected = if bounded(compiled, inputs.edges.len(), features.len()) {
-        injected
+    // Planes are read by texel: without one for every sample there is nothing to read them at.
+    let (texels, injected) = if texels.len() == samples.len() {
+        (texels, injected)
     } else {
-        &[]
+        (&[][..], &[][..])
     };
     let mut lanes = Lanes {
         program,
@@ -850,6 +820,8 @@ fn evaluate_together<'a>(
         index,
         parameters,
         samples,
+        texels,
+        planes: injected,
         scratch,
         bufs: Vec::new(),
         free: Vec::new(),
@@ -871,6 +843,11 @@ fn evaluate_together<'a>(
         .map(|(i, c)| (i * LANES, c))
     {
         lanes.samples = chunk;
+        lanes.texels = if texels.is_empty() {
+            texels
+        } else {
+            &texels[start..start + chunk.len()]
+        };
         lanes.reset();
         for sample in chunk {
             validate_sample(program, sample).ok()?;
@@ -882,9 +859,9 @@ fn evaluate_together<'a>(
         };
         // Fields an earlier evaluation kept: their values at these samples are already known.
         for plane in injected {
-            if plane.field >= lanes.fields.len() {
+            let Some(field) = plane.field().filter(|field| *field < lanes.fields.len()) else {
                 continue;
-            }
+            };
             let mut known = 0u64;
             let mut buf = None;
             for lane in 0..chunk.len() {
@@ -900,7 +877,7 @@ fn evaluate_together<'a>(
                 known |= 1 << lane;
             }
             if let Some(buf) = buf {
-                lanes.fields[plane.field] = FieldLanes::Lanes { buf, done: known };
+                lanes.fields[field] = FieldLanes::Lanes { buf, done: known };
             }
         }
         let mut done: Vec<Outputs> = (0..chunk.len())
@@ -935,11 +912,14 @@ fn evaluate_together<'a>(
             }
         }
         for plane in capture.iter_mut() {
-            let before = plane.stored;
+            let Some(field) = plane.field() else {
+                continue;
+            };
+            let before = plane.stored();
             let had = (0..chunk.len())
-                .filter(|lane| !plane.data[texels[start + lane] * 4 + 3].is_nan())
+                .filter(|lane| plane.has(texels[start + lane]))
                 .count();
-            match lanes.fields.get(plane.field) {
+            match lanes.fields.get(field) {
                 Some(FieldLanes::Uniform { value, .. }) => {
                     for lane in 0..chunk.len() {
                         plane.store(texels[start + lane], value);
@@ -954,7 +934,7 @@ fn evaluate_together<'a>(
                 }
                 _ => {}
             }
-            plane.missed += chunk.len() - had - (plane.stored - before);
+            plane.missed += chunk.len() - had - (plane.stored() - before);
         }
         results.extend(done);
         // More than the allowance: one sample at a time fails at the sample that exhausts it.

@@ -1,5 +1,6 @@
 use super::{
     compiled::{Builtin, Input, Kind, Node, Op},
+    planes::Plane,
     syntax::{Expr, Mark},
     *,
 };
@@ -83,7 +84,7 @@ impl<'a> Value<'a> {
             _ => unreachable!("checked bool type"),
         }
     }
-    fn text(&self) -> &'a str {
+    pub(super) fn text(&self) -> &'a str {
         match self.shape {
             Shape::Text(v) => v,
             _ => unreachable!("checked string type"),
@@ -295,6 +296,8 @@ pub(super) fn constant(
         steps: 0,
         depth: 0,
         remaining: &mut remaining,
+        planes: &[],
+        texel: usize::MAX,
     }
     .value(&node)
     .map(|value| value.json())
@@ -318,6 +321,8 @@ pub(super) fn evaluate(
         &mut Scratch::default(),
         Want::All,
         OutputSet::ALL,
+        &[],
+        usize::MAX,
     )
 }
 /// Which outputs one evaluation computes. A bake of one map evaluates only the outputs that map
@@ -547,10 +552,24 @@ pub(super) fn evaluate_wanted<'a>(
     scratch: &mut Scratch<'a>,
     mut want: Want<'_>,
     outputs: OutputSet,
+    planes: &[&Plane],
+    texel: usize,
 ) -> Result<Outputs, ProgramDiagnostic> {
     validate_sample(program, sample)?;
     scratch.fields.clear();
     scratch.fields.resize(compiled.fields.len(), None);
+    // Fields whose planes hold this texel are known: reading one costs the reference's step, as
+    // reading a field already computed for the sample does (see `planes`).
+    for plane in planes {
+        if let Some(slot) = plane
+            .field()
+            .and_then(|field| scratch.fields.get_mut(field))
+        {
+            if let Some(value) = plane.value(texel) {
+                *slot = Some(value);
+            }
+        }
+    }
     let mut context = Context {
         program,
         compiled,
@@ -563,6 +582,8 @@ pub(super) fn evaluate_wanted<'a>(
         steps: 0,
         depth: 0,
         remaining,
+        planes,
+        texel,
     };
     let mut result = Outputs {
         base_color: [0.; 3],
@@ -627,6 +648,10 @@ pub(super) struct Context<'a, 'b> {
     steps: usize,
     depth: usize,
     remaining: &'b mut usize,
+    /// Planes `external` reads, and the texel of them the sample stands for (`usize::MAX`, which
+    /// no plane holds, for a sample given without one).
+    planes: &'b [&'b Plane],
+    texel: usize,
 }
 /// Nodes write their value into a slot the caller provides and return only success or the rare
 /// boxed error. Returning the 48-byte value instead made every node build it in a temporary and
@@ -659,6 +684,9 @@ impl<'a, 'b> Context<'a, 'b> {
             steps: 0,
             depth: 0,
             remaining,
+            // The lane evaluator reads planes itself (`Lanes::external`).
+            planes: &[],
+            texel: usize::MAX,
         }
     }
     pub(super) fn set_sample(&mut self, sample: &'b Sample) {
@@ -948,6 +976,35 @@ impl<'a> Context<'a, '_> {
         }
         Ok(())
     }
+    /// `external(name, fallback)`: the plane bound to the name, at the sample's texel; the
+    /// fallback where no plane is bound or the texel holds no value. Out of line, so the other
+    /// operations do not carry its locals.
+    #[inline(never)]
+    fn external(&mut self, a: &[Value<'a>], mark: &Mark, out: &mut Value<'a>) -> Done {
+        let name = a[0].text();
+        let supplied = self
+            .planes
+            .iter()
+            .find(|plane| plane.supplies(name))
+            .and_then(|plane| plane.value(self.texel));
+        match supplied {
+            Some(value) => {
+                let (wanted, held) = (a[1].data().1, value.data().1);
+                if wanted != held {
+                    Err(self.program.diagnostic(
+                        "MS_INPUT",
+                        format!(
+                            "External plane '{name}' holds {held} components where the program reads {wanted}."
+                        ),
+                        mark,
+                    ))?;
+                }
+                *out = value;
+            }
+            None => *out = a[1],
+        }
+        Ok(())
+    }
     /// Kept out of line: inlined into the recursive evaluator, its many locals would make every
     /// node pay for one large stack frame.
     #[inline(never)]
@@ -1221,6 +1278,7 @@ impl<'a> Context<'a, '_> {
                     *out = Value::vector(&sampled[..3], 0.);
                 }
             }
+            B::External => return self.external(a, mark, out),
             B::Runoff => {
                 let work = self.inputs.edges.len() * 16;
                 self.steps += work;

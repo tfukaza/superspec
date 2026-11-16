@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Shader compile microbench</title>
+<!--
+  Compiles and links shader programs in a bare WebGL2 context and times each one, away from the viewer, whose own
+  timings are confounded by its CPU build, texture uploads and frames. Driven by tests/shader-compile-bench.mjs.
+-->
+<canvas id="canvas" width="16" height="16"></canvas>
+<script>
+const COMPLETION_STATUS_KHR = 0x91B1;
+/** Yields to the event loop without the 4 ms clamp of nested timers. */
+const channel = new MessageChannel();
+const turn = () => new Promise(done => { channel.port1.onmessage = () => done(); channel.port2.postMessage(0); });
+let salts = 0;
+
+function context() {
+  const gl = document.querySelector("#canvas").getContext("webgl2", { antialias: false });
+  if (!gl) throw new Error("WebGL2 is not available.");
+  return gl;
+}
+
+/**
+ * The source made unique to this run, so no cache of the browser's returns an earlier compile of it: a comment (its
+ * caches key on the text). The graphics driver has a cache of its own, keyed on the compiled code, which a comment does
+ * not reach: with `cold`, a fragment shader's `main` also begins with a test no fragment passes against a constant of
+ * this run, so that cache misses too and the first draw is a cold one. The test adds a `discard`, which makes the
+ * Direct3D compile itself a fifth to a half slower, so compile times are measured without it.
+ */
+function salted(source, salt, cold) {
+  if (salt === null) return source;
+  const first = source.startsWith("#version") ? source.indexOf("\n") + 1 : 0;
+  const unique = `${source.slice(0, first)}// salt ${salt}\n${source.slice(first)}`;
+  return cold ? unique.replace(/void main\(\) \{/, `void main() {\n  if (gl_FragCoord.x < -1.0 - ${salt}.0) discard;`) : unique;
+}
+
+function begin(gl, program, salt, cold) {
+  const made = gl.createProgram(), shaders = [];
+  for (const [type, source] of [[gl.VERTEX_SHADER, program.vertex], [gl.FRAGMENT_SHADER, program.fragment]]) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, salted(source, salt, cold && type === gl.FRAGMENT_SHADER));
+    gl.compileShader(shader);
+    gl.attachShader(made, shader);
+    shaders.push(shader);
+  }
+  gl.linkProgram(made);
+  gl.flush();
+  return { made, shaders };
+}
+
+function finish(gl, { made, shaders }) {
+  const linked = gl.getProgramParameter(made, gl.LINK_STATUS);
+  const log = linked ? "" : [gl.getProgramInfoLog(made), ...shaders.map(shader => gl.getShaderInfoLog(shader))].filter(Boolean).join("\n").slice(0, 2000);
+  return { linked, log };
+}
+
+/** The first draw of a program (where a driver may finish a compile it deferred) and a second one, milliseconds. */
+function draws(gl, made) {
+  const pixel = new Uint8Array(4), times = [];
+  gl.useProgram(made);
+  for (let i = 0; i < 2; i++) {
+    const start = performance.now();
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+    times.push(performance.now() - start);
+  }
+  return times;
+}
+
+/**
+ * Times `programs` ({ name, vertex, fragment }). `salt` false keeps the sources as given (for measuring a cache);
+ * `cold` also defeats the driver's cache, for the first draw's time (see `salted`). `together` links them all at once
+ * and reports when each completed and the whole; otherwise each is linked alone.
+ */
+window.runBench = async (programs, { salt = true, cold = false, together = false } = {}) => {
+  const gl = context();
+  const parallel = gl.getExtension("KHR_parallel_shader_compile");
+  const info = gl.getExtension("WEBGL_debug_renderer_info");
+  const complete = made => parallel ? gl.getProgramParameter(made, COMPLETION_STATUS_KHR) : true;
+  const results = [];
+  const measure = async group => {
+    const start = performance.now();
+    const pending = group.map(program => ({ program, ...begin(gl, program, salt ? Date.now() % 100000 * 100 + salts++ % 100 : null, cold), done: null }));
+    const call = performance.now() - start;
+    for (;;) {
+      const now = performance.now();
+      for (const item of pending) if (item.done === null && complete(item.made)) item.done = now - start;
+      if (pending.every(item => item.done !== null)) break;
+      await turn();
+    }
+    for (const item of pending) {
+      const status = performance.now();
+      const { linked, log } = finish(gl, item);
+      const statusMs = performance.now() - status;
+      const [firstDraw, secondDraw] = linked ? draws(gl, item.made) : [0, 0];
+      results.push({ name: item.program.name, vertexBytes: item.program.vertex.length, fragmentBytes: item.program.fragment.length,
+        callMs: call, completeMs: item.done, statusMs, firstDrawMs: firstDraw, secondDrawMs: secondDraw, linked, log });
+      for (const shader of item.shaders) gl.deleteShader(shader);
+      gl.deleteProgram(item.made);
+    }
+    return performance.now() - start;
+  };
+  let wall = 0;
+  if (together) wall = await measure(programs);
+  else for (const program of programs) wall += await measure([program]);
+  return { renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), parallel: !!parallel, wallMs: wall, results };
+};
+</script>

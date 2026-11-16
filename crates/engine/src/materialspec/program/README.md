@@ -58,6 +58,42 @@ larger successful programs can still execute without entering that cache.
 | `abs`, `floor`, `fract`, `sin`, `cos`, `sqrt`, `min`, `max`, `length`, `normalize`, `dot` | Typed numeric helpers; trig uses radians, normalize rejects zero vectors. |
 | `sample_color`, `sample_data`, `sample_alpha` | Literal supplied image ID and periodic UV coordinates; color decodes sRGB, data/alpha stay linear. |
 | `runoff(width, length)` | Positive meters and caller-supplied finite world-space edges; receiver normal and gravity determine downhill direction. Empty edges or no downhill component produce zero. |
+| `external("name", fallback)` | A scalar or vector the host supplies for each texel of a receiver; the fallback where it supplies none. See "Planes". |
+
+## Planes
+
+A plane (`planes.rs`, `Plane`) holds one value per texel of a receiver's atlas and is bound to
+what its values stand for. It is the one way per-texel data from outside a sample enters an
+evaluation, and both evaluators read it at the texel a sample is given with.
+
+- **External inputs.** `external("name", fallback)` reads the plane bound to `name` at the
+  sample's texel, or the fallback where no plane is bound or the texel holds no value (NaN in a
+  supplied plane). A name has one type in a program (`Metadata::externals`), at most 16 names are
+  read, and a plane of another component count fails the sample with `MS_INPUT`. The read costs
+  its own step and its arguments' whether or not a plane is bound, so a program's cost bound
+  never depends on the host. An external plane is an input like an image: `Dependencies::externals`
+  lists the names each output and field reads, and a host keys what it bakes by the content of
+  the planes bound to them. A value that reads one is not intrinsic. Planes supplied by a host
+  hold single-precision numbers (`Plane::external`, `encode_external`, `decode_external`); a
+  field plane another bake filled becomes an input at full precision with `Plane::into_external`.
+  The names `shadow`, `occlusion` and `sunExposure` are meant for the occluder service; nothing
+  supplies them yet.
+- **Kept fields.** A plane bound to a field holds what an earlier evaluation computed for it. A
+  reference to the field costs the reference's one step where the plane holds the texel, and the
+  field's body is neither evaluated nor charged, in both evaluators. Because that spares steps,
+  field planes serve only programs whose cost is bounded whatever their feature queries visit
+  (`Evaluator::rows_evaluate_together`); for other programs they are ignored, so a limit never
+  depends on what was kept.
+- **Texels.** `Evaluator::evaluate_row_with_planes` and `evaluate_outputs_at` take the texel of
+  each sample. A sample without one reads no plane. A bake gives a texel that repeats the sample
+  of the texel before it in its row that texel's result; with external planes it never repeats
+  the row above (which would depend on where a block of rows starts), and the height one step
+  along a chart leg that is no texel's center is read at the texel the step starts from.
+- **GPU preview.** `Program::shader_plan` treats a field that reads an external input like any
+  CPU field: it is baked by `Session::bake_fields` (which binds the request's planes) and read
+  from a texture, and `CpuField::planes` names the inputs it follows. An `external` used
+  directly in an output or helper cannot be partitioned, like `runoff`; the plain shader
+  (`Program::shader`) evaluates the fallback.
 
 ## Evaluator performance
 
@@ -67,6 +103,11 @@ evaluator keeps these properties; a change that breaks one shows up as a slower
 bench_fingerprint -- --ignored --nocapture`), which also prints material identities that a pure
 optimization must leave unchanged.
 
+- Compare instruction counts (`perf stat -e instructions:u` on the bench binary) before trusting
+  a timing difference of a few percent. Where the linker places the row evaluator beside the
+  kernels it calls moved bake times by 2 to 3 percent with no change to the work (measured by
+  restoring one build's symbol order), and on WSL a buffer that is freshly mapped instead of
+  recycled adds its page faults (about 2 ms per megabyte) to whichever step allocates it.
 - Names, operators and catalog operations resolve to indices and enums once (`compiled.rs`);
   samples never compare strings, including feature selectors.
 - Values are plain copies, and each node writes its value into a slot its caller provides.
@@ -116,6 +157,11 @@ Receiver bakes (`authoring/material.rs`) add these on top:
   build that finishes, so a cancelled or failed one publishes nothing.
 - The heights one step along each leg that no adjacent texel has, and a preview of one field, are
   evaluated with the row evaluator too.
+- A request binds planes to a receiver's external inputs by asset (`Request::planes`). Each bound
+  plane is a node (`plane/<receiver>/<name>`) keyed by its bytes and the layout it covers, and a
+  map's node depends on the planes of only the inputs its outputs read, so a new plane bakes just
+  those maps. Threaded bakes, shares baked by other sessions (`PendingBake::planes` names the
+  assets they need) and field bakes read the same planes and give the same texels.
 
 - A normal needs the height one texel along each chart leg. Where that point is an adjacent
   texel's center, the bake reuses that texel's height instead of evaluating the height graph

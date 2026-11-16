@@ -139,6 +139,7 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
             "exp",
             "triplanar_weights",
             "varied_color",
+            "external",
         ])
     );
     for name in ORIGINAL_BUILTINS {
@@ -160,8 +161,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
 #[test]
 fn catalog_lists_the_documented_builtins_once() {
     let names: Vec<_> = operations().iter().map(|operation| operation.id).collect();
-    assert_eq!(names.len(), 49);
-    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 49);
+    assert_eq!(names.len(), 50);
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 50);
     for operation in operations() {
         assert_eq!(operation.version, 1, "{}", operation.id);
         assert!(!operation.overloads.is_empty(), "{}", operation.id);
@@ -271,9 +272,16 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "crease_tangent",
             "crease_adjacent_normal",
             "remap",
-            "varied_color"
+            "varied_color",
+            "external"
         ])
     );
+    assert_eq!(find("external").unwrap().requires, ["planes"]);
+    for (kind, fallback) in [(Scalar, Scalar), (Vec2, Vec2), (Vec3, Vec3)] {
+        assert_eq!(resolve("external", &[Text, fallback]), Some(kind));
+    }
+    assert_eq!(resolve("external", &[Text, Bool]), None);
+    assert_eq!(resolve("external", &[Scalar, Scalar]), None);
     assert_eq!(find("seed").unwrap().requires, ["seed"]);
     assert_eq!(
         find("runoff").unwrap().requires,

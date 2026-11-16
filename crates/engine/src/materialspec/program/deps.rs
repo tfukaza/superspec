@@ -63,10 +63,14 @@ pub struct Dependencies {
     pub sample: SampleInputs,
     /// Whether crease queries read the receiver's features.
     pub features: bool,
+    /// Names of external inputs read with `external(name, fallback)`. A host supplies each as a
+    /// plane over a receiver's texels, so what is baked from one is keyed by the plane's content.
+    pub externals: BTreeSet<String>,
 }
 
 impl Dependencies {
     fn merge(&mut self, other: &Dependencies) {
+        self.externals.extend(other.externals.iter().cloned());
         self.parameters.extend(&other.parameters);
         self.seed |= other.seed;
         self.images.extend(other.images.iter().cloned());
@@ -77,15 +81,16 @@ impl Dependencies {
     }
 
     /// Whether the value is the same at a domain position on every receiver: it reads nothing of
-    /// a sample but its `surface` position and footprint, and neither features nor source edges.
-    /// Such a value still changes with the texel size where what it reads is filtered by
-    /// footprint.
+    /// a sample but its `surface` position and footprint, and neither features, source edges nor
+    /// external inputs (planes over one receiver's texels). Such a value still changes with the
+    /// texel size where what it reads is filtered by footprint.
     pub fn intrinsic(&self) -> bool {
         self.sample
             .without(SampleInputs::SURFACE.union(SampleInputs::FOOTPRINT))
             .is_empty()
             && !self.features
             && !self.edges
+            && self.externals.is_empty()
     }
 
     /// Everything either side reads.
@@ -216,6 +221,11 @@ impl Walk<'_> {
                     | Builtin::VariedColor => {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
                             found.images.insert(name.to_string());
+                        }
+                    }
+                    Builtin::External => {
+                        if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
+                            found.externals.insert(name.to_string());
                         }
                     }
                     _ => {}

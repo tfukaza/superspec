@@ -1,17 +1,31 @@
 //! A GLSL preview of a checked program.
 //!
 //! The baker evaluates a program per texel on the CPU; a renderer can instead evaluate the same
-//! program per pixel, so an edit shows without a bake. This emits GLSL ES 3.00: one function per
-//! helper, one global per field that the outputs reach, and `ms_evaluate()`, which fills the
-//! channel globals. Parameters and named seeds are uniforms, so changing them needs no new shader.
+//! program per pixel, so an edit shows without a bake. This emits GLSL ES 3.00: one global per
+//! field that the outputs reach and `ms_evaluate()`, which sets the fields in order (helpers are
+//! expanded where they are called) and fills the channel globals. Parameters and named seeds are
+//! uniforms, so changing them needs no new shader.
 //!
 //! The preview is close to a bake, not identical. Lattice hashing uses the same 32-bit integer
 //! arithmetic, but values are 32-bit floats, filtering follows screen derivatives where the baker
 //! propagates a footprint, both branches of a `select` are computed, and `runoff` reads no edges.
 //! Bakes stay the authority for exported maps.
+//!
+//! The shape of the source follows what compiles fast. Direct3D's compiler (behind WebGL on
+//! Windows) inlines every call, and its time grows with about the square of the code it ends up
+//! with: a hundred inlined lattice noises took two seconds, the same hundred evaluated by one loop
+//! over arrays of their arguments a fraction of that. So helpers are expanded here (the compiler
+//! would anyway), every lattice noise becomes a slot of an array, and each entry point is a
+//! sequence of rounds: straight-line statements that set fields and the slots' arguments, then one
+//! loop per kind of noise that evaluates the slots those statements filled. A slot whose argument
+//! reads another slot's result waits for a later round. The loops' bounds add `ms_loop`, a uniform
+//! no host sets (so it is zero), which keeps a compiler from unrolling them back into copies.
+//! Loops draw slower than the same noises inline, so the source holds that form too, behind
+//! `MS_INLINE_NOISE` (see `build`). Measure a change to any of this with
+//! `tests/shader-compile-bench.mjs` on a real GPU: what the compiler is slow at is not obvious.
 use super::{
     Program, Type,
-    compiled::{Builtin, Compiled, Input, Kind, Node, Op},
+    compiled::{Builtin, Input, Kind, Node, Op},
     syntax::Definition,
 };
 use serde::Serialize;
@@ -23,8 +37,9 @@ const RUNTIME: &str = include_str!("glsl_runtime.glsl");
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Shader {
-    /// Uniform declarations, the runtime, the program's functions and `void ms_evaluate()`.
-    /// Before calling it the host sets `ms_world`, `ms_object`, `ms_normal`, `ms_uv`,
+    /// Uniform declarations, the runtime and `void ms_evaluate()`, in two forms: with noises in
+    /// loops, and, where the host defines `MS_INLINE_NOISE` before the source, with each noise
+    /// where it is used. Before calling it the host sets `ms_world`, `ms_object`, `ms_normal`, `ms_uv`,
     /// `ms_surface`, `ms_footprint` and `ms_uv_footprint`; afterwards it reads `ms_base_color`,
     /// `ms_roughness`, `ms_metalness`, `ms_height`, `ms_emissive`, `ms_opacity`,
     /// `ms_receiver_normal` and `ms_normal_offset`.
@@ -46,6 +61,61 @@ pub struct Shader {
     /// Outputs that read a CPU field (through the shader's own math), so a host can say which channels of a preview rest on CPU data.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub cpu_outputs: Vec<String>,
+    /// An identity of `source`: equal sources have equal identities, so a host can key compiled
+    /// programs by it instead of hashing the text.
+    pub id: String,
+    /// Every uniform `source` declares, in order, as GLSL declares it.
+    pub uniforms: Vec<UniformDeclaration>,
+    /// How many of `uniforms` are samplers (each takes a texture unit).
+    pub samplers: usize,
+    /// Entry points besides `ms_evaluate()`: each computes some of the outputs with only the code
+    /// they need, for a pass that writes one texture. One program of `ms_evaluate` compiles in less
+    /// time than its parts do together; the parts are for drawing less per pass.
+    pub entries: Vec<EntryPoint>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct UniformDeclaration {
+    pub name: String,
+    /// The GLSL type: `float`, `vec3`, `bool`, `int`, `uint` or `sampler2D`.
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+/// A function of the source that evaluates part of the program at the current inputs. It sets the
+/// channel globals of `outputs` (to their defaults where the program has no such output) and
+/// leaves the other channels alone. Entry points share the field globals, so the last one called
+/// decides what a field holds.
+#[derive(Clone, Debug, Serialize)]
+pub struct EntryPoint {
+    /// The GLSL function, called as `name()`.
+    pub function: String,
+    pub outputs: Vec<String>,
+    /// Whether it also sets every field a live renderer operation reads.
+    pub live: bool,
+    /// The function's definition, to append to the shader's `source` in a program that calls it;
+    /// empty when `source` already holds it (`ms_evaluate_height`).
+    pub source: String,
+}
+
+/// What a live argument is to a host that bakes: a number, an expression of scalar parameters
+/// alone (the material's own shader can evaluate it from their uniforms), or a value that varies
+/// over the surface and must be baked.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum LiveArgument {
+    Constant {
+        constant: f64,
+    },
+    Parameters {
+        /// The parameter uniforms `glsl` reads.
+        parameters: Vec<String>,
+        glsl: String,
+    },
+    Varying {
+        /// The GLSL symbol holding the value after an entry point that sets live fields ran.
+        varying: String,
+    },
 }
 
 /// A field the host bakes on the CPU into a float texture and binds to the shader.
@@ -65,6 +135,10 @@ pub struct CpuField {
     pub images: Vec<String>,
     /// Whether the field reads the supplied source edges.
     pub edges: bool,
+    /// External inputs the field reads (`external(name, fallback)`): the field's texture also
+    /// follows the planes a host binds to these names.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub planes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -88,6 +162,102 @@ pub struct ImageUniform {
 pub struct LiveOperation {
     pub id: String,
     pub arguments: BTreeMap<String, String>,
+    /// Each argument of `arguments`, classified.
+    pub classes: BTreeMap<String, LiveArgument>,
+}
+
+/// A kind of lattice noise evaluated by a loop over slots rather than where it is used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Batch {
+    Value2,
+    Value3,
+    Gradient2,
+    Gradient3,
+    Cells2,
+    Cells3,
+}
+
+impl Batch {
+    const ALL: [Batch; 6] = [
+        Batch::Value2,
+        Batch::Value3,
+        Batch::Gradient2,
+        Batch::Gradient3,
+        Batch::Cells2,
+        Batch::Cells3,
+    ];
+
+    /// The arrays of a kind: `p` positions, `k` seeds, `s` spreads, `r` results and, for octave
+    /// noises, `c` octave counts.
+    fn prefix(self) -> &'static str {
+        match self {
+            Batch::Value2 => "ms_v2",
+            Batch::Value3 => "ms_v3",
+            Batch::Gradient2 => "ms_g2",
+            Batch::Gradient3 => "ms_g3",
+            Batch::Cells2 => "ms_c2",
+            Batch::Cells3 => "ms_c3",
+        }
+    }
+
+    fn point(self) -> &'static str {
+        match self {
+            Batch::Value2 | Batch::Gradient2 | Batch::Cells2 => "vec2",
+            _ => "vec3",
+        }
+    }
+
+    fn octaves(self) -> bool {
+        !matches!(self, Batch::Value2 | Batch::Value3)
+    }
+
+    /// The noise of slot `i`, as the runtime's direct functions (`ms_value_noise`, `ms_noise`)
+    /// compute it from the same arguments.
+    fn call(self, i: &str) -> String {
+        let p = self.prefix();
+        match self {
+            Batch::Value2 => format!("ms_fade_value(ms_value2({p}p{i}, {p}k{i}), {p}s{i})"),
+            Batch::Value3 => format!("ms_fade_value(ms_value3({p}p{i}, {p}k{i}), {p}s{i})"),
+            Batch::Gradient2 | Batch::Cells2 => format!(
+                "ms_octaves(vec3({p}p{i}, 0.0), 2, {p}k{i}, int({p}c{i}), {}, {p}s{i})",
+                self == Batch::Cells2
+            ),
+            Batch::Gradient3 | Batch::Cells3 => format!(
+                "ms_octaves({p}p{i}, 3, {p}k{i}, int({p}c{i}), {}, {p}s{i})",
+                self == Batch::Cells3
+            ),
+        }
+    }
+}
+
+/// A round's slots of one kind are evaluated by a loop from this many; fewer, line by line.
+const LOOP_SLOTS: usize = 3;
+
+/// What a statement reads: an earlier statement's variable or a noise slot's result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Use {
+    Statement(usize),
+    Slot(usize),
+}
+
+/// One line of an entry point: it sets a field, a local or a slot's arguments, once.
+struct Statement {
+    text: String,
+    uses: Vec<Use>,
+    /// The round it runs in: one more than the round of the latest slot it reads.
+    round: usize,
+}
+
+struct Slot {
+    batch: Batch,
+    /// The statement that sets its arguments; the slot is evaluated at the end of that round.
+    statement: usize,
+}
+
+/// A helper argument while the helper's body is expanded.
+struct Binding {
+    text: String,
+    uses: Vec<Use>,
 }
 
 fn glsl_type(kind: Type) -> &'static str {
@@ -129,6 +299,29 @@ struct Function<'a> {
     /// Scalar arguments that every call passes a seed, so they stay exact unsigned integers.
     seeds: Vec<bool>,
     needed: bool,
+    /// How often the body reads each argument.
+    reads: Vec<usize>,
+}
+
+/// Counts a helper body's reads of each of its arguments.
+fn count_reads(node: &Node, reads: &mut [usize]) {
+    match &node.kind {
+        Kind::Local(index) => reads[*index] += 1,
+        Kind::Unary(_, a) | Kind::Member(a, _) => count_reads(a, reads),
+        Kind::Binary(_, a, b) => {
+            count_reads(a, reads);
+            count_reads(b, reads);
+        }
+        Kind::Select(a, b, c) => {
+            for part in [a, b, c] {
+                count_reads(part, reads);
+            }
+        }
+        Kind::Builtin(_, args) | Kind::Function(_, args) => {
+            args.iter().for_each(|a| count_reads(a, reads))
+        }
+        _ => {}
+    }
 }
 
 struct Emitter<'a> {
@@ -143,13 +336,28 @@ struct Emitter<'a> {
     function_order: Vec<usize>,
     /// Fields baked on the CPU and read from textures (empty unless partitioning).
     cpu_only: Vec<bool>,
+    /// Whether noises stay where they are used instead of becoming slots.
+    inline: bool,
+    statements: Vec<Statement>,
+    slots: Vec<Slot>,
+    /// What the expression being emitted has read so far.
+    uses: Vec<Use>,
+    /// The arguments of the helpers being expanded, innermost last.
+    frames: Vec<Vec<Binding>>,
+    /// The statement that sets each field.
+    field_statement: Vec<usize>,
+    /// Locals by declaration (`type expression`) and slots by kind and arguments, so equal
+    /// expressions are computed once.
+    locals: BTreeMap<String, (String, usize)>,
+    slot_of: BTreeMap<(Batch, String), usize>,
 }
 
 /// Whether a node uses an operation only the CPU baker has, looking through arguments and helper
 /// calls' arguments but not into other fields or helper bodies.
 fn uses_cpu_only(node: &Node) -> bool {
     match &node.kind {
-        Kind::Builtin(Builtin::Runoff, _) => true,
+        // An external input is a plane over the receiver's texels, like a baked CPU field.
+        Kind::Builtin(Builtin::Runoff | Builtin::External, _) => true,
         Kind::Unary(_, a) | Kind::Member(a, _) => uses_cpu_only(a),
         Kind::Binary(_, a, b) => uses_cpu_only(a) || uses_cpu_only(b),
         Kind::Select(a, b, c) => uses_cpu_only(a) || uses_cpu_only(b) || uses_cpu_only(c),
@@ -158,63 +366,279 @@ fn uses_cpu_only(node: &Node) -> bool {
     }
 }
 
-/// Marks every field a node reaches, through other fields and helper bodies. A CPU field is
-/// reached but not entered: the shader reads it from its texture.
-fn reach_fields(
-    compiled: &Compiled,
-    cpu_only: &[bool],
-    node: &Node,
-    fields: &mut [bool],
-    helpers: &mut [bool],
-) {
-    match &node.kind {
-        Kind::Field(index) => {
-            if !std::mem::replace(&mut fields[*index], true) && !cpu_only[*index] {
-                reach_fields(
-                    compiled,
-                    cpu_only,
-                    &compiled.fields[*index],
-                    fields,
-                    helpers,
-                );
-            }
-        }
-        Kind::Unary(_, a) | Kind::Member(a, _) => {
-            reach_fields(compiled, cpu_only, a, fields, helpers)
-        }
-        Kind::Binary(_, a, b) => {
-            reach_fields(compiled, cpu_only, a, fields, helpers);
-            reach_fields(compiled, cpu_only, b, fields, helpers);
-        }
-        Kind::Select(a, b, c) => {
-            for part in [a, b, c] {
-                reach_fields(compiled, cpu_only, part, fields, helpers);
-            }
-        }
-        Kind::Builtin(_, args) => {
-            for argument in args {
-                reach_fields(compiled, cpu_only, argument, fields, helpers);
-            }
-        }
-        Kind::Function(index, args) => {
-            for argument in args {
-                reach_fields(compiled, cpu_only, argument, fields, helpers);
-            }
-            if !std::mem::replace(&mut helpers[*index], true) {
-                reach_fields(
-                    compiled,
-                    cpu_only,
-                    &compiled.functions[*index].body,
-                    fields,
-                    helpers,
-                );
-            }
-        }
-        _ => {}
+/// A slot's place in its arrays while the source is assembled; `settle` writes the final one.
+fn slot_mark(slot: usize) -> String {
+    format!("@{slot}@")
+}
+
+/// Replaces every slot mark of `text` by the slot's place: its round's arrays and its index.
+fn settle(text: &str, place: &[(usize, usize)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut parts = text.split('@');
+    out.push_str(parts.next().unwrap_or(""));
+    while let (Some(slot), Some(rest)) = (parts.next(), parts.next()) {
+        let (round, index) = place[slot.parse::<usize>().expect("a slot mark")];
+        out.push_str(&format!("{round}[{index}]"));
+        out.push_str(rest);
     }
+    out
 }
 
 impl<'a> Emitter<'a> {
+    /// The round a statement reading `uses` runs in.
+    fn round(&self, uses: &[Use]) -> usize {
+        uses.iter()
+            .map(|used| match used {
+                Use::Statement(statement) => self.statements[*statement].round,
+                Use::Slot(slot) => self.statements[self.slots[*slot].statement].round + 1,
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn statement(&mut self, text: String, uses: Vec<Use>) -> usize {
+        let round = self.round(&uses);
+        self.statements.push(Statement { text, uses, round });
+        self.statements.len() - 1
+    }
+
+    /// Emits with `emit` and returns what that read, apart from what the enclosing expression has.
+    fn reading<T>(&mut self, emit: impl FnOnce(&mut Self) -> T) -> (T, Vec<Use>) {
+        let outer = std::mem::take(&mut self.uses);
+        let value = emit(self);
+        (value, std::mem::replace(&mut self.uses, outer))
+    }
+
+    /// A lattice noise as a slot: its arguments are set by a statement, a loop evaluates it at the
+    /// end of that round, and the expression reads the result. Equal arguments share a slot.
+    fn slot(
+        &mut self,
+        batch: Batch,
+        point: String,
+        seed: String,
+        count: &str,
+        uses: Vec<Use>,
+    ) -> String {
+        if self.inline {
+            self.uses.extend(uses);
+            return match batch {
+                Batch::Value2 | Batch::Value3 => format!("ms_value_noise({point}, {seed})"),
+                _ => format!(
+                    "ms_noise({point}, {seed}, {count}, {})",
+                    matches!(batch, Batch::Cells2 | Batch::Cells3)
+                ),
+            };
+        }
+        let p = batch.prefix();
+        let key = (batch, format!("{point}|{seed}|{count}"));
+        let slot = match self.slot_of.get(&key) {
+            Some(slot) => *slot,
+            None => {
+                let slot = self.slots.len();
+                let i = slot_mark(slot);
+                let mut text =
+                    format!("  {p}p{i} = {point}; {p}k{i} = {seed}; {p}s{i} = ms_spread({p}p{i});");
+                if batch.octaves() {
+                    text.push_str(&format!(" {p}c{i} = {count};"));
+                }
+                text.push('\n');
+                let statement = self.statement(text, uses);
+                self.slots.push(Slot { batch, statement });
+                self.slot_of.insert(key, slot);
+                slot
+            }
+        };
+        self.uses.push(Use::Slot(slot));
+        format!("{p}r{}", slot_mark(slot))
+    }
+
+    /// A helper call as the helper's body with the arguments in place. An argument the body reads
+    /// more than once is computed into a local first, unless it is a name or a constant.
+    fn expand(&mut self, index: usize, args: &[Node], scope: Option<usize>) -> String {
+        let mut frame = Vec::with_capacity(args.len());
+        for (position, argument) in args.iter().enumerate() {
+            let seed = self.functions[index].seeds[position];
+            let (text, uses) = self.reading(|emitter| {
+                if seed {
+                    emitter.seed(argument, scope)
+                } else {
+                    emitter.emit(argument, scope)
+                }
+            });
+            if self.functions[index].reads[position] < 2 || !text.contains(' ') {
+                frame.push(Binding { text, uses });
+                continue;
+            }
+            let kind = if seed {
+                "uint"
+            } else {
+                glsl_type(self.functions[index].arguments[position].1)
+            };
+            let (name, statement) = self.named(kind, text, uses);
+            frame.push(Binding {
+                text: name,
+                uses: vec![Use::Statement(statement)],
+            });
+        }
+        self.frames.push(frame);
+        let body = self.functions[index].body;
+        let (value, uses) = self.reading(|emitter| emitter.emit(body, Some(index)));
+        self.frames.pop();
+        if !value.contains(' ') {
+            self.uses.extend(uses);
+            return value;
+        }
+        // The result is a local too, so a call made twice with the same arguments is computed once.
+        let (name, statement) = self.named(glsl_type(self.functions[index].result), value, uses);
+        self.uses.push(Use::Statement(statement));
+        name
+    }
+
+    /// The local that holds `text`, declared by a statement the first time.
+    fn named(&mut self, kind: &str, text: String, uses: Vec<Use>) -> (String, usize) {
+        let declaration = format!("{kind} {text}");
+        if let Some(found) = self.locals.get(&declaration) {
+            return found.clone();
+        }
+        let name = format!("ms_t{}", self.locals.len());
+        let statement = self.statement(format!("  {kind} {name} = {text};\n"), uses);
+        self.locals.insert(declaration, (name.clone(), statement));
+        (name, statement)
+    }
+
+    /// The argument a helper's body reads, noting what it read.
+    fn local(&mut self, index: usize) -> String {
+        let binding = &self.frames.last().expect("a helper body")[index];
+        let text = binding.text.clone();
+        let uses = binding.uses.clone();
+        self.uses.extend(uses);
+        text
+    }
+
+    fn field(&mut self, index: usize) -> String {
+        self.uses.push(Use::Statement(self.field_statement[index]));
+        format!("ms_f{index}")
+    }
+
+    /// Whether a node is arithmetic on numbers and scalar parameters alone, through scalar fields.
+    fn pure(&mut self, node: &Node) -> bool {
+        use Builtin as B;
+        match &node.kind {
+            Kind::Number(_) => true,
+            Kind::Parameter(index) => self.program.metadata.parameters[*index].kind == Type::Scalar,
+            Kind::Field(index) => {
+                let program = self.program;
+                let body = &program.compiled.fields[*index];
+                !self.cpu_only[*index]
+                    && self.field_type(*index) == Type::Scalar
+                    && !self.field_is_seed(*index)
+                    && self.pure(body)
+            }
+            Kind::Unary(Op::Sub, a) => self.pure(a),
+            Kind::Binary(Op::Add | Op::Sub | Op::Mul | Op::Div, a, b) => {
+                self.pure(a) && self.pure(b)
+            }
+            Kind::Builtin(
+                B::Mix
+                | B::Clamp
+                | B::Smoothstep
+                | B::Abs
+                | B::Floor
+                | B::Fract
+                | B::Sin
+                | B::Cos
+                | B::Sqrt
+                | B::Exp
+                | B::Min
+                | B::Max
+                | B::Step
+                | B::Pow,
+                args,
+            ) => args.iter().all(|a| self.pure(a)),
+            _ => false,
+        }
+    }
+
+    /// A pure node as GLSL that reads parameter uniforms only, with the uniforms it reads.
+    fn pure_text(&self, node: &Node, parameters: &mut Vec<String>) -> String {
+        use Builtin as B;
+        match &node.kind {
+            Kind::Number(value) => literal(*value),
+            Kind::Parameter(index) => {
+                let uniform = format!("ms_p{index}");
+                if !parameters.contains(&uniform) {
+                    parameters.push(uniform.clone());
+                }
+                uniform
+            }
+            Kind::Field(index) => self.pure_text(&self.program.compiled.fields[*index], parameters),
+            Kind::Unary(_, a) => format!("(-{})", self.pure_text(a, parameters)),
+            Kind::Binary(op, a, b) => {
+                let sign = match op {
+                    Op::Add => "+",
+                    Op::Sub => "-",
+                    Op::Mul => "*",
+                    _ => "/",
+                };
+                format!(
+                    "({} {sign} {})",
+                    self.pure_text(a, parameters),
+                    self.pure_text(b, parameters)
+                )
+            }
+            Kind::Builtin(name, args) => {
+                let a: Vec<String> = args.iter().map(|a| self.pure_text(a, parameters)).collect();
+                let call = match name {
+                    B::Mix => "mix",
+                    B::Clamp => "clamp",
+                    B::Smoothstep => "smoothstep",
+                    B::Abs => "abs",
+                    B::Floor => "floor",
+                    B::Fract => "fract",
+                    B::Sin => "sin",
+                    B::Cos => "cos",
+                    B::Sqrt => "sqrt",
+                    B::Exp => "exp",
+                    B::Min => "min",
+                    B::Max => "max",
+                    B::Step => "step",
+                    // As `builtin` emits it: the base is held at zero or above.
+                    _ => return format!("pow(max({}, 0.0), {})", a[0], a[1]),
+                };
+                format!("{call}({})", a.join(", "))
+            }
+            _ => "0.0".into(),
+        }
+    }
+
+    /// What a live argument read from field `index` (as `symbol`) is to a host that bakes.
+    fn classify(&mut self, index: usize, symbol: &str) -> LiveArgument {
+        let program = self.program;
+        let node = &program.compiled.fields[index];
+        if self.cpu_only[index]
+            || self.field_type(index) != Type::Scalar
+            || self.field_is_seed(index)
+            || !self.pure(node)
+        {
+            return LiveArgument::Varying {
+                varying: symbol.to_owned(),
+            };
+        }
+        let mut parameters = Vec::new();
+        let glsl = self.pure_text(node, &mut parameters);
+        // A field that only repeats a number, through other fields, is that number.
+        let mut value = node;
+        while let Kind::Field(next) = &value.kind {
+            value = &program.compiled.fields[*next];
+        }
+        match &value.kind {
+            Kind::Number(constant) => LiveArgument::Constant {
+                constant: *constant,
+            },
+            _ => LiveArgument::Parameters { parameters, glsl },
+        }
+    }
+
     fn field_type(&self, index: usize) -> Type {
         self.program.metadata.fields[index].kind
     }
@@ -262,7 +686,7 @@ impl<'a> Emitter<'a> {
                     | B::SampleData => Type::Vec3,
                     B::Mix | B::Min | B::Max | B::Step => wider(of(0), of(1)),
                     B::Smoothstep => wider(wider(of(0), of(1)), of(2)),
-                    B::Remap => of(1),
+                    B::Remap | B::External => of(1),
                     B::Clamp
                     | B::Abs
                     | B::Floor
@@ -423,8 +847,8 @@ impl<'a> Emitter<'a> {
     fn seed(&mut self, node: &Node, scope: Option<usize>) -> String {
         match &node.kind {
             Kind::Builtin(Builtin::Seed, args) => self.seed_uniform(Self::text(&args[0])),
-            Kind::Local(index) if self.seedlike(node, scope) => format!("a{index}"),
-            Kind::Field(index) if self.seedlike(node, scope) => format!("ms_f{index}"),
+            Kind::Local(index) if self.seedlike(node, scope) => self.local(*index),
+            Kind::Field(index) if self.seedlike(node, scope) => self.field(*index),
             Kind::Number(value) => format!("{}u", *value as i64 as u32),
             // Sums stay in integer arithmetic, which agrees with the baker modulo 2^32.
             Kind::Binary(op @ (Op::Add | Op::Sub), a, b) => {
@@ -454,10 +878,14 @@ impl<'a> Emitter<'a> {
             }
             .into(),
             Kind::Parameter(index) => format!("ms_p{index}"),
-            Kind::Field(index) if self.seedlike(node, scope) => format!("float(ms_f{index})"),
-            Kind::Field(index) => format!("ms_f{index}"),
-            Kind::Local(index) if self.seedlike(node, scope) => format!("float(a{index})"),
-            Kind::Local(index) => format!("a{index}"),
+            Kind::Field(index) if self.seedlike(node, scope) => {
+                format!("float({})", self.field(*index))
+            }
+            Kind::Field(index) => self.field(*index),
+            Kind::Local(index) if self.seedlike(node, scope) => {
+                format!("float({})", self.local(*index))
+            }
+            Kind::Local(index) => self.local(*index),
             Kind::Unary(op, value) => {
                 let value = self.emit(value, scope);
                 match op {
@@ -511,22 +939,41 @@ impl<'a> Emitter<'a> {
                 self.emit(yes, scope),
                 self.emit(no, scope)
             ),
-            Kind::Function(index, args) => {
-                let values: Vec<String> = args
-                    .iter()
-                    .enumerate()
-                    .map(|(position, argument)| {
-                        if self.functions[*index].seeds[position] {
-                            self.seed(argument, scope)
-                        } else {
-                            self.emit(argument, scope)
-                        }
-                    })
-                    .collect();
-                format!("ms_h{index}({})", values.join(", "))
-            }
-            Kind::Builtin(name, args) => self.builtin(*name, args, node, scope),
+            Kind::Function(index, args) => self.expand(*index, args, scope),
+            Kind::Builtin(name, args) => match self.batch(*name, args, scope) {
+                Some(batch) => {
+                    let ((point, seed, count), uses) = self.reading(|emitter| {
+                        let point = emitter.emit(&args[0], scope);
+                        let seed = emitter.seed(&args[1], scope);
+                        let count = match name {
+                            Builtin::Fbm => emitter.emit(&args[2], scope),
+                            _ => "1.0".into(),
+                        };
+                        (point, seed, count)
+                    });
+                    self.slot(batch, point, seed, &count, uses)
+                }
+                None => self.builtin(*name, args, node, scope),
+            },
         }
+    }
+
+    /// The kind of slot a lattice noise call takes, if it is one.
+    fn batch(&self, name: Builtin, args: &[Node], scope: Option<usize>) -> Option<Batch> {
+        let vec3 = match self.kind(args.first()?, scope) {
+            Type::Vec2 => false,
+            Type::Vec3 => true,
+            _ => return None,
+        };
+        Some(match (name, vec3) {
+            (Builtin::ValueNoise, false) => Batch::Value2,
+            (Builtin::ValueNoise, true) => Batch::Value3,
+            (Builtin::Noise | Builtin::Fbm, false) => Batch::Gradient2,
+            (Builtin::Noise | Builtin::Fbm, true) => Batch::Gradient3,
+            (Builtin::Cellular, false) => Batch::Cells2,
+            (Builtin::Cellular, true) => Batch::Cells3,
+            _ => return None,
+        })
     }
 
     fn builtin(
@@ -624,6 +1071,8 @@ impl<'a> Emitter<'a> {
             ),
             // The preview reads no source edges.
             B::Runoff => "0.0".into(),
+            // Outside a CPU field the shader has no plane to read: the fallback.
+            B::External => a[1].clone(),
             B::CreaseDistance | B::CreaseNormal | B::CreaseTangent | B::CreaseAdjacentNormal => {
                 self.features = true;
                 let query = match name {
@@ -697,7 +1146,39 @@ pub(super) fn plan(program: &Program) -> Result<Shader, String> {
     build(program, true)
 }
 
+/// The define that selects the entry points with every noise where it is used.
+const INLINE: &str = "MS_INLINE_NOISE";
+
+/// Both forms of the entry points over one set of declarations. Looping over slots compiles fast
+/// and draws slower (a program of a hundred noises compiled in a third of the time and drew in
+/// seven times the time on the GPU this was measured on): right for a bake, which draws once, and
+/// for a first look. A renderer that shades every frame with the program can compile the other
+/// form behind it by defining `MS_INLINE_NOISE` before the source: every noise where it is used,
+/// which draws as fast as the program can and compiles slowly.
 fn build(program: &Program, partition: bool) -> Result<Shader, String> {
+    let (mut shader, at) = emit(program, partition, false)?;
+    let (inline, inline_at) = emit(program, partition, true)?;
+    debug_assert_eq!(shader.source[..at], inline.source[..inline_at]);
+    let looped = shader.source.split_off(at);
+    shader.source.push_str(&format!(
+        "#ifdef {INLINE}\n{}#else\n{looped}#endif\n",
+        &inline.source[inline_at..]
+    ));
+    // FNV-1a over the source.
+    shader.id = format!(
+        "{:016x}",
+        shader
+            .source
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            })
+    );
+    Ok(shader)
+}
+
+/// One form of the program: the shader, and where in its source the entry points begin.
+fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usize), String> {
     let compiled = &program.compiled;
     let definitions: Vec<&Definition> = program
         .definitions
@@ -714,6 +1195,8 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
             else {
                 unreachable!()
             };
+            let mut reads = vec![0; arguments.len()];
+            count_reads(&function.body, &mut reads);
             Function {
                 arguments,
                 result: *result,
@@ -723,6 +1206,7 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
                     .map(|(_, kind)| *kind == Type::Scalar)
                     .collect(),
                 needed: false,
+                reads,
             }
         })
         .collect();
@@ -741,6 +1225,14 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
             .iter()
             .map(|field| partition && uses_cpu_only(field))
             .collect(),
+        inline,
+        statements: Vec::new(),
+        slots: Vec::new(),
+        uses: Vec::new(),
+        frames: Vec::new(),
+        field_statement: vec![usize::MAX; compiled.fields.len()],
+        locals: BTreeMap::new(),
+        slot_of: BTreeMap::new(),
     };
     if partition {
         for (name, node) in &compiled.outputs {
@@ -764,8 +1256,10 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
         emitter.require(node);
     }
     let mut live = Vec::new();
+    let mut live_fields = Vec::new();
     for operation in &program.metadata.live {
         let mut arguments = BTreeMap::new();
+        let mut classes = BTreeMap::new();
         for (argument, field) in &operation.inputs {
             let index = field_index(field)?;
             emitter.require_field(index);
@@ -774,11 +1268,14 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
                 (Type::Scalar, _) => format!("ms_f{index}"),
                 _ => format!("ms_f{index}.x"),
             };
+            classes.insert(argument.clone(), emitter.classify(index, &symbol));
             arguments.insert(argument.clone(), symbol);
+            live_fields.push(index);
         }
         live.push(LiveOperation {
             id: operation.id.clone(),
             arguments,
+            classes,
         });
     }
 
@@ -789,10 +1286,8 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
             }
         }
     }
-    let mut body = String::new();
     let mut declarations = String::new();
     let mut cpu_fields: Vec<CpuField> = Vec::new();
-    let mut field_lines: Vec<(usize, String)> = Vec::new();
     let table = partition.then(|| program.dependency_table());
     for index in emitter.field_order.clone() {
         let kind = if emitter.field_is_seed(index) {
@@ -818,9 +1313,8 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
                 Type::Vec3 => format!("{fetch}.xyz"),
                 _ => format!("({fetch}.x > 0.5)"),
             };
-            let line = format!("  ms_f{index} = {value};\n");
-            body.push_str(&line);
-            field_lines.push((index, line));
+            emitter.field_statement[index] =
+                emitter.statement(format!("  ms_f{index} = {value};\n"), Vec::new());
             let found = table
                 .as_ref()
                 .and_then(|table| table.fields.get(&field.name))
@@ -838,57 +1332,151 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
                 seed: found.seed,
                 images: found.images.iter().cloned().collect(),
                 edges: found.edges,
+                planes: found.externals.iter().cloned().collect(),
             });
             continue;
         }
-        let value = if emitter.field_is_seed(index) {
-            emitter.seed(node, None)
-        } else {
-            emitter.emit(node, None)
-        };
-        let line = format!("  ms_f{index} = {value};\n");
-        body.push_str(&line);
-        field_lines.push((index, line));
+        let seed = emitter.field_is_seed(index);
+        let (value, uses) = emitter.reading(|emitter| {
+            if seed {
+                emitter.seed(node, None)
+            } else {
+                emitter.emit(node, None)
+            }
+        });
+        emitter.field_statement[index] =
+            emitter.statement(format!("  ms_f{index} = {value};\n"), uses);
     }
+    // Each output's value and what it reads.
     let mut outputs = Vec::new();
-    let mut height: Option<(&Node, String)> = None;
+    let mut values: BTreeMap<&str, (String, Vec<Use>)> = BTreeMap::new();
     for (name, node) in &compiled.outputs {
-        let value = emitter.emit(node, None);
-        if name == "height" {
-            height = Some((node, value.clone()));
-        }
-        body.push_str(&format!("  ms_{name} = {value};\n"));
+        values.insert(
+            name.as_str(),
+            emitter.reading(|emitter| emitter.emit(node, None)),
+        );
         outputs.push(name.clone());
     }
-    let mut helpers = String::new();
-    let mut prototypes = String::new();
-    for index in emitter.function_order.clone() {
-        let signature = {
-            let function = &emitter.functions[index];
-            let arguments: Vec<String> = function
-                .arguments
-                .iter()
-                .enumerate()
-                .map(|(position, (_, kind))| {
-                    let kind = if function.seeds[position] {
-                        "uint"
-                    } else {
-                        glsl_type(*kind)
-                    };
-                    format!("{kind} a{position}")
-                })
-                .collect();
-            format!(
-                "{} ms_h{index}({})",
-                glsl_type(function.result),
-                arguments.join(", ")
-            )
+    let reach = |roots: &[Use]| {
+        let mut statements = vec![false; emitter.statements.len()];
+        let mut slots = vec![false; emitter.slots.len()];
+        let mut pending = roots.to_vec();
+        while let Some(used) = pending.pop() {
+            let statement = match used {
+                Use::Statement(statement) => statement,
+                Use::Slot(slot) => {
+                    slots[slot] = true;
+                    emitter.slots[slot].statement
+                }
+            };
+            if !std::mem::replace(&mut statements[statement], true) {
+                pending.extend(&emitter.statements[statement].uses);
+            }
+        }
+        (statements, slots)
+    };
+    let slot_round = |slot: usize| emitter.statements[emitter.slots[slot].statement].round;
+    let rounds = emitter
+        .statements
+        .iter()
+        .map(|statement| statement.round + 1)
+        .max()
+        .unwrap_or(0);
+    // An entry point: the statements `roots` reach, round by round, each round followed by the
+    // loops of the slots it filled. Each round of a kind has arrays of its own, local to the entry
+    // point and exactly as long as the slots it reaches: a compiler follows an array that is
+    // filled whole, read by one loop and then only read far faster than one that is filled in
+    // part, filled again after a loop has read it, or read by two loops.
+    let entry = |name: &str, defaults: &str, roots: &[Use], results: &[&str]| {
+        let (statements, slots) = reach(roots);
+        let mut place = vec![(0, 0); emitter.slots.len()];
+        let mut counts: BTreeMap<(Batch, usize), usize> = BTreeMap::new();
+        for slot in (0..emitter.slots.len()).filter(|slot| slots[*slot]) {
+            let round = slot_round(slot);
+            let count = counts
+                .entry((emitter.slots[slot].batch, round))
+                .or_default();
+            place[slot] = (round, *count);
+            *count += 1;
+        }
+        let mut text = format!("void {name}() {{\n{defaults}");
+        for ((batch, round), count) in &counts {
+            let p = batch.prefix();
+            text.push_str(&format!(
+                "  {} {p}p{round}[{count}]; uint {p}k{round}[{count}]; float {p}s{round}[{count}]; float {p}r{round}[{count}];",
+                batch.point()
+            ));
+            if batch.octaves() {
+                text.push_str(&format!(" float {p}c{round}[{count}];"));
+            }
+            text.push('\n');
+        }
+        for round in 0..rounds {
+            for (statement, reached) in emitter.statements.iter().zip(&statements) {
+                if *reached && statement.round == round {
+                    text.push_str(&settle(&statement.text, &place));
+                }
+            }
+            for batch in Batch::ALL {
+                let Some(count) = counts.get(&(batch, round)) else {
+                    continue;
+                };
+                let p = batch.prefix();
+                if *count >= LOOP_SLOTS {
+                    text.push_str(&format!(
+                        "  for (int i = 0; i < {count} + ms_loop; i++) {p}r{round}[i] = {};\n",
+                        batch.call(&format!("{round}[i]"))
+                    ));
+                } else {
+                    for index in 0..*count {
+                        text.push_str(&format!(
+                            "  {p}r{round}[{index}] = {};\n",
+                            batch.call(&format!("{round}[{index}]"))
+                        ));
+                    }
+                }
+            }
+        }
+        for name in results {
+            if let Some((value, _)) = values.get(name) {
+                text.push_str(&format!("  ms_{name} = {};\n", settle(value, &place)));
+            }
+        }
+        text.push_str("}\n");
+        text
+    };
+    let default_of = |name: &str| match name {
+        "base_color" => "ms_base_color = vec3(0.0);",
+        "roughness" => "ms_roughness = 1.0;",
+        "metalness" => "ms_metalness = 0.0;",
+        "height" => "ms_height = 0.0;",
+        "emissive" => "ms_emissive = vec3(0.0);",
+        "opacity" => "ms_opacity = 1.0;",
+        "receiver_normal" => "ms_receiver_normal = ms_normal;",
+        _ => "ms_normal_offset = vec3(0.0);",
+    };
+    let live_roots: Vec<Use> = live_fields
+        .iter()
+        .map(|index| Use::Statement(emitter.field_statement[*index]))
+        .collect();
+    // A part of the program: the named outputs, and the live fields when `live`.
+    let part = |name: &str, results: &[&str], live: bool| {
+        let mut roots: Vec<Use> = results
+            .iter()
+            .filter_map(|name| values.get(name))
+            .flat_map(|(_, uses)| uses.iter().copied())
+            .collect();
+        if live {
+            roots.extend(&live_roots);
+        }
+        let defaults: Vec<&str> = results.iter().map(|name| default_of(name)).collect();
+        let defaults = if defaults.is_empty() {
+            String::new()
+        } else {
+            format!("  {}\n", defaults.join(" "))
         };
-        let node = emitter.functions[index].body;
-        let value = emitter.emit(node, Some(index));
-        prototypes.push_str(&format!("{signature};\n"));
-        helpers.push_str(&format!("{signature} {{ return {value}; }}\n"));
-    }
+        entry(name, &defaults, &roots, results)
+    };
 
     let mut source = String::new();
     let mut parameters = Vec::new();
@@ -940,58 +1528,113 @@ fn build(program: &Program, partition: bool) -> Result<Shader, String> {
          vec3 ms_emissive; float ms_opacity; vec3 ms_receiver_normal; vec3 ms_normal_offset;\n",
     );
     source.push_str(&declarations);
-    source.push_str(&prototypes);
-    source.push_str(&helpers);
-    source.push_str(
-        "void ms_evaluate() {\n  ms_base_color = vec3(0.0); ms_roughness = 1.0; ms_metalness = 0.0; ms_height = 0.0;\n  \
+    let functions = source.len();
+    let names: Vec<&str> = outputs.iter().map(String::as_str).collect();
+    let mut all_roots = live_roots.clone();
+    all_roots.extend(values.values().flat_map(|(_, uses)| uses.iter().copied()));
+    source.push_str(&entry(
+        "ms_evaluate",
+        "  ms_base_color = vec3(0.0); ms_roughness = 1.0; ms_metalness = 0.0; ms_height = 0.0;\n  \
          ms_emissive = vec3(0.0); ms_opacity = 1.0; ms_receiver_normal = ms_normal; ms_normal_offset = vec3(0.0);\n",
-    );
-    source.push_str(&body);
-    source.push_str("}\n");
-    // The height alone: only the fields the height output reaches, in the same order. A renderer
-    // that shades per pixel calls it at neighboring surface points to take the relief's slope by
-    // finite differences, which screen derivatives of `ms_height` give at half resolution. It
-    // writes the same field globals as `ms_evaluate`, so hosts call it before `ms_evaluate`.
-    if let Some((node, value)) = &height {
-        let mut reached = vec![false; compiled.fields.len()];
-        let mut helpers_seen = vec![false; compiled.functions.len()];
-        reach_fields(
-            compiled,
-            &emitter.cpu_only,
-            node,
-            &mut reached,
-            &mut helpers_seen,
-        );
-        source.push_str("void ms_evaluate_height() {\n  ms_height = 0.0;\n");
-        for (index, line) in &field_lines {
-            if reached[*index] {
-                source.push_str(line);
-            }
-        }
-        source.push_str(&format!("  ms_height = {value};\n}}\n"));
+        &all_roots,
+        &names,
+    ));
+    // Parts of the program, each with only the statements its outputs reach, in the order
+    // `ms_evaluate` has them. The height alone is what a renderer that shades per pixel calls at
+    // neighboring surface points, to take the relief's slope by finite differences, which screen
+    // derivatives of `ms_height` give at half resolution; it is part of the source. The others are
+    // a bake's textures (color, properties, relief as the height with the receiver normal that
+    // turns it, emissive, the normal offset and the live arguments) and stay beside the source,
+    // for a host that wants a program per texture. Every part writes the same field globals as
+    // `ms_evaluate`, so a host that calls several calls `ms_evaluate` last.
+    let mut entries = Vec::new();
+    if values.contains_key("height") {
+        source.push_str(&part("ms_evaluate_height", &["height"], false));
+        entries.push(EntryPoint {
+            function: "ms_evaluate_height".into(),
+            outputs: vec!["height".into()],
+            live: false,
+            source: String::new(),
+        });
     }
+    let mut add = |function: &str, results: &[&str], live: bool| {
+        if inline {
+            return;
+        }
+        entries.push(EntryPoint {
+            function: function.to_owned(),
+            outputs: results.iter().map(|name| (*name).to_owned()).collect(),
+            live,
+            source: part(function, results, live),
+        });
+    };
+    add("ms_evaluate_base", &["base_color", "opacity"], false);
+    add("ms_evaluate_properties", &["roughness", "metalness"], false);
+    add("ms_evaluate_relief", &["height", "receiver_normal"], false);
+    if values.contains_key("emissive") {
+        add("ms_evaluate_emissive", &["emissive"], false);
+    }
+    if values.contains_key("normal_offset") {
+        add("ms_evaluate_offset", &["normal_offset"], false);
+    }
+    if !live_roots.is_empty() {
+        add("ms_evaluate_live", &[], true);
+    }
+    let uniforms: Vec<UniformDeclaration> = source
+        .lines()
+        .filter_map(|line| {
+            let mut words = line
+                .strip_prefix("uniform ")?
+                .trim_end_matches(';')
+                .split(' ');
+            let kind = match words.next()? {
+                "highp" => words.next()?,
+                kind => kind,
+            };
+            Some(UniformDeclaration {
+                name: words.next()?.to_owned(),
+                kind: kind.to_owned(),
+            })
+        })
+        .collect();
+    let samplers = uniforms
+        .iter()
+        .filter(|uniform| uniform.kind.starts_with("sampler"))
+        .count();
     let cpu_outputs: Vec<String> = table
         .as_ref()
         .filter(|_| !cpu_fields.is_empty())
         .map(|table| {
             outputs
                 .iter()
-                .filter(|name| table.outputs.get(*name).is_some_and(|found| found.edges))
+                .filter(|name| {
+                    table
+                        .outputs
+                        .get(*name)
+                        .is_some_and(|found| found.edges || !found.externals.is_empty())
+                })
                 .cloned()
                 .collect()
         })
         .unwrap_or_default();
-    Ok(Shader {
-        source,
-        parameters,
-        seeds,
-        images,
-        outputs,
-        live,
-        features: emitter.features,
-        cpu_fields,
-        cpu_outputs,
-    })
+    Ok((
+        Shader {
+            source,
+            parameters,
+            seeds,
+            images,
+            outputs,
+            live,
+            features: emitter.features,
+            cpu_fields,
+            cpu_outputs,
+            id: String::new(),
+            uniforms,
+            samplers,
+            entries,
+        },
+        functions,
+    ))
 }
 
 #[cfg(test)]
@@ -1120,28 +1763,206 @@ mod tests {
             )
         };
         let shader = plan_of(&source("output height = bump * 0.01;")).unwrap();
-        let entry = shader
-            .source
-            .split("void ms_evaluate_height() {")
-            .nth(1)
-            .expect("a height entry point");
-        // `bump` and, through the helper's body, `relief`; not `tone`, which only the color reads.
-        assert_eq!(entry.matches("  ms_f").count(), 2, "{entry}");
-        assert!(entry.contains("ms_height = "));
-        let whole = shader
-            .source
-            .split("void ms_evaluate() {")
-            .nth(1)
-            .unwrap()
-            .split("void ms_evaluate_height")
-            .next()
-            .unwrap();
-        assert_eq!(whole.matches("  ms_f").count(), 3);
+        for form in forms(&shader.source) {
+            let entry = function(form, "ms_evaluate_height").expect("a height entry point");
+            // `bump` and, through the helper's body, `relief`; not `tone`, which only the color reads.
+            assert_eq!(entry.matches("  ms_f").count(), 2, "{entry}");
+            assert!(entry.contains("ms_height = "));
+            let whole = function(form, "ms_evaluate").unwrap();
+            assert_eq!(whole.matches("  ms_f").count(), 3);
+        }
         assert!(
             !plan_of(&source(""))
                 .unwrap()
                 .source
                 .contains("ms_evaluate_height")
+        );
+    }
+
+    /// The two forms of the entry points: with `MS_INLINE_NOISE` defined, and without.
+    fn forms(source: &str) -> [&str; 2] {
+        let (_, rest) = source.split_once("#ifdef MS_INLINE_NOISE\n").unwrap();
+        let (inline, rest) = rest.split_once("#else\n").unwrap();
+        let (looped, rest) = rest.split_once("#endif\n").unwrap();
+        assert_eq!(rest, "", "nothing follows the entry points");
+        [inline, looped]
+    }
+
+    /// The body of an entry point.
+    fn function<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+        let (_, rest) = source.split_once(&format!("void {name}() {{\n"))?;
+        Some(rest.split_once("\n}\n")?.0)
+    }
+
+    /// Without the define every lattice noise is a slot: a statement sets its arguments and one
+    /// loop per round evaluates the round's slots. A noise whose position reads another noise
+    /// waits for the next round, a call made twice is one slot, and helpers are expanded so that
+    /// the noises inside them are slots too. With the define each noise is where it is used.
+    #[test]
+    fn noises_are_slots_evaluated_round_by_round() {
+        let shader = plan_of(
+            "material 1;
+             fn grain(p: vec2) -> scalar = noise(p * 5.0, seed(\"grain\")) * noise(p * 11.0, seed(\"grain\"));
+             let a = grain(surface);
+             let b = grain(surface) + noise(surface * 2.0, seed(\"wide\"));
+             let warped = value_noise(surface * 3.0 + a, seed(\"warp\"));
+             let c = fbm(surface, seed(\"fbm\"), 4.0);
+             output base_color = vec3(a + b + warped + c);
+             output roughness = 1;
+             output metalness = 0;",
+        )
+        .unwrap();
+        assert!(!shader.source.contains('@'), "every slot has its place");
+        let [inline, looped] = forms(&shader.source);
+        let body = function(looped, "ms_evaluate").unwrap();
+        // The helper's two noises (once, though it is called twice), the wide one and the fbm: one loop.
+        assert_eq!(body.matches("ms_g2k0[").count() - 1, 4 + 1, "{body}");
+        assert!(body.contains("vec2 ms_g2p0[4]; uint ms_g2k0[4]; float ms_g2s0[4]; float ms_g2r0[4]; float ms_g2c0[4];"));
+        assert!(body.contains("for (int i = 0; i < 4 + ms_loop; i++) ms_g2r0[i] = ms_octaves(vec3(ms_g2p0[i], 0.0), 2, ms_g2k0[i], int(ms_g2c0[i]), false, ms_g2s0[i]);"));
+        assert!(
+            body.contains("ms_g2c0[3] = 4.0;"),
+            "the fbm keeps its octaves: {body}"
+        );
+        // The warped noise reads `a`, which reads slots of the first round: it is filled after their loop.
+        let (first, second) = body.split_once("for (int i = 0; i < 4 + ms_loop").unwrap();
+        assert!(!first.contains("ms_v2p1[0] =") && second.contains("ms_v2p1[0] ="));
+        // A round of fewer than three slots is evaluated line by line.
+        assert!(second.contains(
+            "  ms_v2r1[0] = ms_fade_value(ms_value2(ms_v2p1[0], ms_v2k1[0]), ms_v2s1[0]);"
+        ));
+        assert!(!looped.contains("ms_noise(") && !looped.contains("ms_value_noise("));
+        let body = function(inline, "ms_evaluate").unwrap();
+        assert!(!body.contains("for (") && !body.contains("ms_g2"));
+        assert!(body.contains("ms_noise(") && body.contains("ms_value_noise("));
+        // Both forms set the same fields from the same uniforms.
+        for form in [inline, looped] {
+            assert_eq!(
+                function(form, "ms_evaluate")
+                    .unwrap()
+                    .matches("  ms_f")
+                    .count(),
+                4
+            );
+        }
+        assert_eq!(shader.seeds.len(), 4);
+    }
+
+    /// The parts of a bake: each sets its outputs (defaults where the program has none) from only
+    /// the statements they reach, with slots numbered from zero for it.
+    #[test]
+    fn parts_hold_only_what_their_outputs_reach() {
+        let shader = plan_of(
+            "material 1;
+             let tone = noise(surface * 3.0, seed(\"tone\")) + noise(surface * 5.0, seed(\"tone\")) + noise(surface * 7.0, seed(\"tone\"));
+             let relief = value_noise(surface * 9.0, seed(\"relief\"));
+             output base_color = vec3(tone);
+             output roughness = 0.5;
+             output metalness = 0;
+             output height = relief * 0.01;",
+        )
+        .unwrap();
+        let names: Vec<_> = shader
+            .entries
+            .iter()
+            .map(|entry| entry.function.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "ms_evaluate_height",
+                "ms_evaluate_base",
+                "ms_evaluate_properties",
+                "ms_evaluate_relief"
+            ]
+        );
+        let part = |name: &str| {
+            let entry = shader
+                .entries
+                .iter()
+                .find(|entry| entry.function == name)
+                .unwrap();
+            function(&entry.source, name).unwrap().to_owned()
+        };
+        // The height is in the source itself, in both forms.
+        assert!(shader.entries[0].source.is_empty());
+        let base = part("ms_evaluate_base");
+        assert!(
+            base.contains("ms_base_color = vec3(0.0); ms_opacity = 1.0;")
+                && base.contains("ms_g2r0[i]")
+        );
+        assert!(
+            !base.contains("ms_v2") && !base.contains("ms_height"),
+            "{base}"
+        );
+        let properties = part("ms_evaluate_properties");
+        assert!(
+            properties.contains("ms_roughness = 0.5;")
+                && !properties.contains("ms_g2")
+                && !properties.contains("ms_f")
+        );
+        let relief = part("ms_evaluate_relief");
+        assert!(relief.contains("ms_height = 0.0; ms_receiver_normal = ms_normal;"));
+        assert!(
+            relief.contains("ms_v2r0[0] = ") && !relief.contains("ms_g2"),
+            "{relief}"
+        );
+        assert_eq!(shader.entries[3].outputs, ["height", "receiver_normal"]);
+    }
+
+    /// What a host needs besides the text: the uniforms the source declares, how many are
+    /// samplers, an identity that follows the source, and each live argument as a number, an
+    /// expression of parameters or a value that varies.
+    #[test]
+    fn the_record_states_uniforms_identity_and_live_argument_classes() {
+        use super::LiveArgument;
+        let steel = examples("kowloon-rusted-steel.material.ts");
+        let declared = |name: &str| {
+            steel
+                .uniforms
+                .iter()
+                .find(|uniform| uniform.name == name)
+                .map(|uniform| uniform.kind.as_str())
+        };
+        assert_eq!(declared("ms_loop"), Some("int"));
+        assert_eq!(declared("ms_features"), Some("sampler2D"));
+        assert_eq!(declared(&steel.seeds[0].uniform), Some("uint"));
+        assert_eq!(
+            steel.uniforms.len(),
+            steel.source.matches("\nuniform ").count()
+                + usize::from(steel.source.starts_with("uniform "))
+        );
+        assert_eq!(steel.samplers, steel.images.len() + 1);
+        assert_eq!(steel.id.len(), 16);
+        assert_eq!(steel.id, examples("kowloon-rusted-steel.material.ts").id);
+        assert_ne!(steel.id, examples("kowloon-concrete.material.ts").id);
+        let (mut constants, mut parameters, mut varying) = (0, 0, 0);
+        for operation in &steel.live {
+            assert_eq!(operation.classes.len(), operation.arguments.len());
+            for (name, class) in &operation.classes {
+                match class {
+                    LiveArgument::Constant { constant } => {
+                        constants += 1;
+                        assert!(constant.is_finite());
+                    }
+                    LiveArgument::Parameters {
+                        parameters: read,
+                        glsl,
+                    } => {
+                        parameters += 1;
+                        assert!(!glsl.contains("ms_f"), "{glsl} reads no field");
+                        assert!(read.iter().all(|uniform| glsl.contains(uniform.as_str())));
+                    }
+                    LiveArgument::Varying { varying: symbol } => {
+                        varying += 1;
+                        assert_eq!(symbol, &operation.arguments[name]);
+                    }
+                }
+            }
+        }
+        // The study's lighting has fixed widths, strengths that follow parameters and masks that vary.
+        assert!(
+            constants > 0 && parameters > 0 && varying > 0,
+            "{constants} {parameters} {varying}"
         );
     }
 

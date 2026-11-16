@@ -38,6 +38,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             outputs: Vec::new(),
             required_inputs: Vec::new(),
             live: Vec::new(),
+            externals: Vec::new(),
         },
         compiled: Default::default(),
     };
@@ -66,6 +67,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
         program: &program,
         stack: Vec::new(),
         types: BTreeMap::new(),
+        externals: BTreeMap::new(),
         depth: 0,
     };
     let mut errors: Vec<ProgramDiagnostic> = Vec::new();
@@ -119,6 +121,14 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
     if !errors.is_empty() {
         return Err(errors);
     }
+    let externals: Vec<External> = types
+        .externals
+        .iter()
+        .map(|(name, kind)| External {
+            name: name.clone(),
+            kind: *kind,
+        })
+        .collect();
     let inferred = types.types;
     let mut parameters = Vec::new();
     let mut fields = Vec::new();
@@ -185,6 +195,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
     program.metadata.fields = fields;
     program.metadata.outputs = program.outputs.keys().cloned().collect();
     program.metadata.required_inputs = required.into_iter().collect();
+    program.metadata.externals = externals;
     program.metadata.dependencies.sort();
     program.compiled = std::sync::Arc::new(super::compiled::resolve(
         &program.definitions,
@@ -358,13 +369,51 @@ fn builtin_name(name: &str) -> bool {
 fn builtin(name: &str, args: &[Type]) -> Option<Type> {
     catalog::resolve(name, args)
 }
+/// External inputs one program reads at most.
+pub(super) const MAX_EXTERNALS: usize = 16;
 struct Checker<'a> {
     program: &'a Program,
     stack: Vec<String>,
     types: BTreeMap<String, Type>,
+    /// The type each external input is read as.
+    externals: BTreeMap<String, Type>,
     depth: usize,
 }
 impl Checker<'_> {
+    /// Notes one `external(name, fallback)` of type `kind`. A name stands for one plane, so its
+    /// uses agree on a type, and a program reads a bounded number of them.
+    fn external(&mut self, name: &str, kind: Type, mark: &Mark) -> Result<(), ProgramDiagnostic> {
+        if name.len() > 64
+            || !name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+        {
+            return Err(self.program.diagnostic(
+                "MS_TYPE",
+                "External input names are at most 64 letters, digits, '.', '_' or '-'.",
+                mark,
+            ));
+        }
+        match self.externals.get(name) {
+            Some(known) if *known != kind => Err(self.program.diagnostic(
+                "MS_TYPE",
+                format!(
+                    "External input '{name}' is read as {known:?} elsewhere and as {kind:?} here."
+                ),
+                mark,
+            )),
+            Some(_) => Ok(()),
+            None if self.externals.len() >= MAX_EXTERNALS => Err(self.program.diagnostic(
+                "MS_LIMIT",
+                format!("A program reads at most {MAX_EXTERNALS} external inputs."),
+                mark,
+            )),
+            None => {
+                self.externals.insert(name.to_owned(), kind);
+                Ok(())
+            }
+        }
+    }
     fn definition(&mut self, name: &str) -> Result<Type, ProgramDiagnostic> {
         if let Some(kind) = self.types.get(name) {
             return Ok(*kind);
@@ -547,13 +596,19 @@ impl Checker<'_> {
                             ));
                         }
                     }
-                    return builtin(name, &kinds).ok_or_else(|| {
+                    let result = builtin(name, &kinds).ok_or_else(|| {
                         self.program.diagnostic(
                             "MS_TYPE",
                             format!("Invalid arguments for {name}: {kinds:?}."),
                             &expr.mark,
                         )
-                    });
+                    })?;
+                    if let ("external", Some(Expression::Text(plane))) =
+                        (name.as_str(), args.first().map(|v| &v.kind))
+                    {
+                        self.external(plane, result, &expr.mark)?;
+                    }
+                    return Ok(result);
                 }
                 let Some(Definition::Function {
                     arguments, result, ..
@@ -627,6 +682,15 @@ fn dependencies(
                     }) = args.first()
                     {
                         inputs.insert(format!("image:{image}"));
+                    }
+                }
+                if operation.id == "external" {
+                    if let Some(Expr {
+                        kind: Expression::Text(plane),
+                        ..
+                    }) = args.first()
+                    {
+                        inputs.insert(format!("plane:{plane}"));
                     }
                 }
             }
