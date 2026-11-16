@@ -22,12 +22,8 @@ export const materials = [
   { id: "concrete-slab", entry: concrete, parameters: { ground: true, darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40 }, meshes: ["slab"] },
   { id: "tile", entry: "tiled-courtyard.material.ts", parameters: { tileSize: [0.15, 0.15], stagger: 0, wear: 0.3, glaze: [0.2, 0.42, 0.3], glazeRoughness: 0.12, missing: 0.1 }, meshes: ["tiles-wall", "tiles-floor"] },
   { id: "galvanized", entry: steel, parameters: { substrate: [0.5, 0.55, 0.57], metalness: 0.85, roughness: 0.38, surfaceRust: 0.12, rainRust: 0.25 }, meshes: ["duct"] },
-  { id: "rusted-pipe", entry: steel, parameters: { substrate: [0.3, 0.15, 0.08], metalness: 0.45, roughness: 0.5, oxideLight: [0.36, 0.13, 0.035], surfaceRust: 0.8 }, meshes: ["pipes"] },
+  { id: "rusted-pipe", entry: steel, parameters: { substrate: [0.3, 0.15, 0.08], metalness: 0.45, roughness: 0.5, oxideLight: [0.36, 0.13, 0.035], surfaceRust: 0.8 }, meshes: ["pipe"] },
   { id: "flat-steel", entry: steel, parameters: { rainRust: 0.5 }, meshes: ["brackets", "drain"] },
-  { id: "brass", entry: steel, parameters: { substrate: [0.6, 0.42, 0.16], metalness: 0.9, roughness: 0.35, surfaceRust: 0.3, rainRust: 0.3 }, meshes: ["valve"] },
-  { id: "red-paint", entry: steel, parameters: { ...plain, substrate: [0.5, 0.03, 0.025], metalness: 0.1, roughness: 0.4, surfaceRust: 0.4 }, meshes: ["handwheel"] },
-  { id: "chrome", entry: steel, parameters: { substrate: [0.75, 0.76, 0.78], metalness: 1, roughness: 0.12, surfaceRust: 0.15, rainRust: 0.2, edgeRust: 0.3 }, meshes: ["chrome"] },
-  { id: "enamel", entry: steel, parameters: { ...plain, substrate: [0.8, 0.77, 0.69], metalness: 0, roughness: 0.15, surfaceRust: 0.3, rainRust: 0.12, oxideLight: [0.5, 0.2, 0.05] }, meshes: ["sink"] },
   { id: "openings", entry: steel, parameters: { ...plain, substrate: [0.012, 0.012, 0.012], metalness: 0, roughness: 1, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, meshes: ["openings"] },
   { id: "bench-wood", entry: "wood.material.ts", parameters: {}, meshes: ["bench"] },
 ];

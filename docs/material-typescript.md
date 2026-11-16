@@ -500,6 +500,6 @@ CLI takes `--profile preview|production`; a bundle may set `"profile"` itself.
 - `npm run test:scene:browser` drives scene projects: the Kowloon yard, material switching and
   edits, mesh assignment, adding models, save, reopen and export.
 - `npm run test:washroom:browser` opens the [washroom benchmark scene](../tests/studio/washroom/README.md)
-  (15 meshes, 12 materials, all but one from the shipped recipes) in the built Studio and reports its load time.
+  (11 meshes, 8 materials, all but one from the shipped recipes) in the built Studio and reports its load time.
 - `npm run test:material:browser` compares native and Chromium/Wasm bytes for the `.ms`,
   TypeScript and Kowloon fixtures.

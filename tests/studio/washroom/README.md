@@ -1,26 +1,27 @@
 # Washroom benchmark scene
 
-A small scene for measuring and tuning MaterialSpec: a concrete corner with a tiled wall, an
-enamel sink, a galvanized duct, rusted pipes with a valve, a wooden bench and a floor drain. It is modeled after a piece of concept art and is meant to be recreated with the shipped
-example recipes, so that work on those recipes and on the bake pipeline shows up here.
+A small scene for measuring and tuning MaterialSpec: a concrete corner with a tiled wall, a
+galvanized duct with a vent, one large rusted pipe, a wooden bench and a floor drain. It is
+modeled after a piece of concept art and is meant to be recreated with the shipped example
+recipes, so that work on those recipes and on the bake pipeline shows up here. Detailed
+fixtures (a sink, valves, taps) are left out on purpose: they are a job for ItemSpec.
 
 | File | Purpose |
 | --- | --- |
 | `geometry.mjs` | Mesh helpers (boxes, bars, tubes, ducts, tori) and a GLB writer. |
-| `model.mjs` | The scene: 15 meshes, one per material receiver, in meters with Z up. |
+| `model.mjs` | The scene: 11 meshes, one per material receiver, in meters with Z up. |
 | `build.mjs` | Writes `generated/washroom/washroom.glb` and `washroom.studio.json`, a version 2 project. |
 | `materials/` | The one recipe the examples lack: bench wood. |
 | `../../material-washroom-browser.mjs` | Opens the project in the built Material Studio and times it. |
 
 ## Materials
 
-Eleven of the twelve materials are parameter sets of shipped recipes. Wear, broken edges and
+Seven of the eight materials are parameter sets of shipped recipes. Wear, broken edges and
 standing water are left to the materials rather than modeled:
 
 - `kowloon-concrete` on the walls and, with `ground`, the slab.
-- `kowloon-rusted-steel` for the galvanized duct, the rusted pipes, the flat steel brackets and
-  drain, the brass valve, the red handwheel, the chrome tap and trap, the enamel sink and the
-  dark openings: nine parameter sets of one recipe.
+- `kowloon-rusted-steel` for the galvanized duct, the rusted pipe, the flat steel brackets and
+  drain, and the dark openings: four parameter sets of one recipe.
 - `tiled-courtyard` for the wall and floor tile.
 
 ## Running it
