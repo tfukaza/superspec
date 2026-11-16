@@ -118,11 +118,16 @@ export interface AuthoringResult {
   diagnostics?: AuthoringDiagnostic[];
   error?: string;
 }
+/** Export progress: the bake is done once textures are listed, then each encoded texture counts. */
+export interface ExportProgress { encoded: number; textures: number }
+/** An interim worker message; the request stays pending. */
+export interface AuthoringProgress { requestId: number; progress: ExportProgress }
 
 /** Owns a real Rust/Wasm authoring worker and rejects superseded requests before publication. */
 export class AuthoringCompiler {
   private worker?: Worker;
-  private pending?: { requestId: number; resolve: (result: AuthoringResult) => void; reject: (error: Error) => void };
+  private pending?: { requestId: number; resolve: (result: AuthoringResult) => void; reject: (error: Error) => void;
+    progress?: (progress: ExportProgress) => void };
 
   /** An idle worker can retain compiler state; replacing busy work releases its Wasm allocations. */
   compile(request: AuthoringRequest): Promise<AuthoringResult> {
@@ -130,9 +135,10 @@ export class AuthoringCompiler {
   }
 
   /** Exports captured project inputs through the shared native/Wasm project compiler. */
-  exportProject(project: AuthoringProject, requestId: number, textures: ExportTextures = "ktx2"): Promise<AuthoringResult> {
+  exportProject(project: AuthoringProject, requestId: number, textures: ExportTextures = "ktx2",
+    progress?: (progress: ExportProgress) => void): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
-    return this.dispatch({ action: "export-project", requestId, project: inputs, assets, textures });
+    return this.dispatch({ action: "export-project", requestId, project: inputs, assets, textures }, progress);
   }
 
   /** Builds a whole project, including composed models and several materials, through `build_project`. */
@@ -142,14 +148,18 @@ export class AuthoringCompiler {
   }
 
   /** Only the active worker and matching consumer revision can complete a request. */
-  private dispatch(request: AuthoringMessage): Promise<AuthoringResult> {
+  private dispatch(request: AuthoringMessage, progress?: (progress: ExportProgress) => void): Promise<AuthoringResult> {
     if (this.pending) this.cancel();
     return new Promise((resolve, reject) => {
       if (!this.worker) {
         const worker = new Worker(new URL("./authoring-worker.ts", import.meta.url), { type: "module" });
         this.worker = worker;
-        worker.onmessage = (event: MessageEvent<AuthoringResult>) => {
+        worker.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress>) => {
           if (this.worker !== worker || this.pending?.requestId !== event.data.requestId) return;
+          if ("progress" in event.data) {
+            this.pending.progress?.(event.data.progress);
+            return;
+          }
           const pending = this.pending;
           this.pending = undefined;
           pending.resolve(event.data);
@@ -162,7 +172,7 @@ export class AuthoringCompiler {
           this.worker = undefined;
         };
       }
-      this.pending = { requestId: request.requestId, resolve, reject };
+      this.pending = { requestId: request.requestId, resolve, reject, progress };
       this.worker.postMessage(request);
     });
   }

@@ -118,6 +118,8 @@ const exporter = new BrowserCompiler(result => {
   const link = document.createElement("a"); link.href = url; link.download = "level.glb"; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
   exportStatus.textContent = "GLB downloaded.";
+}, (exported, progress) => {
+  if (exported === revision) exportStatus.textContent = `Encoding KTX2 textures ${progress.encoded} of ${progress.textures}…`;
 });
 
 /** Makes retained older geometry visibly stale without destroying it. */

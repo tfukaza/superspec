@@ -7,8 +7,9 @@ pub mod quake;
 mod quake_textures;
 mod tangents;
 mod text;
-pub use gltf::glb;
+pub use gltf::{TextureJob, encode_texture, glb, texture_jobs};
 pub use lightmap::{prepare_lightmap, prepare_lightmap_sized};
+pub use superspec_geometry::ktx2::Kind as TextureKind;
 pub use text::{Obj, obj, svg_plan};
 
 /// Prepares independent output from shared local geometry without modifying authored resources.
@@ -83,6 +84,9 @@ pub struct Options<'a> {
     /// Bounds the entire owned result, including embedded images and JSON metadata.
     pub maximum_bytes: usize,
     pub cancelled: &'a dyn Fn() -> bool,
+    /// KTX2 payloads already encoded with `encode_texture`, by image identity (see
+    /// `texture_jobs`); textures missing here are encoded during export.
+    pub encoded: Option<&'a std::collections::BTreeMap<String, Vec<u8>>>,
 }
 impl Default for Options<'static> {
     fn default() -> Self {
@@ -91,6 +95,7 @@ impl Default for Options<'static> {
             textures: Textures::Png,
             maximum_bytes: superspec_types::limits::MAX_EXPORT_BYTES,
             cancelled: &|| false,
+            encoded: None,
         }
     }
 }

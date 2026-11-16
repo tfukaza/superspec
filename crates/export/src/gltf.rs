@@ -290,33 +290,40 @@ struct Payload<'a> {
 /// output and KTX2 sources are transcoded to PNG; for KTX2 output, PNG and JPEG sources are
 /// encoded by role and KTX2 sources pass through. Encoding is per texture and deterministic, so
 /// encoding them in parallel (native targets only) never changes the bytes.
+fn image_source<'a>(
+    scene: &'a Scene,
+    assets: &BTreeMap<&str, &superspec_model::Asset>,
+    id: &str,
+) -> Result<(&'a [u8], &'static str), String> {
+    let asset = assets
+        .get(id)
+        .ok_or_else(|| format!("Missing export image: {id}"))?;
+    let end = asset
+        .byte_start
+        .checked_add(asset.byte_length)
+        .ok_or("Invalid export image range.")?;
+    let bytes = scene
+        .asset_bytes
+        .get(asset.byte_start..end)
+        .ok_or("Invalid export image range.")?;
+    if bytes.is_empty() || !["image/png", "image/jpeg", ktx2::MIME].contains(&asset.mime) {
+        return Err("Unsupported export image type.".into());
+    }
+    Ok((bytes, asset.mime))
+}
+
 fn texture_payloads<'a>(
     scene: &'a Scene,
     assets: &BTreeMap<&str, &superspec_model::Asset>,
     roles: &BTreeMap<&str, ktx2::Kind>,
-    options: &Options<'_>,
+    options: &Options<'a>,
 ) -> Result<BTreeMap<String, Payload<'a>>, String> {
-    let source = |id: &str| -> Result<(&'a [u8], &'static str), String> {
-        let asset = assets
-            .get(id)
-            .ok_or_else(|| format!("Missing export image: {id}"))?;
-        let end = asset
-            .byte_start
-            .checked_add(asset.byte_length)
-            .ok_or("Invalid export image range.")?;
-        let bytes = scene
-            .asset_bytes
-            .get(asset.byte_start..end)
-            .ok_or("Invalid export image range.")?;
-        if bytes.is_empty() || !["image/png", "image/jpeg", ktx2::MIME].contains(&asset.mime) {
-            return Err("Unsupported export image type.".into());
-        }
-        Ok((bytes, asset.mime))
-    };
-    // Only the format crosses into worker threads; the cancellation callback stays on this one.
+    // Only the format and pre-encoded payloads cross into worker threads; the cancellation
+    // callback stays on this one.
     let format = options.textures;
+    let encoded = options.encoded;
     let convert = |id: &str, kind: ktx2::Kind| -> Result<Payload<'a>, String> {
-        let (bytes, mime) = source(id)?;
+        let (bytes, mime) = image_source(scene, assets, id)?;
         let borrowed = || Payload {
             bytes: bytes.into(),
             mime,
@@ -328,15 +335,21 @@ fn texture_payloads<'a>(
                 mime: "image/png",
             }),
             (crate::Textures::Ktx2, false) => Ok(Payload {
-                bytes: ktx2::encode(&image::decode(bytes)?, kind)
-                    .map_err(|e| format!("{id}: {e}"))?
-                    .into(),
+                bytes: match encoded.and_then(|encoded| encoded.get(id)) {
+                    Some(payload) if payload.starts_with(&ktx2::MAGIC) => payload.as_slice().into(),
+                    Some(_) => return Err(format!("{id}: supplied texture is not KTX2.")),
+                    None => encode_texture(bytes, kind)
+                        .map_err(|e| format!("{id}: {e}"))?
+                        .into(),
+                },
                 mime: ktx2::MIME,
             }),
         }
     };
     let jobs: Vec<(&str, ktx2::Kind)> = roles.iter().map(|(id, kind)| (*id, *kind)).collect();
-    let parallel = !cfg!(target_arch = "wasm32") && options.textures == crate::Textures::Ktx2;
+    let parallel = !cfg!(target_arch = "wasm32")
+        && options.textures == crate::Textures::Ktx2
+        && options.encoded.is_none();
     let results: Vec<Result<Payload<'a>, String>> = if parallel && jobs.len() > 1 {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
         std::thread::scope(|scope| {
@@ -372,9 +385,93 @@ fn texture_payloads<'a>(
         .collect()
 }
 
+/// What an export resolves before writing: the selected meshes, images and materials by
+/// identity, the materials those meshes use and, for visual exports, each used texture's role.
+struct Plan<'a> {
+    selected: Vec<&'a Mesh>,
+    assets: BTreeMap<&'a str, &'a superspec_model::Asset>,
+    materials: BTreeMap<&'a str, &'a Material>,
+    used: BTreeSet<&'a str>,
+    roles: BTreeMap<&'a str, ktx2::Kind>,
+}
+
+fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String> {
+    let selected = selected(scene, options)?;
+    let mut assets = BTreeMap::new();
+    for asset in &scene.manifest.assets {
+        if assets.insert(asset.id.as_str(), asset).is_some() {
+            return Err("Duplicate export image identity.".into());
+        }
+    }
+    let materials: BTreeMap<_, _> = scene
+        .manifest
+        .materials
+        .iter()
+        .map(|m| (m.id.as_str(), m))
+        .collect();
+    if materials.len() != scene.manifest.materials.len() {
+        return Err("Duplicate export material identity.".into());
+    }
+    let used: BTreeSet<_> = selected
+        .iter()
+        .filter_map(|m| m.material.as_deref())
+        .collect();
+    let roles = if options.purpose == Purpose::Visual {
+        texture_roles(&used, &materials)
+    } else {
+        BTreeMap::new()
+    };
+    Ok(Plan {
+        selected,
+        assets,
+        materials,
+        used,
+        roles,
+    })
+}
+
+/// One texture a KTX2 export has to encode: its image identity, sampling role and source bytes.
+pub struct TextureJob<'a> {
+    pub id: &'a str,
+    pub kind: ktx2::Kind,
+    pub source: &'a [u8],
+}
+
+/// The textures `glb` would encode for these options, in its order. A host without threads
+/// (the browser) encodes them concurrently with `encode_texture` elsewhere and passes the results
+/// back through `Options::encoded`; the GLB is then byte-identical to encoding them in `glb`.
+pub fn texture_jobs<'a>(
+    scene: &'a Scene,
+    options: &Options<'_>,
+) -> Result<Vec<TextureJob<'a>>, String> {
+    let plan = plan(scene, options)?;
+    if options.textures != crate::Textures::Ktx2 {
+        return Ok(vec![]);
+    }
+    let mut jobs = vec![];
+    for (id, kind) in plan.roles {
+        let (source, mime) = image_source(scene, &plan.assets, id)?;
+        if mime != ktx2::MIME {
+            jobs.push(TextureJob { id, kind, source });
+        }
+    }
+    Ok(jobs)
+}
+
+/// Encodes one PNG or JPEG texture as KTX2 for its role; the only KTX2 encoding path for exports.
+pub fn encode_texture(source: &[u8], kind: ktx2::Kind) -> Result<Vec<u8>, String> {
+    ktx2::encode(&image::decode(source)?, kind)
+}
+
 /// Navigation/geometry audit statuses remain explicit metadata; export success is not validation.
 pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
-    let selected = selected(scene, options)?;
+    let Plan {
+        selected,
+        assets,
+        materials: source_materials,
+        used,
+        roles,
+    } = plan(scene, options)?;
     let visual = options.purpose == Purpose::Visual;
     let mut buffer = Buffer {
         bytes: vec![],
@@ -387,33 +484,9 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
     let mut images = vec![];
     let mut textures = vec![];
     let mut texture_indices = BTreeMap::new();
-    let mut assets = BTreeMap::new();
-    for asset in &scene.manifest.assets {
-        if assets.insert(asset.id.as_str(), asset).is_some() {
-            return Err("Duplicate export image identity.".into());
-        }
-    }
-    let source_materials: BTreeMap<_, _> = scene
-        .manifest
-        .materials
-        .iter()
-        .map(|m| (m.id.as_str(), m))
-        .collect();
-    if source_materials.len() != scene.manifest.materials.len() {
-        return Err("Duplicate export material identity.".into());
-    }
-    let used: BTreeSet<_> = selected
-        .iter()
-        .filter_map(|m| m.material.as_deref())
-        .collect();
     let mut emissive_strength = false;
     let payloads = if visual {
-        texture_payloads(
-            scene,
-            &assets,
-            &texture_roles(&used, &source_materials),
-            options,
-        )?
+        texture_payloads(scene, &assets, &roles, options)?
     } else {
         BTreeMap::new()
     };

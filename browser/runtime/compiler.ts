@@ -1,4 +1,5 @@
 import type { ValidationReport } from "../model/validation.ts";
+import type { ExportProgress } from "./authoring.ts";
 export interface Compilation { revision: number; buffer?: ArrayBuffer; update?: boolean; compileMs?: number; workers?: number; error?: string; validation?: ValidationReport }
 
 /** Owns one worker; replacing busy workers cancels synchronous Wasm without false cooperative polling. */
@@ -7,7 +8,9 @@ export class BrowserCompiler {
   private active?: number;
   private disposed = false;
 
-  constructor(private readonly receive: (result: Compilation) => void) {}
+  /** `progress` reports KTX2 texture encoding during a GLB export; the request stays active. */
+  constructor(private readonly receive: (result: Compilation) => void,
+    private readonly progress?: (revision: number, progress: ExportProgress) => void) {}
 
   /** Supersedes an outstanding build immediately; idle workers retain their initialized module. */
   compile(source: string, revision: number, assets: Record<string, Uint8Array> = {}, format: "scene" | "glb" | "glb-png" | "validate" = "scene"): void {
@@ -16,8 +19,12 @@ export class BrowserCompiler {
     if (!this.worker) {
       const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
       this.worker = worker;
-      worker.onmessage = (event: MessageEvent<Compilation>) => {
+      worker.onmessage = (event: MessageEvent<Compilation | { revision: number; progress: ExportProgress }>) => {
         if (this.worker !== worker || this.active !== event.data.revision) return;
+        if ("progress" in event.data) {
+          this.progress?.(event.data.revision, event.data.progress);
+          return;
+        }
         this.active = undefined;
         if (event.data.error) this.reset();
         this.receive(event.data);

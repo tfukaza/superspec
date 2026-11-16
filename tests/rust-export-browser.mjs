@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, cp, mkdir } from 'node:fs/promises';
 import { resolve, sep, extname } from 'node:path';
 import { build } from 'vite';
 import { PNG } from 'pngjs';
@@ -12,6 +12,8 @@ const root=resolve('generated/rust-export-browser');
 await build({configFile:false,root:'tests/browser',publicDir:false,
   build:{outDir:root,emptyOutDir:true,rollupOptions:{input:resolve('tests/browser/rust-export.html')}}});
 for(const file of ['superspec_wasm.js','superspec_wasm_bg.wasm'])await copyFile(resolve('generated/wasm',file),resolve(root,file));
+// wasm-bindgen snippets hold the KTX2 encoder module that superspec_wasm.js imports.
+await cp(resolve('generated/wasm/snippets'),resolve(root,'snippets'),{recursive:true});
 // Three's Basis Universal transcoder for the KTX2 sample, served where the loader expects it.
 await mkdir(resolve(root,'basis'),{recursive:true});
 for(const file of ['basis_transcoder.js','basis_transcoder.wasm'])await copyFile(resolve('node_modules/three/examples/jsm/libs/basis',file),resolve(root,'basis',file));

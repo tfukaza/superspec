@@ -1,6 +1,7 @@
 import initialize, { Compiler, prepareTextures } from "../../generated/wasm/superspec_wasm.js";
 import wasmUrl from "../../generated/wasm/superspec_wasm_bg.wasm?url";
 import { libraryAsset } from "./library.ts";
+import { encodeTextures, type TextureJob } from "./texture-encoder.ts";
 
 let ready: Promise<void> | undefined;
 let compiler: Compiler | undefined;
@@ -53,9 +54,17 @@ self.onmessage = async (event: MessageEvent<{ source: string; revision: number; 
     const update = event.data.format === "update";
     const glb = event.data.format === "glb" || event.data.format === "glb-png";
     // KTX2 textures are the default; the codec module loads on the first KTX2 export only.
-    const ktx2 = event.data.format === "glb";
-    if (ktx2) await prepare();
-    const bytes = glb ? compiler.export_glb(source, false, ktx2) : update ? compiler.compile_update(source, revision) : compiler.compile(source, revision);
+    // KTX2 exports stage the scene here and encode their textures in parallel workers.
+    let bytes: Uint8Array;
+    if (event.data.format === "glb") {
+      const staged = compiler;
+      const jobs = JSON.parse(staged.stage_glb(source)) as TextureJob[];
+      const textures = await encodeTextures(jobs, index => staged.staged_texture(index),
+        (done, total) => self.postMessage({ revision, progress: { encoded: done, textures: total } }));
+      bytes = staged.finish_glb(textures.encoded, textures.lengths);
+    } else {
+      bytes = glb ? compiler.export_glb(source, false, false) : update ? compiler.compile_update(source, revision) : compiler.compile(source, revision);
+    }
     const compileMs = performance.now() - start;
     // wasm-bindgen returns an owned copy, not a view of mutable Wasm linear memory.
     self.postMessage({ revision, buffer: bytes.buffer, update, compileMs, workers, cacheStats: JSON.parse(compiler.cache_stats()), bakeStats: JSON.parse(compiler.bake_stats()) }, { transfer: [bytes.buffer] });

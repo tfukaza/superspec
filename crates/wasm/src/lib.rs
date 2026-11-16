@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use wasm_bindgen::prelude::*;
 mod authoring;
 mod recipe;
+mod staged;
 mod study_shaders;
 pub use authoring::Authoring;
 
@@ -21,6 +22,7 @@ pub struct Compiler {
     assets: BTreeMap<String, Vec<u8>>,
     session: superspec_engine::Session,
     previous: Option<superspec_engine::Scene>,
+    staged: staged::StagedExport,
 }
 
 #[wasm_bindgen]
@@ -141,6 +143,22 @@ impl Compiler {
             },
         )
         .map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// Stages a visual KTX2 export so the host can encode its textures in parallel workers;
+    /// returns the texture list (see `StagedExport::stage`). Then `staged_texture` for each
+    /// source, `encodeTexture` elsewhere, and `finish_glb`.
+    pub fn stage_glb(&mut self, source: &str) -> Result<String, JsValue> {
+        let scene = export_scene(self, source, false)?;
+        let scene = superspec_export::prepare_lightmap(&scene, &|| false)
+            .map_err(|e| JsValue::from_str(&e))?;
+        self.staged.stage(scene)
+    }
+    pub fn staged_texture(&self, index: usize) -> Result<Vec<u8>, JsValue> {
+        self.staged.source(index)
+    }
+    pub fn finish_glb(&mut self, encoded: &[u8], lengths: &[u32]) -> Result<Vec<u8>, JsValue> {
+        self.staged.finish(encoded, lengths)
     }
 
     /// JSON file pairs carry the OBJ, MTL and original diffuse image bytes together.
