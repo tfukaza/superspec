@@ -108,6 +108,14 @@ Receiver bakes (`authoring/material.rs`) add these on top:
   in one pass just the outputs of the maps it has to bake (the relief is derived only for the normal
   map). A distributed bake (`PendingBake.groups`) asks other sessions for the rows of those maps only.
 - The maps of a production bake are encoded at once, on native threads.
+- Serial (preview) bakes keep the per-texel values of costly fields (`FieldPlane`, at least 24 steps
+  per field) in a bounded partition of their own (48 MiB, at most 24 MiB added per bake). A plane is
+  keyed by the layout, program, decoded images and the effective values of only the parameters, seed
+  and edges the field reads, so a dirty map reads the planes of the fields its edit cannot change and
+  computes the rest; the lane evaluator seeds its field table from them. Planes are kept only by a
+  build that finishes, so a cancelled or failed one publishes nothing.
+- The heights one step along each leg that no adjacent texel has, and a preview of one field, are
+  evaluated with the row evaluator too.
 
 - A normal needs the height one texel along each chart leg. Where that point is an adjacent
   texel's center, the bake reuses that texel's height instead of evaluating the height graph

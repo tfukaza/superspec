@@ -21,6 +21,9 @@ pub struct Dependencies {
     pub images: BTreeSet<String>,
     /// Whether `runoff` reads the supplied source edges.
     pub edges: bool,
+    /// Fields read directly or through other fields and helpers, by index into
+    /// `Program::metadata().fields`.
+    pub fields: BTreeSet<usize>,
 }
 
 impl Dependencies {
@@ -29,6 +32,7 @@ impl Dependencies {
         self.seed |= other.seed;
         self.images.extend(other.images.iter().cloned());
         self.edges |= other.edges;
+        self.fields.extend(&other.fields);
     }
 
     /// Everything either side reads.
@@ -91,7 +95,10 @@ impl Walk<'_> {
             Kind::Parameter(index) => {
                 found.parameters.insert(*index);
             }
-            Kind::Field(index) => found.merge(&self.field(*index)),
+            Kind::Field(index) => {
+                found.fields.insert(*index);
+                found.merge(&self.field(*index));
+            }
             Kind::Unary(_, a) | Kind::Member(a, _) => found.merge(&self.node(a)),
             Kind::Binary(_, a, b) => {
                 found.merge(&self.node(a));

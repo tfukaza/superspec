@@ -23,6 +23,59 @@ use super::{
 };
 use std::collections::BTreeMap;
 
+/// The values one field took at every texel of an atlas in an earlier evaluation, so a later
+/// evaluation whose inputs cannot change the field reads them instead of computing the field. A
+/// field's value depends only on the sample and the parameters, seed, images and edges it reads, so
+/// the owner keys a plane by those. Texels the field was not computed for hold NaN as their
+/// footprint estimate (an evaluated value never has one) and are computed when needed.
+#[derive(Clone, Debug)]
+pub struct FieldPlane {
+    field: usize,
+    /// Components of the field's value, or 4 for a boolean.
+    kind: u8,
+    /// Four numbers per texel: the components (padding included) and the footprint estimate.
+    data: Vec<f64>,
+}
+
+impl FieldPlane {
+    /// An empty plane for `field` (a value of `components` numbers, or a boolean when 0) over
+    /// `texels` texels.
+    pub fn new(field: usize, components: usize, texels: usize) -> Self {
+        Self {
+            field,
+            kind: if components == 0 { 4 } else { components as u8 },
+            data: [0., 0., 0., f64::NAN].repeat(texels),
+        }
+    }
+    pub fn field(&self) -> usize {
+        self.field
+    }
+    /// Bytes this plane holds.
+    pub fn bytes(&self) -> usize {
+        self.data.len() * 8 + 64
+    }
+    fn value<'a>(&self, texel: usize) -> Option<Value<'a>> {
+        let at = &self.data[texel * 4..texel * 4 + 4];
+        if at[3].is_nan() {
+            return None;
+        }
+        Some(if self.kind == 4 {
+            Value::Bool(at[0] != 0.)
+        } else {
+            Value::Number([at[0], at[1], at[2]], self.kind as usize, at[3])
+        })
+    }
+    fn store(&mut self, texel: usize, value: &Value<'_>) {
+        let at = &mut self.data[texel * 4..texel * 4 + 4];
+        if self.kind == 4 {
+            at.copy_from_slice(&[f64::from(u8::from(value.boolean())), 0., 0., 0.]);
+        } else {
+            let (data, _, width) = value.data();
+            at.copy_from_slice(&[data[0], data[1], data[2], width]);
+        }
+    }
+}
+
 /// Samples evaluated together. More amortize dispatch further; fewer keep every node's values in
 /// the first-level cache.
 pub(super) const LANES: usize = 64;
@@ -606,6 +659,9 @@ pub(super) fn evaluate<'a>(
     outputs: OutputSet,
     selected: &[(usize, usize)],
     fields: &mut [FieldValue],
+    texels: &[usize],
+    injected: &[&FieldPlane],
+    capture: &mut [FieldPlane],
 ) -> Option<Vec<Outputs>> {
     let cost = &compiled.cost;
     let queries = cost.queries * (1 + features.len() / 16);
@@ -650,6 +706,29 @@ pub(super) fn evaluate<'a>(
         } else {
             (1u64 << chunk.len()) - 1
         };
+        // Fields an earlier evaluation kept: their values at these samples are already known.
+        for plane in injected {
+            if plane.field >= lanes.fields.len() {
+                continue;
+            }
+            let mut known = 0u64;
+            let mut buf = None;
+            for lane in 0..chunk.len() {
+                let Some(value) = plane.value(texels[start + lane]) else {
+                    continue;
+                };
+                let id = *buf.get_or_insert_with(|| {
+                    let id = lanes.alloc();
+                    lanes.field_bufs.push(id);
+                    id
+                });
+                lanes.bufs[id].as_mut().expect("a field buffer")[lane] = value;
+                known |= 1 << lane;
+            }
+            if let Some(buf) = buf {
+                lanes.fields[plane.field] = FieldLanes::Lanes { buf, done: known };
+            }
+        }
         let mut done: Vec<Outputs> = (0..chunk.len())
             .map(|_| Outputs {
                 base_color: [0.; 3],
@@ -679,6 +758,23 @@ pub(super) fn evaluate<'a>(
             for lane in 0..chunk.len() {
                 fields[(start + lane) * selected.len() + slot] =
                     lanes.value(&value.src, lane).field();
+            }
+        }
+        for plane in capture.iter_mut() {
+            match lanes.fields.get(plane.field) {
+                Some(FieldLanes::Uniform(value)) => {
+                    for lane in 0..chunk.len() {
+                        plane.store(texels[start + lane], value);
+                    }
+                }
+                Some(FieldLanes::Lanes { buf, done }) => {
+                    let (buf, done) = (*buf, *done);
+                    for lane in active(done) {
+                        let value = lanes.buf(buf)[lane];
+                        plane.store(texels[start + lane], &value);
+                    }
+                }
+                _ => {}
             }
         }
         results.extend(done);

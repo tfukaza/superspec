@@ -404,3 +404,62 @@ fn write_parity_fixture() {
     )
     .unwrap();
 }
+
+/// How much of a production bake the map encoding is: each map of a 2048 px bake is decoded and
+/// encoded again alone (`encode_small`, as production does), serially and all at once.
+#[test]
+#[ignore]
+fn bench_encode_share() {
+    for case in cases() {
+        let started = Instant::now();
+        let output = Session::default()
+            .build(
+                &request(&case, serde_json::json!({}), 2048),
+                1,
+                &asset,
+                &|| false,
+            )
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let wall = started.elapsed().as_secs_f64();
+        let maps: Vec<_> = output
+            .model
+            .images
+            .values()
+            .map(|image| superspec_geometry::image::decode(&image.bytes).unwrap())
+            .collect();
+        let encode = |image: &superspec_geometry::image::Image| {
+            let started = Instant::now();
+            superspec_geometry::image::encode_small_cancellable(
+                &superspec_geometry::image::Image {
+                    width: image.width,
+                    height: image.height,
+                    rgba: image.rgba.clone(),
+                    mime: "image/png",
+                },
+                &|| false,
+            )
+            .unwrap();
+            started.elapsed().as_secs_f64()
+        };
+        let each: Vec<f64> = maps.iter().map(encode).collect();
+        let together = Instant::now();
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = maps
+                .iter()
+                .map(|m| scope.spawn(move || encode(m)))
+                .collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        eprintln!(
+            "{}: build {wall:.2}s; encode serial {:.2}s (maps {:?}), all at once {:.2}s",
+            case.name,
+            each.iter().sum::<f64>(),
+            each.iter()
+                .map(|s| (s * 100.).round() / 100.)
+                .collect::<Vec<_>>(),
+            together.elapsed().as_secs_f64()
+        );
+    }
+}

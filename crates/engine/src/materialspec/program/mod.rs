@@ -16,6 +16,7 @@ mod numeric;
 mod syntax;
 mod ts;
 pub use deps::{Dependencies, DependencyTable};
+pub use lanes::FieldPlane;
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{
     COPLANAR_DEGREES, MAX_FEATURES, bend_shaded, orient_relief, receiver_features, receiver_seams,
@@ -396,8 +397,26 @@ impl<'a> Evaluator<'a> {
         selection: &FieldSelection,
         values: &mut Vec<FieldValue>,
     ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
+        self.evaluate_row_with_planes(samples, &[], outputs, selection, values, &[], &mut [])
+    }
+    /// [`Self::evaluate_row`] that reads the fields of `injected` planes instead of computing
+    /// them where a plane has them, and records the fields of `capture` planes it computes.
+    /// `texels` gives each sample's index into the planes. Planes only change what is computed:
+    /// every result equals the one without them, for planes of the same samples and inputs.
+    pub fn evaluate_row_with_planes(
+        &mut self,
+        samples: &[Sample],
+        texels: &[usize],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut Vec<FieldValue>,
+        injected: &[&FieldPlane],
+        capture: &mut [FieldPlane],
+    ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
         let slots = selection.len();
-        if let Some(done) = self.evaluate_row_together(samples, outputs, selection, values) {
+        if let Some(done) =
+            self.together(samples, texels, outputs, selection, values, injected, capture)
+        {
             return Ok(done);
         }
         let mut results = Vec::with_capacity(samples.len());
@@ -421,6 +440,19 @@ impl<'a> Evaluator<'a> {
         selection: &FieldSelection,
         values: &mut Vec<FieldValue>,
     ) -> Option<Vec<Outputs>> {
+        self.together(samples, &[], outputs, selection, values, &[], &mut [])
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn together(
+        &mut self,
+        samples: &[Sample],
+        texels: &[usize],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut Vec<FieldValue>,
+        injected: &[&FieldPlane],
+        capture: &mut [FieldPlane],
+    ) -> Option<Vec<Outputs>> {
         values.clear();
         values.resize(samples.len() * selection.len(), FieldValue::Scalar(0.));
         lanes::evaluate(
@@ -436,6 +468,9 @@ impl<'a> Evaluator<'a> {
             outputs,
             &selection.0,
             values,
+            texels,
+            injected,
+            capture,
         )
     }
     /// Only the height output, for derivative samples; identical to [`Self::evaluate`]'s height.
@@ -498,6 +533,10 @@ impl Program {
     /// operation return the same shader as [`Self::shader`], with no CPU fields.
     pub fn shader_plan(&self) -> Result<Shader, String> {
         glsl::plan(self)
+    }
+    /// Steps of each field's own body, by field index: what computing the field costs a sample.
+    pub fn field_steps(&self) -> &[usize] {
+        &self.compiled.field_steps
     }
     /// Resolves field names once for [Evaluator::evaluate_selected].
     pub fn select_fields(&self, names: &[&str]) -> Result<FieldSelection, String> {

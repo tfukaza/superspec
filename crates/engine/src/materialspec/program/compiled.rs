@@ -235,6 +235,8 @@ pub(super) struct Compiled {
     pub retained: usize,
     /// What evaluating one sample of every output and field can cost at most.
     pub cost: Cost,
+    /// Steps of each field's own body (nested fields count one each), by field index.
+    pub field_steps: Vec<usize>,
 }
 
 /// Upper bounds on what one sample's evaluation can consume, counted like the evaluator counts:
@@ -370,7 +372,7 @@ impl Costing<'_> {
     }
 }
 
-fn cost(fields: &[Node], functions: &[Function], outputs: &[(String, Node)]) -> Cost {
+fn cost(fields: &[Node], functions: &[Function], outputs: &[(String, Node)]) -> (Cost, Vec<usize>) {
     let mut costing = Costing {
         fields,
         functions,
@@ -378,12 +380,20 @@ fn cost(fields: &[Node], functions: &[Function], outputs: &[(String, Node)]) -> 
         function_cost: vec![None; functions.len()],
     };
     let mut total = Cost::default();
-    for node in fields.iter().chain(outputs.iter().map(|(_, node)| node)) {
+    let mut field_steps = Vec::with_capacity(fields.len());
+    for (position, node) in fields
+        .iter()
+        .chain(outputs.iter().map(|(_, node)| node))
+        .enumerate()
+    {
         let found = costing.node(node);
         Costing::add(&mut total, found);
         total.depth = total.depth.max(found.depth);
+        if position < fields.len() {
+            field_steps.push(found.steps);
+        }
     }
-    total
+    (total, field_steps)
 }
 
 struct Resolver<'a> {
@@ -521,13 +531,14 @@ pub(super) fn resolve(
                 .map(|(name, _)| name.capacity() + size_of::<(String, Node)>())
                 .sum::<usize>(),
     );
-    let cost = cost(&fields, &functions, &outputs);
+    let (cost, field_steps) = cost(&fields, &functions, &outputs);
     Compiled {
         fields,
         functions,
         outputs,
         retained,
         cost,
+        field_steps,
     }
 }
 

@@ -123,12 +123,18 @@ fn object_projection_is_rigid_transform_invariant_and_world_projection_is_not() 
             .flatten()
             .copied()
             .collect::<Vec<_>>(),
-        placed
-            .indices
+        // The atlas lists each triangle from its chart corner (the one nearest a right angle), so
+        // the placed mesh is the original's mesh carried by the rigid transform, vertex for vertex.
+        a.model
+            .meshes
+            .values()
+            .next()
+            .unwrap()
+            .positions
             .iter()
-            .flat_map(|i| placed.positions[*i as usize * 3..*i as usize * 3 + 3]
-                .iter()
-                .copied())
+            .flat_map(|p| std::array::from_fn::<_, 3, _>(|i| {
+                rotated[i] * p[0] + rotated[i + 4] * p[1] + rotated[i + 8] * p[2] + rotated[i + 12]
+            }))
             .collect::<Vec<_>>()
     );
     let world = Request {

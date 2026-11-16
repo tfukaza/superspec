@@ -243,7 +243,9 @@ impl Atlas {
                 across = across.max(b);
             }
             // Charts lie wider than tall: rotate when the first leg is the shorter one.
-            let rotated = along < across;
+            // Legs equal up to rounding noise do not rotate, so a rigidly moved receiver keeps the
+            // chart orientation of the original.
+            let rotated = along < across * (1. - 1e-9);
             sizes.push(if rotated {
                 [across, along]
             } else {

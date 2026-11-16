@@ -6,7 +6,7 @@ use crate::{
     materialspec::program::{self, FieldValue, Inputs, Program},
     runtime::{
         dependencies::{Dependency, Node, Plan},
-        store::ContentKey,
+        store::{ContentKey, Retention},
     },
 };
 use sha2::{Digest, Sha256};
@@ -21,6 +21,16 @@ use superspec_types::{
 /// The baked maps of a receiver. Each is baked from only the outputs it reads, so an edit that
 /// cannot change an output keeps the map baked from it, and a bake after a small edit evaluates
 /// only the outputs that edit can reach.
+///
+/// Errors are deterministic. A request whose parameters are invalid, or whose maps' fingerprints
+/// cannot be formed, matches no retained map, so building it bakes (and fails with the parameter
+/// diagnostic) whatever is retained. A map that fails to bake is never retained, and a retained
+/// map was baked from the same inputs its outputs read, so no error can hide in it; when several
+/// maps being baked would fail, the one evaluation pass reports its first failing sample (texel
+/// order) and, within it, its first failing output (alphabetical order), exactly as a bake of
+/// those outputs alone would. The limits on a sample's steps and a row's operations apply to the
+/// outputs a build evaluates: a rebake that evaluates fewer outputs than a full bake can finish
+/// where evaluating them all would exceed a limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Group {
     /// Base color, with opacity as alpha.
@@ -125,6 +135,61 @@ impl Groups {
     }
 }
 
+/// Retention of kept field planes: a partition of its own, bounded apart from the build graph's
+/// (which is the Session's one 128 MiB store), and dropped by `Session::clear` with the rest.
+const FIELD_PLANES: Retention = Retention {
+    name: "material-fields",
+    bytes: 48 * 1024 * 1024,
+    entries: 64,
+};
+/// Fields cheaper than this are recomputed rather than kept.
+const MIN_FIELD_STEPS: usize = 24;
+/// Most a single bake adds to the plane partition (it evicts the least recently used beyond it).
+const FIELD_CAPTURE_BYTES: usize = 24 * 1024 * 1024;
+
+/// The fields one receiver's bake reads from earlier bakes and keeps for later ones.
+#[derive(Default)]
+struct FieldPlan {
+    injected: Vec<Arc<BakedReceiver>>,
+    /// Field index, components of its value (0 for a boolean) and the key its plane is kept under.
+    capture: Vec<(usize, usize, ContentKey)>,
+}
+
+/// The key of a field's plane: the layout whose samples it covers, the program and decoded images,
+/// and the effective values of only the parameters, seed and edges the field reads.
+fn field_plane_key(
+    program: &Program,
+    dependencies: &program::Dependencies,
+    request: &Request,
+    [layout, program_key, assets]: [&ContentKey; 3],
+    field: usize,
+) -> ContentKey {
+    let fingerprint = program
+        .input_fingerprint(
+            &Inputs {
+                parameters: request.parameters.clone(),
+                seed: request.seed,
+                edges: request.edges.clone(),
+                ..Inputs::default()
+            },
+            dependencies,
+        )
+        .unwrap_or_else(|error| error.to_string().into_bytes());
+    let mut digest = Sha256::new();
+    for part in [
+        b"material-field-v1".as_slice(),
+        layout,
+        program_key,
+        assets,
+        &(field as u32).to_le_bytes(),
+        &fingerprint,
+    ] {
+        digest.update((part.len() as u64).to_le_bytes());
+        digest.update(part);
+    }
+    digest.finalize().into()
+}
+
 /// An encoded map and its content identity.
 pub(crate) struct BakedImage {
     id: String,
@@ -146,6 +211,8 @@ pub(crate) enum BakedReceiver {
         images: Vec<BakedImage>,
         operations: Vec<LiveDescriptor>,
     },
+    /// The values of one field at every texel, kept for later bakes (see [FieldPlan]).
+    Plane(program::FieldPlane),
 }
 
 impl BakedReceiver {
@@ -156,11 +223,15 @@ impl BakedReceiver {
             }
             Self::Emissive(emission) => emission.iter().map(|(_, image)| image).collect(),
             Self::Live { images, .. } => images.iter().collect(),
+            Self::Plane(_) => Vec::new(),
         }
     }
 
     /// Bytes this result retains, for artifact admission.
     fn bytes(&self) -> usize {
+        if let Self::Plane(plane) = self {
+            return plane.bytes();
+        }
         self.images()
             .iter()
             .map(|image| image.resource.bytes.len() + image.id.len())
@@ -231,7 +302,7 @@ fn assemble(
                 }
                 BakedReceiver::Emissive(None) => {}
                 BakedReceiver::Live { operations, .. } => material.live = operations.clone(),
-                BakedReceiver::Color { .. } => return Err(missing()),
+                BakedReceiver::Color { .. } | BakedReceiver::Plane(_) => return Err(missing()),
             }
         }
     }
@@ -618,6 +689,77 @@ impl Session {
                 }
             }
         }
+        // Fields that an earlier bake kept for the samples of these receivers, and the expensive
+        // fields this bake keeps for the next one. Planes are keyed by the inputs the field reads,
+        // so an edit that cannot change a field finds its values; only serial previews keep them.
+        let mut field_plans: Vec<FieldPlan> = Vec::new();
+        if share.is_none() && !inspecting && request.profile.threads() == 1 {
+            let field_names: Vec<&str> = compiled
+                .metadata()
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect();
+            let steps = compiled.field_steps();
+            let program_key = plan.key("program").expect("planned program");
+            let assets_key = plan.key("assets").expect("planned assets");
+            for (i, wanted) in dirty.iter().enumerate() {
+                let mut candidates = std::collections::BTreeSet::new();
+                for group in wanted.iter() {
+                    let dependencies = group_dependencies(&dependency_table, group, &live_fields);
+                    candidates.extend(dependencies.fields.iter().copied());
+                    if group == Group::Live {
+                        candidates.extend(
+                            live_fields
+                                .iter()
+                                .filter_map(|name| field_names.iter().position(|n| n == name)),
+                        );
+                    }
+                }
+                candidates.retain(|field| steps.get(*field).is_some_and(|s| *s >= MIN_FIELD_STEPS));
+                let layout_key = plan.key(&format!("layout/{i}")).expect("planned layout");
+                let mut chosen = FieldPlan::default();
+                let mut budget = FIELD_CAPTURE_BYTES;
+                let plane_bytes = request.resolution * request.resolution * 32;
+                let mut missing = Vec::new();
+                for field in candidates {
+                    let key = field_plane_key(
+                        &compiled,
+                        &dependency_table.fields[field_names[field]],
+                        request,
+                        [&layout_key, &program_key, &assets_key],
+                        field,
+                    );
+                    match self.runtime.lookup(FIELD_PLANES, &key) {
+                        Some(found) => {
+                            if let Artifact::Material(baked) = found.as_ref() {
+                                if matches!(baked.as_ref(), BakedReceiver::Plane(_)) {
+                                    chosen.injected.push(baked.clone());
+                                }
+                            }
+                        }
+                        None => missing.push((steps[field], field, key)),
+                    }
+                }
+                // The costliest fields first, while the budget lasts.
+                missing.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+                for (_, field, key) in missing {
+                    if plane_bytes > budget {
+                        break;
+                    }
+                    budget -= plane_bytes;
+                    let components = match compiled.metadata().fields[field].kind {
+                        program::Type::Scalar => 1,
+                        program::Type::Vec2 => 2,
+                        program::Type::Vec3 => 3,
+                        _ => 0,
+                    };
+                    chosen.capture.push((field, components, key));
+                }
+                field_plans.push(chosen);
+            }
+        }
+        let mut captured_planes: Vec<(ContentKey, program::FieldPlane)> = Vec::new();
         let run_plan = match &dependencies_only {
             Some(plan) => plan.as_ref().map_err(|e| fail(e.to_string()))?,
             None => &plan,
@@ -776,9 +918,15 @@ impl Session {
                             compact,
                             wanted,
                             provided.remove(&index),
+                            field_plans.get(index),
                             stopped,
                         ) {
-                            Ok(results) => {
+                            Ok((results, planes)) => {
+                                if let Some(plan) = field_plans.get(index) {
+                                    for ((_, _, key), plane) in plan.capture.iter().zip(planes) {
+                                        captured_planes.push((*key, plane));
+                                    }
+                                }
                                 let mut requested = None;
                                 for (made, value) in results {
                                     let value = Arc::new(value);
@@ -808,6 +956,17 @@ impl Session {
                     .map(|e| vec![e])
                     .unwrap_or_else(|| fail(e))
             })?;
+        // Only a finished build keeps what it computed: a failed or cancelled one never reaches here.
+        for (key, plane) in captured_planes {
+            let bytes = plane.bytes();
+            self.runtime.retain(
+                FIELD_PLANES,
+                key,
+                Artifact::Material(Arc::new(BakedReceiver::Plane(plane))),
+                bytes,
+                false,
+            );
+        }
         if let Some(share) = share {
             let Artifact::Program(program) = complete["program"].as_ref() else {
                 unreachable!()
@@ -916,6 +1075,8 @@ impl Session {
 thread_local! {
     /// The groups each bake evaluated on this thread, for tests of what an edit rebakes.
     static BAKED: std::cell::RefCell<Vec<Groups>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Field planes (read, kept) of each bake that evaluated rows on this thread.
+    static PLANES: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 /// Bakes below this many requested texels are evaluated where they are requested.
 const DISTRIBUTE_TEXELS: usize = 8192;
@@ -1300,6 +1461,42 @@ fn neighbor_texel(
         })
 }
 
+/// The program field a preview shows, to evaluate with the outputs; none for an output channel.
+fn inspected_fields(program: &Program, inspect: Option<&str>) -> program::FieldSelection {
+    inspect
+        .and_then(|name| program.select_fields(&[name]).ok())
+        .unwrap_or_default()
+}
+
+/// The height output at each sample, evaluated together where the program allows.
+fn heights_of(
+    evaluator: &mut program::Evaluator<'_>,
+    samples: &[program::Sample],
+) -> Result<Vec<f64>, Diagnostic> {
+    if samples.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut unused = Vec::new();
+    Ok(evaluator
+        .evaluate_row(
+            samples,
+            program::OutputSet::HEIGHT,
+            &program::FieldSelection::default(),
+            &mut unused,
+        )
+        .map_err(Diagnostic::from)?
+        .into_iter()
+        .map(|outputs| outputs.height)
+        .collect())
+}
+
+/// Field planes a block of rows reads and fills (see [FieldPlan]); empty for bakes that keep none.
+#[derive(Default)]
+struct FieldAccess<'a> {
+    injected: &'a [&'a program::FieldPlane],
+    capture: &'a mut [program::FieldPlane],
+}
+
 /// Evaluates consecutive atlas rows for the groups in `groups`: the outputs those maps read, the
 /// relief normal and any live arguments.
 ///
@@ -1315,7 +1512,9 @@ fn bake_block(
     rows: &[(usize, usize)],
     inspect: Option<&str>,
     live_fields: &program::FieldSelection,
+    inspected: &program::FieldSelection,
     groups: Groups,
+    fields: &mut FieldAccess<'_>,
     entry: &str,
 ) -> Result<Vec<Row>, Diagnostic> {
     let failure = |message: String| Diagnostic::message(entry, message);
@@ -1329,6 +1528,7 @@ fn bake_block(
     let relief = wants(Group::Normal);
     // Live field values of the samples of a row, one run of live_count per sample.
     let mut live: Vec<FieldValue> = Vec::new();
+    let mut inspected_values: Vec<FieldValue> = Vec::new();
     let mut baked: Vec<Row> = Vec::with_capacity(rows.len());
     let mut centers: Vec<Vec<Center>> = Vec::with_capacity(rows.len());
     // Center heights by (chart, row): this block's rows, then neighbor rows as they are needed.
@@ -1383,12 +1583,16 @@ fn bake_block(
             })
             .collect();
         let mut row_samples: Vec<program::Sample> = Vec::new();
+        let mut row_texels: Vec<usize> = Vec::new();
         let mut sample_error = None;
         for x in 0..cell {
             if repeats[x].is_none() {
                 let (triangle, u, v) = texels[x];
                 match atlas.sample(triangle, u, v) {
-                    Ok(sample) => row_samples.push(sample),
+                    Ok(sample) => {
+                        row_samples.push(sample);
+                        row_texels.push((chart.y + y) * atlas.width + chart.x + x);
+                    }
                     Err(message) => {
                         sample_error = Some(message);
                         break;
@@ -1396,16 +1600,31 @@ fn bake_block(
                 }
             }
         }
-        // A preview computes its one field; channel values are the same either way.
-        let row_values = if inspect.is_some() {
-            row_samples
-                .iter()
-                .map(|sample| evaluator.evaluate_channels(sample, inspect))
-                .collect::<Result<Vec<_>, _>>()
-        } else {
-            evaluator.evaluate_row(&row_samples, outputs, live_fields, &mut live)
+        // A preview computes its one field with every output; channel values are the same either way.
+        let mut row_values = evaluator
+            .evaluate_row_with_planes(
+                &row_samples,
+                &row_texels,
+                outputs,
+                if inspect.is_some() {
+                    inspected
+                } else {
+                    live_fields
+                },
+                if inspect.is_some() {
+                    &mut inspected_values
+                } else {
+                    &mut live
+                },
+                fields.injected,
+                &mut *fields.capture,
+            )
+            .map_err(Diagnostic::from)?;
+        if let (Some(name), 1) = (inspect, inspected.len()) {
+            for (value, field) in row_values.iter_mut().zip(&inspected_values) {
+                value.fields.insert(name.to_owned(), field.clone());
+            }
         }
-        .map_err(Diagnostic::from)?;
         if let Some(message) = sample_error {
             return Err(failure(message));
         }
@@ -1482,6 +1701,30 @@ fn bake_block(
     {
         let chart = &atlas.charts[chart_index];
         evaluator.replenish(64_000_000);
+        // The heights one step along each leg that no adjacent texel already has, for the texels
+        // that need new slopes, are evaluated together; the texels below take them in order.
+        let mut direct = Vec::new();
+        if relief {
+            for (x, center) in row_centers.iter().enumerate() {
+                let (triangle, u, v) = (center.triangle, center.u, center.v);
+                if (x > 0 && row_centers[x - 1].samples(triangle, u, v))
+                    || (above(row_number) && centers[row_number - 1][x].samples(triangle, u, v))
+                {
+                    continue;
+                }
+                let [step_u, step_v] = atlas.steps(triangle);
+                for target in [[u + step_u, v], [u, v + step_v]] {
+                    if neighbor_texel(atlas, chart, [x, y], triangle, target).is_none() {
+                        direct.push(
+                            atlas
+                                .sample(triangle, target[0], target[1])
+                                .map_err(&failure)?,
+                        );
+                    }
+                }
+            }
+        }
+        let mut direct_heights = heights_of(evaluator, &direct)?.into_iter();
         let mut previous: Option<[f64; 3]> = None;
         let mut row_slopes: Vec<[f64; 2]> = Vec::with_capacity(row_centers.len());
         for (x, center) in row_centers.iter().enumerate() {
@@ -1493,31 +1736,31 @@ fn bake_block(
                 let mut height_at = |target: [f64; 2]| -> Result<f64, Diagnostic> {
                     let Some([nx, ny]) = neighbor_texel(atlas, chart, [x, y], triangle, target)
                     else {
-                        return evaluator
-                            .evaluate_height(
-                                &atlas
-                                    .sample(triangle, target[0], target[1])
-                                    .map_err(&failure)?,
-                            )
-                            .map_err(Diagnostic::from);
+                        return Ok(direct_heights.next().expect("a height for each new point"));
                     };
                     if !heights.contains_key(&(chart_index, ny)) {
                         // A neighbor row of another block: its center heights, as that block has them.
                         let mut row_heights: Vec<f64> = Vec::with_capacity(chart.width);
                         let mut before = None;
+                        let mut points = Vec::new();
+                        let mut fresh = Vec::new();
                         for other in 0..chart.width {
                             let (triangle, u, v) = atlas.texel(chart, other, ny);
                             let key = (triangle, u.to_bits(), v.to_bits());
-                            let height = if before == Some(key) {
-                                row_heights[other - 1]
-                            } else {
-                                evaluator
-                                    .evaluate_height(
-                                        &atlas.sample(triangle, u, v).map_err(&failure)?,
-                                    )
-                                    .map_err(Diagnostic::from)?
-                            };
+                            let new = before != Some(key);
+                            fresh.push(new);
+                            if new {
+                                points.push(atlas.sample(triangle, u, v).map_err(&failure)?);
+                            }
                             before = Some(key);
+                        }
+                        let mut computed = heights_of(evaluator, &points)?.into_iter();
+                        for (other, new) in fresh.into_iter().enumerate() {
+                            let height = if new {
+                                computed.next().expect("a height for each new point")
+                            } else {
+                                row_heights[other - 1]
+                            };
                             row_heights.push(height);
                         }
                         heights.insert((chart_index, ny), row_heights);
@@ -1698,6 +1941,7 @@ fn bake_rows(
         program::FieldSelection::default()
     };
     let rows = atlas_rows(atlas);
+    let inspected = inspected_fields(program, inspect);
     let mut evaluator = program
         .evaluator_with_features(inputs, &features)
         .map_err(Diagnostic::from)?;
@@ -1718,7 +1962,9 @@ fn bake_rows(
             block_rows,
             inspect,
             &live_selection,
+            &inspected,
             groups,
+            &mut FieldAccess::default(),
             entry,
         )?;
         baked.extend(
@@ -1778,8 +2024,9 @@ fn bake_groups(
     compact: bool,
     wanted: Groups,
     provided: Option<(Groups, Vec<Row>)>,
+    field_plan: Option<&FieldPlan>,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<(Group, BakedReceiver)>, Diagnostic> {
+) -> Result<(Vec<(Group, BakedReceiver)>, Vec<program::FieldPlane>), Diagnostic> {
     #[cfg(test)]
     BAKED.with(|baked| baked.borrow_mut().push(wanted));
     let failure = |message: String| Diagnostic::message(&program.metadata().entry, message);
@@ -1802,6 +2049,7 @@ fn bake_groups(
         program::FieldSelection::default()
     };
     let live_count = live_selection.len();
+    let inspected = inspected_fields(program, inspect);
     let has = |group: Group| data.contains(group);
     let mut color = if has(Group::Color) {
         vec![0u8; pixels * 4]
@@ -1864,6 +2112,33 @@ fn bake_groups(
     } else {
         None
     };
+    // Planes of fields kept from earlier bakes are read, and planes of fields this bake computes are
+    // filled, by the serial evaluator only.
+    let injected_planes: Vec<&program::FieldPlane> = field_plan
+        .map(|plan| {
+            plan.injected
+                .iter()
+                .filter_map(|baked| match baked.as_ref() {
+                    BakedReceiver::Plane(plane) => Some(plane),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut captured: Vec<program::FieldPlane> = match (&serial, field_plan) {
+        (Some(_), Some(plan)) => plan
+            .capture
+            .iter()
+            .map(|(field, components, _)| program::FieldPlane::new(*field, *components, pixels))
+            .collect(),
+        _ => Vec::new(),
+    };
+    #[cfg(test)]
+    PLANES.with(|planes| {
+        planes
+            .borrow_mut()
+            .push((injected_planes.len(), captured.len()))
+    });
     // Rows are evaluated independently and written back in order, so threads never change bytes.
     let evaluated: &[(usize, usize)] = if data.is_empty() { &[] } else { &rows };
     for batch in evaluated.chunks(threads * BLOCK_ROWS) {
@@ -1884,7 +2159,12 @@ fn bake_groups(
                 batch,
                 inspect,
                 &live_selection,
+                &inspected,
                 data,
+                &mut FieldAccess {
+                    injected: &injected_planes,
+                    capture: &mut captured,
+                },
                 entry,
             ) {
                 Ok(rows) => rows.into_iter().map(Ok).collect(),
@@ -1895,6 +2175,7 @@ fn bake_groups(
                     .chunks(batch.len().div_ceil(threads))
                     .map(|share| {
                         let live_selection = &live_selection;
+                        let inspected = &inspected;
                         let evaluator = &evaluator;
                         scope.spawn(move || -> Vec<Result<Row, Diagnostic>> {
                             let mut evaluator = match evaluator() {
@@ -1909,7 +2190,9 @@ fn bake_groups(
                                 share,
                                 inspect,
                                 live_selection,
+                                inspected,
                                 data,
+                                &mut FieldAccess::default(),
                                 entry,
                             ) {
                                 Ok(rows) => rows.into_iter().map(Ok).collect(),
@@ -2052,7 +2335,7 @@ fn bake_groups(
             encodings.push((group, encoding));
         }
     }
-    encode_maps(encodings, threads, cancelled)
+    Ok((encode_maps(encodings, threads, cancelled)?, captured))
 }
 
 /// Named fields evaluated over a receiver's atlas: the data a GPU preview binds as textures for the
@@ -2481,5 +2764,147 @@ output emissive = vec3(glow * 0.2);";
         let (output, baked) = build(&mut session, 4, &edited);
         assert_eq!(baked, [groups(&[Group::Color])]);
         assert_same(&output, &fresh(&edited), "distributed color edit");
+    }
+
+    const HEAVY: &str = "material 1;
+param tint: scalar = 0.5 range(0, 1);
+param shine: scalar = 0.2 range(0, 1);
+param zoom: scalar = 12 range(1, 40);
+let heavy = fbm(surface * zoom, seed(\"g\"), 3) + noise(surface * 5, seed(\"h\")) * 0.5 + sin(surface.x * 9) * cos(surface.y * 7) * 0.1;
+let shade = clamp(heavy * tint, 0, 1);
+output base_color = vec3(shade, shade * 0.5, 0.2);
+output roughness = clamp(heavy * shine, 0, 1);
+output metalness = 0;";
+
+    fn heavy_request(parameters: serde_json::Value, seed: u32) -> Request {
+        Request {
+            source: HEAVY.into(),
+            ..request(parameters, seed, 48)
+        }
+    }
+
+    /// The (read, kept) planes of the bakes a build ran.
+    fn planes_of(
+        session: &mut Session,
+        revision: u64,
+        request: &Request,
+    ) -> (Output, Vec<(usize, usize)>) {
+        PLANES.with(|planes| planes.borrow_mut().clear());
+        let (output, _) = build(session, revision, request);
+        (
+            output,
+            PLANES.with(|planes| std::mem::take(&mut *planes.borrow_mut())),
+        )
+    }
+
+    #[test]
+    fn an_edit_reads_the_expensive_fields_it_cannot_change_and_equals_a_fresh_bake() {
+        let mut session = Session::default();
+        let base = heavy_request(json!({}), 0);
+        let (first, planes) = planes_of(&mut session, 1, &base);
+        assert_eq!(
+            planes,
+            [(0, 1)],
+            "the costly field is kept by the first bake"
+        );
+        assert_same(&first, &fresh(&base), "first bake");
+        // The field reads only the seed and `zoom`: edits of other parameters read its plane, and
+        // an edit of `zoom` or the seed computes and keeps it again.
+        let edits = [
+            (json!({ "tint": 0.9 }), 0, (1, 0)),
+            (json!({ "shine": 0.7 }), 0, (1, 0)),
+            (json!({ "tint": 0.3, "shine": 0.4 }), 0, (1, 0)),
+            (json!({ "zoom": 20 }), 0, (0, 1)),
+            (json!({}), 4, (0, 1)),
+        ];
+        let mut revision = 1;
+        for (parameters, seed, expected) in edits {
+            revision += 1;
+            let edited = heavy_request(parameters.clone(), seed);
+            let (output, planes) = planes_of(&mut session, revision, &edited);
+            assert_eq!(planes, [expected], "{parameters} seed {seed}");
+            assert_same(
+                &output,
+                &fresh(&edited),
+                &format!("{parameters} seed {seed}"),
+            );
+        }
+        // Cancelling at every poll never publishes a partial plane: later builds still equal fresh ones.
+        let target = heavy_request(json!({ "tint": 0.65, "zoom": 17 }), 2);
+        let expected = fresh(&target);
+        for limit in 0..30 {
+            revision += 1;
+            let polls = Cell::new(0);
+            let _ = session.build(&target, revision, &no_assets, &|| {
+                polls.set(polls.get() + 1);
+                polls.get() > limit
+            });
+        }
+        revision += 1;
+        let (recovered, _) = planes_of(&mut session, revision, &target);
+        assert_same(&recovered, &expected, "after cancellations");
+        revision += 1;
+        let (edited, planes) = planes_of(
+            &mut session,
+            revision,
+            &heavy_request(json!({ "tint": 0.1, "zoom": 17 }), 2),
+        );
+        assert_eq!(planes, [(1, 0)], "the plane of the finished build is read");
+        assert_same(
+            &edited,
+            &fresh(&heavy_request(json!({ "tint": 0.1, "zoom": 17 }), 2)),
+            "after recovery",
+        );
+        // A cleared session keeps nothing, planes included.
+        session.clear();
+        revision += 1;
+        let (_, planes) = planes_of(&mut session, revision, &target);
+        assert_eq!(planes, [(0, 1)]);
+    }
+
+    #[test]
+    fn a_partial_rebake_is_held_to_the_limits_of_the_outputs_it_evaluates() {
+        // Each of color and roughness fits one sample's 16,384 steps; evaluating both would not.
+        const SOURCE: &str = "material 1;
+param a: bool = false;
+param b: bool = true;
+fn l1(x: scalar) -> scalar = x + x + x + x + x + x + x + x + x + x;
+fn l2(x: scalar) -> scalar = l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x) + l1(x);
+fn l3(x: scalar) -> scalar = l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x) + l2(x);
+fn heavy(x: scalar) -> scalar = l3(x) + l3(x) + l3(x) + l3(x);
+output base_color = vec3(select(a, heavy(surface.x) * 0.00001, 0.25));
+output roughness = select(b, heavy(surface.y) * 0.00001, 0.5);
+output metalness = 0;";
+        let with = |parameters: serde_json::Value| Request {
+            source: SOURCE.into(),
+            ..request(parameters, 0, 32)
+        };
+        let mut session = Session::default();
+        build(&mut session, 1, &with(json!({ "a": false, "b": true })));
+        // Only color is dirty: roughness (which reads `b` alone) is kept, so the rebake evaluates
+        // only color and succeeds.
+        let both = with(json!({ "a": true, "b": true }));
+        let (output, baked) = build(&mut session, 2, &both);
+        assert_eq!(baked, [groups(&[Group::Color])]);
+        assert!(!output.model.materials.is_empty());
+        // The same request on a session that holds neither map evaluates both outputs in each
+        // sample, which exceeds the step budget: limits apply to what a build evaluates.
+        let errors = Session::default()
+            .build(&both, 1, &no_assets, &|| false)
+            .err()
+            .expect("evaluating both outputs exceeds the step budget");
+        assert_eq!(errors[0].code, "MS_LIMIT", "{errors:?}");
+        // Errors do not depend on what is retained: a build that bakes a failing map reports that
+        // map's error whether or not other maps are kept.
+        let mut other = Session::default();
+        build(&mut other, 1, &with(json!({ "a": false, "b": true })));
+        let bad = with(json!({ "a": true, "b": true, "nope": 1 }));
+        for session in [&mut session, &mut other, &mut Session::default()] {
+            let errors = session
+                .build(&bad, 9, &no_assets, &|| false)
+                .err()
+                .expect("an unknown parameter fails");
+            assert_eq!(errors[0].code, "MS_PARAMETER", "{errors:?}");
+        }
     }
 }

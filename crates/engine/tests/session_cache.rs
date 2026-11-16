@@ -121,15 +121,17 @@ fn cached_admission_still_counts_every_used_image_against_bundle_limits() {
         }
         body + "</architecture>"
     };
+    // As many distinct images as the scene pixel allowance admits, then one more.
+    let fits = superspec_model::MAX_SCENE_IMAGE_PIXELS / (2048 * 2048);
     cache
-        .compile(&source(48), 0, &|_| Ok(bytes.clone()))
+        .compile(&source(fits), 0, &|_| Ok(bytes.clone()))
         .unwrap();
     assert_eq!(cache.stats().misses, 1);
-    assert_eq!(cache.stats().hits, 47);
+    assert_eq!(cache.stats().hits, fits as u64 - 1);
     let error = cache
-        .compile(&source(49), 1, &|_| Ok(bytes.clone()))
+        .compile(&source(fits + 1), 1, &|_| Ok(bytes.clone()))
         .err()
-        .expect("49 image identities exceed the scene pixel allowance");
+        .expect("one more image identity exceeds the scene pixel allowance");
     assert!(error.message.contains("pixel budget"));
     cache
         .compile(&source(1), 2, &|_| Ok(bytes.clone()))
