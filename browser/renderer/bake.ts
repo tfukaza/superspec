@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { shaderIdentity, type MaterialShading, type ProgramShader } from "./shade.ts";
 import { MAP_ANISOTROPY } from "./textures.ts";
 import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
-import { ATLAS_MAPPING_FRAGMENT, ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, atlasFragment, attachmentReads, programLayout, type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
+import { ATLAS_MAPPING_FRAGMENT, ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, LATTICE_MAPPING_FRAGMENT, MAX_TILES, PLANE_VALUES, STACK_COMPOSE_FRAGMENT, TILE_CELLS, TILE_START,
+  atlasFragment, attachmentReads, intrinsicTileFragment, latticeTiles, outputCpuFields, outputIntrinsic, outputReads, planeFragment, programLayout,
+  type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { BakeGraph, type DrawStep, type GraphInstance, type NodeOp, type NodeSpec, type TargetSpec } from "./bake-graph.ts";
 
 /**
@@ -181,6 +183,24 @@ export interface AtlasBakeInput {
   program?: AtlasProgramLayout;
 }
 
+/**
+ * One weathering layer of a layered slot as a stack bake is given it (the engine's `metadata.layers`, see
+ * `Session::shade_project`): the layer's plan, in which every `below.<channel>` is a CPU field this bake binds to the
+ * plane of that channel beneath, its uniforms over the receiver (its parameters, seeds and images, the receiver's own
+ * with the features as the layer queries them), what each `base.<channel>` input reads, and what names its features.
+ */
+export interface StackLayer {
+  /** `stack.1`, `stack.2`, ...: the lowest first. */
+  id: string;
+  shading: MaterialShading;
+  uniforms: Uniforms;
+  /** External input (`base.<channel>`) to the stack material whose plane it reads (`stack.base`, `stack.<k>`). */
+  reads: Record<string, string>;
+  receiver: string;
+}
+/** A layered slot: its layers and the stack material each channel of the result comes from (`metadata.channels`). */
+export interface StackInput { layers: StackLayer[]; channels: Record<string, string> }
+
 /** Where a shared intrinsic bake lies in a receiver's surface coordinates (meters), for `GpuBaker.mappingOp`. */
 export interface IntrinsicDomain {
   /** The surface coordinate of the intrinsic texture's corner at UV (0, 0), and the size it covers. */
@@ -258,6 +278,13 @@ const PASS1_TEXTURES = 5;
 const VIEWER_UNITS = 7;
 /** Compiled bake programs kept, least recently used dropped first. */
 const KEPT_PASSES = 8;
+/**
+ * Compiled programs of weathering stacks kept (each material of a stack has its plane program, a slot has at most
+ * eight layers, and a scene several layered slots), least recently used dropped first.
+ */
+const KEPT_PLANE_PASSES = 32;
+/** Channels of a stack's result (`STACK_CHANNELS` in the engine). */
+const STACK_CHANNELS = ["base_color", "roughness", "metalness", "height", "opacity", "emissive", "normal_offset"];
 /** Sources whose compile failed, remembered so an edit that keeps the source does not compile it again. */
 const KEPT_FAILURES = 16;
 
@@ -465,6 +492,8 @@ export class GpuBaker {
     this.atlasNormalPass = undefined;
     this.atlasCompileTarget = undefined;
     this.opPasses.clear();
+    this.planePasses.clear();
+    this.blankTexture = undefined;
     this.graph.forget();
     this.displayed.clear();
     this.held.clear();
@@ -504,7 +533,7 @@ export class GpuBaker {
 
   /** Drops the least recently used programs beyond what is kept; one a bake is using waits for the next trim. */
   private trim(): void {
-    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.atlasPasses, KEPT_PASSES]] as const) {
+    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.atlasPasses, KEPT_PASSES], [this.planePasses, KEPT_PLANE_PASSES]] as const) {
       for (const [key, pass] of [...passes]) {
         if (passes.size <= kept) break;
         if (!this.evictable(pass)) continue;
@@ -1402,6 +1431,359 @@ export class GpuBaker {
       total: timings.total, bands: result.bands, drawn: result.drawn, reused: result.reused, units: { bake: bakeUnits, limit: unitLimit } } };
   }
 
+  // ---- Weathering stacks (layered slots) ----
+
+  /** Programs of stack bakes (planes, intrinsic tiles, lattice mappings, composition), by what they are compiled from. */
+  private planePasses = new Map<string, Pass>();
+  /** Bound where a stack program's input is absent for the node being drawn (that output never reads it). */
+  private blankTexture?: THREE.DataTexture;
+  /**
+   * Whether a stack's base reads its intrinsic outputs from shared lattice tiles where a receiver's charts all lie on
+   * its pattern anchor's lattice (`?intrinsic=off` in the viewer evaluates them per receiver, for comparisons).
+   */
+  intrinsicTiles = true;
+
+  private blank(): THREE.Texture {
+    if (this.blankTexture) return this.blankTexture;
+    const texture = new THREE.DataTexture(new Float32Array(4), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+    texture.minFilter = texture.magFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    return this.blankTexture = texture;
+  }
+
+  private async planePass(key: string, vertex: string, fragment: string, geometry: THREE.BufferGeometry): Promise<Pass> {
+    const cached = this.planePasses.get(key);
+    if (cached) { this.planePasses.delete(key); this.planePasses.set(key, cached); return cached; }
+    const waiting = this.compiling.get(key);
+    if (waiting) return waiting;
+    const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: vertex, fragmentShader: fragment, uniforms: {},
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, side: THREE.DoubleSide });
+    const started: Promise<Pass> = this.compiled(material, this.compileTarget(), this.planePasses, key, geometry)
+      .finally(() => { if (this.compiling.get(key) === started) this.compiling.delete(key); });
+    this.compiling.set(key, started);
+    return started;
+  }
+
+  /** The texture of one channel's plane: the value unencoded, read by texel (`PLANE_VALUES`). */
+  private static planeTarget(channel: string, width: number, height: number, name = `gpu-plane ${channel}`): TargetSpec {
+    const vector = channel === "base_color" || channel === "emissive" || channel === "normal_offset";
+    // Heights in single precision, like the atlas bake's (the relief differences them); the rest in half floats.
+    return { width, height, format: vector ? THREE.RGBAFormat : THREE.RedFormat, type: channel === "height" ? THREE.FloatType : THREE.HalfFloatType,
+      colorSpace: THREE.NoColorSpace, filter: "nearest", wrap: THREE.ClampToEdgeWrapping, name };
+  }
+
+  /**
+   * How the maps of a layered slot's bake are laid out (`bakeStack`): the result's textures, by the channels the stack
+   * has (`StackInput.channels`), and the base's live renderer arguments, which layers never change. Like
+   * `atlasProgram`, it is what the material showing the maps is made for.
+   */
+  stackProgram(base: MaterialShading, stack: StackInput): AtlasProgramLayout {
+    const own = this.atlasProgram(base);
+    const attachments: AtlasAttachment[] = ["base", "properties", "height"];
+    if (stack.channels.emissive) attachments.push("emissive");
+    if (stack.channels.normal_offset) attachments.push("offset");
+    attachments.push(...own.attachments.filter(name => name.startsWith("live")));
+    return { ...own, key: `stack:${attachments.join("+")}:${own.key}`, attachments, orient: false, unsupported: own.unsupported ?? stackUnsupported(base, stack) ?? undefined };
+  }
+
+  /**
+   * Starts compiling the programs a stack bake draws with (see `precompileAtlas`): each material's plane program as
+   * `bakeStack` makes it (`stackPlanes`), the base's intrinsic tile program, the composition and the normals.
+   */
+  precompileStack(base: MaterialShading, stack: StackInput): void {
+    if (this.unavailable() || gpuBakeUnsupported(base, true) || stackUnsupported(base, stack)) return;
+    const planes = stackPlanes(base, stack);
+    const compile = (key: string, vertex: string, fragment: string, geometry: THREE.BufferGeometry) =>
+      void this.planePass(`${key}:${shaderIdentity(base.shader)}:${hash(fragment)}:${fragment.length}`, vertex, fragment, geometry).catch(() => {});
+    const own = this.atlasProgram(base);
+    const baseChannels = planes.get("stack.base") ?? [];
+    try {
+      // A receiver off its anchor's lattice evaluates every plane of the base; one on it, the rest beside the tiles.
+      compile("plane", ATLAS_VERTEX, planeFragment(base.shader.source, [...baseChannels.map(channel => PLANE_VALUES[channel]), ...liveValues(own)], []), this.atlasIdle);
+      const tiled = this.intrinsicTiles ? baseChannels.filter(channel => outputIntrinsic(base.shader, channel)) : [];
+      if (tiled.length) compile("tile", VERTEX, intrinsicTileFragment(base.shader.source, tiled.map(channel => PLANE_VALUES[channel])), this.geometry);
+      for (const layer of stack.layers) {
+        const channels = planes.get(layer.id) ?? [];
+        if (!channels.length) continue;
+        const below = (layer.shading.shader.cpuFields ?? []).filter(field => field.name.startsWith("below.")).map(field => field.uniform);
+        const fragment = planeFragment(layer.shading.shader.source, channels.map(channel => PLANE_VALUES[channel]), below);
+        void this.planePass(`plane:${shaderIdentity(layer.shading.shader)}:${hash(fragment)}:${fragment.length}`, ATLAS_VERTEX, fragment, this.atlasIdle).catch(() => {});
+      }
+    } catch { /* the bake reports it */ }
+    void this.planePass("stack-compose", ATLAS_VERTEX, STACK_COMPOSE_FRAGMENT, this.atlasIdle).catch(() => {});
+    void this.planePass("stack-lattice", ATLAS_VERTEX, LATTICE_MAPPING_FRAGMENT, this.atlasIdle).catch(() => {});
+    void this.atlasNormals(this.compileTarget()).catch(() => {});
+  }
+
+  /**
+   * Bakes a layered slot over one receiver's atlas as a pass graph of PLANES, the GPU preview of the CPU's stack
+   * (`Request::layers`; see "Layered slots" in the program README). Each material of the stack (`stack.base`, then each
+   * layer) draws a plane node per channel it gives, holding the value unencoded; a layer's `below.<channel>` reads the
+   * plane of the material beneath that last changed the channel (`StackLayer.reads`), or the channel's default where
+   * none did. A plane is keyed by its material's program, what its value reads of that material's parameters, seeds,
+   * images and CPU fields, the receiver's atlas and the features the material queries; its resolved key adds the
+   * planes it reads. So editing, adding or removing a layer draws only that layer's planes and those above that read
+   * them, and the base is drawn once under any stack. The result's maps are composed from the planes of the materials
+   * that last changed each channel; the normals pass reads the height and offset planes.
+   *
+   * The base's INTRINSIC outputs (`Reads.intrinsic`) are drawn into shared lattice tiles when every chart of the
+   * receiver lies on its pattern anchor's lattice (`latticeTiles`): a tile is keyed by the lattice and the values it
+   * reads alone, so another receiver over the same stretch of the pattern, and the same receiver resized, read the
+   * tiles already drawn, through a cheap per-receiver mapping that copies the texel of each lattice cell.
+   *
+   * `fields` holds the CPU fields of the base's plan by sampler uniform and of each layer's by `<layer id>/<uniform>`
+   * (all but its `below.*` fields). Returns and throws as `bakeAtlas` does; `atlas.program` is `stackProgram`'s layout.
+   */
+  async bakeStack(base: MaterialShading, uniforms: Uniforms, stack: StackInput, atlas: AtlasBakeInput,
+    previous?: AtlasMaps, options: AtlasBakeOptions = {}): Promise<{ maps: AtlasMaps; timings: AtlasBakeTimings } | null> {
+    this.busy++;
+    const holds: object[] = [];
+    try { return await this.bakeStackNow(base, uniforms, stack, atlas, previous, options, holds); }
+    catch (error) { if (error instanceof Abandoned) return null; throw error; }
+    finally { this.release(holds); this.busy--; this.trim(); }
+  }
+
+  private async bakeStackNow(base: MaterialShading, uniforms: Uniforms, stack: StackInput, atlas: AtlasBakeInput,
+    previous: AtlasMaps | undefined, options: AtlasBakeOptions, holds: object[]): Promise<{ maps: AtlasMaps; timings: AtlasBakeTimings } | null> {
+    const { measure = false, bandTexels = BAND_TEXELS, fields = {} } = options;
+    const reason = this.unavailable();
+    if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
+    const composite = atlas.program ?? this.stackProgram(base, stack);
+    const own = this.atlasProgram(base);
+    // (A layer need not give a base color: what it does not give passes through.)
+    const unsupported = gpuBakeUnsupported(base, true) ?? composite.unsupported ?? stackUnsupported(base, stack);
+    if (unsupported) throw new Error(`GPU preview does not support this program: ${unsupported}.`);
+    const { width, height } = atlas.layout;
+    if (width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error("GPU preview size is out of range.");
+    const unitLimit = this.renderer.capabilities.maxTextures;
+    const bakeUnits = Math.max(factsOf(base.shader).samplers, ...stack.layers.map(layer => factsOf(layer.shading.shader).samplers), MAX_TILES);
+    if (bakeUnits > unitLimit) throw new Error(`GPU preview needs ${bakeUnits} texture units to bake; this device has ${unitLimit}.`);
+    const profile = `${GPU_PREVIEW_PROFILE}:${GPU_PREVIEW_VERSION}`;
+    // The CPU fields of each material, as their keys name them; a layer's `below.*` fields are planes of this graph.
+    const fieldIdsOf = (shading: MaterialShading, prefix: string): string[] => (shading.shader.cpuFields ?? []).map(field => {
+      if (prefix && field.name.startsWith("below.")) return `${field.name}=plane`;
+      const found = fields[`${prefix}${field.uniform}`];
+      if (!found) throw new Error(`GPU preview needs the CPU field ${prefix}${field.name}.`);
+      if (found.width !== width || found.height !== height) throw new Error("CPU field and atlas sizes differ.");
+      return `${field.name}=${found.id}`;
+    });
+    const bindFor = (shading: MaterialShading, own: Uniforms, prefix: string) => (): Uniforms => {
+      const bound: Uniforms = { ...own, msAtlas: { value: new THREE.Vector2(width, height) }, msGutter: { value: atlas.layout.gutter },
+        msExtent: { value: new THREE.Vector2(atlas.extent[0], atlas.extent[1]) } };
+      for (const field of shading.shader.cpuFields ?? []) {
+        if (!(prefix && field.name.startsWith("below."))) bound[field.uniform] = { value: this.fieldTexture(fields[`${prefix}${field.uniform}`]) };
+      }
+      return bound;
+    };
+    const planes = stackPlanes(base, stack);
+    const planeId = (producer: string, channel: string) => `${producer}/${channel}`;
+    const signatures: string[] = [];
+    const before: NodeSpec[] = [], after: NodeSpec[] = [];
+    const passKeys: string[] = [];
+
+    // The base: intrinsic channels from lattice tiles where the receiver allows it, the rest (and its live arguments)
+    // evaluated over the atlas.
+    const baseFieldIds = fieldIdsOf(base, "");
+    signatures.push(GpuBaker.atlasKey(base, uniforms, atlas.layout, own, baseFieldIds, atlas.receiver));
+    const baseHash = factsOf(base.shader).hash;
+    const baseChannels = planes.get("stack.base") ?? [];
+    const lattice = this.intrinsicTiles ? latticeTiles(atlas.layout) : null;
+    const tiled = lattice ? baseChannels.filter(channel => outputIntrinsic(base.shader, channel)) : [];
+    const evaluated = baseChannels.filter(channel => !tiled.includes(channel));
+    const live = own.attachments.filter(name => name.startsWith("live"));
+    const bindBase = bindFor(base, uniforms, "");
+    if (tiled.length) {
+      const { step, tiles } = lattice!;
+      const fragment = intrinsicTileFragment(base.shader.source, tiled.map(channel => PLANE_VALUES[channel]));
+      const passKey = `tile:${shaderIdentity(base.shader)}:${hash(fragment)}:${fragment.length}`;
+      passKeys.push(passKey);
+      const origins: [number, number][] = [];
+      for (const [i, j] of tiles) {
+        const origin: [number, number] = [TILE_START + i * TILE_CELLS, TILE_START + j * TILE_CELLS];
+        origins.push(origin);
+        const op = this.tileOp(passKey, fragment, origin, step, bindBase, holds);
+        tiled.forEach((channel, output) => before.push({ id: `tile/${i},${j}/${channel}`, op, output,
+          key: `${profile}:tile:${baseHash}:${channel}:${step}:${origin.join(",")}:${TILE_CELLS}:${GpuBaker.ownValuesKey(base, uniforms, outputReads(base.shader, [channel]))}`,
+          target: GpuBaker.planeTarget(channel, TILE_CELLS, TILE_CELLS, `gpu-tile ${channel}`) }));
+      }
+      const op = this.latticeOp(atlas, origins);
+      for (const channel of tiled) {
+        before.push({ id: planeId("stack.base", channel), key: `lattice:1:${atlas.layout.key}:${channel}`, op, target: GpuBaker.planeTarget(channel, width, height),
+          inputs: Object.fromEntries(tiles.map(([i, j], index) => [`tile${index}`, `tile/${i},${j}/${channel}`])) });
+      }
+    }
+    if (evaluated.length || live.length) {
+      const values = [...evaluated.map(channel => PLANE_VALUES[channel]), ...liveValues(own)];
+      const fragment = planeFragment(base.shader.source, values, []);
+      const passKey = `plane:${shaderIdentity(base.shader)}:${hash(fragment)}:${fragment.length}`;
+      passKeys.push(passKey);
+      const op = this.stackEvaluateOp("base", passKey, fragment, atlas.geometry, bindBase, holds, []);
+      const liveReads = this.nodeKeys ? this.atlasReads(base.shader, own) : {};
+      evaluated.forEach((channel, output) => before.push({ id: planeId("stack.base", channel), op, output, target: GpuBaker.planeTarget(channel, width, height),
+        key: `${profile}:plane:${baseHash}:${atlas.layout.key}:${channel}:${GpuBaker.atlasInputsKey(base, uniforms, baseFieldIds, atlas.receiver, this.nodeKeys ? outputReads(base.shader, [channel]) : undefined)}` }));
+      live.forEach((name, index) => before.push({ id: name, op, output: evaluated.length + index, target: GpuBaker.atlasTarget(name, width, height, own),
+        key: `${profile}:stack-live:${baseHash}:${own.key}:${atlas.layout.key}:${name}:${GpuBaker.atlasInputsKey(base, uniforms, baseFieldIds, atlas.receiver, liveReads[name])}` }));
+    }
+
+    // Each layer, over the planes beneath it.
+    const fallbacks = new Set<string>();
+    for (const layer of stack.layers) {
+      const shader = layer.shading.shader;
+      const channels = planes.get(layer.id) ?? [];
+      const fieldIds = fieldIdsOf(layer.shading, `${layer.id}/`);
+      signatures.push(GpuBaker.atlasKey(layer.shading, layer.uniforms, atlas.layout, own, fieldIds, layer.receiver));
+      if (!channels.length) continue;
+      const below = (shader.cpuFields ?? []).filter(field => field.name.startsWith("below."));
+      const fragment = planeFragment(shader.source, channels.map(channel => PLANE_VALUES[channel]), below.map(field => field.uniform));
+      const passKey = `plane:${shaderIdentity(shader)}:${hash(fragment)}:${fragment.length}`;
+      passKeys.push(passKey);
+      const op = this.stackEvaluateOp("layer", passKey, fragment, atlas.geometry, bindFor(layer.shading, layer.uniforms, `${layer.id}/`), holds, below.map(field => field.uniform));
+      const beneath = (field: (typeof below)[number]): string => {
+        const channel = field.name.slice("below.".length), producer = layer.reads[`base.${channel}`];
+        if (producer) return planeId(producer, channel);
+        fallbacks.add(channel);
+        return `fallback/${channel}`;
+      };
+      const hashed = factsOf(shader).hash;
+      channels.forEach((channel, output) => {
+        // The planes beneath that this channel's value reads (all of them where the record does not say).
+        const reads = outputCpuFields(shader, channel);
+        const inputs = Object.fromEntries(below.filter(field => !reads || reads.includes(field.name)).map(field => [field.uniform, beneath(field)]));
+        after.push({ id: planeId(layer.id, channel), op, output, inputs, target: GpuBaker.planeTarget(channel, width, height),
+          key: `${profile}:plane:${hashed}:${atlas.layout.key}:${channel}:${GpuBaker.atlasInputsKey(layer.shading, layer.uniforms, fieldIds, layer.receiver, this.nodeKeys ? outputReads(shader, [channel]) : undefined)}` });
+      });
+    }
+
+    // The result: maps composed from the planes of the materials that last changed each channel, and the normals.
+    const produced = (channel: string) => stack.channels[channel] && planes.get(stack.channels[channel])?.includes(channel) ? planeId(stack.channels[channel], channel) : undefined;
+    const color = produced("base_color"), roughness = produced("roughness"), metalness = produced("metalness"), emissive = produced("emissive");
+    const offset = produced("normal_offset");
+    let heightId = produced("height");
+    if (!heightId) { fallbacks.add("height"); heightId = "fallback/height"; }
+    const compose = this.composeOp(atlas);
+    after.push({ id: "base", key: `stack-compose:1:${atlas.layout.key}:base`, op: compose, output: 0, target: GpuBaker.atlasTarget("base", width, height, composite),
+      inputs: color ? { color } : {} });
+    after.push({ id: "properties", key: `stack-compose:1:${atlas.layout.key}:properties`, op: compose, output: 1, target: GpuBaker.atlasTarget("properties", width, height, composite),
+      inputs: { ...(roughness ? { roughness } : {}), ...(metalness ? { metalness } : {}) } });
+    if (emissive) after.push({ id: "emissive", key: `stack-compose:1:${atlas.layout.key}:emissive`, op: compose, output: 2, target: GpuBaker.atlasTarget("emissive", width, height, composite), inputs: { emissive } });
+    const normalTarget = GpuBaker.atlasTarget("normal", width, height, composite);
+    after.push(!stack.channels.height && !offset ? { id: "normal", key: "flat-normal:1", target: normalTarget, op: this.fillOp("normals", 0.5, 0.5, 1) }
+      : { id: "normal", key: `atlas-normals:1:${atlas.layout.key}:false:${!!offset}`, target: normalTarget, op: this.atlasNormalsOp(atlas, false, !!offset),
+        inputs: offset ? { height: heightId, offset } : { height: heightId } });
+    // Channels no material beneath a layer gives: the default its `below.<channel>` falls back to.
+    const fills: Record<string, [number, number, number]> = { base_color: [0.5, 0.5, 0.5], roughness: [1, 0, 0], opacity: [1, 0, 0] };
+    const defaults: NodeSpec[] = [...fallbacks].map(channel => ({ id: `fallback/${channel}`, key: `stack-fallback:1:${channel}`,
+      target: GpuBaker.planeTarget(channel, width, height), op: this.fillOp("fallback", ...(fills[channel] ?? [0, 0, 0])) }));
+    const specs = [...before, ...defaults, ...after];
+    const hadPasses = passKeys.every(key => this.planePasses.has(key));
+    const signature = signatures.join("|");
+    const result = await this.graph.realize(specs, previous?.nodes, {
+      current: options.current, measure, bandTexels, inPlace: options.inPlace, allocate: options.allocate, beforeOverwrite: options.beforeOverwrite,
+      // A value that changed while the bands were drawn is in some texels and not others.
+      stable: () => [GpuBaker.atlasKey(base, uniforms, atlas.layout, own, baseFieldIds, atlas.receiver),
+        ...stack.layers.map(layer => GpuBaker.atlasKey(layer.shading, layer.uniforms, atlas.layout, own, fieldIdsOf(layer.shading, `${layer.id}/`), layer.receiver))].join("|") === signature,
+    });
+    if (!result) return null;
+    const nodes = result.instance;
+    const liveTextures: Record<string, THREE.Texture> = {};
+    for (const name of live) liveTextures[`gpu-live-${name.slice(4)}`] = nodes.texture(name)!;
+    const maps: AtlasMaps = { profile: GPU_PREVIEW_PROFILE, key: `stack:${hash(signature)}:${composite.key}:${atlas.layout.key}`, width, height, layout: composite, nodes,
+      baseColor: nodes.texture("base")!, properties: nodes.texture("properties")!, heightMap: nodes.texture(heightId)!,
+      emissive: emissive ? nodes.texture("emissive") : undefined, offset: offset ? nodes.texture(offset) : undefined, normal: nodes.texture("normal")!, live: liveTextures };
+    const { timings } = result;
+    const evaluate = ["base", "layer", "tile", "lattice", "compose", "fallback"].reduce((sum, label) => sum + (timings.draw[label] ?? 0), 0);
+    return { maps, timings: { compile: hadPasses ? 0 : timings.prepare, evaluate, normals: timings.draw.normals ?? 0, mips: timings.mips,
+      total: timings.total, bands: result.bands, drawn: result.drawn, reused: result.reused, units: { bake: bakeUnits, limit: unitLimit } } };
+  }
+
+  /** The values of a program's own uniforms that `reads` names (all of them when it is undefined), for an intrinsic tile's key. */
+  private static ownValuesKey(shading: MaterialShading, uniforms: Uniforms, reads: ReadonlySet<string> | undefined): string {
+    const own = [...shading.shader.parameters, ...shading.shader.seeds].filter(entry => !reads || reads.has(entry.uniform))
+      .map(entry => [entry.uniform, JSON.stringify(uniforms[entry.uniform]?.value)]);
+    const images = shading.shader.images.filter(image => !reads || reads.has(image.uniform))
+      .map(image => `${image.name}:${image.linear}:${(uniforms[image.uniform]?.value as THREE.Texture | undefined)?.uuid}`);
+    return hash(JSON.stringify([own, images]));
+  }
+
+  /** The evaluate pass of one material of a stack: its plane program over the receiver's atlas, `below` bound to the planes beneath. */
+  private stackEvaluateOp(label: string, key: string, fragment: string, geometry: THREE.BufferGeometry, bind: () => Uniforms, holds: object[], below: string[]): NodeOp {
+    let pass: Pass | undefined, bound: Uniforms | undefined;
+    return {
+      label,
+      prepare: async () => { pass = await this.planePass(key, ATLAS_VERTEX, fragment, this.atlasIdle); this.hold(pass, holds); },
+      draw: ({ node, output, rows, inputs }) => {
+        // Assigned at every draw: another bake may have used the program since the last band.
+        const uniform = pass!.material.uniforms;
+        Object.assign(uniform, bound ??= bind());
+        for (const role of below) uniform[role] = { value: inputs[role]?.texture ?? this.blank() };
+        uniform.msOutput = { value: output };
+        pass!.material.uniformsNeedUpdate = true;
+        pass!.mesh.geometry = geometry;
+        try { this.renderInto(node.target, pass!.scene, rows); } finally { pass!.mesh.geometry = this.atlasIdle; }
+      },
+    };
+  }
+
+  /** The draw of one intrinsic tile: the base's intrinsic outputs over `TILE_CELLS` square lattice cells from `origin`. */
+  private tileOp(key: string, fragment: string, origin: [number, number], step: number, bind: () => Uniforms, holds: object[]): NodeOp {
+    let pass: Pass | undefined, bound: Uniforms | undefined;
+    return {
+      label: "tile",
+      prepare: async () => { pass = await this.planePass(key, VERTEX, fragment, this.geometry); this.hold(pass, holds); },
+      draw: ({ node, output, rows }) => {
+        const uniform = pass!.material.uniforms;
+        Object.assign(uniform, bound ??= bind());
+        uniform.msTileOrigin = { value: new THREE.Vector2(...origin) };
+        uniform.msStep = { value: step };
+        uniform.msOutput = { value: output };
+        pass!.material.uniformsNeedUpdate = true;
+        this.renderInto(node.target, pass!.scene, rows);
+      },
+    };
+  }
+
+  /** The draw of a lattice mapping: each texel of a receiver copies its lattice cell from the tiles (`tile0`, ... inputs) at `origins`. */
+  private latticeOp(atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry }, origins: [number, number][]): NodeOp {
+    let pass: Pass | undefined;
+    return {
+      label: "lattice",
+      prepare: async () => { pass = await this.planePass("stack-lattice", ATLAS_VERTEX, LATTICE_MAPPING_FRAGMENT, this.atlasIdle); },
+      draw: ({ node, inputs, rows }) => {
+        const uniform = pass!.material.uniforms;
+        uniform.msAtlas = { value: new THREE.Vector2(atlas.layout.width, atlas.layout.height) };
+        uniform.msGutter = { value: atlas.layout.gutter };
+        uniform.msTiles = { value: origins.length };
+        uniform.msTileOrigins = { value: Array.from({ length: MAX_TILES }, (_, index) => new THREE.Vector2(...(origins[index] ?? [0, 0]))) };
+        for (let index = 0; index < MAX_TILES; index++) uniform[`msTile${index}`] = { value: inputs[`tile${index}`]?.texture ?? this.blank() };
+        pass!.material.uniformsNeedUpdate = true;
+        pass!.mesh.geometry = atlas.geometry;
+        try { this.renderInto(node.target, pass!.scene, rows); } finally { pass!.mesh.geometry = this.atlasIdle; }
+      },
+    };
+  }
+
+  /** The draw of a stack's result maps from its planes (`STACK_COMPOSE_FRAGMENT`): output 0 base color, 1 properties, 2 emissive. */
+  private composeOp(atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry }): NodeOp {
+    let pass: Pass | undefined;
+    return {
+      label: "compose",
+      prepare: async () => { pass = await this.planePass("stack-compose", ATLAS_VERTEX, STACK_COMPOSE_FRAGMENT, this.atlasIdle); },
+      draw: ({ node, output, inputs, rows }) => {
+        const uniform = pass!.material.uniforms;
+        uniform.msAtlas = { value: new THREE.Vector2(atlas.layout.width, atlas.layout.height) };
+        for (const [role, name] of [["color", "Color"], ["roughness", "Roughness"], ["metalness", "Metalness"], ["emissive", "Emissive"]]) {
+          uniform[`ms${name}`] = { value: inputs[role]?.texture ?? this.blank() };
+          uniform[`msHas${name}`] = { value: inputs[role] !== undefined };
+        }
+        uniform.msOutput = { value: output };
+        pass!.material.uniformsNeedUpdate = true;
+        pass!.mesh.geometry = atlas.geometry;
+        try { this.renderInto(node.target, pass!.scene, rows); } finally { pass!.mesh.geometry = this.atlasIdle; }
+      },
+    };
+  }
+
   /** The base color and normal texels of the last bake, for tests and diagnostics (not for display). */
   readBack(bake: GpuBake): { baseColor: Uint8Array; normal: Uint8Array; height: Float32Array; properties: Uint8Array } {
     const nodes = this.swatches.get(`${bake.width}x${bake.height}`)?.instance;
@@ -1451,6 +1833,9 @@ export class GpuBaker {
     this.atlasNormalPass?.material.dispose(); this.atlasNormalPass = undefined;
     for (const pass of this.opPasses.values()) pass.material.dispose();
     this.opPasses.clear();
+    for (const pass of this.planePasses.values()) pass.material.dispose();
+    this.planePasses.clear();
+    this.blankTexture?.dispose(); this.blankTexture = undefined;
     this.atlasCompileTarget?.dispose(); this.atlasCompileTarget = undefined;
     this.failureCheck?.pass.material.dispose(); this.failureCheck?.target.dispose(); this.failureCheck = undefined;
     this.disposeTargets();
@@ -1460,6 +1845,50 @@ export class GpuBaker {
     this.passes.clear();
     this.normalPass = undefined;
   }
+}
+
+/**
+ * The planes a stack bake draws, by stack material (`stack.base`, `stack.<k>`): the channels something reads (each
+ * channel of the result, and each a layer reads beneath it), in the order of the material's outputs, so a material's
+ * plane program is the same text whoever makes it (`bakeStack`, `precompileStack`). The maps store no opacity, like
+ * an atlas bake's, so it is drawn only for a layer that reads it.
+ */
+function stackPlanes(base: MaterialShading, stack: StackInput): Map<string, string[]> {
+  const wanted = new Map<string, Set<string>>();
+  const want = (producer: string, channel: string) => { if (!wanted.has(producer)) wanted.set(producer, new Set()); wanted.get(producer)!.add(channel); };
+  for (const [channel, producer] of Object.entries(stack.channels)) if (STACK_CHANNELS.includes(channel) && channel !== "opacity") want(producer, channel);
+  for (const layer of stack.layers) for (const [input, producer] of Object.entries(layer.reads)) want(producer, input.slice("base.".length));
+  const planes = new Map<string, string[]>();
+  for (const [id, shading] of [["stack.base", base] as const, ...stack.layers.map(layer => [layer.id, layer.shading] as const)]) {
+    planes.set(id, shading.shader.outputs.filter(output => wanted.get(id)?.has(output) && PLANE_VALUES[output]));
+  }
+  return planes;
+}
+
+/** What the evaluate pass writes into each live argument texture of a program's layout, as `atlasFragment` writes it. */
+function liveValues(layout: AtlasProgramLayout): string[] {
+  return layout.attachments.filter(name => name.startsWith("live")).map(name => {
+    const first = Number(name.slice(4)) * 4;
+    return `vec4(${[0, 1, 2, 3].map(channel => layout.liveChannels[first + channel] ?? "0.0").join(", ")})`;
+  });
+}
+
+/** Why a layered slot cannot be composed on the GPU, or null (see `GpuBaker.bakeStack`). */
+export function stackUnsupported(base: MaterialShading, stack: StackInput): string | null {
+  if (!stack.layers.length) return "the slot has no layers";
+  for (const [index, layer] of stack.layers.entries()) {
+    if (!layer.shading.shader.source) return `weathering layer ${layer.id} has no GPU plan`;    if (layer.shading.shader.live.length) return `weathering layer ${layer.id} has live operations`;
+    const unknown = (layer.shading.shader.cpuFields ?? []).find(field => field.name.startsWith("below.") && !PLANE_VALUES[field.name.slice("below.".length)]);
+    if (unknown) return `weathering layer ${layer.id} reads ${unknown.name}, which the GPU stack does not hold`;
+    for (const producer of Object.values(layer.reads)) {
+      if (producer !== "stack.base" && !stack.layers.slice(0, index).some(other => other.id === producer)) return `weathering layer ${layer.id} reads ${producer}, which is not beneath it`;
+    }
+  }
+  const outputs = (producer: string) => producer === "stack.base" ? base.shader.outputs : stack.layers.find(layer => layer.id === producer)?.shading.shader.outputs ?? [];
+  for (const [channel, producer] of Object.entries(stack.channels)) {
+    if (!STACK_CHANNELS.includes(channel) || !outputs(producer).includes(channel)) return `the stack's ${channel} comes from ${producer}, which does not give it`;
+  }
+  return null;
 }
 
 /**

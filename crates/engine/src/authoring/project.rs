@@ -809,6 +809,77 @@ impl Session {
 /// them per pixel; the sharpest creases and the open edges are kept.
 pub const PREVIEW_FEATURES: usize = 1024;
 
+/// A receiver's features as a preview shader reads them, twelve numbers each (see
+/// [`Session::shade_project`]): its derived creases, open edges and contacts (the receiver's
+/// `contacts` must be found), then its named features that `names` (a shader's
+/// `named_features`) queries, with kind 5 plus the name's place in `names`. A shader that follows
+/// (`follow`, a layer's own name to the receiver's) sees a receiver's feature by the name it
+/// follows it as, and the receiver's other names as they are, as a CPU bake renames them.
+fn preview_features(
+    receiver: &Receiver,
+    named: Option<&[crate::materialspec::program::NamedFeature]>,
+    names: &[String],
+    follow: &BTreeMap<String, String>,
+) -> Vec<f64> {
+    let mut features = Vec::new();
+    let mut found =
+        crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices);
+    // Sharpest first, so a receiver with more edges than a shader visits loses only its
+    // shallowest creases.
+    found.sort_by(|a, b| b.angle.total_cmp(&a.angle));
+    found.truncate(PREVIEW_FEATURES - receiver.contacts.len().min(PREVIEW_FEATURES / 2));
+    use crate::materialspec::program::FeatureKind as Kind;
+    for feature in &found {
+        let kind = match feature.kind {
+            Kind::Convex => 0.,
+            Kind::Concave => 1.,
+            Kind::Boundary => 2.,
+            Kind::Seam => 3.,
+            Kind::Contact => 4.,
+            // Derived features are never named.
+            Kind::Named => continue,
+        };
+        let normal = feature.normal.unwrap_or([0.; 3]);
+        features.extend(feature.start);
+        features.push(kind);
+        features.extend(feature.end);
+        features.push(feature.angle);
+        features.extend(normal);
+        features.push(f64::from(u8::from(feature.normal.is_some())));
+    }
+    for contact in receiver.contacts.iter().take(PREVIEW_FEATURES / 2) {
+        features.extend(contact.start);
+        features.push(4.);
+        features.extend(contact.end);
+        features.extend([0., 0., 0., 0., 0.]);
+    }
+    for feature in named.into_iter().flatten() {
+        // The names the shader sees this feature by.
+        let own = (!follow.contains_key(&feature.name)).then_some(&feature.name);
+        let followed = follow
+            .iter()
+            .filter(|(_, theirs)| **theirs == feature.name)
+            .map(|(own, _)| own);
+        for seen in own.into_iter().chain(followed) {
+            let Some(place) = names.iter().position(|name| name == seen) else {
+                continue;
+            };
+            let last = feature
+                .points
+                .first()
+                .filter(|_| feature.closed && feature.points.len() > 2);
+            let ends = feature.points.iter().skip(1).chain(last);
+            for (start, end) in feature.points.iter().zip(ends) {
+                features.extend(start);
+                features.push(5. + place as f64);
+                features.extend(end);
+                features.extend([0., 0., 0., 0., 0.]);
+            }
+        }
+    }
+    features
+}
+
 impl Session {
     /// Describes a multi-model, multi-material project for a renderer that evaluates materials
     /// itself: the composed models without any bake, and for each material its program as a
@@ -903,10 +974,34 @@ impl Session {
                 }
             }
             metadata["shader"] = serde_json::to_value(shader).unwrap();
+            // What each layer's shader queries of a receiver: whether it reads derived features,
+            // the named features it reads, and which of the receiver's names it follows.
+            let mut layer_queries: Vec<(bool, Vec<String>, BTreeMap<String, String>)> = Vec::new();
             if !assignment.layers.is_empty() {
                 // A slot its bake would refuse is refused here too, with the same diagnostics.
                 self.check_layered(&material_request(project, assignment, source, Vec::new()))?;
                 let (layers, channels) = self.layer_shaders(project, assignment, &program)?;
+                for (layer, described) in assignment
+                    .layers
+                    .iter()
+                    .zip(layers.as_array().into_iter().flatten())
+                {
+                    // The plan is what a GPU host bakes; its queries are the program's.
+                    let shader = described
+                        .get("plan")
+                        .map_or(&described["shader"], |plan| &plan["shader"]);
+                    let names = shader["namedFeatures"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|name| name.as_str().map(str::to_owned))
+                        .collect();
+                    layer_queries.push((
+                        shader["features"].as_bool().unwrap_or(false),
+                        names,
+                        layer.follow.clone(),
+                    ));
+                }
                 metadata["layers"] = layers;
                 metadata["channels"] = channels;
             }
@@ -930,73 +1025,39 @@ impl Session {
                         high[axis] = high[axis].max(point[axis]);
                     }
                 }
-                let mut features = Vec::new();
-                if wants_features {
+                if wants_features || layer_queries.iter().any(|(derived, _, _)| *derived) {
                     receiver.contacts = contacts(&scene, &receiver);
-                    let mut found = crate::materialspec::program::receiver_features(
-                        &receiver.positions,
-                        &receiver.indices,
-                    );
-                    // Sharpest first, so a receiver with more edges than a shader visits loses
-                    // only its shallowest creases.
-                    found.sort_by(|a, b| b.angle.total_cmp(&a.angle));
-                    found.truncate(
-                        PREVIEW_FEATURES - receiver.contacts.len().min(PREVIEW_FEATURES / 2),
-                    );
-                    use crate::materialspec::program::FeatureKind as Kind;
-                    for feature in &found {
-                        let kind = match feature.kind {
-                            Kind::Convex => 0.,
-                            Kind::Concave => 1.,
-                            Kind::Boundary => 2.,
-                            Kind::Seam => 3.,
-                            Kind::Contact => 4.,
-                            // Derived features are never named.
-                            Kind::Named => continue,
-                        };
-                        let normal = feature.normal.unwrap_or([0.; 3]);
-                        features.extend(feature.start);
-                        features.push(kind);
-                        features.extend(feature.end);
-                        features.push(feature.angle);
-                        features.extend(normal);
-                        features.push(f64::from(u8::from(feature.normal.is_some())));
-                    }
-                    for contact in receiver.contacts.iter().take(PREVIEW_FEATURES / 2) {
-                        features.extend(contact.start);
-                        features.push(4.);
-                        features.extend(contact.end);
-                        features.extend([0., 0., 0., 0., 0.]);
-                    }
-                    // The mesh's named features the program queries, with kind 5 plus the
-                    // name's place in the shader's `named_features` (see `Shader`).
-                    let named = project.features.get(&receiver.id);
-                    for feature in named.into_iter().flatten() {
-                        let names = &program.metadata().named_features;
-                        let Some(place) = names.iter().position(|name| *name == feature.name)
-                        else {
-                            continue;
-                        };
-                        let last = feature
-                            .points
-                            .first()
-                            .filter(|_| feature.closed && feature.points.len() > 2);
-                        let ends = feature.points.iter().skip(1).chain(last);
-                        for (start, end) in feature.points.iter().zip(ends) {
-                            features.extend(start);
-                            features.push(5. + place as f64);
-                            features.extend(end);
-                            features.extend([0., 0., 0., 0., 0.]);
-                        }
-                    }
                 }
-                meshes.insert(
-                    receiver.id.clone(),
-                    serde_json::json!({
-                        "material": assignment.id, "boundsMin": low, "boundsMax": high, "features": features,
-                        "objectToWorld": receiver.object_to_world,
-                    }),
-                );
+                let named = project.features.get(&receiver.id).map(Vec::as_slice);
+                let features = if wants_features {
+                    preview_features(
+                        &receiver,
+                        named,
+                        &program.metadata().named_features,
+                        &BTreeMap::new(),
+                    )
+                } else {
+                    Vec::new()
+                };
+                let mut entry = serde_json::json!({
+                    "material": assignment.id, "boundsMin": low, "boundsMax": high, "features": features,
+                    "objectToWorld": receiver.object_to_world,
+                });
+                if !layer_queries.is_empty() {
+                    // Each layer of the slot queries the receiver's features by its own names
+                    // (and follows the slot's): a GPU host binds these to that layer's shader.
+                    entry["layerFeatures"] = layer_queries
+                        .iter()
+                        .map(|(derived, names, follow)| {
+                            if *derived {
+                                preview_features(&receiver, named, names, follow)
+                            } else {
+                                Vec::new()
+                            }
+                        })
+                        .collect();
+                }
+                meshes.insert(receiver.id.clone(), entry);
             }
         }
         let ids: Vec<&str> = visible.into_iter().collect();

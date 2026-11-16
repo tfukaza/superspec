@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
-import type { MaterialShading } from "./shade.ts";
-import { GpuBaker, SCENE_MAP_BYTES, gpuBakeUnsupported, type AtlasMaps, type FieldTexels } from "./bake.ts";
+import type { CpuField, MaterialShading } from "./shade.ts";
+import { GpuBaker, SCENE_MAP_BYTES, gpuBakeUnsupported, type AtlasMaps, type FieldTexels, type StackInput } from "./bake.ts";
 import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { shareInstanceAttributes } from "./batch.ts";
 
@@ -48,6 +48,24 @@ export interface SceneBakeTarget {
   extent: [number, number];
   /** The receiver the CPU bakes this mesh's fields for, when it is not named as the mesh is (an instanced batch's template). */
   fieldsId?: string;
+  /**
+   * A layered slot's weathering layers over `shading` (the base): the mesh's maps are composed from the planes of the
+   * base and each layer on the GPU (`GpuBaker.bakeStack`), not baked from one program.
+   */
+  stack?: StackInput;
+  /** Why the mesh cannot be baked, known before any bake (a layered slot whose layers have no GPU plan). */
+  unsupported?: string;
+}
+
+/** A CPU field a target's bake reads: the base's, kept by its sampler uniform, or a layer's (not a plane beneath it), by `<layer>/<uniform>`. */
+interface WantedField { request: string; slot: string; field: CpuField; shading: MaterialShading; uniforms: Uniforms }
+
+/** The CPU fields of a target, in the order they are asked for: the base's, then each layer's (`stack.<k>/<field>` to the source). */
+function wantedFields(target: SceneBakeTarget): WantedField[] {
+  const own = (target.shading.shader.cpuFields ?? []).map(field => ({ request: field.name, slot: field.uniform, field, shading: target.shading, uniforms: target.uniforms }));
+  const layered = (target.stack?.layers ?? []).flatMap(layer => (layer.shading.shader.cpuFields ?? []).filter(field => !field.name.startsWith("below."))
+    .map(field => ({ request: `${layer.id}/${field.name}`, slot: `${layer.id}/${field.uniform}`, field, shading: layer.shading, uniforms: layer.uniforms })));
+  return [...own, ...layered];
 }
 
 /**
@@ -103,6 +121,11 @@ export interface SceneBakeStatus {
   details: string[];
   /** Atlas sizes by mesh. */
   atlases: Record<string, string>;
+  /**
+   * Meshes of layered slots whose maps are composed from weathering layers on the GPU, and what their per-pixel look
+   * (first look, edits and drags) shows: the base alone, since a layer reads the planes of the bake beneath it.
+   */
+  layers?: { meshes: number; perPixel: "base only" };
 }
 
 /** A scene being prepared (`SceneBaker.prepare`). */
@@ -202,12 +225,13 @@ export class SceneBaker {
     const run: Run = { entries: [], fields, fieldsInFlight: false, fieldRetries: 0, attached: false, shaderReady: false, closed: false, pumping: false,
       settleAt: 0, started: performance.now(), totals: { ...NO_TOTALS }, details: [], materials: Promise.resolve() };
     for (const target of targets) {
-      const program = baker.atlasProgram(target.shading);
+      // A layered slot's maps are laid out as its stack's result: the base's live arguments, and the channels the stack has.
+      const program = target.stack ? baker.stackProgram(target.shading, target.stack) : baker.atlasProgram(target.shading);
       // A mesh kept from the scene on screen may be showing that scene's baked look: its own geometry is beside it.
       const shaderGeometry = (target.mesh.userData.sourceGeometry as THREE.BufferGeometry | undefined) ?? target.mesh.geometry;
       const entry: Entry = { target, program, shaderGeometry, wanted: 1, done: 0, showing: "shader" };
-      entry.unsupported = baker.unavailable() ?? gpuBakeUnsupported(target.shading, true) ?? program.unsupported
-        ?? (target.shading.shader.cpuFields?.length && !fields ? "the program needs CPU-baked fields" : undefined);
+      entry.unsupported = baker.unavailable() ?? target.unsupported ?? gpuBakeUnsupported(target.shading, true) ?? program.unsupported
+        ?? (wantedFields(target).length && !fields ? "the program needs CPU-baked fields" : undefined);
       run.entries.push(entry);
     }
     this.pending = run;
@@ -331,7 +355,7 @@ export class SceneBaker {
     if (!run) return 0;
     let asked = 0;
     for (const entry of run.entries) {
-      if (entry.unsupported || !entry.target.shading.shader.cpuFields?.some(field => field.planes?.some(plane => names.includes(plane)))) continue;
+      if (entry.unsupported || !wantedFields(entry.target).some(wanted => wanted.field.planes?.some(plane => names.includes(plane)))) continue;
       entry.wanted++; entry.keepShown = true;
       asked++;
     }
@@ -441,30 +465,36 @@ export class SceneBaker {
       compileMs: Math.round(run.totals.compileMs), drawMs: +run.totals.drawMs.toFixed(1), fieldMs: Math.round(run.totals.fieldMs),
       bytes: this.bytesHeld(run), graph: this.host.baker().graph.stats(), shaderReady: run.shaderReady, details: run.details,
       atlases: Object.fromEntries(run.entries.map(entry => [entry.target.mesh.name, `${entry.target.layout.width}x${entry.target.layout.height}`])),
+      ...(run.entries.some(entry => entry.target.stack) ? { layers: { meshes: run.entries.filter(entry => entry.target.stack && !entry.unsupported).length, perPixel: "base only" as const } } : {}),
     });
   }
 
   /** What an entry's CPU fields depend on: the values of the parameters they read (seed, source and layout are the run's). */
   private fieldsKey(entry: Entry): string {
-    const { shading, uniforms } = entry.target;
-    const names = new Set((shading.shader.cpuFields ?? []).flatMap(field => field.parameters));
-    const values = shading.shader.parameters.filter(parameter => names.has(parameter.name)).map(parameter => [parameter.name, uniforms[parameter.uniform]?.value]);
+    const wanted = wantedFields(entry.target);
+    const values: unknown[] = [];
+    // The base's fields as they always were keyed; a layer's after them, by the layer.
+    for (const { shading, uniforms, prefix } of [{ shading: entry.target.shading, uniforms: entry.target.uniforms, prefix: "" },
+      ...(entry.target.stack?.layers ?? []).map(layer => ({ shading: layer.shading, uniforms: layer.uniforms, prefix: `${layer.id}/` }))]) {
+      const names = new Set(wanted.filter(item => item.shading === shading).flatMap(item => item.field.parameters));
+      values.push(...shading.shader.parameters.filter(parameter => names.has(parameter.name)).map(parameter => [`${prefix}${parameter.name}`, uniforms[parameter.uniform]?.value]));
+    }
     // And the state of the external planes they read (`planesChanged`).
-    const planes = [...new Set((shading.shader.cpuFields ?? []).flatMap(field => field.planes ?? []))].sort();
+    const planes = [...new Set(wanted.flatMap(item => item.field.planes ?? []))].sort();
     return JSON.stringify(planes.length ? [values, planes.map(plane => [plane, this.planeEpochs.get(plane) ?? 0])] : values);
   }
 
   /** Asks the CPU for the fields of every hybrid entry that lacks current ones; the entries are baked when they arrive. */
   private async fetchFields(run: Run): Promise<void> {
     if (run.fieldsInFlight || !run.fields) return;
-    const needy = run.entries.filter(entry => !entry.unsupported && entry.target.shading.shader.cpuFields?.length && entry.fieldsKey !== this.fieldsKey(entry));
+    const needy = run.entries.filter(entry => !entry.unsupported && wantedFields(entry.target).length && entry.fieldsKey !== this.fieldsKey(entry));
     if (!needy.length) return;
     run.fieldsInFlight = true;
     const keys = new Map(needy.map(entry => [entry, this.fieldsKey(entry)]));
     const started = performance.now();
     try {
       const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.fieldsId ?? entry.target.mesh.name,
-        names: entry.target.shading.shader.cpuFields!.map(field => field.name), planes: entry.target.shading.shader.cpuFields!.map(field => field.planes ?? []) })));
+        names: wantedFields(entry.target).map(wanted => wanted.request), planes: wantedFields(entry.target).map(wanted => wanted.field.planes ?? []) })));
       if (run.closed) return;
       if (!baked) {
         // Superseded by a newer request of the page; asked again, a few times at most.
@@ -475,7 +505,7 @@ export class SceneBaker {
       run.totals.fieldMs += performance.now() - started;
       for (const entry of needy) {
         const found = baked.get(entry.target.fieldsId ?? entry.target.mesh.name);
-        const wanted = entry.target.shading.shader.cpuFields!;
+        const wanted = wantedFields(entry.target);
         const { width, height } = entry.target.layout;
         if (found && "error" in found) {
           entry.unsupported = `the CPU field bake failed: ${found.error}`;
@@ -488,12 +518,12 @@ export class SceneBaker {
         const key = keys.get(entry)!;
         // A field that reads planes is named by their content where the source states it (the value of what the field
         // reads of the parameters besides), so a request made for another plane leaves it, and what is drawn from it, alone.
-        const parameters = (field: (typeof wanted)[number]) => JSON.stringify(field.parameters.map(name =>
-          entry.target.uniforms[entry.target.shading.shader.parameters.find(parameter => parameter.name === name)?.uniform ?? ""]?.value));
-        const named = (field: (typeof wanted)[number], index: number) => field.planes?.length && found.keys?.[index] !== undefined
-          ? `planes:${found.keys[index]}:${parameters(field)}` : key;
-        entry.fields = Object.fromEntries(wanted.map((field, index) => [field.uniform,
-          { id: `${entry.target.layout.key}:${entry.target.mesh.name}:${field.name}:${named(field, index)}`, width, height, rgba: found.fields[index] }]));
+        const parameters = ({ field, shading, uniforms }: WantedField) => JSON.stringify(field.parameters.map(name =>
+          uniforms[shading.shader.parameters.find(parameter => parameter.name === name)?.uniform ?? ""]?.value));
+        const named = (item: WantedField, index: number) => item.field.planes?.length && found.keys?.[index] !== undefined
+          ? `planes:${found.keys[index]}:${parameters(item)}` : key;
+        entry.fields = Object.fromEntries(wanted.map((item, index) => [item.slot,
+          { id: `${entry.target.layout.key}:${entry.target.mesh.name}:${item.request}:${named(item, index)}`, width, height, rgba: found.fields[index] }]));
         entry.fieldsKey = key;
       }
     } catch (error) {
@@ -516,7 +546,7 @@ export class SceneBaker {
         if (performance.now() < run.settleAt) return;
         void this.fetchFields(run);
         const ready = (entry: Entry) => !entry.unsupported && entry.done !== entry.wanted
-          && (!entry.target.shading.shader.cpuFields?.length || entry.fieldsKey === this.fieldsKey(entry));
+          && (!wantedFields(entry.target).length || entry.fieldsKey === this.fieldsKey(entry));
         const entry = run.entries.find(ready);
         if (!entry) return;
         const version = entry.wanted;
@@ -550,14 +580,17 @@ export class SceneBaker {
     // others are drawn: over this mesh's own textures where only it holds them, unless they are on screen with no
     // per-pixel look to show meanwhile; into new textures otherwise, which replace the old ones when all are complete.
     const onScreen = run.attached && entry.showing === "baked" && (!run.shaderReady || entry.keepShown === true);
-    const baked = await baker.bakeAtlas(target.shading, target.uniforms,
-      { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver, program }, entry.maps, {
-        fields: entry.fields, current, inPlace: !onScreen,
-        allocate: bytes => {
-          if (this.bytesHeld(run) + bytes > SCENE_BAKE_BYTES) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
-        },
-        beforeOverwrite: () => this.showShader(run, entry),
-      });
+    const input = { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver, program };
+    const options = {
+      fields: entry.fields, current, inPlace: !onScreen,
+      allocate: (bytes: number) => {
+        if (this.bytesHeld(run) + bytes > SCENE_BAKE_BYTES) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
+      },
+      beforeOverwrite: () => this.showShader(run, entry),
+    };
+    // A layered slot is composed from its planes; any other mesh is baked from its one program.
+    const baked = target.stack ? await baker.bakeStack(target.shading, target.uniforms, target.stack, input, entry.maps, options)
+      : await baker.bakeAtlas(target.shading, target.uniforms, input, entry.maps, options);
     if (!baked) return;
     // The bake released the maps it replaced. A run closed meanwhile has no use for the new ones.
     if (run.closed) { baker.releaseAtlasMaps(baked.maps); return; }
@@ -566,7 +599,7 @@ export class SceneBaker {
     run.totals.nodesDrawn += timings.drawn.length; run.totals.nodesReused += timings.reused;
     if (timings.drawn.length) {
       run.totals.compileMs += timings.compile; run.totals.drawMs += timings.total - timings.compile; run.totals.drawn++;
-      run.details.push(`${target.mesh.name.replace(/^.*node\/(\d+).*$/, "$1")}:${target.material} c${Math.round(timings.compile)} e${timings.evaluate.toFixed(1)} n${timings.normals.toFixed(1)} m${timings.mips.toFixed(1)} d${timings.drawn.length} r${timings.reused}`);
+      run.details.push(`${target.mesh.name.replace(/^.*node\/(\d+).*$/, "$1")}:${target.material} c${Math.round(timings.compile)} e${timings.evaluate.toFixed(1)} n${timings.normals.toFixed(1)} m${timings.mips.toFixed(1)} d${timings.drawn.length} r${timings.reused}${target.stack ? ` [${timings.drawn.join(" ")}]` : ""}`);
     } else run.totals.reused++;
     if (!current()) return;
     // The material is compiled before its mesh shows it, so the switch does not stall a frame.

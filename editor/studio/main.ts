@@ -841,10 +841,13 @@ class Studio {
    */
   private async compileLive(candidate: StudioProject, revision: number, opened: boolean, fit: boolean): Promise<boolean> {
     const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
+    // The values of each layered slot's layers: like a material's own, they reach the GPU bake through uniforms.
+    const layerValues = Object.fromEntries((candidate.materials ?? []).filter(material => material.layers?.length)
+      .map(material => [material.id, material.layers!.map(layer => layer.parameters as Record<string, unknown>)]));
     // While an item control is dragged the scene is shown per pixel alone; its settled value is baked.
     const baking = this.sceneBake && !this.dragging;
     const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.mappings, candidate.anchors, candidate.gravity, candidate.domain,
-      (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
+      (candidate.materials ?? []).map(({ id, entry, seed, meshes, layers }) => [id, entry, seed, meshes, layers?.map(layer => [layer.entry, layer.seed, layer.follow])]),
       Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
       // Baked maps follow the receivers' atlases, which these size.
       baking ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
@@ -852,7 +855,7 @@ class Studio {
     // Before the uniforms change: a bake they start asks for CPU fields of this project.
     const previous = this.bakeProject;
     this.bakeProject = candidate;
-    if (this.shaded?.key === key && Object.entries(values).every(([id, parameters]) => this.scene.setShadingParameters(id, parameters))) {
+    if (this.shaded?.key === key && Object.entries(values).every(([id, parameters]) => this.scene.setShadingParameters(id, parameters, layerValues[id]))) {
       ({ packet, metadata } = this.shaded);
     } else {
       this.bakeProject = previous;
@@ -869,7 +872,7 @@ class Studio {
       const bake = baking && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[]; planes: string[][] }[]) => this.sceneFields(requests) } : undefined;
       if (baking && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
       else delete element("viewport").dataset.sceneBakeFallback;
-      const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake);
+      const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake, layerValues);
       if (revision !== this.revision) return false;
       this.bakeProject = candidate;
       if (!await this.scene.apply(packet, () => revision === this.revision, fit, decorate)) { this.bakeProject = previous; return false; }
@@ -898,7 +901,10 @@ class Studio {
     element("scene-title").textContent = packet.manifest.name || candidate.entry;
     element("model-details").textContent = `${packet.manifest.meshes.filter(mesh => mesh.visible).length} meshes · ${packet.manifest.vertexCount.toLocaleString()} vertices · meters, Z up`;
     element("viewport").dataset.inputRevision = String(revision);
-    this.guides(); this.ready(`Revision ${revision} ready · ${element("viewport").dataset.preview === "gpu-bake" ? "GPU-baked preview" : "shader preview"}`);
+    // Weathering layers are composed in the GPU bake; the per-pixel look (first look, drags, `?preview=shader`) shows a layered slot's base alone.
+    const gpuBaked = element("viewport").dataset.preview === "gpu-bake";
+    const layered = Object.values(materials).some(material => (material as { layers?: unknown[] }).layers?.length);
+    this.guides(); this.ready(`Revision ${revision} ready · ${gpuBaked ? "GPU-baked preview" : "shader preview"}${layered ? ` · weathering layers ${gpuBaked ? "composed in the bake (per pixel: base only)" : "not shown per pixel (base only)"}` : ""}`);
     return true;
   }
 
@@ -947,7 +953,9 @@ class Studio {
     const key = (mesh: string, name: string, planes: string[]): string => {
       const bound = this.meshBindings[mesh];
       const material = project.materials?.find(candidate => candidate.id === bound || candidate.meshes.includes(mesh));
-      return JSON.stringify([scene, mesh, name, material?.entry, material?.seed, material?.parameters, planes.length ? [planes, planes.includes("shadow") ? sun : null] : null]);
+      // (A layer's field, `stack.<k>/<name>`, reads the layer's values: the slot's layers are part of what names it.)
+      return JSON.stringify([scene, mesh, name, material?.entry, material?.seed, material?.parameters, planes.length ? [planes, planes.includes("shadow") ? sun : null] : null,
+        ...(name.startsWith("stack.") && material?.layers ? [material.layers] : [])]);
     };
     type Kept = { width: number; height: number; field: Float32Array; planes?: string };
     const kept = new Map<string, (Kept | undefined)[]>();

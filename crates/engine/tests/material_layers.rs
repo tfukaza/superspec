@@ -407,6 +407,91 @@ fn pipe_project(amount: f64) -> Project {
     }
 }
 
+/// What a GPU host composing a slot's layers itself is given: each mesh's features as each layer
+/// queries them (the grime that follows `base` as `follow` measures to the same segments as the
+/// ground stain, which reads `base` by that name), and a layer's own CPU fields by
+/// `stack.<k>/<field>`, over the receiver's atlas.
+#[test]
+fn a_gpu_host_gets_each_layers_features_and_fields() {
+    let project = wall_project(2.7, &[], full());
+    let mut session = Session::default();
+    let shaded = session
+        .shade_project(&project, 1, &asset, &|| false)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let named = |rows: &serde_json::Value, from: f64| {
+        rows.as_array()
+            .unwrap()
+            .chunks_exact(12)
+            .filter(|row| row[3].as_f64().unwrap() >= from)
+            .count()
+    };
+    let mut walls = 0;
+    let layouts = session
+        .project_layouts(&project, 2, &asset, &|| false)
+        .unwrap();
+    for (id, mesh) in shaded.metadata["shading"].as_object().unwrap() {
+        if mesh["material"] != "concrete" {
+            assert!(mesh.get("layerFeatures").is_none(), "{id}");
+            continue;
+        }
+        let layers = mesh["layerFeatures"].as_array().unwrap();
+        assert_eq!(layers.len(), full().len(), "{id}");
+        // Ground stain (`base`) and the base grime (`follow`, following `base`) see the same segments.
+        assert_eq!(named(&layers[1], 5.), named(&layers[4], 5.), "{id}");
+        // Worn edges read derived features and no name.
+        assert_eq!(named(&layers[3], 5.), 0, "{id}");
+        if named(&layers[1], 5.) > 0 {
+            walls += 1;
+            let fields = session
+                .bake_project_fields(
+                    &project,
+                    id,
+                    &["stack.3/shelter".to_owned()],
+                    3,
+                    &asset,
+                    &|| false,
+                )
+                .unwrap_or_else(|e| panic!("{id}: {e:?}"));
+            let layout = layouts
+                .receivers
+                .iter()
+                .find(|layout| layout.id == *id)
+                .unwrap();
+            assert_eq!(
+                (fields.width, fields.height),
+                (layout.width, layout.height),
+                "{id}"
+            );
+            assert_eq!(
+                fields.fields[0].len(),
+                layout.width * layout.height * 4,
+                "{id}"
+            );
+        }
+    }
+    assert!(walls > 0, "some receiver of the wall has a base");
+    // A name of no layer of the slot is an error, not another material's field.
+    let mesh = shaded.metadata["shading"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, mesh)| mesh["material"] == "concrete")
+        .unwrap()
+        .0;
+    assert!(
+        session
+            .bake_project_fields(
+                &project,
+                mesh,
+                &["stack.9/shelter".to_owned()],
+                4,
+                &asset,
+                &|| false
+            )
+            .is_err()
+    );
+}
+
 /// The packets of a sequence of layered and anchored builds in one session, for the Node
 /// parity check against Wasm (`tests/stage2-layers-parity.mjs`): a cold stack, a base edit, a
 /// layer edit, a layer added, one removed, the wall widened, and the anchored base alone.

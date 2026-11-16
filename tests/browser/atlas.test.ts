@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { atlasLayouts, attachmentReads, bakeGeometry, displayGeometry, programLayout, type ProjectLayouts } from "../../browser/renderer/atlas.ts";
+import { PLANE_VALUES, TILE_CELLS, TILE_START, atlasFragment, atlasLayouts, attachmentReads, bakeGeometry, displayGeometry, latticeTiles, planeFragment, programLayout,
+  type ProjectLayouts } from "../../browser/renderer/atlas.ts";
 import type { MaterialShading, Reads } from "../../browser/renderer/shade.ts";
 
 /** One triangle record as `authoring/layout.rs` writes it (38 numbers). */
@@ -189,4 +190,32 @@ test("the evaluate pass writes only what the program has outputs for", () => {
   assert.deepEqual(full.attachments, ["base", "properties", "height", "emissive", "offset"]);
   assert.equal(full.orient, true);
   assert.notEqual(plain.key, full.key);
+});
+
+test("a layer's plane program reads the planes beneath it by framebuffer row, and nothing else is turned over", () => {
+  const source = "uniform highp sampler2D ms_cpu0;\nuniform highp sampler2D ms_cpu1;\nvoid ms_evaluate() {\n  ms_f0 = texelFetch(ms_cpu0, ms_texel, 0).xyz;\n  ms_f1 = texelFetch(ms_cpu1, ms_texel, 0).x;\n}";
+  const fragment = planeFragment(source, [PLANE_VALUES.base_color], ["ms_cpu0"]);
+  assert.match(fragment, /texelFetch\(ms_cpu0, msPlaneTexel\(ms_texel\), 0\)/);
+  // A CPU field the host bakes keeps the engine's rows, from the atlas's upper edge.
+  assert.match(fragment, /texelFetch\(ms_cpu1, ms_texel, 0\)/);
+  assert.match(fragment, /int\(msAtlas\.y\) - 1 - texel\.y/);
+  assert.throws(() => planeFragment("void ms_evaluate() { ms_f0 = texture(ms_cpu0, ms_uv).xyz; }", [PLANE_VALUES.base_color], ["ms_cpu0"]), /form the GPU stack does not know/);
+  // Without planes beneath, the program is the evaluate pass's (an atlas bake's text, with plane values).
+  assert.equal(planeFragment(source, ["X"], []), atlasFragment(source, { ...programLayout(shading({}, "", ["base_color"])), attachments: ["base"] }).replace("vec4(clamp(ms_base_color, 0.0, 1.0), 1.0)", "X"));
+});
+
+test("a receiver of whole flat faces on a lattice reads the intrinsic tiles its cells lie in", () => {
+  // One 20 x 12 chart (gutter 2) of a face on a 1/128 m lattice whose first inner texel is cell (3, 5).
+  const step = 1 / 128, face = record([0, 0, 20, 12], 0, [16, 8], 3, [[0, 0, 0], [1, 0, 0], [0, 0, 1]], [[2 / 32, 14 / 16], [18 / 32, 14 / 16], [2 / 32, 6 / 16]]);
+  const surface = [0, 0, 3.5 * step, 5.5 * step, step, 0, 0, step, step, 1];
+  const lattice: ProjectLayouts = { gutter: 2, record: 38, receivers: [{ id: "wall", material: "m", width: 32, height: 16, density: 128, triangles: 1, offset: 0, surface }], records: new Float32Array(face) };
+  const tiles = latticeTiles(atlasLayouts(lattice).get("wall")!)!;
+  assert.equal(tiles.step, Math.fround(step));
+  // Cells 0 to 21 across and 2 to 15 down (the gutter included, one cell either side): all in the first tile.
+  assert.deepEqual(tiles.tiles, [[0, 0]]);
+  // Moved to straddle a tile's edge, it reads two.
+  const moved = { ...lattice, receivers: [{ ...lattice.receivers[0], surface: [0, 0, (TILE_CELLS + TILE_START - 5.5) * step, 5.5 * step, step, 0, 0, step, step, 1] }] };
+  assert.deepEqual(latticeTiles(atlasLayouts(moved).get("wall")!)!.tiles, [[0, 0], [1, 0]]);
+  // A chart off the lattice (a lone triangle) reads none.
+  assert.equal(latticeTiles(atlasLayouts(layouts).get("quad")!), null);
 });

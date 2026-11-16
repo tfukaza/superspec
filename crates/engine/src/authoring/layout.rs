@@ -4,12 +4,15 @@
 //! bake samples there and CPU-baked fields ([`Session::bake_project_fields`]) land on its grid.
 
 use super::{
-    Diagnostic, FieldBake, Project, Session,
+    Diagnostic, FieldBake, Project, Request, Session,
     project::{contacts, material_request, receivers},
     receiver::{Atlas, GUTTER},
 };
 use serde::Serialize;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// Numbers per triangle in [`ProjectLayouts::records`]:
 /// - 0..4 the triangle's chart rectangle in atlas texels, rows from the upper edge: x, y, width,
@@ -220,7 +223,10 @@ impl Session {
 
     /// Evaluates `names` (fields of the material assigned to `mesh`) at every texel of that
     /// receiver's atlas, as [`Session::bake_fields`] does for a single request: the receiver, its
-    /// contacts and the request are the ones `build_project` bakes that mesh with.
+    /// contacts and the request are the ones `build_project` bakes that mesh with. A name
+    /// `stack.<k>/<field>` is a field of the slot's `k`-th layer (from 1), baked with that layer's
+    /// module, parameters and seed, and the receiver's named features as the layer follows them
+    /// (a GPU host composing the layers itself asks for the fields of a layer's plan this way).
     pub fn bake_project_fields(
         &mut self,
         project: &Project,
@@ -264,8 +270,91 @@ impl Session {
         };
         receiver.contacts = contacts(&scene, &receiver);
         let request = material_request(project, assignment, source, vec![receiver]);
-        self.bake_fields(&request, revision, names, assets, cancelled)
+        // The names by the stack's material they are fields of: 0 the slot's own, k its k-th layer.
+        let mut groups: BTreeMap<usize, Vec<(usize, String)>> = BTreeMap::new();
+        for (at, name) in names.iter().enumerate() {
+            let (material, field) = match name
+                .strip_prefix("stack.")
+                .and_then(|rest| rest.split_once('/'))
+                .and_then(|(k, field)| Some((k.parse::<usize>().ok()?, field)))
+            {
+                Some((k, field)) if k >= 1 => (k, field.to_owned()),
+                _ => (0, name.clone()),
+            };
+            groups.entry(material).or_default().push((at, field));
+        }
+        if groups.len() == 1 && groups.contains_key(&0) {
+            return self.bake_fields(&request, revision, names, assets, cancelled);
+        }
+        let mut fields: Vec<Vec<f32>> = vec![Vec::new(); names.len()];
+        let (mut width, mut height) = (0, 0);
+        for (material, wanted) in groups {
+            let request = if material == 0 {
+                request.clone()
+            } else {
+                let layer = assignment.layers.get(material - 1).ok_or_else(|| {
+                    fail(format!(
+                        "Material {} has no layer stack.{material}.",
+                        assignment.id
+                    ))
+                })?;
+                let text = project.modules.get(&layer.entry).ok_or_else(|| {
+                    fail(format!(
+                        "Material {} uses missing module {}.",
+                        assignment.id, layer.entry
+                    ))
+                })?;
+                let mut features = request.features.clone();
+                if let Some(own) = features.get_mut(mesh) {
+                    *own = followed_features(own, &layer.follow);
+                }
+                Request {
+                    entry: layer.entry.clone(),
+                    source: text.clone(),
+                    parameters: layer.parameters.clone(),
+                    seed: layer.seed,
+                    layers: Vec::new(),
+                    features,
+                    ..request.clone()
+                }
+            };
+            let field_names: Vec<String> = wanted.iter().map(|(_, field)| field.clone()).collect();
+            let baked = self.bake_fields(&request, revision, &field_names, assets, cancelled)?;
+            (width, height) = (baked.width, baked.height);
+            for ((at, _), texels) in wanted.iter().zip(baked.fields) {
+                fields[*at] = texels;
+            }
+        }
+        Ok(FieldBake {
+            width,
+            height,
+            fields,
+        })
     }
+}
+
+/// A receiver's named features as a layer that follows `follow` (its own names to the
+/// receiver's) sees them: the receiver's names it does not take as its own stay, and each name
+/// it follows is a copy under the layer's name (as the CPU bake renames them).
+fn followed_features(
+    features: &[crate::materialspec::program::NamedFeature],
+    follow: &BTreeMap<String, String>,
+) -> Vec<crate::materialspec::program::NamedFeature> {
+    let mut renamed = Vec::new();
+    for feature in features {
+        if !follow.contains_key(&feature.name) {
+            renamed.push(feature.clone());
+        }
+        for (own, theirs) in follow {
+            if *theirs == feature.name {
+                renamed.push(crate::materialspec::program::NamedFeature {
+                    name: own.clone(),
+                    ..feature.clone()
+                });
+            }
+        }
+    }
+    renamed
 }
 
 #[cfg(test)]
@@ -284,6 +373,26 @@ mod tests {
             density,
         )
         .unwrap()
+    }
+
+    /// A layer that follows `base` as its `follow` measures to the receiver's base by its own
+    /// name; the receiver's other names stay, and a name the layer takes as its own is not also
+    /// the receiver's.
+    #[test]
+    fn a_layer_sees_the_features_it_follows_by_its_own_names() {
+        let feature = |name: &str| crate::materialspec::program::NamedFeature {
+            name: name.into(),
+            points: vec![[0., 0., 0.], [1., 0., 0.]],
+            closed: false,
+        };
+        let features = [feature("base"), feature("sill"), feature("follow")];
+        let follow = BTreeMap::from([("follow".to_owned(), "base".to_owned())]);
+        let names: Vec<String> = followed_features(&features, &follow)
+            .into_iter()
+            .map(|feature| feature.name)
+            .collect();
+        assert_eq!(names, ["base", "follow", "sill"]);
+        assert_eq!(followed_features(&features, &BTreeMap::new()).len(), 3);
     }
 
     /// Reads a record the way a renderer does and checks it against the atlas's own sampling.

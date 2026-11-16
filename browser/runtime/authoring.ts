@@ -41,7 +41,16 @@ export function decalImages(project: Pick<AuthoringProject, "modules" | "models"
   return names;
 }
 /** One material applied to a set of composed meshes; entries share the project's modules. */
-export interface StudioMaterial { id: string; entry: string; parameters: Record<string, ParameterValue>; seed: number; meshes: string[] }
+export interface StudioMaterial {
+  id: string; entry: string; parameters: Record<string, ParameterValue>; seed: number; meshes: string[];
+  /**
+   * Weathering layers over the material, the lowest first (`MaterialAssignment::layers`): a `defineLayer` module with its
+   * own parameters and seed, and the receiver's features it follows (its own name to the receiver's).
+   */
+  layers?: StudioLayer[];
+}
+/** A weathering layer of a material slot (`authoring::Layer`). */
+export interface StudioLayer { entry: string; parameters: Record<string, ParameterValue>; seed: number; follow?: Record<string, string> }
 /** Portable studio inputs; original scene assets remain separate from compiled render output. */
 export interface AuthoringProject {
   /** Version 2 adds `models` and `materials`; version 1 projects open unchanged. */

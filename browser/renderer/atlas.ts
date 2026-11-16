@@ -568,12 +568,192 @@ export function atlasFragment(source: string, layout: AtlasProgramLayout): strin
     emissive: "vec4(max(ms_emissive, vec3(0.0)), 1.0)",
     offset: "vec4(ms_normal_offset, 0.0)",
   };
-  const outputs = "uniform int msOutput;\nlayout(location = 0) out vec4 msOut;";
-  const assigns = layout.attachments.map((name, index) => {
+  return evaluateFragment(source, layout.attachments.map(name => {
     const first = Number(name.slice(4)) * 4;
-    const value = name.startsWith("live") ? `vec4(${[0, 1, 2, 3].map(channel => layout.liveChannels[first + channel] ?? "0.0").join(", ")})` : writes[name];
-    return `  ${index > 0 ? "else " : ""}if (msOutput == ${index}) msOut = ${value};`;
-  }).join("\n");
+    return name.startsWith("live") ? `vec4(${[0, 1, 2, 3].map(channel => layout.liveChannels[first + channel] ?? "0.0").join(", ")})` : writes[name];
+  }));
+}
+
+/**
+ * What a PLANE of a weathering stack holds for a channel (`Plane::exact_external` in the engine): the program's value
+ * unencoded and unclamped, for the layers above to read (`below.<channel>`). Scalars are in red.
+ */
+export const PLANE_VALUES: Record<string, string> = {
+  base_color: "vec4(ms_base_color, 1.0)", emissive: "vec4(ms_emissive, 1.0)", normal_offset: "vec4(ms_normal_offset, 0.0)",
+  roughness: "vec4(ms_roughness, 0.0, 0.0, 1.0)", metalness: "vec4(ms_metalness, 0.0, 0.0, 1.0)", height: "vec4(ms_height, 0.0, 0.0, 1.0)",
+  opacity: "vec4(ms_opacity, 0.0, 0.0, 1.0)",
+};
+
+/**
+ * The evaluate pass of one material of a weathering stack over a receiver's atlas: `values[msOutput]` (plane values,
+ * `PLANE_VALUES`, and live arguments) of `source`. `below` names the CPU-field samplers of the layer's plan that read
+ * the surface beneath (`below.<channel>`); on the GPU they are planes this pass graph drew, whose rows run from the
+ * framebuffer's lowest (the engine's plan reads a CPU field by atlas row, from the upper edge), so their reads are
+ * turned over. Throws when the plan reads one in a form this does not know.
+ */
+export function planeFragment(source: string, values: string[], below: string[]): string {
+  let text = source;
+  for (const uniform of below) {
+    const read = new RegExp(`texelFetch\\(\\s*${uniform}\\s*,\\s*ms_texel\\s*,\\s*0\\s*\\)`, "g");
+    if (!read.test(text)) throw new Error(`the layer's plan reads ${uniform} in a form the GPU stack does not know`);
+    text = text.replace(read, `texelFetch(${uniform}, msPlaneTexel(ms_texel), 0)`);
+  }
+  const head = below.length ? "ivec2 msPlaneTexel(ivec2 texel) { return ivec2(texel.x, int(msAtlas.y) - 1 - texel.y); }\n" : "";
+  return evaluateFragment(text, values, head);
+}
+
+/** Lattice cells per side of an intrinsic tile (`intrinsicTileFragment`), and the cell its first tile starts at. */
+export const TILE_CELLS = 512;
+export const TILE_START = -64;
+/** Tiles a lattice mapping node reads at most (`LATTICE_MAPPING_FRAGMENT`). */
+export const MAX_TILES = 8;
+
+/**
+ * An intrinsic tile: `source`'s intrinsic outputs (`Reads.intrinsic`: they read a sample's surface position and
+ * footprint alone) evaluated at the lattice points of `TILE_CELLS` by `TILE_CELLS` cells of a lattice of step `msStep`
+ * meters, from cell `msTileOrigin`, exactly as the evaluate pass gives them a texel on that lattice (`msLatticeSurface`).
+ * No receiver is in it: every receiver whose texels lie on those cells reads the same texels (`LATTICE_MAPPING_FRAGMENT`).
+ */
+export function intrinsicTileFragment(source: string, values: string[]): string {
+  const assigns = values.map((value, index) => `  ${index > 0 ? "else " : ""}if (msOutput == ${index}) msOut = ${value};`).join("\n");
+  return `
+uniform vec2 msTileOrigin;
+uniform float msStep;
+uniform int msOutput;
+layout(location = 0) out vec4 msOut;
+${source}
+void main() {
+  vec2 cell = msTileOrigin + floor(gl_FragCoord.xy);
+  ms_surface = (cell + 0.5) * msStep;
+  ms_footprint = msStep;
+  ms_world = vec3(0.0); ms_object = vec3(0.0); ms_normal = vec3(0.0, 0.0, 1.0); ms_uv = vec2(0.0); ms_uv_footprint = 0.0;
+  ms_texel = ivec2(0);
+  ms_evaluate();
+${assigns}
+}
+`;
+}
+
+/**
+ * A lattice mapping: every texel of a receiver whose charts are all whole flat faces on a pattern anchor's lattice
+ * reads the intrinsic tile that holds its lattice cell (the cell `msLatticeSurface` samples), texel for texel.
+ */
+export const LATTICE_MAPPING_FRAGMENT = `
+${RECORD_INPUTS}
+${TEXEL_LEGS}
+${Array.from({ length: MAX_TILES }, (_, index) => `uniform highp sampler2D msTile${index};`).join("\n")}
+uniform vec2 msTileOrigins[${MAX_TILES}];
+uniform int msTiles;
+layout(location = 0) out vec4 msOut;
+void main() {
+  vec2 texel = msAtlasTexel();
+  vec2 from = texel - vRect.xy - msGutter;
+  vec2 at = vSurface0.xy + from.x * vSurface0.zw + from.y * vSurface1.xy;
+  vec2 cell = round(at / vSurface1.z - 0.5);
+  vec4 value = vec4(0.0);
+${Array.from({ length: MAX_TILES }, (_, index) => `  if (${index} < msTiles) {
+    vec2 local = cell - msTileOrigins[${index}];
+    if (all(greaterThanEqual(local, vec2(0.0))) && all(lessThan(local, vec2(${TILE_CELLS}.0)))) value = texelFetch(msTile${index}, ivec2(local), 0);
+  }`).join("\n")}
+  msOut = value;
+}
+`;
+
+/**
+ * The maps of a stack composed from its planes over a receiver's atlas: base color (encoded by the sRGB target),
+ * packed properties and emissive, from the plane of the material that last changed each channel, or the channel's
+ * default where none did (`STACK_CHANNELS` in the engine). Drawn over the charts only, like the evaluate pass.
+ */
+export const STACK_COMPOSE_FRAGMENT = `
+uniform vec2 msAtlas;
+uniform highp sampler2D msColor;
+uniform highp sampler2D msRoughness;
+uniform highp sampler2D msMetalness;
+uniform highp sampler2D msEmissive;
+uniform bool msHasColor;
+uniform bool msHasRoughness;
+uniform bool msHasMetalness;
+uniform int msOutput;
+layout(location = 0) out vec4 msOut;
+void main() {
+  ivec2 at = ivec2(gl_FragCoord.xy);
+  if (msOutput == 0) msOut = vec4(clamp(msHasColor ? texelFetch(msColor, at, 0).rgb : vec3(0.5), 0.0, 1.0), 1.0);
+  else if (msOutput == 1) msOut = vec4(1.0, clamp(msHasRoughness ? texelFetch(msRoughness, at, 0).r : 1.0, 0.0, 1.0),
+    clamp(msHasMetalness ? texelFetch(msMetalness, at, 0).r : 0.0, 0.0, 1.0), 1.0);
+  else msOut = vec4(max(texelFetch(msEmissive, at, 0).rgb, vec3(0.0)), 1.0);
+}
+`;
+
+/**
+ * The lattice charts of a receiver's atlas, when every triangle lies on a pattern anchor's lattice (a whole flat face,
+ * role 3) at one step: the step and the intrinsic tiles (`TILE_CELLS` cells, from `TILE_START`) its texels read,
+ * as tile indices. Null when some chart is not on the lattice, the steps differ, or more than `MAX_TILES` are read.
+ */
+export function latticeTiles(layout: AtlasLayout): { step: number; tiles: [number, number][] } | null {
+  if (!layout.triangles) return null;
+  const charts = new Map<string, Float64Array>();
+  for (let chart = 0; chart + SURFACE <= layout.surface.length; chart += SURFACE) {
+    charts.set(`${layout.surface[chart]},${layout.surface[chart + 1]}`, layout.surface.subarray(chart + 2, chart + SURFACE));
+  }
+  let step: number | undefined;
+  const tiles = new Map<string, [number, number]>();
+  const seen = new Set<string>();
+  for (let triangle = 0; triangle < layout.triangles; triangle++) {
+    const record = layout.records.subarray(triangle * RECORD, (triangle + 1) * RECORD);
+    if (record[META + 3] !== FACE) return null;
+    const name = `${record[0]},${record[1]}`;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const map = charts.get(name);
+    if (!map) return null;
+    // The lattice step as the bake geometry carries it (a float attribute).
+    const footprint = Math.fround(map[6]);
+    if (!(footprint > 0) || (step !== undefined && footprint !== step)) return null;
+    step = footprint;
+    const [, , width, height] = record;
+    const low = [Infinity, Infinity], high = [-Infinity, -Infinity];
+    for (const fx of [-layout.gutter, width - 1 - layout.gutter]) for (const fy of [-layout.gutter, height - 1 - layout.gutter]) {
+      for (let axis = 0; axis < 2; axis++) {
+        const at = map[axis] + fx * map[2 + axis] + fy * map[4 + axis];
+        // A cell either side of the one the corner rounds to: the shader rounds in single precision.
+        const cell = Math.round(at / footprint - 0.5);
+        low[axis] = Math.min(low[axis], cell - 1); high[axis] = Math.max(high[axis], cell + 1);
+      }
+    }
+    for (let i = Math.floor((low[0] - TILE_START) / TILE_CELLS); i <= Math.floor((high[0] - TILE_START) / TILE_CELLS); i++) {
+      for (let j = Math.floor((low[1] - TILE_START) / TILE_CELLS); j <= Math.floor((high[1] - TILE_START) / TILE_CELLS); j++) {
+        tiles.set(`${i},${j}`, [i, j]);
+        if (tiles.size > MAX_TILES) return null;
+      }
+    }
+  }
+  return step === undefined ? null : { step, tiles: [...tiles.values()] };
+}
+
+/** The program's own uniforms the values of `outputs` read (see `attachmentReads`), or undefined when not stated. */
+export function outputReads(shader: ProgramShader, outputs: string[]): ReadonlySet<string> | undefined {
+  const stated = shader.reads;
+  if (!stated || typeof stated !== "object" || typeof stated.outputs !== "object" || stated.outputs === null) return undefined;
+  const sets = outputs.map(output => stated.outputs[output] && statedUniforms(shader, stated.outputs[output]));
+  return sets.every(set => set) ? new Set(sets.flatMap(set => [...set!])) : undefined;
+}
+
+/** Whether the engine states that an output is intrinsic (`Reads.intrinsic`). */
+export function outputIntrinsic(shader: ProgramShader, output: string): boolean {
+  const read = shader.reads?.outputs?.[output];
+  return typeof read === "object" && read !== null && read.intrinsic === true;
+}
+
+/** The CPU fields an output reads, by name, or undefined when the record does not say. */
+export function outputCpuFields(shader: ProgramShader, output: string): string[] | undefined {
+  const read = shader.reads?.outputs?.[output];
+  return typeof read === "object" && read !== null && Array.isArray(read.cpuFields) ? read.cpuFields : undefined;
+}
+
+/** The evaluate pass's fragment shader over a receiver's atlas: the program evaluated at each texel, writing `values[msOutput]`. */
+function evaluateFragment(source: string, values: string[], head = ""): string {
+  const outputs = "uniform int msOutput;\nlayout(location = 0) out vec4 msOut;";
+  const assigns = values.map((value, index) => `  ${index > 0 ? "else " : ""}if (msOutput == ${index}) msOut = ${value};`).join("\n");
   return `
 ${RECORD_INPUTS}
 flat in vec3 vN0;
@@ -587,7 +767,7 @@ uniform vec2 msExtent;
 uniform int msMapping;
 ${TEXEL_LEGS}
 ${outputs}
-${source}
+${head}${source}
 void main() {
   vec2 texel = msAtlasTexel();
   vec2 legs = msLegs(texel);

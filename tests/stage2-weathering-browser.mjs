@@ -18,11 +18,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import { resolve, extname, sep } from "node:path";
 import { PNG } from "pngjs";
 import { launchBrowser, waitForFrames } from "../tools/browser.mjs";
 import { buildProject } from "./studio/washroom-items/build.mjs";
+import { split } from "./studio/washroom-items/split.mjs";
 
 const root = resolve(process.env.STUDIO_UI_ROOT ?? "generated/stage2/rust-editor");
 const out = resolve("generated/verification/stage2");
@@ -31,34 +31,6 @@ const resolution = Number(process.env.RESOLUTION ?? 512);
 // Shadows are off: a widened wall refits the shadow map to the scene's bounds, which moves
 // shadow edges over the region compared.
 const query = process.env.QUERY ?? "preview=bake&ao=off&shadows=off&gpuprobe";
-const examples = resolve("crates/engine/src/materialspec/program/examples");
-
-/** The washroom-items project with the split materials on the walls, the duct and the pipe. */
-function split(project) {
-  const copy = structuredClone(project);
-  for (const name of ["kowloon-concrete-anchored", "kowloon-top-grime", "kowloon-ground", "kowloon-ground-stain", "kowloon-moss",
-    "kowloon-concrete-edges", "kowloon-feature-grime", "kowloon-joint-rust"]) {
-    copy.modules[`${name}.material.ts`] = readFileSync(resolve(examples, `${name}.material.ts`), "utf8");
-  }
-  const layer = (name, parameters = {}, follow) => ({ entry: `${name}.material.ts`, parameters, seed: 7, ...(follow ? { follow: { follow } } : {}) });
-  const walls = copy.materials.find(material => material.id === "concrete-walls");
-  walls.entry = "kowloon-concrete-anchored.material.ts";
-  delete walls.parameters.featureGrime;
-  walls.layers = [
-    layer("kowloon-top-grime"), layer("kowloon-ground-stain"), layer("kowloon-moss"), layer("kowloon-concrete-edges"),
-    // The washroom-items walls' grime along the base and under the sill (`featureGrime` 0.8).
-    layer("kowloon-feature-grime", { amount: 0.68, near: 0, far: 0.3, color: [0.035, 0.032, 0.026], roughness: 0.95 }, "base"),
-    layer("kowloon-feature-grime", {}, "sill"),
-  ];
-  copy.mappings = { ...(copy.mappings ?? {}), "concrete-walls": "anchored" };
-  for (const id of ["galvanized", "rusted-pipe"]) {
-    const steel = copy.materials.find(material => material.id === id);
-    steel.entry = "kowloon-rusted-steel.material.ts";
-    const oxide = Object.fromEntries(Object.entries(steel.parameters).filter(([name]) => ["rustRepeat", "rustRoughness", "oxideDark", "oxideLight"].includes(name)));
-    steel.layers = [layer("kowloon-joint-rust", { amount: 0.9, ...oxide })];
-  }
-  return copy;
-}
 
 const server = createServer(async (request, response) => {
   try {
