@@ -98,6 +98,22 @@ try {
     return { times, renderer: info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) };
   });
   console.log(`Frame times (ms): ${JSON.stringify(frame)}`);
+  // Draw time without the display's frame pacing: with QUERY containing gpuprobe, redraw directly and read one pixel
+  // so the GPU has finished. (The frame times above wait two animation frames, so a GPU reads as about two refreshes.)
+  const draws = await page.evaluate(() => {
+    const scene = window.__scene;
+    if (!scene) return null;
+    const gl = scene.renderer.getContext(), pixel = new Uint8Array(4), times = [];
+    for (let i = 0; i < 24; i++) {
+      const start = performance.now();
+      scene.renderer.render(scene.scene, scene.camera);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+      times.push(performance.now() - start);
+    }
+    times.sort((a, b) => a - b);
+    return { median: +times[12].toFixed(2), min: +times[0].toFixed(2), max: +times[23].toFixed(2), shadowExtentMeters: scene.shadowStyle?.uniforms.msShadowExtent.value };
+  });
+  if (draws) console.log(`Draw time (ms, finished on the GPU, 24 draws): ${JSON.stringify(draws)}`);
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
   console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
 } finally {

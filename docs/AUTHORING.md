@@ -161,7 +161,12 @@ Studio also has two GPU previews, which are approximations and never authoritati
 - **Shadows.** The Studio viewer casts and receives shadows from its sun by default
   (a 2048 px PCF soft shadow map fitted to the loaded models, drawn when the models
   change rather than every frame). `?shadows=off` in the page URL turns them off for
-  debugging.
+  debugging. `?shadowstyle=illustration` tries a stylized look (a prototype, not the
+  default): a wider soft penumbra, a large-scale noise that breaks the shadow's edge and
+  mottles its interior, and a blue tint in the shadow. Overrides: `shadowblur` (penumbra
+  radius, meters), `shadowedge` (edge displacement, meters), `shadownoise` (interior
+  mottle, 0-1), `shadownoisescale` (noise feature size, meters), `shadowtint` (hex color
+  without `#`), `shadowtintstrength` (0-1) and `shadowseed`.
 ## TypeScript recipes
 
 Materials can also be written as `.material.ts` files: strict TypeScript against a

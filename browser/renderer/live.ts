@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { LiveOperation } from "../model/packet.ts";
+import { shadowStyleKey } from "./shadow-style.ts";
 
 /** Operations this renderer executes; others are ignored, like any renderer without support. */
 export const SUPPORTED_LIVE_OPERATIONS = ["modulateDiffuse", "grazingFalloff", "filterEnvironment", "bandLuminance", "scaleSpecular", "lightFloor"] as const;
@@ -163,7 +164,7 @@ ${band ? `  {
   };
   const layout = usable.map(operation => [operation.id, Object.entries(operation.arguments)
     .map(([name, argument]) => [name, "value" in argument ? "c" : `t${slots.get((argument as { texture: string }).texture)}.${(argument as { channel: number }).channel}`])]);
-  material.customProgramCacheKey = () => `materialSpec-live:${JSON.stringify(layout)}`;
+  material.customProgramCacheKey = () => `materialSpec-live:${JSON.stringify(layout)}${shadowStyleKey(material)}`;
   // A viewer that swaps the textures behind an argument (a GPU preview) updates these in place, with no recompile.
   material.userData.liveUniforms = uniforms;
   material.userData.liveTextureSlots = slots;

@@ -156,6 +156,22 @@ occluder service.
     exposed as a mask for other live effects. Dynamic lights only; implemented
     identically in Studio and the three.js game runtime; not representable in a plain
     GLB. Builds on the Studio viewer's default-on shadows.
+    *Prototype (Studio viewer, `browser/renderer/shadow-style.ts`,
+    `?shadowstyle=illustration`):* one module patches a standard material where three.js
+    applies the directional shadow, and composes with the live-operation and per-pixel
+    shader patches and the GPU preview swaps. Settled: a 16-tap PCF kernel on the existing
+    depth-compare map with a penumbra radius in meters (VSM was not needed); a fixed
+    per-texel rotation instead of a screen-space dither; procedural two-octave value noise
+    in the light's shadow-map plane in meters (a gobo: world-stable, no texture unit) that
+    displaces the lookup (edge) and lifts the interior in patches (mottle); a color factor
+    `mix(tint * strength, 1, s)` on the light's color, so lit areas and ambient light are
+    untouched; every parameter a uniform shared by all styled materials; the styled term
+    exposed as the GLSL global `msShadowTerm`. Because the viewer's sun is bright, a tint
+    strength of about 0.06 already reads blue, and a penumbra radius beyond about 3 cm
+    with strong mottle starts to dissolve small shadows. Remaining: the portable contract
+    (a scene-lighting record or `LiveOperation` for the style and for reading the shadow
+    term as a mask), the game runtime using the same module, more than one shadowed light,
+    non-PCF shadow types (they keep plain shadows), and the baked variant (item 27).
 30. **Placement by shadow (least important, later).** A light survey over ground and
     wall samples exposing `shadowAt(point)` / `sunExposure(point)` as placement
     predicates. CPU-only and deterministic; surveyed on architecture first, with a

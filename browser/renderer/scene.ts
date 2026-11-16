@@ -7,6 +7,7 @@ import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
 import { programMaterial, programTexture, setParameters, setSeeds, type MaterialShading, type SceneShading } from "./shade.ts";
 import { GpuBaker, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
+import { ShadowStyle, shadowStyleFromQuery } from "./shadow-style.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 
@@ -90,6 +91,11 @@ export class RustScene {
   private readonly sun: THREE.DirectionalLight;
   /** Whether the viewer casts and receives shadows (on unless `?shadows=off`). */
   readonly shadows = new URLSearchParams(location.search).get("shadows") !== "off";
+  /** The stylized shadow look, when the page asks for one (`?shadowstyle=illustration`); plain shadows otherwise. */
+  private readonly shadowStyle = ((): ShadowStyle | undefined => {
+    const parameters = this.shadows ? shadowStyleFromQuery(new URLSearchParams(location.search)) : null;
+    return parameters ? new ShadowStyle(parameters) : undefined;
+  })();
 
   /** Fits the sun's shadow camera to the models' bounds and asks for one new shadow map; the light direction is unchanged. */
   private fitShadows(): void {
@@ -104,6 +110,7 @@ export class RustScene {
     Object.assign(this.sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: radius * 0.5, far: radius * 5.5 });
     this.sun.shadow.camera.updateProjectionMatrix();
     this.sun.target.updateMatrixWorld();
+    this.shadowStyle?.fit(this.sun);
     this.renderer.shadowMap.needsUpdate = true;
   }
 
@@ -238,6 +245,8 @@ export class RustScene {
         }
         const geometry = new THREE.BufferGeometry();
         const material = new THREE.MeshStandardMaterial();
+        // The shadow style goes on first; live operations and GPU previews chain onto it.
+        this.shadowStyle?.apply(material);
         const mesh = new THREE.Mesh(geometry, material);
         // Every displayed mesh casts and receives; textures, GPU previews and live operations only change its material.
         mesh.castShadow = mesh.receiveShadow = this.shadows;
@@ -384,6 +393,7 @@ export class RustScene {
         if (!spec || !entry) continue;
         (mesh.material as THREE.Material).dispose();
         const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms);
+        this.shadowStyle?.apply(material);
         material.wireframe = this.view.wireframe;
         material.side = THREE.DoubleSide;
         mesh.material = material;
@@ -549,6 +559,7 @@ export class RustScene {
     // A material with no operations has the prototype's hooks; the operations chain onto whatever is installed.
     material.onBeforeCompile = THREE.Material.prototype.onBeforeCompile;
     material.customProgramCacheKey = THREE.Material.prototype.customProgramCacheKey;
+    this.shadowStyle?.apply(material);
     delete material.userData.liveUniforms; delete material.userData.liveTextureSlots;
     mesh.userData.liveOperations = applyLiveOperations(material, live.operations as never, id => textures.get(id));
     mesh.userData.bakedLive = { key: live.key };
