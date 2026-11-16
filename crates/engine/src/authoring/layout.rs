@@ -16,7 +16,8 @@ use std::{collections::BTreeSet, sync::Arc};
 ///   height (gutters included);
 /// - 4 the quarter turns from the triangle's legs to the atlas axes ([`Atlas::turn`]), 5..7 the
 ///   chart's distinct samples along its width and height, 7 the triangle's role in its chart
-///   (0 alone, 1 the first of a pair, 2 the second);
+///   (0 alone, 1 the first of a pair, 2 the second, 3 one of a flat face on a pattern anchor's
+///   lattice, which lies in the chart where its atlas UVs put it);
 /// - 8..17 world positions of the corner, the first leg's end and the second leg's end;
 /// - 17..26 their unit normals; 26..32 their surface UVs; 32..38 their atlas UVs (V up).
 pub const LAYOUT_RECORD: usize = 38;
@@ -116,10 +117,12 @@ fn write_records(atlas: &Atlas, records: &mut Vec<f32>) {
         if let Some(second) = chart.second {
             owner[second] = (index, 2.);
         }
-        // A whole flat face on a pattern anchor's lattice: each triangle draws in the chart
-        // where its atlas UVs put it.
-        for other in &chart.others {
-            owner[*other] = (index, 0.);
+        // A whole flat face on a pattern anchor's lattice (role 3): each triangle draws in the
+        // chart where its atlas UVs put it, not along its own legs.
+        if chart.lattice.is_some() {
+            for triangle in chart.triangles() {
+                owner[triangle] = (index, 3.);
+            }
         }
     }
     records.reserve(triangles * LAYOUT_RECORD);

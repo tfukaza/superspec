@@ -1124,6 +1124,45 @@ fn resizing_an_anchored_wall_keeps_its_pattern_and_reuses_the_intrinsic_bake() {
             on as f64 >= width * 2.6 * 64. * 64. * 0.8,
             "{on} texels at width {width}"
         );
+        // The face around the window is one chart, its bounding rectangle: no texel is spent
+        // on the empty half of a triangle's own rectangle.
+        let atlas = Atlas::for_request(request.receivers[0].clone(), &request).unwrap();
+        assert_eq!(atlas.charts.len(), 1, "one flat face, one chart");
+        assert!(
+            atlas.charts[0].others.len() >= 5,
+            "{:?}",
+            atlas.charts[0].others
+        );
+        assert!(
+            on as f64 <= width * 2.6 * 64. * 64. * 1.1,
+            "{on} texels at width {width}"
+        );
+        // Each triangle is drawn where its texture coordinates say: the texel under its
+        // centroid samples that triangle, at the centroid to within a texel.
+        let chart = &atlas.charts[0];
+        for triangle in chart.triangles() {
+            let corner = |k: usize| {
+                (
+                    atlas.mesh.positions[triangle * 3 + k],
+                    atlas.mesh.uvs[triangle * 3 + k],
+                )
+            };
+            let middle = |axis: usize| (0..3).map(|k| corner(k).0[axis]).sum::<f64>() / 3.;
+            let u = (0..3).map(|k| corner(k).1[0]).sum::<f64>() / 3.;
+            let v = (0..3).map(|k| corner(k).1[1]).sum::<f64>() / 3.;
+            let x = (u * atlas.width as f64) as usize - chart.x;
+            let y = ((1. - v) * atlas.height as f64) as usize - chart.y;
+            let (owner, s, t) = atlas.texel(chart, x, y);
+            assert_eq!(owner, triangle, "the texel at {x}, {y}");
+            let sample = atlas.sample(owner, s, t).unwrap();
+            for axis in 0..3 {
+                assert!(
+                    (sample.world[axis] - middle(axis)).abs() <= 1. / 64.,
+                    "triangle {triangle}: {:?}",
+                    sample.world
+                );
+            }
+        }
         if let Some((before, previous)) = &kept {
             // The region both sizes cover: the same lattice points, the same bytes.
             let shared: Vec<_> = colors
