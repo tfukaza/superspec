@@ -31,6 +31,9 @@ struct Metadata<'a> {
     geometry_validation: &'a str,
     navigation_validation: &'a str,
     diagnostics: &'a [superspec_types::diagnostic::Diagnostic],
+    /// The scene's whole lighting record, for consumers that honor more than punctual lights.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lighting: Option<&'a superspec_types::lighting::Lighting>,
 }
 
 struct Buffer<'a, 'cancel> {
@@ -709,10 +712,22 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         meshes.push(json!({"name":mesh.id,"primitives":[primitive]}));
         nodes.push(json!({"name":mesh.id,"mesh":index,"extras":{"meshId":mesh.id,"objectId":mesh.object_id,"source":mesh.source,"collidable":scene.manifest.colliders.contains(&mesh.id)}}));
     }
+    // A visual export carries the scene's lighting record: its lights as nodes under the root,
+    // so their directions stay in the domain's Z-up frame, and the whole record in the extras.
+    let lighting = if visual {
+        options.lighting.or(scene.manifest.lighting.as_ref())
+    } else {
+        None
+    };
+    let (lights, light_nodes) = lighting.map(crate::lighting::punctual).unwrap_or_default();
+    nodes.extend(light_nodes);
     let root = nodes.len();
     nodes.push(json!({"name":scene.manifest.id,"rotation":[-std::f64::consts::FRAC_1_SQRT_2,0.,0.,std::f64::consts::FRAC_1_SQRT_2],"children":(0..root).collect::<Vec<_>>() }));
     let mut document = json!({"asset":{"version":"2.0","generator":"SuperSpec Rust"},"scene":0,"scenes":[{"nodes":[root]}],"nodes":nodes,"meshes":meshes,
         "buffers":[{"byteLength":buffer.bytes.len()}],"bufferViews":buffer.views,"accessors":buffer.accessors});
+    if !lights.is_empty() {
+        document["extensions"] = json!({ (crate::lighting::EXTENSION): { "lights": lights } });
+    }
     if !materials.is_empty() {
         document["materials"] = json!(materials);
     }
@@ -730,6 +745,9 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         extensions.push("KHR_texture_basisu");
         document["extensionsRequired"] = json!(["KHR_texture_basisu"]);
     }
+    if !lights.is_empty() {
+        extensions.push(crate::lighting::EXTENSION);
+    }
     if !extensions.is_empty() {
         document["extensionsUsed"] = json!(extensions);
     }
@@ -744,6 +762,7 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         geometry_validation: scene.manifest.geometry_validation,
         navigation_validation: scene.manifest.navigation_validation,
         diagnostics: &scene.manifest.diagnostics,
+        lighting,
     };
     let wrapped = Document {
         gltf: &document,

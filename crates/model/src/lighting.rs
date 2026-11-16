@@ -20,6 +20,28 @@ pub fn from_json(text: &str) -> Result<Lighting, Vec<Invalid>> {
     }
 }
 
+/// The lighting record a project document carries in its optional `lighting` field, admitted as
+/// `from_json` admits one; `None` when the project has no such field and so the shipped look.
+/// The authoring engine's project ignores the field: a host that delivers the project reads it
+/// here and hands it to the exporter (`Manifest::lighting`).
+pub fn of_project(document: &serde_json::Value) -> Result<Option<Lighting>, Vec<Invalid>> {
+    let Some(record) = document.get("lighting") else {
+        return Ok(None);
+    };
+    let lighting: Lighting = serde_json::from_value(record.clone()).map_err(|error| {
+        vec![Invalid {
+            field: String::new(),
+            message: error.to_string(),
+        }]
+    })?;
+    let findings = lighting.validate();
+    if findings.is_empty() {
+        Ok(Some(lighting))
+    } else {
+        Err(findings)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +129,22 @@ mod tests {
                 assert_eq!(fields, [case["field"].as_str().unwrap()], "{name}");
             }
         }
+    }
+
+    #[test]
+    fn a_project_document_carries_an_optional_record() {
+        assert_eq!(of_project(&json!({"kind": "material"})), Ok(None));
+        let project = json!({"kind": "material", "lighting": {"version": 1, "exposure": 2.0}});
+        let mut expected = Lighting::default();
+        expected.exposure = 2.0;
+        assert_eq!(of_project(&project), Ok(Some(expected)));
+        // A stated record is admitted like any other: no version, null and a range fault are refused.
+        for record in [json!({"exposure": 2.0}), Value::Null] {
+            let findings = of_project(&json!({"lighting": record})).unwrap_err();
+            assert_eq!(findings[0].field, "");
+        }
+        let findings = of_project(&json!({"lighting": {"version": 1, "exposure": -1.0}}));
+        assert_eq!(findings.unwrap_err()[0].field, "exposure");
     }
 
     #[test]

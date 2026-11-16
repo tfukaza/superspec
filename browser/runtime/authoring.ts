@@ -1,4 +1,5 @@
 import type { ProjectLayouts } from "../renderer/atlas.ts";
+import type { LightingInput } from "../renderer/lighting.ts";
 
 export type ParameterValue = number | boolean | string | number[];
 export interface SourceEdge { start: number[]; end: number[] }
@@ -33,6 +34,11 @@ export interface AuthoringProject {
   models?: StudioModel[];
   /** Materials applied in order to disjoint meshes; when present they replace `target`. */
   materials?: StudioMaterial[];
+  /**
+   * How the scene is lit and rendered (`renderer/lighting.ts`); without it the scene has the shipped look. The viewer
+   * and the GLB export read it. The engine's project ignores the field: no build or bake depends on it.
+   */
+  lighting?: LightingInput;
 }
 export interface Parameter {
   name: string;

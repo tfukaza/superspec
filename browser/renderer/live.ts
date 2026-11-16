@@ -139,8 +139,12 @@ ${band ? `  {
     filtered = mix( filtered, banded, clamp( ${band.mask}, 0.0, 1.0 ) );
   }` : ""}
   return filtered;
-#else
+#elif defined( USE_ENVMAP )
   return getIBLRadiance( viewDir, normal, roughness );
+#else
+  // No environment (the lighting record's \`environment.source: "none"\`): three.js defines no radiance lookup then,
+  // and nothing calls this one.
+  return vec3( 0.0 );
 #endif
 }
 ` : "";

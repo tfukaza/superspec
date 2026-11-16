@@ -77,7 +77,7 @@ fn main() -> ExitCode {
     };
     let bytes = match arguments.command.as_str() {
         "scene" => output.scene(0).map(|scene| scene.packet()),
-        "glb" => superspec_export::world_glb(&output.model, 0, &superspec_export::Options { cancelled: &cancelled, textures: arguments.textures, ..Default::default() }),
+        "glb" => superspec_export::world_glb(&output.model, 0, &superspec_export::Options { cancelled: &cancelled, textures: arguments.textures, lighting: input.lighting.as_ref(), ..Default::default() }),
         "check" => output.scene(0).and_then(|scene| serde_json::to_vec(&json!({"schemaVersion":1,"success":true,"diagnostics":scene.manifest.diagnostics,
             "metadata":output.metadata,"scene":{"id":scene.manifest.id,"meshes":scene.manifest.meshes.len(),
             "vertices":scene.manifest.vertex_count,"colliders":scene.manifest.colliders.len()}})).map_err(|error| error.to_string())),

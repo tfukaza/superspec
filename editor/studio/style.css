@@ -19,3 +19,15 @@
 .type-status:empty { display: none; }
 
 .preview-label { color: #e2a65f; font-weight: 600; }
+
+/* The scene's lighting record: groups of small controls, two to a row. */
+.lighting-group { border: 0; margin: 0 0 12px; padding: 0; min-width: 0; }
+.lighting-group legend { font-size: 11px; letter-spacing: .8px; text-transform: uppercase; color: #a8bc9c; font-weight: 650; padding: 0; margin-bottom: 7px; }
+.lighting-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
+.lighting-fields label { margin: 0; min-width: 0; }
+.lighting-fields .lighting-wide { grid-column: 1 / -1; }
+.lighting-fields .lighting-check { grid-column: 1 / -1; flex-direction: row !important; align-items: center; gap: 7px !important; }
+.lighting-fields input[type=color] { width: 100%; height: 32px; padding: 2px; border: 1px solid #3d5145; background: #101d17; border-radius: 4px; }
+.lighting-fields [aria-invalid=true] { border-color: #e07a5f; }
+#lighting-status { display: block; font-size: 11px; line-height: 1.5; color: #edb19a; margin: 4px 0 8px; }
+#lighting-status:empty { display: none; }

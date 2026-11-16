@@ -130,13 +130,57 @@ export function sunOf(lighting: Lighting): Light | undefined {
   return lighting.lights.find(light => light.role === "sun");
 }
 
-/** A six-digit sRGB hex color as linear RGB, by the transfer function three.js uses for its colors. */
-function linearFromHex(hex: string): Rgb {
+/**
+ * A record as a project or a file states it: `version` and any of the fields. `parseLighting` admits it and fills in
+ * the rest, so what a record leaves out follows the shipped look.
+ */
+export type LightingInput = { version: 1 } & {
+  [Key in Exclude<keyof Lighting, "version" | "lights">]?: Lighting[Key] extends object ? Partial<Lighting[Key]> : Lighting[Key];
+} & { lights?: (Partial<Omit<Light, "shadow">> & { shadow?: Partial<Omit<LightShadow, "noise">> & { noise?: Partial<ShadowNoise> } })[] };
+
+/** A six-digit sRGB hex color (without `#`) as linear RGB, by the transfer function three.js uses for its colors. */
+export function linearFromHex(hex: string): Rgb {
   const channel = (start: number): number => {
     const value = parseInt(hex.slice(start, start + 2), 16) / 255;
     return value < 0.04045 ? value * 0.0773993808 : Math.pow(value * 0.9478672986 + 0.0521327014, 2.4);
   };
   return [channel(0), channel(2), channel(4)];
+}
+
+/** Linear RGB as the nearest six-digit sRGB hex color (without `#`), for a color control. */
+export function hexFromLinear(color: Rgb): string {
+  return color.map(value => {
+    const clamped = Math.min(Math.max(value, 0), 1);
+    const encoded = clamped < 0.0031308 ? clamped * 12.92 : 1.055 * Math.pow(clamped, 1 / 2.4) - 0.055;
+    return Math.round(encoded * 255).toString(16).padStart(2, "0");
+  }).join("");
+}
+
+/**
+ * A light's direction as a compass pair, degrees: `azimuth` turns from +X toward +Y about +Z (0 is a light standing
+ * toward +X, 90 toward +Y), `elevation` is its height above the ground plane (90 is straight overhead).
+ */
+export function sunAngles(direction: Rgb): { azimuth: number; elevation: number } {
+  const length = Math.hypot(...direction) || 1;
+  return {
+    azimuth: (Math.atan2(direction[1], direction[0]) * 180 / Math.PI + 360) % 360,
+    elevation: Math.asin(Math.min(Math.max(direction[2] / length, -1), 1)) * 180 / Math.PI,
+  };
+}
+
+/** The unit direction toward a light standing at `azimuth` and `elevation` degrees (see `sunAngles`). */
+export function sunDirection(azimuth: number, elevation: number): Rgb {
+  const turn = azimuth * Math.PI / 180, lift = elevation * Math.PI / 180;
+  return [Math.cos(lift) * Math.cos(turn), Math.cos(lift) * Math.sin(turn), Math.sin(lift)];
+}
+
+/**
+ * Whether a record as stated (before `parseLighting` fills it in) says itself whether ambient occlusion is on. A
+ * renderer may then choose its own default only where the record is silent (see `software-occlusion.ts`).
+ */
+export function statesAmbientOcclusion(record: unknown): boolean {
+  const occlusion = (record as { ambientOcclusion?: { enabled?: unknown } } | null | undefined)?.ambientOcclusion;
+  return typeof occlusion?.enabled === "boolean";
 }
 
 /**
@@ -148,7 +192,8 @@ function linearFromHex(hex: string): Rgb {
  * - `shadowblur`, `shadowspread`, `shadowblurmax`, `shadowdark`, `shadowtint` and `shadowtint2` (sRGB hex),
  *   `shadowtintstrength`, `shadowwrap`, `shadownoisescale`, `shadowedge`, `shadownoise` and `shadowseed` replace single
  *   values of the shadow's look.
- * - `ao=off` turns ambient occlusion off; `aoradius`, `aointensity` and `aothickness` replace its values.
+ * - `ao=off` turns ambient occlusion off and `ao=on` turns it on, whatever the record and the renderer's own default
+ *   say; `aoradius`, `aointensity` and `aothickness` replace its values.
  */
 export function lightingFromQuery(record: Lighting, query: URLSearchParams): Lighting {
   const lighting = structuredClone(record);
@@ -184,6 +229,7 @@ export function lightingFromQuery(record: Lighting, query: URLSearchParams): Lig
   }
   const occlusion = lighting.ambientOcclusion;
   if (query.get("ao") === "off") occlusion.enabled = false;
+  if (query.get("ao") === "on") occlusion.enabled = true;
   occlusion.radius = number("aoradius", occlusion.radius, 0.01, 10);
   occlusion.intensity = number("aointensity", occlusion.intensity, 0, 4);
   occlusion.thickness = number("aothickness", occlusion.thickness, 0.01, 10);
@@ -342,4 +388,18 @@ export function parseLighting(value: unknown): Lighting {
 export function projectLighting(project: object): Lighting {
   const record = (project as { lighting?: unknown }).lighting;
   return record === undefined ? defaultLighting() : parseLighting(record);
+}
+
+/**
+ * The record a project stores for `lighting`, or undefined when it is the shipped look and the project then carries no
+ * field at all. `statesOcclusion` says whether the author chose ambient occlusion on or off; while they did not, the
+ * stored record leaves it out, so a renderer's own default still applies to it (`statesAmbientOcclusion`).
+ */
+export function storedLighting(lighting: Lighting, statesOcclusion: boolean): LightingInput | undefined {
+  const { enabled, ...occlusion } = lighting.ambientOcclusion;
+  const silent = !statesOcclusion && enabled === DEFAULT_LIGHTING.ambientOcclusion.enabled;
+  if (silent && JSON.stringify(lighting) === JSON.stringify(DEFAULT_LIGHTING)) return undefined;
+  const stored: LightingInput = structuredClone(lighting);
+  if (silent) stored.ambientOcclusion = occlusion;
+  return stored;
 }

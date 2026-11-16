@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DEFAULT_LIGHTING, LightingError, defaultLighting, lightingFromQuery, parseLighting, projectLighting, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
+import { DEFAULT_LIGHTING, LightingError, defaultLighting, hexFromLinear, lightingFromQuery, linearFromHex, parseLighting, projectLighting, statesAmbientOcclusion,
+  storedLighting, sunAngles, sunDirection, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
 
 /** The fixtures the Rust record is checked against (`crates/model/src/lighting.rs`). */
 const fixture = (name: string): unknown => JSON.parse(readFileSync(new URL(`../../crates/model/src/${name}`, import.meta.url), "utf8"));
@@ -91,6 +92,72 @@ test("page parameters override the record without changing it", () => {
   assert.deepEqual(tuned.ambientOcclusion, { enabled: true, radius: 0.8, intensity: 4, thickness: 0.2 });
   // An overridden record is still a valid one.
   assert.doesNotThrow(() => parseLighting(tuned));
+});
+
+test("ao=on turns ambient occlusion on over a record that has it off", () => {
+  const off = defaultLighting();
+  off.ambientOcclusion.enabled = false;
+  assert.equal(lightingFromQuery(off, new URLSearchParams("ao=on")).ambientOcclusion.enabled, true);
+  assert.equal(lightingFromQuery(off, new URLSearchParams("")).ambientOcclusion.enabled, false);
+});
+
+test("sun angles and directions convert both ways", () => {
+  // Independently known directions: +X on the horizon, +Y on the horizon, overhead, and halfway up toward -X.
+  const near = (actual: number[], expected: number[]): void => actual.forEach((value, axis) => assert.ok(Math.abs(value - expected[axis]) < 1e-12, `${actual} is not ${expected}`));
+  near(sunDirection(0, 0), [1, 0, 0]);
+  near(sunDirection(90, 0), [0, 1, 0]);
+  near(sunDirection(123, 90), [0, 0, 1]);
+  near(sunDirection(180, 45), [-Math.SQRT1_2, 0, Math.SQRT1_2]);
+  assert.deepEqual(sunAngles([0, -1, 0]), { azimuth: 270, elevation: 0 });
+  const shipped = sunAngles(DEFAULT_LIGHTING.lights[0].direction);
+  // The shipped sun stands at (-3, -5, 8): behind -X and -Y, well above the horizon.
+  assert.ok(Math.abs(shipped.azimuth - (180 + Math.atan(5 / 3) * 180 / Math.PI)) < 1e-9);
+  assert.ok(Math.abs(shipped.elevation - Math.atan(8 / Math.hypot(3, 5)) * 180 / Math.PI) < 1e-9);
+  near(sunDirection(shipped.azimuth, shipped.elevation), DEFAULT_LIGHTING.lights[0].direction);
+  // Every direction made from angles is a unit vector the record admits.
+  for (const [azimuth, elevation] of [[0, 0], [37.5, -20], [359, 89.9], [200, -90]]) {
+    const lighting = defaultLighting();
+    lighting.lights[0].direction = sunDirection(azimuth, elevation);
+    assert.doesNotThrow(() => parseLighting(lighting));
+  }
+});
+
+test("colors convert between the record's linear RGB and a color control's hex", () => {
+  assert.equal(hexFromLinear([0, 0, 0]), "000000");
+  assert.equal(hexFromLinear([1, 1, 1]), "ffffff");
+  // The shipped tints are stated in the record's comments as #2f6fe0 and #3f4fd8, the sun as #ffefdb.
+  assert.equal(hexFromLinear(DEFAULT_LIGHTING.lights[0].shadow.tint), "2f6fe0");
+  assert.equal(hexFromLinear(DEFAULT_LIGHTING.lights[0].shadow.tintAlt), "3f4fd8");
+  assert.equal(hexFromLinear(DEFAULT_LIGHTING.lights[0].color), "ffefdb");
+  assert.equal(hexFromLinear(DEFAULT_LIGHTING.ambient.ground), "777768");
+  for (const hex of ["123456", "fedcba", "808080", "0a0b0c"]) assert.equal(hexFromLinear(linearFromHex(hex)), hex);
+});
+
+test("a project stores no record for the shipped look and says ambient occlusion only when the author chose it", () => {
+  assert.equal(storedLighting(defaultLighting(), false), undefined);
+  assert.equal(statesAmbientOcclusion(undefined), false);
+  assert.equal(statesAmbientOcclusion({ version: 1, ambientOcclusion: { radius: 1 } }), false);
+  assert.equal(statesAmbientOcclusion({ version: 1, ambientOcclusion: { enabled: true } }), true);
+
+  // The shipped look with ambient occlusion chosen on is a record: it states the choice.
+  const chosen = storedLighting(defaultLighting(), true)!;
+  assert.equal(statesAmbientOcclusion(chosen), true);
+  assert.deepEqual(parseLighting(chosen), DEFAULT_LIGHTING);
+
+  // Another edit leaves ambient occlusion unsaid, and the stored record still reads back as the edited one.
+  const brighter = defaultLighting();
+  brighter.exposure = 1.5;
+  const stored = storedLighting(brighter, false)!;
+  assert.equal(statesAmbientOcclusion(stored), false);
+  assert.deepEqual(stored.ambientOcclusion, { radius: 0.35, intensity: 2, thickness: 0.5 });
+  assert.deepEqual(parseLighting(stored), brighter);
+  assert.deepEqual(projectLighting({ lighting: JSON.parse(JSON.stringify(stored)) }), brighter);
+
+  // Turned off is always said, chosen or not: silence would mean on.
+  const off = defaultLighting();
+  off.ambientOcclusion.enabled = false;
+  assert.equal(statesAmbientOcclusion(storedLighting(off, false)), true);
+  assert.deepEqual(parseLighting(storedLighting(off, false)), off);
 });
 
 test("a hex tint override is the color the record's default states", () => {

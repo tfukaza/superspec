@@ -13,6 +13,9 @@ use superspec_engine::authoring::Project;
 use superspec_types::limits::{MAX_COMPANION_BYTES as MAX_ASSETS, MAX_FILE_BYTES};
 pub struct Input {
     pub project: Project,
+    /// The project's optional lighting record, which the engine's project ignores; a GLB export
+    /// delivers it.
+    pub lighting: Option<superspec_export::Lighting>,
     parent: PathBuf,
     raw_recipe: bool,
     embedded: Option<BTreeMap<String, Arc<[u8]>>>,
@@ -229,10 +232,15 @@ impl Input {
                 .ok_or("Project parameters must be an object.")?;
             target.extend(supplied.clone());
         }
+        let lighting = superspec_export::project_lighting(&value).map_err(|findings| {
+            let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+            format!("Invalid lighting record: {}.", findings.join("; "))
+        })?;
         let project = serde_json::from_value(value)
             .map_err(|error| format!("Invalid studio project: {error}"))?;
         Ok(Self {
             project,
+            lighting,
             parent,
             raw_recipe,
             embedded,

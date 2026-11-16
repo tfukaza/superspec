@@ -2,6 +2,7 @@
 mod brushes;
 mod gltf;
 mod json;
+mod lighting;
 mod lightmap;
 pub mod quake;
 mod quake_textures;
@@ -10,6 +11,9 @@ mod text;
 pub use gltf::{TextureJob, encode_texture, glb, texture_jobs};
 pub use lightmap::{prepare_lightmap, prepare_lightmap_sized};
 pub use superspec_geometry::ktx2::Kind as TextureKind;
+/// The lighting record a project document carries, for `Options::lighting` or a staged scene's
+/// `Manifest::lighting`.
+pub use superspec_model::lighting::{Lighting, of_project as project_lighting};
 pub use text::{Obj, obj, svg_plan};
 
 /// Prepares independent output from shared local geometry without modifying authored resources.
@@ -18,7 +22,8 @@ pub fn instance_glb(
     options: &Options<'_>,
 ) -> Result<Vec<u8>, String> {
     options.check(0)?;
-    let scene = model.scene(0)?;
+    let mut scene = model.scene(0)?;
+    lit(&mut scene, options);
     glb(&scene, options)
 }
 
@@ -29,8 +34,16 @@ pub fn world_glb(
     options: &Options<'_>,
 ) -> Result<Vec<u8>, String> {
     options.check(0)?;
-    let scene = model.scene_cancellable(revision, options.cancelled)?;
+    let mut scene = model.scene_cancellable(revision, options.cancelled)?;
+    lit(&mut scene, options);
     glb(&scene, options)
+}
+
+/// The delivered scene states the lighting record it is exported with (`Manifest::lighting`).
+fn lit(scene: &mut superspec_model::Scene, options: &Options<'_>) {
+    if let Some(lighting) = options.lighting {
+        scene.manifest.lighting = Some(lighting.clone());
+    }
 }
 
 /// Splits the portable GLB into a JSON document and its referenced binary buffer.
@@ -87,6 +100,10 @@ pub struct Options<'a> {
     /// KTX2 payloads already encoded with `encode_texture`, by image identity (see
     /// `texture_jobs`); textures missing here are encoded during export.
     pub encoded: Option<&'a std::collections::BTreeMap<String, Vec<u8>>>,
+    /// The lighting record the scene is exported with; it replaces the scene's own
+    /// (`Manifest::lighting`). A visual GLB carries it as `KHR_lights_punctual` lights and whole
+    /// under `extras.superspec.lighting`; without one the output has neither.
+    pub lighting: Option<&'a Lighting>,
 }
 impl Default for Options<'static> {
     fn default() -> Self {
@@ -96,6 +113,7 @@ impl Default for Options<'static> {
             maximum_bytes: superspec_types::limits::MAX_EXPORT_BYTES,
             cancelled: &|| false,
             encoded: None,
+            lighting: None,
         }
     }
 }

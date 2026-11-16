@@ -1,6 +1,5 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { SceneMesh, ScenePacket } from "../model/packet.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
@@ -12,7 +11,7 @@ import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget 
 import type { ShadowStyle } from "./shadow-style.ts";
 import type { AmbientOcclusion } from "./ambient-occlusion.ts";
 import type { Lighting } from "./lighting.ts";
-import { SceneLighting } from "./rendering.ts";
+import { SceneLighting, studioEnvironment } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 
@@ -28,18 +27,6 @@ function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
   const surface = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false }));
   surface.position.z = 0.025;
   return surface;
-}
-
-/** Builds neutral reflection lighting once per viewer; the caller owns the returned GPU target. */
-function reflectionEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarget {
-  const room = new RoomEnvironment();
-  const generator = new THREE.PMREMGenerator(renderer);
-  try {
-    return generator.fromScene(room);
-  } finally {
-    room.dispose();
-    generator.dispose();
-  }
 }
 
 /** Compares uploaded attributes against current Rust buffers without allocating replacement geometry. */
@@ -178,19 +165,25 @@ export class RustScene {
   /**
    * Lights and renders the view by a scene's lighting record (see `lighting.ts`); the page's parameters and the
    * exposure control stay on top of it. Values change in place; only turning shadows, their style or ambient occlusion
-   * on or off recompiles programs.
+   * on or off recompiles programs. `stated` is the record as the project states it, before its defaults were filled in
+   * (see `SceneLighting.set`).
    */
-  setLighting(record: Lighting): void {
-    this.lights.set(record);
+  setLighting(record: Lighting, stated?: unknown): void {
+    this.lights.set(record, stated);
     for (const mesh of this.models.children) mesh.castShadow = mesh.receiveShadow = this.shadows;
     this.fitShadows();
     this.stateLighting();
     this.invalidate();
   }
 
+  /** Why ambient occlusion the record leaves to its default is not drawn by this renderer (`software-occlusion.ts`), or null. */
+  get ambientOcclusionDefault(): string | null { return this.lights.occlusionDefault; }
+
   /** States on the host what is drawn (`data-rendering`) and the record in effect with the session's overrides (`data-lighting`), for inspection and tests. */
   private stateLighting(): void {
-    this.host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.lights.styledShadows, ambientOcclusion: this.ambientOcclusion !== undefined });
+    this.host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.lights.styledShadows, ambientOcclusion: this.ambientOcclusion !== undefined,
+      // Set where ambient occlusion nobody asked for is left off by this renderer's own default (software-occlusion.ts).
+      ...(this.lights.occlusionDefault ? { ambientOcclusionDefault: this.lights.occlusionDefault } : {}) });
     this.host.dataset.lighting = JSON.stringify(this.lights.lighting);
   }
 
@@ -198,7 +191,7 @@ export class RustScene {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color("#d5d7ce");
-    this.environment = reflectionEnvironment(this.renderer);
+    this.environment = studioEnvironment(this.renderer);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.addEventListener("change", this.invalidate);
     this.controls.target.fromArray(this.view.target);

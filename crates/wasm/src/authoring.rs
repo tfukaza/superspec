@@ -441,8 +441,10 @@ impl Authoring {
         ktx2: bool,
     ) -> Result<Vec<u8>, JsValue> {
         let output = self.export_build(source, revision)?;
+        let lighting = export_lighting(source)?;
         let options = superspec_export::Options {
             textures: crate::textures(ktx2),
+            lighting: lighting.as_ref(),
             ..Default::default()
         };
         superspec_export::world_glb(&output.model, revision, &options)
@@ -501,10 +503,13 @@ impl Authoring {
     /// returns the texture list. Then `staged_texture`, `encodeTexture` and `finish_project`.
     pub fn stage_project(&mut self, source: &str, revision: u32) -> Result<String, JsValue> {
         let output = self.export_build(source, revision)?;
-        let scene = output
+        let mut scene = output
             .model
             .scene_cancellable(revision, &|| false)
             .map_err(|error| JsValue::from_str(&error))?;
+        if let Some(lighting) = export_lighting(source)? {
+            scene.manifest.lighting = Some(lighting);
+        }
         self.staged.stage(scene)
     }
     pub fn staged_texture(&self, index: usize) -> Result<Vec<u8>, JsValue> {
@@ -513,6 +518,20 @@ impl Authoring {
     pub fn finish_project(&mut self, encoded: &[u8], lengths: &[u32]) -> Result<Vec<u8>, JsValue> {
         self.staged.finish(encoded, lengths)
     }
+}
+
+/// The lighting record the project document carries (its optional `lighting` field, which the
+/// engine's project ignores), for the export to deliver. An invalid record refuses the export.
+fn export_lighting(source: &str) -> Result<Option<superspec_export::Lighting>, JsValue> {
+    let document: serde_json::Value =
+        serde_json::from_str(source).map_err(|error| JsValue::from_str(&error.to_string()))?;
+    superspec_export::project_lighting(&document).map_err(|findings| {
+        let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
+        JsValue::from_str(&format!(
+            "Invalid lighting record: {}.",
+            findings.join("; ")
+        ))
+    })
 }
 
 impl Authoring {

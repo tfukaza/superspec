@@ -2,7 +2,8 @@ import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_B
 import "./style.css";
 import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
-import { projectLighting } from "../../browser/renderer/lighting.ts";
+import { projectLighting, statesAmbientOcclusion, storedLighting, type Lighting } from "../../browser/renderer/lighting.ts";
+import { LightingPanel } from "./lighting.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
 import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
@@ -79,6 +80,8 @@ class Studio {
   private readonly scene: RustScene;
   private readonly parameters: ParameterControls;
   private readonly channels: Channels;
+  /** Controls for the project's lighting record; edits go to the viewport at once and to the project (`relight`). */
+  private readonly lightingPanel: LightingPanel;
   private readonly code = element<HTMLTextAreaElement>("code");
   private readonly status = element<HTMLOutputElement>("status");
   /** Advances only when the edited document is replaced, not for recompiles of the same source. */
@@ -123,13 +126,14 @@ class Studio {
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
     });
     this.channels = new Channels(element("channels"));
+    this.lightingPanel = new LightingPanel(element("lighting-controls"), (lighting, statesOcclusion) => this.relight(lighting, statesOcclusion));
     if (kind === "material") this.recipe = new RecipePanel(element("recipe-body"), this.recipeTools, {
       revision: () => this.documentRevision,
       entry: () => this.project.entry, module: () => this.module, modules: () => this.project.modules,
       source: () => this.code.value, apply: (patches, source) => this.applyPatches(patches, source),
       insert: text => this.insert(text), override: name => this.project.parameters[name],
     });
-    this.bindControls(); this.showProject(); this.edit();
+    this.showLighting(); this.bindControls(); this.showProject(); this.edit();
     window.addEventListener("pagehide", () => this.dispose(), { once: true });
   }
 
@@ -150,7 +154,6 @@ class Studio {
     element("save-project").addEventListener("click", () => { const file = projectFile(this.project); download(file.name, file.content); });
     element("save-source").addEventListener("click", () => download(this.module.split("/").at(-1)!, this.project.modules[this.module], "text/plain"));
     element("export-glb").addEventListener("click", () => void this.exportGlb());
-    element<HTMLInputElement>("exposure").addEventListener("input", event => this.scene.setExposure((event.target as HTMLInputElement).valueAsNumber));
     element<HTMLTextAreaElement>("environment").addEventListener("input", event => {
       try {
         const environment = parseEnvironment((event.target as HTMLTextAreaElement).value);
@@ -685,7 +688,7 @@ class Studio {
     }
     if (opened) {
       this.project = candidate; this.base = base; this.baseMetadata = baseMetadata;
-      this.scene.setLighting(projectLighting(candidate));
+      this.showLighting();
       this.module = candidate.entry;
       if (fit && !scene) this.selected = candidate.target.mesh;
       if (scene && !candidate.materials?.some(material => material.id === this.activeMaterial)) this.activeMaterial = candidate.materials?.[0]?.id;
@@ -709,6 +712,39 @@ class Studio {
     element("viewport").dataset.inputRevision = String(revision);
     this.guides(); this.ready(`Revision ${revision} ready${base && !candidate.target.enabled ? " · Original bindings; select a surface and apply." : ""}`);
     return true;
+  }
+
+  /**
+   * Lights the viewport by the project's lighting record (the shipped look without one) and shows it in the Lighting
+   * panel. The record was admitted when the project was opened.
+   */
+  private showLighting(): void {
+    const stated = this.project.lighting, lighting = projectLighting(this.project);
+    this.scene.setLighting(lighting, stated);
+    this.lightingPanel.show(lighting, statesAmbientOcclusion(stated));
+    this.noteLighting();
+  }
+
+  /** Says in the Lighting panel what stands between the record and the picture: page parameters, and a renderer's own default. */
+  private noteLighting(): void {
+    // Page parameters stay on top of the record for the session; the panel edits the record itself.
+    const overrides = [...new URLSearchParams(location.search).keys()].filter(name => /^(shadow|ao)/.test(name));
+    const notes = overrides.length ? [`This page's parameters (${overrides.join(", ")}) override the record in the viewport; they are not saved.`] : [];
+    const occlusion = this.scene.ambientOcclusionDefault;
+    if (occlusion) notes.push(`Ambient occlusion is ${occlusion}.`);
+    this.lightingPanel.viewer(notes.join(" "), occlusion !== null);
+  }
+
+  /**
+   * Takes an edit of the Lighting panel: the viewport is lit by it at once (no material is rebuilt and nothing is
+   * compiled by the engine) and the project stores it, so Save project and Download GLB carry it. The shipped look is
+   * stored as no record at all.
+   */
+  private relight(lighting: Lighting, statesOcclusion: boolean): void {
+    const stored = storedLighting(lighting, statesOcclusion);
+    if (stored) this.project.lighting = stored; else delete this.project.lighting;
+    this.scene.setLighting(lighting, stored);
+    this.noteLighting();
   }
 
   /** Whether a project previews through shaders: a scene project showing its final channels. */
@@ -758,7 +794,7 @@ class Studio {
     const materials = (metadata.materials ?? {}) as Record<string, AuthoringMetadata>;
     if (opened) {
       this.project = candidate; this.base = undefined; this.baseMetadata = undefined;
-      this.scene.setLighting(projectLighting(candidate));
+      this.showLighting();
       this.module = candidate.entry;
       if (!candidate.materials?.some(material => material.id === this.activeMaterial)) this.activeMaterial = candidate.materials?.[0]?.id;
       const active = this.active();
@@ -825,6 +861,8 @@ class Studio {
   private async exportGlb(): Promise<void> {
     if (this.status.dataset.state !== "ready" || !this.accepted || !this.environmentValid) return;
     const candidate = copyProject(this.accepted);
+    // Lighting is not part of a build, so the accepted snapshot may predate the record now shown: the export carries the current one.
+    if (this.project.lighting) candidate.lighting = structuredClone(this.project.lighting); else delete candidate.lighting;
     const textures = element<HTMLInputElement>("export-ktx2").checked ? "ktx2" : "png";
     const revision = this.begin(textures === "ktx2" ? "Exporting GLB: baking…" : "Exporting GLB…");
     const started = performance.now();

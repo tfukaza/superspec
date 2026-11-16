@@ -130,7 +130,12 @@ try {
     assert.equal(lighting.version, 1);
     assert.equal(lighting.exposure, record.exposure ?? 1);
     assert.equal(lighting.ambient.intensity, record.ambient?.intensity ?? 0.65);
-    assert.deepEqual(lighting.lights[0]?.direction.map(axis => +axis.toFixed(3)), (record.lights?.[0]?.direction ?? [-0.303, -0.505, 0.808]).map(axis => +axis.toFixed(3)));
+    // A record's empty `lights` list is no direct light; a record without the list has the shipped sun.
+    assert.equal(lighting.lights.length, record.lights?.length ?? 1);
+    if (lighting.lights.length) assert.deepEqual(lighting.lights[0].direction.map(axis => +axis.toFixed(3)), (record.lights?.[0]?.direction ?? [-0.303, -0.505, 0.808]).map(axis => +axis.toFixed(3)));
+    assert.equal(lighting.toneMapping, record.toneMapping ?? "aces");
+    assert.equal(lighting.environment.source, record.environment?.source ?? "studio");
+    assert.equal(lighting.environment.rotation, record.environment?.rotation ?? 0);
     if (query.get("ao") === "off") assert.equal(lighting.ambientOcclusion.enabled, false);
     if (query.get("shadowstyle") === "plain") assert.equal(lighting.lights[0].shadow.style, "plain");
   }

@@ -1,17 +1,36 @@
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { AmbientOcclusion } from "./ambient-occlusion.ts";
-import { DEFAULT_LIGHTING, defaultLighting, lightingFromQuery, sunOf, type Lighting } from "./lighting.ts";
+import { DEFAULT_LIGHTING, defaultLighting, lightingFromQuery, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
 import { ShadowStyle } from "./shadow-style.ts";
+import { softwareOcclusionDefault } from "./software-occlusion.ts";
 
 const TONE_MAPPING: Record<Lighting["toneMapping"], THREE.ToneMapping> = {
-  aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.NoToneMapping,
+  // `none` is no curve: the exposure still multiplies (three.js's "no tone mapping" would drop the exposure too).
+  aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.LinearToneMapping,
 };
+
+/**
+ * The record's built-in `studio` environment: three.js's neutral room, prefiltered for reflections. Built once per
+ * renderer; the caller owns the returned GPU target.
+ */
+export function studioEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarget {
+  const room = new RoomEnvironment();
+  const generator = new THREE.PMREMGenerator(renderer);
+  try {
+    return generator.fromScene(room);
+  } finally {
+    room.dispose();
+    generator.dispose();
+  }
+}
 
 /**
  * Everything of a scene view that a lighting record decides: tone mapping and exposure, the environment's strength
  * and turn, the hemisphere light, the sun, whether and how it casts shadows, and ambient occlusion. Global settings of
  * the view, never part of a material. A viewer holds one of these and gives it the scene's record (`set`); the page's
- * parameters stay on top as session overrides.
+ * parameters stay on top as session overrides. The Studio viewer and the game runtime (`game-lighting.ts`)
+ * both draw through this class, so a record gives the same picture in each.
  *
  * How the record's values are reached is this class's own choice and not in the record: the shadow map's size, type
  * and biases, and the occlusion's sample counts.
@@ -23,19 +42,26 @@ export class SceneLighting {
   readonly shadowStyle = new ShadowStyle(DEFAULT_LIGHTING.lights[0].shadow);
   /** Ambient occlusion while it is on and the renderer can composite; frames then go through it. */
   ambientOcclusion?: AmbientOcclusion;
+  /** Why ambient occlusion the record leaves to its default is not drawn here (`software-occlusion.ts`), or null. */
+  occlusionDefault: string | null = null;
   /** The record in effect: the scene's, with the session's overrides. */
   private resolved = defaultLighting();
-  /** The session's exposure (the viewer's own control), which then replaces the record's. */
+  /** The session's exposure (a host's own control), which then replaces the record's. */
   private exposure?: number;
   private readonly direction = new THREE.Vector3(0, 0, 1);
   private readonly reported = new Set<string>();
+  /** What the lights hang from: the scene itself where the world is the record's Z-up frame, else a turned group. */
+  private readonly frame: THREE.Object3D;
 
   /**
-   * `environment` is the built-in `studio` reflection environment, `query` the page's parameters and `excluded`
-   * what ambient occlusion must not see (see `AmbientOcclusion`). The lights are added to `scene`.
+   * `environment` is the built-in `studio` reflection environment (`studioEnvironment`), `query` the page's
+   * parameters and `excluded` what ambient occlusion must not see (see `AmbientOcclusion`). The lights are added to
+   * `scene`. `up` names the world's up axis: the record's own Z (the Studio viewer), or Y, as a loaded glTF scene and
+   * most three.js games have it; the record's directions are then turned with the world (x, y, z to x, z, -y).
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly scene: THREE.Scene, private readonly camera: THREE.Camera,
-    private readonly environment: THREE.Texture, private readonly query: URLSearchParams, private readonly excluded: () => THREE.Object3D[] = () => []) {
+    private readonly environment: THREE.Texture, private readonly query: URLSearchParams, private readonly excluded: () => THREE.Object3D[] = () => [],
+    private readonly up: "z" | "y" = "z") {
     this.ambient.position.set(0, 0, 1);
     // The sun does not move between records and a viewer renders on demand, so the shadow map is drawn when asked
     // (`shadowMap.needsUpdate`, see `fit`), not every frame.
@@ -45,7 +71,15 @@ export class SceneLighting {
     // A small bias against acne and a normal bias that keeps thin parts (ducts, pipes) attached to their shadows.
     this.sun.shadow.bias = -0.0003;
     this.sun.shadow.normalBias = 0.02;
-    scene.add(this.ambient, this.sun, this.sun.target);
+    if (up === "y") {
+      this.frame = new THREE.Group();
+      this.frame.rotation.x = -Math.PI / 2;
+      scene.add(this.frame);
+      // The shadow map keeps the roll it has in the record's frame (its rows along the domain's +Y), so the style's
+      // noise, which lives in the map's plane, lies in the world as it does in a Z-up view.
+      this.sun.shadow.camera.up.set(0, 0, -1);
+    } else this.frame = scene;
+    this.frame.add(this.ambient, this.sun, this.sun.target);
     this.set(defaultLighting());
   }
 
@@ -56,8 +90,12 @@ export class SceneLighting {
   /** Whether those shadows have the illustration look instead of three.js's plain one. */
   get styledShadows(): boolean { return this.shadowStyle.enabled; }
 
-  /** Lights and renders the view by `record`. Call `fit` afterwards: the sun may have moved or started casting. */
-  set(record: Lighting): void {
+  /**
+   * Lights and renders the view by `record`. Call `fit` afterwards: the sun may have moved or started casting.
+   * `stated` is the record as its project or file states it, before defaults were filled in (see `parseLighting`):
+   * what it leaves out, a renderer may default by its own policy.
+   */
+  set(record: Lighting, stated?: unknown): void {
     const lighting = this.resolved = lightingFromQuery(record, this.query);
     const { renderer, scene } = this;
     renderer.toneMapping = TONE_MAPPING[lighting.toneMapping];
@@ -65,8 +103,11 @@ export class SceneLighting {
     const source = lighting.environment.source;
     if (source !== "studio" && source !== "none") this.report(`environment.source "${source}" is not available in this viewer; using "studio".`);
     scene.environment = source === "none" ? null : this.environment;
-    // The built-in environment is Y-up: a quarter turn stands it up, then the record turns it about +Z.
-    scene.environmentRotation.set(Math.PI / 2, 0, lighting.environment.rotation);
+    // The built-in environment is Y-up. In a Z-up world a quarter turn stands it up, then the record turns it about
+    // +Z (the order matters: the turn is about the world's vertical, not the lying environment's). In a Y-up world
+    // it stands already and the record's turn about the domain's +Z is one about the world's +Y.
+    if (this.up === "y") scene.environmentRotation.set(0, lighting.environment.rotation, 0, "XYZ");
+    else scene.environmentRotation.set(Math.PI / 2, 0, lighting.environment.rotation, "ZYX");
     scene.environmentIntensity = lighting.environment.intensity;
     this.ambient.color.setRGB(...lighting.ambient.sky, THREE.LinearSRGBColorSpace);
     this.ambient.groundColor.setRGB(...lighting.ambient.ground, THREE.LinearSRGBColorSpace);
@@ -87,6 +128,13 @@ export class SceneLighting {
     this.shadowStyle.set(casting ? shadow : { ...shadow, style: "plain" });
 
     const occlusion = lighting.ambientOcclusion;
+    // The one renderer default: see `software-occlusion.ts`. It applies only where neither the record nor the page says.
+    this.occlusionDefault = occlusion.enabled
+      ? softwareOcclusionDefault(renderer, statesAmbientOcclusion(stated) || this.query.get("ao") === "on") : null;
+    if (this.occlusionDefault) {
+      occlusion.enabled = false;
+      this.report(`ambientOcclusion is ${this.occlusionDefault}.`, "info");
+    }
     const unavailable = occlusion.enabled ? AmbientOcclusion.unavailable(renderer) : null;
     if (unavailable) this.report(`ambientOcclusion is not drawn: ${unavailable}.`);
     if (occlusion.enabled && !unavailable) {
@@ -113,31 +161,50 @@ export class SceneLighting {
    * record's; only where the light stands along it changes.
    */
   fit(models: THREE.Object3D): void {
-    if (!this.shadows) return;
-    const bounds = new THREE.Box3().setFromObject(models);
-    if (bounds.isEmpty()) return;
+    if (this.shadows) this.fitBounds(new THREE.Box3().setFromObject(models));
+  }
+
+  /** `fit` for bounds already known, in world coordinates. */
+  fitBounds(bounds: THREE.Box3): void {
+    if (!this.shadows || bounds.isEmpty()) return;
     const sphere = bounds.getBoundingSphere(new THREE.Sphere());
     const radius = Math.max(sphere.radius, 0.05);
+    // The lights stand in the record's frame.
+    if (this.frame !== this.scene) { this.frame.updateWorldMatrix(true, false); this.frame.worldToLocal(sphere.center); }
     this.sun.target.position.copy(sphere.center);
     this.sun.position.copy(sphere.center).addScaledVector(this.direction, radius * 3);
     Object.assign(this.sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: radius * 0.5, far: radius * 5.5 });
     this.sun.shadow.camera.updateProjectionMatrix();
+    this.sun.updateMatrixWorld();
     this.sun.target.updateMatrixWorld();
     this.shadowStyle.fit(this.sun);
     this.renderer.shadowMap.needsUpdate = true;
   }
 
+  /** Draws one frame: through the ambient occlusion when it is on, else straight to the canvas. */
+  render(): void {
+    if (this.ambientOcclusion) this.ambientOcclusion.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Follows the renderer's size (call after `renderer.setSize`): the occlusion's targets are sized with the canvas. */
+  resize(): void {
+    const size = this.renderer.getSize(new THREE.Vector2());
+    this.ambientOcclusion?.setSize(size.x, size.y, this.renderer.getPixelRatio());
+  }
+
   /** A setting this viewer cannot honor is said once, with its fallback, and never blocks the scene. */
-  private report(message: string): void {
+  private report(message: string, level: "warn" | "info" = "warn"): void {
     if (this.reported.has(message)) return;
     this.reported.add(message);
-    console.warn(`Lighting: ${message}`);
+    console[level](`Lighting: ${message}`);
   }
 
   dispose(): void {
     this.ambientOcclusion?.dispose();
     this.ambientOcclusion = undefined;
-    this.scene.remove(this.ambient, this.sun, this.sun.target);
+    this.frame.remove(this.ambient, this.sun, this.sun.target);
+    if (this.frame !== this.scene) this.scene.remove(this.frame);
     this.sun.shadow.dispose();
   }
 }
