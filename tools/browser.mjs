@@ -16,7 +16,8 @@ export async function launchBrowser() {
   return chromium.launch({
     headless: true,
     executablePath,
-    args: software ? ["--use-angle=swiftshader"] : undefined,
+    // BROWSER_ARGS adds flags, such as "--use-angle=d3d11 --ignore-gpu-blocklist" to render on the GPU.
+    args: software ? ["--use-angle=swiftshader"] : process.env.BROWSER_ARGS?.split(" ").filter(Boolean),
   });
 }
 /** Opens a deterministic reduced-motion context unless a scenario overrides it. */

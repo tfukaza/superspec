@@ -1,0 +1,65 @@
+/**
+ * Writes the washroom benchmark scene: `generated/washroom/washroom.glb` and a version 2 Studio
+ * project that applies the shipped example recipes to it. Usage: node tests/studio/washroom/build.mjs [resolution] [texels per meter, 0 for none]
+ */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildMeshes } from "./model.mjs";
+import { writeGlb } from "./geometry.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const examples = resolve(here, "../../../crates/engine/src/materialspec/program/examples");
+const out = resolve(here, "../../../generated/washroom");
+
+const concrete = "kowloon-concrete.material.ts", steel = "kowloon-rusted-steel.material.ts";
+/** Steel without the study's stylized lighting, for parts that are not bare metal. */
+const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
+
+/** Every material of the scene: an example recipe, its parameters and the meshes it covers. */
+export const materials = [
+  { id: "concrete-walls", entry: concrete, parameters: { darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40 }, meshes: ["wall-tall", "wall-low"] },
+  { id: "concrete-slab", entry: concrete, parameters: { ground: true, darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40 }, meshes: ["slab"] },
+  { id: "tile", entry: "tiled-courtyard.material.ts", parameters: { tileSize: [0.15, 0.15], stagger: 0, wear: 0.3, glaze: [0.2, 0.42, 0.3], glazeRoughness: 0.12, missing: 0.1 }, meshes: ["tiles-wall", "tiles-floor"] },
+  { id: "galvanized", entry: steel, parameters: { substrate: [0.5, 0.55, 0.57], metalness: 0.85, roughness: 0.38, surfaceRust: 0.12, rainRust: 0.25 }, meshes: ["duct"] },
+  { id: "rusted-pipe", entry: steel, parameters: { substrate: [0.3, 0.15, 0.08], metalness: 0.45, roughness: 0.5, oxideLight: [0.36, 0.13, 0.035], surfaceRust: 0.8 }, meshes: ["pipes"] },
+  { id: "flat-steel", entry: steel, parameters: { rainRust: 0.5 }, meshes: ["brackets", "drain"] },
+  { id: "brass", entry: steel, parameters: { substrate: [0.6, 0.42, 0.16], metalness: 0.9, roughness: 0.35, surfaceRust: 0.3, rainRust: 0.3 }, meshes: ["valve"] },
+  { id: "red-paint", entry: steel, parameters: { ...plain, substrate: [0.5, 0.03, 0.025], metalness: 0.1, roughness: 0.4, surfaceRust: 0.4 }, meshes: ["handwheel"] },
+  { id: "chrome", entry: steel, parameters: { substrate: [0.75, 0.76, 0.78], metalness: 1, roughness: 0.12, surfaceRust: 0.15, rainRust: 0.2, edgeRust: 0.3 }, meshes: ["chrome"] },
+  { id: "enamel", entry: steel, parameters: { ...plain, substrate: [0.8, 0.77, 0.69], metalness: 0, roughness: 0.15, surfaceRust: 0.3, rainRust: 0.12, oxideLight: [0.5, 0.2, 0.05] }, meshes: ["sink"] },
+  { id: "openings", entry: steel, parameters: { ...plain, substrate: [0.012, 0.012, 0.012], metalness: 0, roughness: 1, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, meshes: ["openings"] },
+  { id: "bench-wood", entry: "wood.material.ts", parameters: {}, meshes: ["bench"] },
+];
+
+export function buildProject(resolution = 512, texelDensity = 128) {
+  const meshes = buildMeshes();
+  const glb = writeGlb(meshes);
+  const identity = name => {
+    const index = meshes.findIndex(mesh => mesh.name === name);
+    if (index < 0) throw new Error(`No mesh named ${name}.`);
+    return `washroom/node/${index}/mesh/${index}/primitive/0`;
+  };
+  const example = name => readFileSync(resolve(examples, name), "utf8");
+  const modules = Object.fromEntries(["kowloon-noise.material.ts", concrete, steel, "tiled-courtyard.material.ts"].map(name => [name, example(name)]));
+  for (const name of ["wood.material.ts"]) modules[name] = readFileSync(resolve(here, "materials", name), "utf8");
+  const assets = { "washroom.glb": glb };
+  for (const name of ["textures/concrete-plain.png", "textures/concrete-fine-sand.png"]) assets[name] = readFileSync(resolve(examples, name));
+  const project = {
+    schemaVersion: 2, kind: "material", entry: concrete, modules, parameters: {}, seed: 7, resolution,
+    ...(texelDensity ? { texelDensity } : {}), inspection: "final", mapping: "world", domain: [1, 1], edges: [], gravity: [0, 0, -1],
+    base: { kind: "swatch" }, target: { scope: "mesh", enabled: false },
+    models: [{ id: "washroom", kind: "glb", name: "washroom.glb" }],
+    materials: materials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(identity) })),
+    assets: Object.fromEntries(Object.entries(assets).map(([name, bytes]) => [name, Buffer.from(bytes).toString("base64")])),
+  };
+  return { glb, project };
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const { glb, project } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128));
+  mkdirSync(out, { recursive: true });
+  writeFileSync(resolve(out, "washroom.glb"), glb);
+  writeFileSync(resolve(out, "washroom.studio.json"), JSON.stringify(project, null, 2) + "\n");
+  console.log(`Wrote ${resolve(out, "washroom.studio.json")} (${project.materials.length} materials, ${glb.length} byte model).`);
+}

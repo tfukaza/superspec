@@ -20,6 +20,7 @@
     "test:material:browser": "node tests/material-program-browser.mjs",
     "test:recipe:browser": "node tests/material-ts-browser.mjs",
     "test:scene:browser": "node tests/material-scene-browser.mjs",
+    "test:washroom:browser": "node tests/material-washroom-browser.mjs",
     "test:world:browser": "node tests/authoring-world-browser.mjs"
   },
   "dependencies": {
