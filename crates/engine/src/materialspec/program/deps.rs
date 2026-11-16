@@ -25,6 +25,14 @@ impl SampleInputs {
     pub const FOOTPRINT: Self = Self(1 << 6);
     pub const UV_FOOTPRINT: Self = Self(1 << 7);
     pub const BOUNDS: Self = Self(1 << 8);
+    /// Render-only: the renderer's clock.
+    pub const TIME: Self = Self(1 << 9);
+    /// Render-only: the drawn instance's value and attributes.
+    pub const INSTANCE: Self = Self(1 << 10);
+    /// Render-only: the drawn vertex's attributes.
+    pub const VERTEX: Self = Self(1 << 11);
+    /// What only a renderer supplies, which no bake can read.
+    pub const RENDER_ONLY: Self = Self(Self::TIME.0 | Self::INSTANCE.0 | Self::VERTEX.0);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -47,6 +55,9 @@ impl SampleInputs {
             (Self::FOOTPRINT, "footprint"),
             (Self::UV_FOOTPRINT, "uv_footprint"),
             (Self::BOUNDS, "bounds"),
+            (Self::TIME, "time"),
+            (Self::INSTANCE, "instance"),
+            (Self::VERTEX, "vertex"),
         ]
         .into_iter()
         .filter(|(part, _)| self.contains(*part))
@@ -185,6 +196,8 @@ impl Walk<'_> {
                     Input::Footprint => S::FOOTPRINT,
                     Input::UvFootprint => S::UV_FOOTPRINT,
                     Input::BoundsMin | Input::BoundsMax => S::BOUNDS,
+                    Input::Time => S::TIME,
+                    Input::Instance | Input::InstanceW => S::INSTANCE,
                 };
             }
             Kind::Parameter(index) => {
@@ -241,6 +254,7 @@ impl Walk<'_> {
                     Builtin::SampleColor
                     | Builtin::SampleData
                     | Builtin::SampleAlpha
+                    | Builtin::AuthoredMask
                     | Builtin::VariedColor => {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
                             found.images.insert(name.to_string());
@@ -257,6 +271,12 @@ impl Walk<'_> {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
                             found.externals.insert(name.to_string());
                         }
+                    }
+                    Builtin::InstanceAttribute => {
+                        found.sample = found.sample.union(SampleInputs::INSTANCE);
+                    }
+                    Builtin::VertexAttribute => {
+                        found.sample = found.sample.union(SampleInputs::VERTEX);
                     }
                     _ => {}
                 }

@@ -62,7 +62,7 @@ pub fn inputs() -> &'static [Input] {
             summary,
         }
     }
-    static INPUTS: [Input; 10] = [
+    static INPUTS: [Input; 13] = [
         input(
             "uv",
             "uv",
@@ -123,6 +123,24 @@ pub fn inputs() -> &'static [Input] {
             Type::Vec3,
             "Maximum corner of the receiver's world-space bounding box in meters.",
         ),
+        input(
+            "time",
+            "time",
+            Type::Scalar,
+            "Render-only: seconds of the renderer's clock (uniform msTime). Only the shader reads it; a bake of a value that reads it fails, naming it.",
+        ),
+        input(
+            "instance",
+            "instance",
+            Type::Vec3,
+            "Render-only: the first three components of the drawn instance's value (varying msInstanceValue). Only the shader reads it; a bake of a value that reads it fails.",
+        ),
+        input(
+            "instanceW",
+            "instance_w",
+            Type::Scalar,
+            "Render-only: the fourth component of the drawn instance's value. Only the shader reads it.",
+        ),
     ];
     &INPUTS
 }
@@ -178,6 +196,14 @@ pub fn sdk_exports() -> Vec<String> {
         "LiveEffect",
         "MaterialOptions",
         "MaterialDefinition",
+        "defineDecal",
+        "DecalOptions",
+        "DecalDefinition",
+        "defineLayer",
+        "WeatheringOptions",
+        "WeatheringDefinition",
+        "BlendRule",
+        "below",
     ]
     .iter()
     .map(|name| (*name).to_owned())
@@ -782,6 +808,82 @@ fn build() -> Vec<Operation> {
             vec![overload(&[Scalar, Scalar], Scalar)],
         ),
         operation(
+            "alpha_cutout",
+            "output",
+            "The material's opacity as a cutout: coverage clamped to [0, 1], drawn where it reaches the \
+             cutoff and not at all elsewhere. Valid only as the whole opacity channel, with a constant \
+             cutoff in [0, 1]; the material is delivered with alpha mode MASK and that cutoff.",
+            "alphaCutout(sticker, 0.5)",
+            vec![overload(&[Scalar, Scalar], Scalar)],
+        ),
+        literal(
+            operation(
+                "authored_mask",
+                "image",
+                "An authored mask in [0, 1]: the red channel of a linear image, bilinear, over the unit \
+                 square of the coordinate (V up). The image does not repeat; outside the unit square the \
+                 mask is zero.",
+                "authoredMask(\"sticker-tear.png\", uv)",
+                vec![overload(&[Text, Vec2], Scalar)],
+            ),
+            &[],
+            true,
+        ),
+        {
+            let mut op = literal(
+                operation(
+                    "ramp",
+                    "color",
+                    "A color ramp: after the mode and the coordinate t come two to seven stops, each a \
+                     position and a color, with positions ascending. t is clamped to the stops. linear \
+                     interpolates between neighboring stops and constant holds the stop at or below t, both \
+                     on linear-light colors. The display modes are for painted materials: stops are \
+                     display-referred (sRGB-encoded, in [0, 1]) colors, interpolated as such, and the result \
+                     is decoded to linear light.",
+                    "ramp(\"linear\", t, 0, vec3(0.1), 0.5, rust, 1, vec3(0.9))",
+                    (2..=RAMP_STOPS)
+                        .map(|stops| {
+                            let mut args = vec![Text, Scalar];
+                            for _ in 0..stops {
+                                args.extend([Scalar, Vec3]);
+                            }
+                            overload(&args, Vec3)
+                        })
+                        .collect(),
+                ),
+                &[],
+                false,
+            );
+            op.literal_values = RAMP_MODES;
+            op
+        },
+        literal(
+            operation(
+                "instance_attribute",
+                "render",
+                "Render-only: a named attribute of the drawn instance (varying msInstance_<name>, such as \
+                 root, pivot, shadeNormal, random or variation), typed like the second argument. Only the \
+                 shader reads it; a bake of a value that reads it fails, naming it.",
+                "instanceAttribute(\"random\", 0)",
+                each(&NUMERIC, |a| overload(&[Text, a], a)),
+            ),
+            &["instance"],
+            false,
+        ),
+        literal(
+            operation(
+                "vertex_attribute",
+                "render",
+                "Render-only: a named attribute of the drawn vertex (varying msVertex_<name>, such as \
+                 heightRatio or bendWeight), typed like the second argument. Only the shader reads it; \
+                 a bake of a value that reads it fails, naming it.",
+                "vertexAttribute(\"heightRatio\", 0)",
+                each(&NUMERIC, |a| overload(&[Text, a], a)),
+            ),
+            &["vertex"],
+            false,
+        ),
+        operation(
             "adjust_normal",
             "receiver",
             "Turn a normal toward a target normal along the great circle; weight is clamped to [0, 1], \
@@ -799,6 +901,12 @@ pub const SELECTORS: &[&str] = &[
 
 /// Out-of-range behavior accepted by `remap`.
 pub const REMAP_MODES: &[&str] = &["clamp", "extrapolate"];
+
+/// Interpolation and color space accepted by `ramp`.
+pub const RAMP_MODES: &[&str] = &["linear", "constant", "display-linear", "display-constant"];
+
+/// Stops a `ramp` takes at most: with the mode and the coordinate, a call's sixteen arguments.
+pub const RAMP_STOPS: usize = 7;
 
 /// Every operation, in documentation order.
 pub fn operations() -> &'static [Operation] {

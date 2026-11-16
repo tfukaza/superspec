@@ -40,6 +40,12 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             live: Vec::new(),
             externals: Vec::new(),
             named_features: Vec::new(),
+            kind: RecipeKind::Material,
+            double_sided: false,
+            alpha_cutoff: None,
+            size: None,
+            blend: BTreeMap::new(),
+            reads: Vec::new(),
         },
         compiled: Default::default(),
     };
@@ -57,7 +63,27 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             &root,
         )]);
     }
-    if !program.outputs.contains_key("base_color") {
+    if program.metadata.kind == RecipeKind::Layer {
+        // A layer changes some channels of the surface beneath and leaves the others alone.
+        let foreign = program
+            .outputs
+            .iter()
+            .find(|(name, _)| !LAYER_CHANNELS.contains(&name.as_str()));
+        if let Some((name, expr)) = foreign {
+            return Err(vec![program.diagnostic(
+                "MS_OUTPUT",
+                format!("A layer changes {}, not {name}.", LAYER_CHANNELS.join(", ")),
+                &expr.mark,
+            )]);
+        }
+        if program.outputs.is_empty() {
+            return Err(vec![program.diagnostic(
+                "MS_OUTPUT",
+                "A layer must change at least one channel.",
+                &root,
+            )]);
+        }
+    } else if !program.outputs.contains_key("base_color") {
         return Err(vec![program.diagnostic(
             "MS_OUTPUT",
             "The entry module must declare base_color.",
@@ -194,6 +220,15 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
     for expr in program.outputs.values() {
         dependencies(&program, expr, &mut required, &mut helpers);
     }
+    program.metadata.alpha_cutoff = cutout(&program)?;
+    if program.metadata.kind == RecipeKind::Layer {
+        program.metadata.reads = externals
+            .iter()
+            .filter_map(|external| external.name.strip_prefix(BASE_PLANE))
+            .filter(|channel| LAYER_CHANNELS.contains(channel))
+            .map(str::to_owned)
+            .collect();
+    }
     program.metadata.parameters = parameters;
     program.metadata.fields = fields;
     program.metadata.outputs = program.outputs.keys().cloned().collect();
@@ -206,6 +241,83 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
         &program.outputs,
     ));
     Ok(program)
+}
+
+/// The cutoff of the program's cutout, if its opacity is one. `alpha_cutout` declares how the
+/// material is drawn, so it is valid only as the whole opacity channel (directly, or as the
+/// field the channel names) with a constant cutoff in [0, 1].
+fn cutout(program: &Program) -> Result<Option<f64>, Vec<ProgramDiagnostic>> {
+    fn calls<'e>(expr: &'e Expr, found: &mut Vec<&'e Expr>) {
+        match &expr.kind {
+            Expression::Unary(_, a) | Expression::Member(a, _) => calls(a, found),
+            Expression::Binary(_, a, b) => {
+                calls(a, found);
+                calls(b, found);
+            }
+            Expression::Call(name, args) => {
+                if name == "alpha_cutout" {
+                    found.push(expr);
+                }
+                for arg in args {
+                    calls(arg, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for definition in program.definitions.values() {
+        calls(definition.value(), &mut found);
+    }
+    for expr in program.outputs.values() {
+        calls(expr, &mut found);
+    }
+    let Some(first) = found.first() else {
+        return Ok(None);
+    };
+    // The opacity channel, through the fields that only name it.
+    let mut opacity = program.outputs.get("opacity");
+    for _ in 0..64 {
+        match opacity.map(|expr| &expr.kind) {
+            Some(Expression::Name(name)) => match program.definitions.get(name) {
+                Some(Definition::Field { value, .. }) => opacity = Some(value),
+                _ => break,
+            },
+            _ => break,
+        }
+    }
+    let misplaced = |expr: &Expr| {
+        vec![program.diagnostic(
+            "MS_OUTPUT",
+            "alpha_cutout declares how the material is drawn: it is valid only as the whole opacity channel.",
+            &expr.mark,
+        )]
+    };
+    let Some(opacity) = opacity else {
+        return Err(misplaced(first));
+    };
+    if let Some(other) = found.iter().find(|call| !std::ptr::eq(**call, opacity)) {
+        return Err(misplaced(other));
+    }
+    let Expression::Call(_, args) = &opacity.kind else {
+        return Err(misplaced(first));
+    };
+    let out_of_range = || {
+        vec![program.diagnostic(
+            "MS_OUTPUT",
+            "An alpha cutoff is a constant in [0, 1].",
+            &args.get(1).unwrap_or(opacity).mark,
+        )]
+    };
+    let Some(cutoff) = args.get(1).filter(|cutoff| constant(cutoff)) else {
+        return Err(out_of_range());
+    };
+    let cutoff = eval::constant(program, cutoff)
+        .map_err(|error| vec![error])?
+        .as_f64()
+        .filter(|cutoff| (0.0..=1.0).contains(cutoff))
+        .ok_or_else(out_of_range)?;
+    Ok(Some(cutoff))
 }
 
 pub(super) fn normalize(from: &str, path: &str) -> Option<String> {
@@ -315,6 +427,13 @@ fn load(
         ));
     }
     program.metadata.live.extend(parsed.live);
+    if module == program.sources.entry {
+        let traits = parsed.traits;
+        program.metadata.kind = traits.kind;
+        program.metadata.double_sided = traits.double_sided;
+        program.metadata.size = traits.size;
+        program.metadata.blend = traits.blend;
+    }
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -348,6 +467,9 @@ pub(super) fn variable(name: &str) -> Option<Type> {
         "uv" | "surface" => Some(Type::Vec2),
         "object" | "world" | "normal" | "gravity" | "bounds_min" | "bounds_max" => Some(Type::Vec3),
         "footprint" | "uv_footprint" => Some(Type::Scalar),
+        // Render-only: what a renderer supplies where the material is drawn.
+        "time" | "instance_w" => Some(Type::Scalar),
+        "instance" => Some(Type::Vec3),
         _ => None,
     }
 }
@@ -375,6 +497,9 @@ fn builtin(name: &str, args: &[Type]) -> Option<Type> {
 }
 /// External inputs one program reads at most.
 pub(super) const MAX_EXTERNALS: usize = 16;
+/// External inputs a layered slot's composite reads at most: its channels and the base's live
+/// inputs, which an author never writes.
+pub(super) const MAX_COMPOSITE_EXTERNALS: usize = 64;
 /// Feature names one program queries at most.
 pub(super) const MAX_NAMED_QUERIES: usize = 32;
 struct Checker<'a> {
@@ -411,11 +536,19 @@ impl Checker<'_> {
                 mark,
             )),
             Some(_) => Ok(()),
-            None if self.externals.len() >= MAX_EXTERNALS => Err(self.program.diagnostic(
-                "MS_LIMIT",
-                format!("A program reads at most {MAX_EXTERNALS} external inputs."),
-                mark,
-            )),
+            None if self.externals.len()
+                >= if self.program.metadata.entry == super::LAYERED_COMPOSITE {
+                    MAX_COMPOSITE_EXTERNALS
+                } else {
+                    MAX_EXTERNALS
+                } =>
+            {
+                Err(self.program.diagnostic(
+                    "MS_LIMIT",
+                    format!("A program reads at most {MAX_EXTERNALS} external inputs."),
+                    mark,
+                ))
+            }
             None => {
                 self.externals.insert(name.to_owned(), kind);
                 Ok(())
@@ -638,6 +771,23 @@ impl Checker<'_> {
                             ));
                         }
                         self.named_features.insert(feature.clone());
+                    }
+                    if let (
+                        "instance_attribute" | "vertex_attribute",
+                        Some(Expression::Text(attribute)),
+                    ) = (name.as_str(), args.first().map(|v| &v.kind))
+                    {
+                        let bytes = attribute.as_bytes();
+                        if bytes.len() > 64
+                            || !bytes[0].is_ascii_alphabetic()
+                            || !bytes.iter().all(|c| c.is_ascii_alphanumeric())
+                        {
+                            return Err(self.program.diagnostic(
+                                "MS_TYPE",
+                                "Attribute names are at most 64 letters and digits, starting with a letter.",
+                                &expr.mark,
+                            ));
+                        }
                     }
                     return Ok(result);
                 }

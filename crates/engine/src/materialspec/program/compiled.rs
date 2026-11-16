@@ -18,11 +18,24 @@ pub(super) enum Input {
     UvFootprint,
     BoundsMin,
     BoundsMax,
+    /// Render-only: seconds of the renderer's clock (`msTime`).
+    Time,
+    /// Render-only: the drawn instance's value (`msInstanceValue`), its first three components.
+    Instance,
+    /// Render-only: the fourth component of the instance's value.
+    InstanceW,
 }
 
 impl Input {
+    /// Whether only a renderer has the input: a bake cannot read it.
+    pub(super) fn render_only(self) -> bool {
+        matches!(self, Self::Time | Self::Instance | Self::InstanceW)
+    }
     fn named(name: &str) -> Option<Self> {
         Some(match name {
+            "time" => Self::Time,
+            "instance" => Self::Instance,
+            "instance_w" => Self::InstanceW,
             "uv" => Self::Uv,
             "surface" => Self::Surface,
             "object" => Self::Object,
@@ -159,6 +172,13 @@ pub(super) enum Builtin {
     SoftUnion,
     MaskIntersect,
     MaskSubtract,
+    AlphaCutout,
+    AuthoredMask,
+    Ramp,
+    /// Render-only: a named attribute of the drawn instance (`msInstance_<name>`).
+    InstanceAttribute,
+    /// Render-only: a named attribute of the drawn vertex (`msVertex_<name>`).
+    VertexAttribute,
     /// A name outside the catalog; the checker rejects these before evaluation.
     Unknown,
 }
@@ -217,6 +237,11 @@ impl Builtin {
             "soft_union" => Self::SoftUnion,
             "mask_intersect" => Self::MaskIntersect,
             "mask_subtract" => Self::MaskSubtract,
+            "alpha_cutout" => Self::AlphaCutout,
+            "authored_mask" => Self::AuthoredMask,
+            "ramp" => Self::Ramp,
+            "instance_attribute" => Self::InstanceAttribute,
+            "vertex_attribute" => Self::VertexAttribute,
             _ => Self::Unknown,
         }
     }

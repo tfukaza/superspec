@@ -1155,6 +1155,18 @@ fn resizing_an_anchored_wall_keeps_its_pattern_and_reuses_the_intrinsic_bake() {
             let (owner, s, t) = atlas.texel(chart, x, y);
             assert_eq!(owner, triangle, "the texel at {x}, {y}");
             let sample = atlas.sample(owner, s, t).unwrap();
+            // The UV footprint is how far the mesh UVs move over one texel of the face.
+            let [ds, dt] = atlas.steps(owner);
+            let moved = |other: program::Sample| {
+                ((other.uv[0] - sample.uv[0]).powi(2) + (other.uv[1] - sample.uv[1]).powi(2)).sqrt()
+            };
+            let expected = moved(atlas.sample(owner, s + ds, t).unwrap())
+                .max(moved(atlas.sample(owner, s, t + dt).unwrap()));
+            let footprint = sample.uv_footprint.unwrap();
+            assert!(
+                (footprint - expected).abs() <= 1e-9 * expected.max(1.),
+                "triangle {triangle}: {footprint} for {expected}"
+            );
             for axis in 0..3 {
                 assert!(
                     (sample.world[axis] - middle(axis)).abs() <= 1. / 64.,

@@ -143,6 +143,30 @@ pub struct Request {
     /// receiver without one is anchored at the world's origin along the world's axes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub anchors: BTreeMap<String, Anchor>,
+    /// Weathering layers composed over this request's material, the lowest first (see
+    /// [`Layer`]). With layers, the request's own entry, parameters and seed are the base.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<Layer>,
+}
+
+/// A weathering layer of a slot: a `defineLayer` recipe of the request's modules with its own
+/// parameters and seed, composed over the base and the layers beneath it.
+///
+/// Each layer is baked as planes of the channels it changes, reading the surface beneath through
+/// the planes of whichever material below last changed each channel; the channels it leaves
+/// pass through by reference. So the base is baked once whatever stack it is under, and adding,
+/// removing or editing a layer bakes only that layer and the ones above it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Layer {
+    pub entry: String,
+    pub parameters: BTreeMap<String, serde_json::Value>,
+    pub seed: u32,
+    /// The receiver feature each named feature the layer measures to follows, by the layer's
+    /// own name for it: `{ "follow": "sill" }` makes `featureDistance("follow", ...)` measure to
+    /// the receiver's `sill`. Names left out are the receiver's own.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub follow: BTreeMap<String, String>,
 }
 
 /// An item's features (`itemspec::definition::output::Feature`: joint, end, bracket-contact,
@@ -217,6 +241,7 @@ impl Default for Request {
             materials: BTreeMap::new(),
             features: BTreeMap::new(),
             anchors: BTreeMap::new(),
+            layers: Vec::new(),
         }
     }
 }

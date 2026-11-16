@@ -136,6 +136,100 @@ pub struct Metadata {
     /// `feature_tangent`), ascending.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_features: Vec<String>,
+    /// What the recipe is: a material, a decal's appearance or a weathering layer.
+    #[serde(skip_serializing_if = "RecipeKind::is_material")]
+    pub kind: RecipeKind,
+    /// Whether the surface is drawn from both sides.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub double_sided: bool,
+    /// The cutoff of a cutout (`alpha_cutout` as the opacity): the material is delivered with
+    /// alpha mode MASK, drawn where its opacity reaches this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha_cutoff: Option<f64>,
+    /// A decal's width and height in meters. Its `uv` spans the rectangle and its `surface`
+    /// coordinates are meters from the rectangle's lower left corner.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<[f64; 2]>,
+    /// For a decal or a layer, how each channel it outputs combines with the surface beneath,
+    /// by output name. A layer's outputs already hold the combined value (it reads the surface
+    /// beneath through `external("base.<channel>", ...)`); a decal's hold its own value, and
+    /// whoever places it combines them.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub blend: BTreeMap<String, Blend>,
+    /// For a layer, the channels of the surface beneath that it reads, by output name.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reads: Vec<String>,
+}
+
+/// See [`Metadata::kind`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecipeKind {
+    #[default]
+    Material,
+    /// A bounded image sized in meters, baked without a receiver and placed by its owner.
+    Decal,
+    /// A contribution over a whole surface, composed over a base material and the layers
+    /// beneath it.
+    Layer,
+}
+impl RecipeKind {
+    fn is_material(&self) -> bool {
+        *self == Self::Material
+    }
+}
+
+/// How a channel of a decal or layer combines with the value beneath it, by coverage:
+/// `mix(beneath, combined, coverage)`, where `combined` is the channel's value (`mix`), the sum
+/// (`add`), the product (`multiply`) or the larger or smaller of the two (`max`, `min`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Blend {
+    Mix,
+    Add,
+    Multiply,
+    Max,
+    Min,
+}
+impl Blend {
+    pub const NAMES: [&'static str; 5] = ["mix", "add", "multiply", "max", "min"];
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "mix" => Self::Mix,
+            "add" => Self::Add,
+            "multiply" => Self::Multiply,
+            "max" => Self::Max,
+            "min" => Self::Min,
+            _ => return None,
+        })
+    }
+}
+
+/// The prefix of the external inputs a layer reads the surface beneath through:
+/// `base.base_color`, `base.roughness`, `base.metalness`, `base.height`, `base.opacity`,
+/// `base.normal_offset`.
+pub const BASE_PLANE: &str = "base.";
+/// The entry of a layered slot's composite program, which the authoring session writes: it reads
+/// every channel of its stack and its base's live inputs as planes.
+pub const LAYERED_COMPOSITE: &str = "superspec-layered-stack.ms";
+/// The channels a layer may read and change. `normal_offset` lets a layer that follows the
+/// receiver's creases round them over, as a base material may.
+pub const LAYER_CHANNELS: [&str; 6] = [
+    "base_color",
+    "roughness",
+    "metalness",
+    "height",
+    "opacity",
+    "normal_offset",
+];
+
+/// What a recipe's entry declares about itself beside its outputs.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Traits {
+    pub kind: RecipeKind,
+    pub double_sided: bool,
+    pub size: Option<[f64; 2]>,
+    pub blend: BTreeMap<String, Blend>,
 }
 
 /// A named per-texel input a host may supply; see [`Metadata::externals`].
@@ -718,6 +812,28 @@ pub fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnostic>> {
 impl Program {
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+    /// This program with the live operations `live`, whose inputs name its own fields: how a
+    /// layered slot's composite carries its base's live operations, reading the base's fields
+    /// through planes. Fields a live input names that the program lacks are refused.
+    pub(crate) fn with_live(&self, live: Vec<LiveOperation>) -> Result<Self, String> {
+        for operation in &live {
+            for field in operation.inputs.values() {
+                if !self
+                    .metadata
+                    .fields
+                    .iter()
+                    .any(|known| known.name == *field)
+                {
+                    return Err(format!(
+                        "Live input field '{field}' is not a field of the program."
+                    ));
+                }
+            }
+        }
+        let mut program = self.clone();
+        program.metadata.live = live;
+        Ok(program)
     }
     pub fn source_modules(&self) -> impl Iterator<Item = (&str, &str)> {
         std::iter::once(self.metadata.entry.as_str())

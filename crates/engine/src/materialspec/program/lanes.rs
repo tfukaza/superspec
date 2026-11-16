@@ -210,6 +210,10 @@ impl<'a, 'b> Lanes<'a, 'b> {
             }
             Kind::Input(input) => {
                 use super::compiled::Input as I;
+                // A render-only input fails each sample alone, with the error that order gives.
+                if input.render_only() {
+                    return Err(Declined);
+                }
                 let out = self.alloc();
                 let mut buf = self.bufs[out].take().expect("a free buffer");
                 for lane in active(mask) {
@@ -225,6 +229,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                         I::BoundsMax => Value::vector(&sample.bounds_max, 0.),
                         I::Footprint => Value::scalar(sample.footprint),
                         I::UvFootprint => Value::scalar(sample.uv_footprint.unwrap_or(0.)),
+                        I::Time | I::Instance | I::InstanceW => unreachable!("declined above"),
                     };
                     buf[lane] = value;
                 }
@@ -484,14 +489,19 @@ impl<'a, 'b> Lanes<'a, 'b> {
         node: &'a Node,
         mask: u64,
     ) -> Lane<Res<'a>> {
-        if args.len() > 8 || name == Builtin::Unknown {
+        if args.len() > 16
+            || matches!(
+                name,
+                Builtin::Unknown | Builtin::InstanceAttribute | Builtin::VertexAttribute
+            )
+        {
             return Err(Declined);
         }
         // Only `external` reads a plane; it has its own path, so no other operation pays for one.
         if name == Builtin::External {
             return self.external(args, mask);
         }
-        let mut operands = [Res::one(Value::EMPTY); 8];
+        let mut operands = [Res::one(Value::EMPTY); 16];
         for (slot, arg) in operands.iter_mut().zip(args) {
             *slot = self.eval(arg, mask)?;
         }
@@ -500,7 +510,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
         let uniform = !reads_sample(name) && operands.iter().all(|r| matches!(r.src, Src::One(_)));
         const AMPLE: usize = usize::MAX / 2;
         let mut remaining = AMPLE;
-        let mut gathered = [Value::EMPTY; 8];
+        let mut gathered = [Value::EMPTY; 16];
         let (program, compiled, inputs) = (self.program, self.compiled, self.inputs);
         let (features, index, parameters, samples) =
             (self.features, self.index, self.parameters, self.samples);

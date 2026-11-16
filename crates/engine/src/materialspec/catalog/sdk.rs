@@ -71,6 +71,7 @@ fn input_space(ts_name: &str) -> &'static str {
         "surface" => "surface",
         "object" => "object",
         "normal" | "gravity" => "direction",
+        "instance" => "none",
         _ => "world",
     }
 }
@@ -398,11 +399,64 @@ pub fn declarations() -> String {
          \x20 /** Direct expressions that replace a channel's final value. */\n\
          \x20 readonly channels?: Partial<Omit<BaseChannels, \"baseColor\">> & { readonly baseColor?: Vec3 };\n\
          \x20 readonly live?: readonly LiveEffect[];\n\
+         \x20 /** Draw the surface from both sides. */\n\
+         \x20 readonly doubleSided?: boolean;\n\
          }\n\
          export interface MaterialDefinition {\n\
          \x20 readonly [kind]: \"material\";\n\
          }\n\
-         export declare function defineMaterial(options: MaterialOptions): MaterialDefinition;\n",
+         export declare function defineMaterial(options: MaterialOptions): MaterialDefinition;\n\
+         \n// Decal appearance and weathering layers.\n\
+         /** How a channel combines with the value beneath it, by coverage: mix(beneath, combined, coverage), where combined is the channel's value (mix), the sum (add), the product (multiply) or the larger or smaller of the two (max, min). */\n\
+         export type BlendRule = \"mix\" | \"add\" | \"multiply\" | \"max\" | \"min\";\n\
+         export interface DecalOptions {\n\
+         \x20 readonly name?: string;\n\
+         \x20 /** Width and height in meters, numeric literals. `uv` spans the rectangle; `surface` is meters from its lower left corner. */\n\
+         \x20 readonly size: readonly [number, number];\n\
+         \x20 readonly baseColor: Vec3;\n\
+         \x20 /** Coverage of the decal; alphaCutout(...) makes it a cutout. */\n\
+         \x20 readonly opacity?: ScalarInput;\n\
+         \x20 readonly roughness?: ScalarInput;\n\
+         \x20 readonly metalness?: ScalarInput;\n\
+         \x20 readonly height?: ScalarInput;\n\
+         \x20 readonly emissive?: Vec3;\n\
+         \x20 /** How each channel given combines with the surface beneath, by opacity; mix where omitted. */\n\
+         \x20 readonly blend?: { readonly baseColor?: BlendRule; readonly roughness?: BlendRule; readonly metalness?: BlendRule; readonly height?: BlendRule; readonly emissive?: BlendRule };\n\
+         \x20 readonly doubleSided?: boolean;\n\
+         }\n\
+         export interface DecalDefinition {\n\
+         \x20 readonly [kind]: \"decal\";\n\
+         }\n\
+         /** A bounded appearance sized in meters, baked without a receiver; its owner places it. */\n\
+         export declare function defineDecal(options: DecalOptions): DecalDefinition;\n\
+         /** The surface beneath a weathering layer: the base material with the layers under this one. */\n\
+         export declare const below: {\n\
+         \x20 readonly baseColor: Vec3<\"none\">;\n\
+         \x20 readonly roughness: Scalar;\n\
+         \x20 readonly metalness: Scalar;\n\
+         \x20 readonly height: Scalar;\n\
+         \x20 readonly opacity: Scalar;\n\
+         \x20 readonly normalOffset: Vec3<\"direction\">;\n\
+         };\n\
+         export interface WeatheringOptions {\n\
+         \x20 readonly name?: string;\n\
+         \x20 /** Where the layer lies, clamped to [0, 1]. */\n\
+         \x20 readonly coverage: ScalarInput;\n\
+         \x20 readonly baseColor?: Vec3;\n\
+         \x20 readonly roughness?: ScalarInput;\n\
+         \x20 readonly metalness?: ScalarInput;\n\
+         \x20 readonly height?: ScalarInput;\n\
+         \x20 readonly opacity?: ScalarInput;\n\
+         \x20 /** A world-space vector added to the shaded normal after the relief, as a material's normalOffset. */\n\
+         \x20 readonly normalOffset?: Vec3;\n\
+         \x20 /** How each channel given combines with the surface beneath, by coverage; mix where omitted. */\n\
+         \x20 readonly blend?: { readonly baseColor?: BlendRule; readonly roughness?: BlendRule; readonly metalness?: BlendRule; readonly height?: BlendRule; readonly opacity?: BlendRule; readonly normalOffset?: BlendRule };\n\
+         }\n\
+         export interface WeatheringDefinition {\n\
+         \x20 readonly [kind]: \"weathering\";\n\
+         }\n\
+         /** A weathering layer over a whole surface. It changes the channels it gives and passes the others through; it reads the surface beneath through `below` and follows geometry through named features and external inputs, never the receiver's bounds. */\n\
+         export declare function defineLayer(options: WeatheringOptions): WeatheringDefinition;\n",
     );
     out
 }

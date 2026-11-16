@@ -92,6 +92,15 @@ pub(super) fn pow(x: f64, y: f64) -> f64 {
     exp(y * ln(x))
 }
 
+/// Linear light of an sRGB-encoded value in [0, 1] (IEC 61966-2-1).
+pub(super) fn srgb_to_linear(encoded: f64) -> f64 {
+    if encoded <= 0.04045 {
+        encoded / 12.92
+    } else {
+        pow((encoded + 0.055) / 1.055, 2.4)
+    }
+}
+
 /// Base-2 logarithm of a positive argument.
 pub(super) fn log2(x: f64) -> f64 {
     ln(x) / LN2

@@ -80,6 +80,23 @@ pub struct Shader {
     /// What each output and each live argument reads, so a host that keeps one texture per
     /// output redraws only those an edit can change.
     pub reads: ShaderReads,
+    /// Render-only inputs the source reads, which only a renderer has (`time`, `instance`,
+    /// instance and vertex attributes): the uniform `msTime` it declares (`ms_time`), and the
+    /// varyings the host must declare and set, `msInstanceValue` (`ms_instance`, a vec4),
+    /// `msInstance_<name>` and `msVertex_<name>`. Never baked: a bake of a value that reads one
+    /// fails, naming it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub render_inputs: Vec<RenderInput>,
+}
+
+/// See [`Shader::render_inputs`].
+#[derive(Clone, Debug, Serialize)]
+pub struct RenderInput {
+    pub symbol: String,
+    /// `uniform`, `instance` (one value per drawn instance) or `vertex`.
+    pub kind: &'static str,
+    /// The GLSL type: `float`, `vec2`, `vec3` or `vec4`.
+    pub glsl: &'static str,
 }
 
 /// What the outputs and live arguments of a [`Shader`] read.
@@ -375,6 +392,11 @@ struct Emitter<'a> {
     seeds: Vec<String>,
     images: Vec<(String, bool)>,
     features: bool,
+    /// Stop counts of the ramps emitted (each has a helper), and whether one is display-referred.
+    ramps: std::collections::BTreeSet<usize>,
+    display_ramp: bool,
+    /// Render-only inputs read: GLSL symbol, kind (`uniform`, `instance`, `vertex`) and type.
+    render: std::collections::BTreeSet<(String, &'static str, &'static str)>,
     field_state: Vec<u8>,
     field_order: Vec<usize>,
     function_order: Vec<usize>,
@@ -694,7 +716,9 @@ impl<'a> Emitter<'a> {
             Kind::Text(_) => Type::String,
             Kind::Input(input) => match input {
                 Input::Uv | Input::Surface => Type::Vec2,
-                Input::Footprint | Input::UvFootprint => Type::Scalar,
+                Input::Footprint | Input::UvFootprint | Input::Time | Input::InstanceW => {
+                    Type::Scalar
+                }
                 _ => Type::Vec3,
             },
             Kind::Parameter(index) => self.program.metadata.parameters[*index].kind,
@@ -728,10 +752,11 @@ impl<'a> Emitter<'a> {
                     | B::TriplanarWeights
                     | B::VariedColor
                     | B::SampleColor
+                    | B::Ramp
                     | B::SampleData => Type::Vec3,
                     B::Mix | B::Min | B::Max | B::Step => wider(of(0), of(1)),
                     B::Smoothstep => wider(wider(of(0), of(1)), of(2)),
-                    B::Remap | B::External => of(1),
+                    B::Remap | B::External | B::InstanceAttribute | B::VertexAttribute => of(1),
                     B::Clamp
                     | B::Abs
                     | B::Floor
@@ -920,6 +945,19 @@ impl<'a> Emitter<'a> {
                 Input::UvFootprint => "ms_uv_footprint",
                 Input::BoundsMin => "ms_bounds_min",
                 Input::BoundsMax => "ms_bounds_max",
+                Input::Time => {
+                    self.render.insert(("msTime".into(), "uniform", "float"));
+                    "ms_time"
+                }
+                Input::Instance | Input::InstanceW => {
+                    self.render
+                        .insert(("msInstanceValue".into(), "instance", "vec4"));
+                    if *input == Input::Instance {
+                        "ms_instance.xyz"
+                    } else {
+                        "ms_instance.w"
+                    }
+                }
             }
             .into(),
             Kind::Parameter(index) => format!("ms_p{index}"),
@@ -1174,6 +1212,45 @@ impl<'a> Emitter<'a> {
             B::SoftUnion => format!("ms_mask(0, {}, {})", a[0], a[1]),
             B::MaskIntersect => format!("ms_mask(1, {}, {})", a[0], a[1]),
             B::MaskSubtract => format!("ms_mask(2, {}, {})", a[0], a[1]),
+            // The host draws the cutout: it tests this coverage against the declared cutoff.
+            B::AlphaCutout => format!("clamp({}, 0.0, 1.0)", a[0]),
+            // Render-only attributes are varyings the renderer declares and sets.
+            B::InstanceAttribute | B::VertexAttribute => {
+                let (prefix, kind) = if name == B::InstanceAttribute {
+                    ("msInstance_", "instance")
+                } else {
+                    ("msVertex_", "vertex")
+                };
+                let symbol = format!("{prefix}{}", Self::text(&args[0]));
+                let glsl = match result {
+                    Type::Vec2 => "vec2",
+                    Type::Vec3 => "vec3",
+                    _ => "float",
+                };
+                self.render.insert((symbol.clone(), kind, glsl));
+                symbol
+            }
+            B::AuthoredMask => format!(
+                "ms_authored_mask({}, {})",
+                self.image_uniform(Self::text(&args[0]), true),
+                a[1]
+            ),
+            B::Ramp => {
+                let mode = Self::text(&args[0]);
+                let stops = (args.len() - 2) / 2;
+                self.ramps.insert(stops);
+                let ramp = format!(
+                    "ms_ramp{stops}({}, {})",
+                    a[1..].join(", "),
+                    mode.ends_with("constant")
+                );
+                if mode.starts_with("display") {
+                    self.display_ramp = true;
+                    format!("ms_srgb_to_linear({ramp})")
+                } else {
+                    ramp
+                }
+            }
             B::Unknown => "0.0".into(),
         }
     }
@@ -1192,6 +1269,53 @@ float ms_mask(int mode, float x, float y) {
   return mode == 0 ? 1.0 - (1.0 - x) * (1.0 - y) : mode == 1 ? x * y : x * (1.0 - y);
 }
 ";
+
+/// `authored_mask`: the red channel over the unit square, edge texels continuing to its edge,
+/// zero outside, whatever wrapping the host gave the texture.
+const AUTHORED_MASK: &str = "float ms_authored_mask(sampler2D image, vec2 uv) {
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return 0.0;
+  vec2 half_texel = 0.5 / vec2(textureSize(image, 0));
+  return texture(image, clamp(uv, half_texel, 1.0 - half_texel)).r;
+}
+";
+
+/// Whether any node of the program is an `authored_mask`.
+fn source_reads_mask(compiled: &super::compiled::Compiled) -> bool {
+    fn within(node: &Node) -> bool {
+        match &node.kind {
+            Kind::Builtin(Builtin::AuthoredMask, _) => true,
+            Kind::Unary(_, a) | Kind::Member(a, _) => within(a),
+            Kind::Binary(_, a, b) => within(a) || within(b),
+            Kind::Select(a, b, c) => within(a) || within(b) || within(c),
+            Kind::Function(_, args) | Kind::Builtin(_, args) => args.iter().any(within),
+            _ => false,
+        }
+    }
+    compiled.fields.iter().any(within)
+        || compiled
+            .functions
+            .iter()
+            .any(|function| within(&function.body))
+        || compiled.outputs.iter().any(|(_, node)| within(node))
+}
+
+/// The helper of a ramp of `stops` stops: each stop after the first takes over from the color
+/// so far, at once (`hold`) or across the stretch from the stop before it.
+fn ramp_helper(stops: usize) -> String {
+    let mut text = format!("vec3 ms_ramp{stops}(float t");
+    for stop in 0..stops {
+        text.push_str(&format!(", float p{stop}, vec3 c{stop}"));
+    }
+    text.push_str(", bool hold) {\n  vec3 c = c0;\n");
+    for stop in 1..stops {
+        let before = stop - 1;
+        text.push_str(&format!(
+            "  c = mix(c, c{stop}, hold ? step(p{stop}, t) : clamp((t - p{before}) / max(p{stop} - p{before}, 1e-30), 0.0, 1.0));\n"
+        ));
+    }
+    text.push_str("  return c;\n}\n");
+    text
+}
 
 /// The program as one shader: `runoff` reads no edges (it is zero), as a preview approximates it.
 pub(super) fn shader(program: &Program) -> Result<Shader, String> {
@@ -1279,6 +1403,9 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
         seeds: Vec::new(),
         images: Vec::new(),
         features: false,
+        ramps: Default::default(),
+        display_ramp: false,
+        render: Default::default(),
         field_state: vec![0; compiled.fields.len()],
         field_order: Vec::new(),
         function_order: Vec::new(),
@@ -1585,6 +1712,25 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
     }
     source.push_str(RUNTIME);
     source.push_str(HELPERS);
+    if source_reads_mask(compiled) {
+        source.push_str(AUTHORED_MASK);
+    }
+    // Render-only inputs: the renderer binds `msTime` and declares and sets the varyings.
+    for (symbol, _, _) in &emitter.render {
+        match symbol.as_str() {
+            "msTime" => source.push_str("uniform float msTime;\n#define ms_time msTime\n"),
+            "msInstanceValue" => source.push_str("#define ms_instance msInstanceValue\n"),
+            _ => {}
+        }
+    }
+    for stops in &emitter.ramps {
+        source.push_str(&ramp_helper(*stops));
+    }
+    if emitter.display_ramp {
+        source.push_str(
+            "vec3 ms_srgb_to_linear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n",
+        );
+    }
     source.push_str(
         "vec3 ms_base_color; float ms_roughness; float ms_metalness; float ms_height;\n\
          vec3 ms_emissive; float ms_opacity; vec3 ms_receiver_normal; vec3 ms_normal_offset;\n",
@@ -1756,6 +1902,15 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             samplers,
             entries,
             reads,
+            render_inputs: emitter
+                .render
+                .iter()
+                .map(|(symbol, kind, glsl)| RenderInput {
+                    symbol: symbol.clone(),
+                    kind,
+                    glsl,
+                })
+                .collect(),
         },
         functions,
     ))

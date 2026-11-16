@@ -952,7 +952,29 @@ impl Atlas {
             let end = index as usize * 2;
             ((data[end] - data[start]).powi(2) + (data[end + 1] - data[start + 1]).powi(2)).sqrt()
         };
-        let uv_footprint = Some((uv_edge(indices[1]) / along).max(uv_edge(indices[2]) / across));
+        let uv_footprint = match self.framed[triangle] {
+            // A framed chart's texels step along its rectangle's edges, not the triangle's legs:
+            // how far the mesh UVs move over one texel along each edge.
+            Some([_, edge_x, edge_y]) => {
+                let (first, second) = (sub(b, a), sub(c, a));
+                let (ff, fs, ss) = (dot(first, first), dot(first, second), dot(second, second));
+                let determinant = ff * ss - fs * fs;
+                let data = &self.receiver.uvs;
+                let uv_of = |index: u32, axis: usize| data[index as usize * 2 + axis];
+                let moved = |edge: [f64; 3], texels: f64| {
+                    let (pf, ps) = (dot(edge, first), dot(edge, second));
+                    let p = (pf * ss - ps * fs) / determinant;
+                    let q = (ps * ff - pf * fs) / determinant;
+                    let delta = |axis: usize| {
+                        p * (uv_of(indices[1], axis) - uv_of(indices[0], axis))
+                            + q * (uv_of(indices[2], axis) - uv_of(indices[0], axis))
+                    };
+                    (delta(0).powi(2) + delta(1).powi(2)).sqrt() / texels
+                };
+                Some(moved(edge_x, along).max(moved(edge_y, across)))
+            }
+            None => Some((uv_edge(indices[1]) / along).max(uv_edge(indices[2]) / across)),
+        };
         // On the lattice the pattern is sampled at the lattice point itself and at the lattice
         // step: the same bits on every receiver and at every size, whatever rounding the way
         // from texel to position took. The other inputs keep the texel's own position.

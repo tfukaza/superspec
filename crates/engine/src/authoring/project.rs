@@ -90,6 +90,10 @@ pub struct MaterialAssignment {
     pub seed: u32,
     /// Visible mesh identities of the composed scene; disjoint from every other assignment.
     pub meshes: Vec<String>,
+    /// Weathering layers over this material, the lowest first (`Request::layers`): each with
+    /// its parameters and the feature it follows.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<super::Layer>,
 }
 
 /// Portable authored inputs. Encoded companion bytes are decoded and supplied by the host adapter.
@@ -715,7 +719,89 @@ pub(super) fn material_request(
         },
         planes,
         features,
+        layers: assignment.layers.clone(),
         ..Default::default()
+    }
+}
+
+impl Session {
+    /// A layered slot's layers for a renderer that composes them itself (the GPU preview's pass
+    /// graph), lowest first: each layer's program as a shader plan in which every
+    /// `base.<channel>` input is a CPU field (`below.<channel>`) the renderer binds to the
+    /// texture of that channel beneath, with the seed values, the features it follows and the
+    /// material each of those inputs reads (`stack.base`, `stack.1`, ...). Also the material
+    /// each channel of the result comes from.
+    fn layer_shaders(
+        &mut self,
+        project: &Project,
+        assignment: &MaterialAssignment,
+        base: &crate::materialspec::program::Program,
+    ) -> Result<(serde_json::Value, serde_json::Value), Vec<Diagnostic>> {
+        use crate::materialspec::program::{self as program, seed_value};
+        let fail = |message: String| vec![Diagnostic::message(&assignment.entry, message)];
+        let mut latest: BTreeMap<String, String> = base
+            .metadata()
+            .outputs
+            .iter()
+            .map(|output| (output.clone(), "stack.base".to_owned()))
+            .collect();
+        let mut layers = Vec::with_capacity(assignment.layers.len());
+        for (k, layer) in assignment.layers.iter().enumerate() {
+            let source = project.modules.get(&layer.entry).ok_or_else(|| {
+                fail(format!(
+                    "Material {} uses missing module {}.",
+                    assignment.id, layer.entry
+                ))
+            })?;
+            let program = self.program(&Request {
+                kind: "material".into(),
+                entry: layer.entry.clone(),
+                source: source.clone(),
+                modules: project.modules.clone(),
+                ..Default::default()
+            })?;
+            let shader = program.shader().map_err(&fail)?;
+            let seeds = |names: Vec<&str>| -> Vec<u32> {
+                names
+                    .into_iter()
+                    .map(|name| seed_value(layer.seed, name))
+                    .collect()
+            };
+            let reads: BTreeMap<&str, &String> = program
+                .metadata()
+                .externals
+                .iter()
+                .filter_map(|external| {
+                    let channel = external.name.strip_prefix(program::BASE_PLANE)?;
+                    Some((external.name.as_str(), latest.get(channel)?))
+                })
+                .collect();
+            let mut entry = serde_json::json!({
+                "id": format!("stack.{}", k + 1),
+                "entry": layer.entry,
+                "parameters": layer.parameters,
+                "follow": layer.follow,
+                "reads": reads,
+                "metadata": program.metadata(),
+                "seedValues": seeds(shader.seeds.iter().map(|seed| seed.name.as_str()).collect()),
+            });
+            match program.shader_plan() {
+                Ok(plan) => {
+                    let values = seeds(plan.seeds.iter().map(|seed| seed.name.as_str()).collect());
+                    entry["plan"] = serde_json::json!({ "seedValues": values, "shader": plan });
+                }
+                Err(reason) => entry["planError"] = serde_json::json!(reason),
+            }
+            entry["shader"] = serde_json::to_value(&shader).unwrap();
+            layers.push(entry);
+            for output in &program.metadata().outputs {
+                latest.insert(output.clone(), format!("stack.{}", k + 1));
+            }
+        }
+        Ok((
+            serde_json::Value::Array(layers),
+            serde_json::to_value(latest).unwrap(),
+        ))
     }
 }
 
@@ -788,13 +874,14 @@ impl Session {
                 .map(|seed| crate::materialspec::program::seed_value(assignment.seed, &seed.name))
                 .collect();
             let wants_features = shader.features;
-            // A program with CPU-only operations (runoff) also gets a plan: a shader that reads the
-            // CPU-baked fields as textures, with its own seeds (it holds less of the program).
+            // A program with CPU-only operations (runoff) or external planes also gets a plan: a
+            // shader that reads the CPU-baked fields as textures, with its own seeds (it holds
+            // less of the program).
             if program
                 .metadata()
                 .required_inputs
                 .iter()
-                .any(|input| input == "edges")
+                .any(|input| input == "edges" || input.starts_with("plane:"))
             {
                 match program.shader_plan() {
                     Ok(plan) if !plan.cpu_fields.is_empty() => {
@@ -816,6 +903,11 @@ impl Session {
                 }
             }
             metadata["shader"] = serde_json::to_value(shader).unwrap();
+            if !assignment.layers.is_empty() {
+                let (layers, channels) = self.layer_shaders(project, assignment, &program)?;
+                metadata["layers"] = layers;
+                metadata["channels"] = channels;
+            }
             materials.insert(assignment.id.clone(), metadata);
             let ids: BTreeSet<String> = assignment.meshes.iter().cloned().collect();
             if let Some(missing) = ids.iter().find(|id| !visible.contains(id.as_str())) {

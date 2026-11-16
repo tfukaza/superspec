@@ -142,6 +142,11 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
             "external",
             "feature_distance",
             "feature_tangent",
+            "alpha_cutout",
+            "authored_mask",
+            "ramp",
+            "instance_attribute",
+            "vertex_attribute",
         ])
     );
     for name in ORIGINAL_BUILTINS {
@@ -163,8 +168,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
 #[test]
 fn catalog_lists_the_documented_builtins_once() {
     let names: Vec<_> = operations().iter().map(|operation| operation.id).collect();
-    assert_eq!(names.len(), 52);
-    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 52);
+    assert_eq!(names.len(), 57);
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 57);
     for operation in operations() {
         assert_eq!(operation.version, 1, "{}", operation.id);
         assert!(!operation.overloads.is_empty(), "{}", operation.id);
@@ -277,9 +282,16 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "varied_color",
             "external",
             "feature_distance",
-            "feature_tangent"
+            "feature_tangent",
+            "authored_mask",
+            "ramp",
+            "instance_attribute",
+            "vertex_attribute",
         ])
     );
+    assert_eq!(find("ramp").unwrap().literal_values, RAMP_MODES);
+    assert_eq!(find("instance_attribute").unwrap().requires, ["instance"]);
+    assert_eq!(find("vertex_attribute").unwrap().requires, ["vertex"]);
     assert_eq!(find("external").unwrap().requires, ["planes"]);
     for (kind, fallback) in [(Scalar, Scalar), (Vec2, Vec2), (Vec3, Vec3)] {
         assert_eq!(resolve("external", &[Text, fallback]), Some(kind));
@@ -302,7 +314,8 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "sample_color",
             "sample_data",
             "sample_alpha",
-            "varied_color"
+            "varied_color",
+            "authored_mask"
         ])
     );
     // Operations that read sample inputs declare them, so ports.json is a complete contract.
@@ -405,6 +418,8 @@ fn argument(operation: &str, kind: Type, position: usize) -> String {
         Bool => "true".into(),
         Text if operation.starts_with("crease_") => "\"exposed\"".into(),
         Text if operation == "remap" => "\"clamp\"".into(),
+        Text if operation == "ramp" => "\"linear\"".into(),
+        Text if operation.ends_with("_attribute") => "\"root\"".into(),
         Text => "\"img\"".into(),
     }
 }
@@ -423,7 +438,8 @@ fn scalar_of(expression: String, result: Type) -> String {
 fn every_catalog_overload_compiles_and_evaluates() {
     use crate::materialspec::program::{self, Image, Inputs, Sample, Sources};
     let mut probes = Vec::new();
-    for operation in operations() {
+    // A cutout is only ever the whole opacity channel (see tests/material_cutout.rs).
+    for operation in operations().iter().filter(|op| op.id != "alpha_cutout") {
         for overload in &operation.overloads {
             let args: Vec<String> = overload
                 .args
@@ -477,6 +493,12 @@ fn every_catalog_overload_compiles_and_evaluates() {
             modules: [("probe.ms".to_owned(), text.clone())].into(),
         })
         .unwrap_or_else(|errors| panic!("{label}: {text}\n{errors:?}"));
+        // Render-only inputs exist where the material is drawn; a CPU evaluation says so.
+        if label.contains("_attribute") {
+            let error = program.evaluate(&inputs, &Sample::default()).unwrap_err();
+            assert!(error.message.contains("render-only"), "{label}: {error}");
+            continue;
+        }
         let value = program
             .evaluate(&inputs, &Sample::default())
             .unwrap_or_else(|error| panic!("{label} failed to evaluate: {error}"));

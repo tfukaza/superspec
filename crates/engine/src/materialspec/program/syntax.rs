@@ -134,6 +134,7 @@ pub(super) struct Module {
     pub declarations: Vec<(String, Definition)>,
     pub outputs: Vec<(String, Expr)>,
     pub live: Vec<super::LiveOperation>,
+    pub traits: super::Traits,
 }
 #[derive(Clone, Debug)]
 enum Token {
@@ -434,6 +435,7 @@ impl Parser<'_> {
             declarations: Vec::new(),
             outputs: Vec::new(),
             live: Vec::new(),
+            traits: Default::default(),
         };
         while !matches!(self.current().token, Token::End) {
             let (keyword, mark) = self.name()?;

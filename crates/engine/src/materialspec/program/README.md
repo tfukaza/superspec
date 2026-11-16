@@ -60,6 +60,95 @@ larger successful programs can still execute without entering that cache.
 | `runoff(width, length)` | Positive meters and caller-supplied finite world-space edges; receiver normal and gravity determine downhill direction. Empty edges or no downhill component produce zero. |
 | `external("name", fallback)` | A scalar or vector the host supplies for each texel of a receiver; the fallback where it supplies none. See "Planes". |
 
+## Cutouts, authored masks and ramps
+
+- `alpha_cutout(coverage, cutoff)` (`alphaCutout`) is valid only as the whole opacity channel
+  (directly, or as the field the channel names), with a constant cutoff in [0, 1]; anywhere else, or
+  with another cutoff, compiling fails where it is written. The opacity is the coverage clamped to
+  [0, 1], `Metadata::alpha_cutoff` records the cutoff and a bake delivers the material with alpha
+  mode MASK and that cutoff. `doubleSided: true` on `defineMaterial` or `defineDecal` sets
+  `Metadata::double_sided` and the delivered material's `doubleSided`.
+- `authored_mask(name, coords)` (`authoredMask`) is the red channel of a linear image over the unit
+  square of its coordinates (V up), bilinear between texel centers with the edge texels continuing
+  to the square's edge, and zero outside the square: it never repeats. A missing image fails naming
+  it.
+- `ramp(mode, t, p0, c0, p1, c1, ...)` takes two to seven stops (a position and a color each, in
+  ascending order) after the mode and `t`, which is clamped to the stops. `linear` interpolates
+  neighboring stops and `constant` holds the stop at or below `t`, both on linear-light colors;
+  `display-linear` and `display-constant` take display-referred (sRGB-encoded, [0, 1]) stops,
+  interpolate them as such and decode the result. The GLSL has one helper per stop count.
+
+## Render-only inputs
+
+`time` (seconds of the renderer's clock), `instance` and `instance_w` (the drawn instance's vec4
+value, as its first three components and its fourth), `instance_attribute(name, like)` and
+`vertex_attribute(name, like)` (named per-instance and per-vertex attributes such as `root`,
+`random`, `heightRatio`, typed like the second argument) exist only where a material is drawn.
+The shader reads them from what the renderer binds: it declares `uniform float msTime`
+(`ms_time`) and reads the varyings `msInstanceValue` (`ms_instance`), `msInstance_<name>` and
+`msVertex_<name>`, which the host declares and sets; `Shader::render_inputs` lists them, and
+`Shader::reads` names them `time`, `instance` and `vertex` among an output's sample inputs. They
+enter no bake key: a bake (or `evaluate`) of a value that reads one fails with `MS_INPUT` where it is
+read, and values that read none bake as before. Live operations whose arguments read them are not
+yet routed to the renderer: they fail like any baked value.
+
+## Recipe kinds: decals and weathering layers
+
+A TypeScript recipe's default export says what it is (`Metadata::kind`).
+
+- `defineDecal({ size, baseColor, opacity, roughness, metalness, height, emissive, blend })` is a
+  bounded appearance sized in meters: it is baked on its own rectangle (`uv` spans it, `surface` is
+  meters from its lower left corner) without receivers, and `metadata.decal` says where the
+  rectangle lies in the texture. Its channels are its own values; `Metadata::blend` says how
+  whoever places it combines each with the surface beneath, by the decal's opacity (`mix`, `add`,
+  `multiply`, `max`, `min`).
+- `defineLayer({ coverage, baseColor, roughness, metalness, height, opacity, normalOffset, blend })`
+  is a weathering layer over a whole surface. It reads the surface beneath through `below.<channel>`
+  (the external input `base.<channel>`), and each channel it gives is
+  `mix(beneath, combined, clamp(coverage, 0, 1))` under the channel's blend rule; the channels it
+  does not give are not outputs and pass through. A layer reads abstract inputs only (named
+  features, masks, `runoff`, the occluder planes), never a receiver's bounds; `Metadata::reads`
+  lists the channels beneath it reads.
+
+## Layered slots
+
+`Request::layers` (and `MaterialAssignment::layers` of a project) compose weathering layers over
+the request's material, the lowest first; each layer has its own parameters, seed and `follow`, which
+maps the layer's feature names to the receiver's (`{ "follow": "sill" }`). The composition is a
+chain of planes, not one linked program:
+
+- The base (`stack.base`) and each layer (`stack.1`, ...) are materials planes are baked from
+  (`PlaneSource::Material`). A layer's `base.<channel>` input reads the plane of the material below
+  it that last changed the channel; a channel a layer does not change passes by reference. The map
+  bake is a composite program that reads each channel of the result as the plane of the material
+  that last changed it (and the base's live-operation fields, so the base's live operations are
+  delivered as the base bakes them). It bakes the bytes the stack written as one program bakes, the
+  relief included (`a_stack_of_layers_bakes_the_bytes_of_the_same_appearance_written_as_one_program`).
+- A plane node of the stack is keyed by its material's program and images, what its values read of
+  that material's parameters and seed, what it follows, the layout, and the planes beneath it it
+  reads; never by the composite. So the base is baked once under any stack: editing, adding or
+  removing a layer bakes only that layer and the ones above it that read it. One pass bakes every
+  plane of one material over a receiver (each reads all the planes beneath that any of them reads).
+- The stack's output planes are in the exact form (`Plane::exact_external`: full precision, no
+  filtering estimate, 8 bytes a component) and are baked on the profile's threads. They are kept
+  apart from the build graph's store (`LAYER_PLANES`). A layered bake is not distributed to other
+  sessions: a Wasm host bakes it in one worker.
+- Outputs of a material of the stack that are intrinsic (the anchored base's are) are also kept by
+  lattice point (`INTRINSIC_OUTPUTS`), keyed by no layout, feature or plane: another receiver, a
+  resized one and another stack over the same base read them instead of evaluating them.
+- Planes carry no filtering estimate: a layer that feathers a value of the surface beneath by its
+  estimate (`soft_threshold` of `below.height`) sees none.
+- For a GPU host, `shade_project` adds `metadata.layers` to a layered assignment: each layer's
+  shader plan, in which `below.<channel>` is a CPU field whose texture is that channel beneath,
+  with the layer's seeds, `follow` and which material each input reads, and `metadata.channels`.
+
+The Kowloon concrete is split this way beside the shipped recipe: `kowloon-concrete-anchored`
+(intrinsic, on the pattern anchor), `kowloon-top-grime` (follows `top`), `kowloon-ground-stain` and
+`kowloon-moss` (follow `base`; moss also reads `occlusion` and `sunExposure`),
+`kowloon-concrete-edges` (the receiver's creases) and `kowloon-feature-grime` (any feature the slot
+names). `kowloon-joint-rust` is the joint rust of the item washroom's steel as a layer over the
+shipped `kowloon-rusted-steel`.
+
 ## Named features
 
 A geometry's owner names polylines in world meters (`NamedFeature`: a sill, a joint, a base),

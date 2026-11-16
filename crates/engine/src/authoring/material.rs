@@ -215,7 +215,43 @@ pub(crate) struct IntrinsicRaster {
     /// By footprint bits and tile; each tile holds the four numbers of a plane texel for
     /// `RASTER_TILE` squared points, NaN in the fourth where it holds none.
     tiles: BTreeMap<LatticePoint, Box<[f64]>>,
+    /// Bytes this raster holds at most; [`INTRINSIC_RASTER_BYTES`] where zero.
+    cap: usize,
+    /// Points given a value.
+    points: usize,
 }
+
+/// Retention of the rasters of intrinsic outputs of a layered stack's materials (see
+/// [IntrinsicRaster]): the base's values by position of its own domain, which a resized
+/// receiver, another receiver and another stack over the same base read instead of evaluating.
+const INTRINSIC_OUTPUTS: Retention = Retention {
+    name: "material-intrinsic-outputs",
+    bytes: if cfg!(target_arch = "wasm32") {
+        96 * 1024 * 1024
+    } else {
+        512 * 1024 * 1024
+    },
+    entries: 256,
+};
+/// Bytes one raster of an intrinsic output holds at most: the lattice points of a 1024 px
+/// atlas, or a quarter of a 2048 px one, natively; a third of that in Wasm.
+const INTRINSIC_OUTPUT_BYTES: usize = if cfg!(target_arch = "wasm32") {
+    40 * 1024 * 1024
+} else {
+    128 * 1024 * 1024
+};
+/// Retention of the planes of layered stacks, apart from the build graph's store (a 2048 px
+/// atlas's base color alone is 96 MiB): a layer or base edit, or a layer added or removed, finds
+/// the planes it cannot change here.
+const LAYER_PLANES: Retention = Retention {
+    name: "material-layer-planes",
+    bytes: if cfg!(target_arch = "wasm32") {
+        192 * 1024 * 1024
+    } else {
+        1536 * 1024 * 1024
+    },
+    entries: 1024,
+};
 
 impl IntrinsicRaster {
     /// The lattice point `sample` is exactly on, if it is on one.
@@ -246,7 +282,12 @@ impl IntrinsicRaster {
     }
     fn put(&mut self, point: LatticePoint, value: [f64; 4]) {
         let (tile, at) = Self::slot(point);
-        if !self.tiles.contains_key(&tile) && self.bytes() >= INTRINSIC_RASTER_BYTES {
+        let cap = if self.cap == 0 {
+            INTRINSIC_RASTER_BYTES
+        } else {
+            self.cap
+        };
+        if !self.tiles.contains_key(&tile) && self.bytes() >= cap {
             return;
         }
         let values = self.tiles.entry(tile).or_insert_with(|| {
@@ -254,6 +295,9 @@ impl IntrinsicRaster {
                 .repeat((RASTER_TILE * RASTER_TILE) as usize)
                 .into()
         });
+        if values[at + 3].is_nan() {
+            self.points += 1;
+        }
         values[at..at + 4].copy_from_slice(&value);
     }
     fn bytes(&self) -> usize {
@@ -332,14 +376,33 @@ fn field_plane_key(
 }
 
 /// The planes a request binds to the external inputs `program` reads, for each receiver: input
-/// name, and the asset's bytes. Inputs the request binds nothing to read their fallback. A
+/// name, and the node of the plane. Inputs the request binds nothing to read their fallback. A
 /// request that binds none holds nothing here, so builds without planes allocate as they always
 /// did.
 #[derive(Default)]
 struct BoundPlanes {
-    receivers: Vec<Vec<(String, Bound)>>,
+    receivers: Vec<Vec<(String, String)>>,
     /// The request's other materials that planes are baked from, by their name in the request.
     sources: BTreeMap<String, Source>,
+    /// Every plane node of the build, by id: the entry's and, in a layered build, the ones the
+    /// materials of the stack read from each other.
+    nodes: BTreeMap<String, PlaneNode>,
+}
+
+/// One plane node: the receiver it covers, the input name it is read as, and its source.
+struct PlaneNode {
+    index: usize,
+    name: String,
+    bound: Bound,
+    /// A layered stack's plane: the planes its value reads, by input name and node id.
+    reads: Vec<(String, String)>,
+}
+
+impl PlaneNode {
+    /// Whether this is a plane of a layered stack, which no entry program's key enters.
+    fn layered(id: &str) -> bool {
+        id.contains('@')
+    }
 }
 
 /// Where a bound plane's values come from.
@@ -356,20 +419,47 @@ struct Source {
     /// The request as that material's own: its entry, source, parameters and seed.
     request: Request,
     table: program::DependencyTable,
+    /// In a layered build, the material of the stack and the value whose plane each input of
+    /// this one reads (`base.<channel>`: the channel of the one beneath that last changed it).
+    /// Its other inputs read the request's planes of the receiver by name.
+    bindings: BTreeMap<String, (String, String)>,
+    /// The receiver feature each named feature it measures to follows (see `Layer::follow`).
+    follow: BTreeMap<String, String>,
 }
 
 impl std::ops::Index<usize> for BoundPlanes {
-    type Output = [(String, Bound)];
+    type Output = [(String, String)];
     fn index(&self, receiver: usize) -> &Self::Output {
         self.receivers.get(receiver).map_or(&[], Vec::as_slice)
     }
 }
 
-impl BoundPlanes {
-    fn bound(&self, receiver: usize, name: &str) -> &Bound {
-        let found = self[receiver].iter().find(|(bound, _)| bound == name);
-        &found.expect("a bound plane").1
+/// The id of the node of a plane of receiver `index` read as input `name`: from an asset or a
+/// value the entry binds by name, or (`producer`) a value of a material of a layered stack, which
+/// several materials of the stack read under one name.
+fn plane_id(index: usize, name: &str, producer: Option<&str>) -> String {
+    match producer {
+        None => format!("plane/{index}/{name}"),
+        Some(material) => format!("plane/{index}/{name}@{material}"),
     }
+}
+
+/// A layered request's stack: the materials it bakes planes of and which plane each input reads.
+#[derive(Default)]
+struct Chain {
+    /// The base and then the layers, lowest first, by their material name in the build, with
+    /// their requests and the features they follow.
+    materials: Vec<(String, program::MaterialRequest, BTreeMap<String, String>)>,
+    /// For the composite entry, the material and value each input reads: `base.<channel>` the
+    /// channel of the material that last changed it, `live.<k>` a field of the base that its
+    /// live operations read.
+    entry: BTreeMap<String, (String, String)>,
+    /// For each material of the stack, the material and channel each of its `base.<channel>`
+    /// inputs reads.
+    reads: BTreeMap<String, BTreeMap<String, (String, String)>>,
+    /// The base's live operations, their inputs renamed to the composite's fields that read the
+    /// base's fields through planes.
+    live: Vec<program::LiveOperation>,
 }
 
 /// Values of one material a plane bake holds at most: a plane of exact values is 32 bytes a
@@ -385,25 +475,61 @@ impl Session {
         request: &Request,
         receivers: &[super::Receiver],
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        chain: Option<&Chain>,
     ) -> Result<BoundPlanes, Vec<Diagnostic>> {
         let externals = &program.metadata().externals;
-        if externals.is_empty() || request.planes.is_empty() {
+        if externals.is_empty() || (request.planes.is_empty() && chain.is_none()) {
             return Ok(BoundPlanes::default());
         }
         let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
         let mut bound = BoundPlanes::default();
-        for receiver in receivers {
+        // The stack's materials, each reading the planes of the ones beneath it.
+        for (name, wanted, follow) in chain.map_or(&[][..], |chain| &chain.materials) {
+            let mut source = self.plane_source(request, wanted)?;
+            source.bindings = chain
+                .and_then(|chain| chain.reads.get(name))
+                .cloned()
+                .unwrap_or_default();
+            source.follow = follow.clone();
+            bound.sources.insert(name.clone(), source);
+        }
+        for (index, receiver) in receivers.iter().enumerate() {
             let mut planes = Vec::new();
             for external in externals {
+                if let Some((producer, value)) =
+                    chain.and_then(|chain| chain.entry.get(&external.name))
+                {
+                    let id = chain_plane(
+                        &mut bound,
+                        request,
+                        receiver,
+                        index,
+                        &external.name,
+                        (producer, value),
+                        assets,
+                    )
+                    .map_err(&fail)?;
+                    planes.push((external.name.clone(), id));
+                    continue;
+                }
                 let source = request
                     .planes
                     .get(&receiver.id)
                     .and_then(|named| named.get(&external.name));
+                let id = plane_id(index, &external.name, None);
                 match source {
-                    None => {}
+                    None => continue,
                     Some(super::PlaneSource::Asset(asset)) => {
                         let bytes = assets(asset).map_err(|e| fail(format!("{asset}: {e}")))?;
-                        planes.push((external.name.clone(), Bound::Asset(bytes)));
+                        bound.nodes.insert(
+                            id.clone(),
+                            PlaneNode {
+                                index,
+                                name: external.name.clone(),
+                                bound: Bound::Asset(bytes),
+                                reads: Vec::new(),
+                            },
+                        );
                     }
                     Some(super::PlaneSource::Material { material, value }) => {
                         if !bound.sources.contains_key(material) {
@@ -413,34 +539,8 @@ impl Session {
                                     external.name
                                 ))
                             })?;
-                            let text = if wanted.entry == request.entry {
-                                Some(&request.source)
-                            } else {
-                                request.modules.get(&wanted.entry)
-                            };
-                            let own = Request {
-                                entry: wanted.entry.clone(),
-                                source: text
-                                    .ok_or_else(|| {
-                                        fail(format!("Missing source module {}.", wanted.entry))
-                                    })?
-                                    .clone(),
-                                parameters: wanted.parameters.clone(),
-                                seed: wanted.seed,
-                                planes: BTreeMap::new(),
-                                materials: BTreeMap::new(),
-                                ..request.clone()
-                            };
-                            let program = self.program(&own)?;
-                            let table = program.dependency_table();
-                            bound.sources.insert(
-                                material.clone(),
-                                Source {
-                                    program,
-                                    request: own,
-                                    table,
-                                },
-                            );
+                            let source = self.plane_source(request, wanted)?;
+                            bound.sources.insert(material.clone(), source);
                         }
                         let source = &bound.sources[material];
                         if source_value(&source.program, &source.table, value).is_none() {
@@ -448,25 +548,407 @@ impl Session {
                                 "Material '{material}' has no field '{value}', and no such output a plane can hold."
                             )));
                         }
-                        planes.push((
-                            external.name.clone(),
-                            Bound::Material {
-                                material: material.clone(),
-                                value: value.clone(),
+                        bound.nodes.insert(
+                            id.clone(),
+                            PlaneNode {
+                                index,
+                                name: external.name.clone(),
+                                bound: Bound::Material {
+                                    material: material.clone(),
+                                    value: value.clone(),
+                                },
+                                reads: Vec::new(),
                             },
-                        ));
+                        );
                     }
                 }
+                planes.push((external.name.clone(), id));
             }
-            if planes.len() > MAX_SOURCE_VALUES {
+            if chain.is_none() && planes.len() > MAX_SOURCE_VALUES {
                 return Err(fail(format!(
                     "A receiver binds at most {MAX_SOURCE_VALUES} planes."
                 )));
             }
             bound.receivers.push(planes);
         }
+        // Every plane of one material of a stack over a receiver reads all the planes any of
+        // them reads, so one pass bakes them all: a cold build evaluates each material once.
+        let mut union: BTreeMap<(usize, String), Vec<(String, String)>> = BTreeMap::new();
+        for (id, plane) in &bound.nodes {
+            if let (true, Bound::Material { material, .. }) = (PlaneNode::layered(id), &plane.bound)
+            {
+                let reads = union.entry((plane.index, material.clone())).or_default();
+                for read in &plane.reads {
+                    if !reads.contains(read) {
+                        reads.push(read.clone());
+                    }
+                }
+            }
+        }
+        for (id, plane) in bound.nodes.iter_mut() {
+            if let (true, Bound::Material { material, .. }) = (PlaneNode::layered(id), &plane.bound)
+            {
+                let mut reads = union[&(plane.index, material.clone())].clone();
+                reads.sort();
+                plane.reads = reads;
+            }
+        }
         Ok(bound)
     }
+
+    /// What the session keeps of material bakes beside its build graph, by partition: entries
+    /// and bytes of kept field planes, intrinsic rasters of fields and of a stack's outputs, and
+    /// the planes of layered stacks. For hosts and benches that report memory.
+    pub fn retained_material(&self) -> BTreeMap<&'static str, (usize, usize)> {
+        [
+            FIELD_PLANES,
+            INTRINSIC_RASTERS,
+            INTRINSIC_OUTPUTS,
+            LAYER_PLANES,
+        ]
+        .into_iter()
+        .map(|partition| (partition.name, self.runtime.retained(partition)))
+        .collect()
+    }
+
+    /// Another material of the request's modules, compiled as its own request.
+    fn plane_source(
+        &mut self,
+        request: &Request,
+        wanted: &program::MaterialRequest,
+    ) -> Result<Source, Vec<Diagnostic>> {
+        let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
+        let text = if wanted.entry == request.entry {
+            Some(&request.source)
+        } else {
+            request.modules.get(&wanted.entry)
+        };
+        let own = Request {
+            entry: wanted.entry.clone(),
+            source: text
+                .ok_or_else(|| fail(format!("Missing source module {}.", wanted.entry)))?
+                .clone(),
+            parameters: wanted.parameters.clone(),
+            seed: wanted.seed,
+            planes: BTreeMap::new(),
+            materials: BTreeMap::new(),
+            layers: Vec::new(),
+            ..request.clone()
+        };
+        let program = self.program(&own)?;
+        let table = program.dependency_table();
+        Ok(Source {
+            program,
+            request: own,
+            table,
+            bindings: BTreeMap::new(),
+            follow: BTreeMap::new(),
+        })
+    }
+
+    /// A layered request as the build bakes it: a composite entry that reads every channel of
+    /// the stack as the plane of the material that last changed it, the stack's materials (the
+    /// base under `stack.base`, the layers under `stack.1`, `stack.2`, ...) and which plane each
+    /// of their `base.<channel>` inputs reads. `None` for a request without layers.
+    fn layered(
+        &mut self,
+        request: &Request,
+    ) -> Result<Option<(Request, Chain, Vec<Arc<Program>>)>, Vec<Diagnostic>> {
+        if request.layers.is_empty() {
+            return Ok(None);
+        }
+        let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
+        if request.layers.len() > MAX_LAYERS {
+            return Err(fail(format!(
+                "A slot composes at most {MAX_LAYERS} layers over its base."
+            )));
+        }
+        if request.inspection.is_some() {
+            return Err(fail(
+                "A layered material is inspected through its base and each layer on its own."
+                    .into(),
+            ));
+        }
+        let base = self.program(request)?;
+        let metadata = base.metadata();
+        if metadata.kind != program::RecipeKind::Material
+            || metadata
+                .outputs
+                .iter()
+                .any(|output| output == "receiver_normal")
+        {
+            return Err(fail(
+                "The base of a layered slot is a material (defineMaterial) without a receiver normal."
+                    .into(),
+            ));
+        }
+        let mut modules = request.modules.clone();
+        modules.insert(request.entry.clone(), request.source.clone());
+        let mut chain = Chain::default();
+        // The material that last changed each channel, from the base up.
+        let mut latest: BTreeMap<String, String> = BTreeMap::new();
+        for (channel, _) in STACK_CHANNELS {
+            if metadata.outputs.iter().any(|output| output == channel) {
+                latest.insert(channel.to_owned(), STACK_BASE.to_owned());
+            }
+        }
+        chain.materials.push((
+            STACK_BASE.to_owned(),
+            program::MaterialRequest {
+                entry: request.entry.clone(),
+                parameters: request.parameters.clone(),
+                seed: request.seed,
+            },
+            BTreeMap::new(),
+        ));
+        let mut layers = Vec::with_capacity(request.layers.len());
+        for (k, layer) in request.layers.iter().enumerate() {
+            let name = format!("stack.{}", k + 1);
+            let text = modules
+                .get(&layer.entry)
+                .ok_or_else(|| fail(format!("Missing source module {}.", layer.entry)))?;
+            let program = self.program(&Request {
+                entry: layer.entry.clone(),
+                source: text.clone(),
+                parameters: layer.parameters.clone(),
+                seed: layer.seed,
+                layers: Vec::new(),
+                ..request.clone()
+            })?;
+            let own = program.metadata();
+            if own.kind != program::RecipeKind::Layer || !own.live.is_empty() {
+                return Err(vec![Diagnostic::message(
+                    &layer.entry,
+                    "A slot's layer is a weathering layer (defineLayer) without live operations.",
+                )]);
+            }
+            let reads = own
+                .externals
+                .iter()
+                .filter_map(|external| {
+                    let channel = external.name.strip_prefix(program::BASE_PLANE)?;
+                    let producer = latest.get(channel)?.clone();
+                    Some((external.name.clone(), (producer, channel.to_owned())))
+                })
+                .collect();
+            chain.reads.insert(name.clone(), reads);
+            for output in &own.outputs {
+                latest.insert(output.clone(), name.clone());
+            }
+            chain
+                .materials
+                .push((name, layer_request(layer), layer.follow.clone()));
+            layers.push(program);
+        }
+        let mut text = String::from("material 1;\n");
+        for (channel, fallback) in STACK_CHANNELS {
+            if let Some(producer) = latest.get(channel) {
+                let input = format!("{}{channel}", program::BASE_PLANE);
+                text.push_str(&format!(
+                    "output {channel} = external(\"{input}\", {fallback});\n"
+                ));
+                chain
+                    .entry
+                    .insert(input, (producer.clone(), channel.to_owned()));
+            }
+        }
+        // The base's live operations read its fields; the composite reads them as planes, so
+        // the live maps are the base's (layers change no live input).
+        let mut live_fields: Vec<&str> = Vec::new();
+        let mut live = metadata.live.clone();
+        for operation in &mut live {
+            for field in operation.inputs.values_mut() {
+                let at = match live_fields
+                    .iter()
+                    .position(|known| *known == field.as_str())
+                {
+                    Some(at) => at,
+                    None => {
+                        let kind = metadata.fields.iter().find(|known| known.name == *field);
+                        let fallback = match kind.map(|known| known.kind) {
+                            Some(program::Type::Scalar) => "0",
+                            Some(program::Type::Vec2) => "vec2(0)",
+                            Some(program::Type::Vec3) => "vec3(0)",
+                            _ => {
+                                return Err(fail(format!(
+                                    "Live input field '{field}' of a layered slot's base is not a number or a vector."
+                                )));
+                            }
+                        };
+                        let at = live_fields.len();
+                        let base_field = metadata
+                            .fields
+                            .iter()
+                            .find(|known| known.name == *field)
+                            .map(|known| known.name.as_str())
+                            .expect("a field of the base");
+                        live_fields.push(base_field);
+                        text.push_str(&format!(
+                            "let live_{at} = external(\"live.{at}\", {fallback});\n"
+                        ));
+                        chain
+                            .entry
+                            .insert(format!("live.{at}"), (STACK_BASE.to_owned(), field.clone()));
+                        at
+                    }
+                };
+                *field = format!("live_{at}");
+            }
+        }
+        if !live.is_empty() {
+            // The composite's program is keyed by its text: say which operations it carries.
+            let described: Vec<_> = live
+                .iter()
+                .map(|operation| (&operation.id, operation.version, &operation.inputs))
+                .collect();
+            text.push_str(&format!(
+                "// live operations: {}\n",
+                serde_json::to_string(&described).unwrap()
+            ));
+        }
+        chain.live = live;
+        let composite = Request {
+            entry: COMPOSITE_ENTRY.into(),
+            source: text,
+            modules,
+            parameters: BTreeMap::new(),
+            seed: 0,
+            layers: Vec::new(),
+            ..request.clone()
+        };
+        let mut programs = vec![base];
+        programs.extend(layers);
+        Ok(Some((composite, chain, programs)))
+    }
+}
+
+/// Layers a slot composes over its base at most.
+const MAX_LAYERS: usize = 8;
+/// The base's material name in a layered build.
+const STACK_BASE: &str = "stack.base";
+/// The entry of a layered build's composite (see `Session::layered`).
+const COMPOSITE_ENTRY: &str = program::LAYERED_COMPOSITE;
+/// Channels a layered stack passes up, with the value of each where nothing gives it.
+const STACK_CHANNELS: [(&str, &str); 7] = [
+    ("base_color", "vec3(0.5)"),
+    ("roughness", "1"),
+    ("metalness", "0"),
+    ("height", "0"),
+    ("opacity", "1"),
+    ("emissive", "vec3(0)"),
+    ("normal_offset", "vec3(0)"),
+];
+
+fn layer_request(layer: &super::Layer) -> program::MaterialRequest {
+    program::MaterialRequest {
+        entry: layer.entry.clone(),
+        parameters: layer.parameters.clone(),
+        seed: layer.seed,
+    }
+}
+
+/// A receiver's named features as a layer that follows `follow` sees them: each of the layer's
+/// names measures to the receiver's feature it follows, and the receiver's other names stay.
+fn followed(
+    features: &[program::NamedFeature],
+    follow: &BTreeMap<String, String>,
+) -> Result<program::NamedFeatures, String> {
+    let mut renamed = Vec::new();
+    for feature in features {
+        if !follow.contains_key(&feature.name) {
+            renamed.push(feature.clone());
+        }
+        for (own, theirs) in follow {
+            if *theirs == feature.name {
+                renamed.push(program::NamedFeature {
+                    name: own.clone(),
+                    ..feature.clone()
+                });
+            }
+        }
+    }
+    program::NamedFeatures::new(&renamed)
+}
+
+/// The node of the plane of `value` (a channel, or a field the base's live operations read) of
+/// the stack's material `producer` over receiver `index`, read as input `name`, with the nodes of
+/// the planes that value reads, made where not made yet. Returns its id.
+fn chain_plane(
+    bound: &mut BoundPlanes,
+    request: &Request,
+    receiver: &super::Receiver,
+    index: usize,
+    name: &str,
+    (producer, value): (&str, &str),
+    assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+) -> Result<String, String> {
+    let id = plane_id(index, name, Some(producer));
+    if bound.nodes.contains_key(&id) {
+        return Ok(id);
+    }
+    let source = &bound.sources[producer];
+    let (_, _, read) = source_value(&source.program, &source.table, value)
+        .ok_or_else(|| format!("Material '{producer}' has no output {value}."))?;
+    let inputs: Vec<String> = read.externals.iter().cloned().collect();
+    let mut reads = Vec::new();
+    for input in inputs {
+        let below = bound.sources[producer].bindings.get(&input).cloned();
+        let found = match below {
+            Some((beneath, channel)) => Some(chain_plane(
+                bound,
+                request,
+                receiver,
+                index,
+                &input,
+                (&beneath, &channel),
+                assets,
+            )?),
+            None => match request
+                .planes
+                .get(&receiver.id)
+                .and_then(|named| named.get(&input))
+            {
+                None => None,
+                Some(super::PlaneSource::Asset(asset)) => {
+                    let id = plane_id(index, &input, None);
+                    if !bound.nodes.contains_key(&id) {
+                        let bytes = assets(asset).map_err(|e| format!("{asset}: {e}"))?;
+                        bound.nodes.insert(
+                            id.clone(),
+                            PlaneNode {
+                                index,
+                                name: input.clone(),
+                                bound: Bound::Asset(bytes),
+                                reads: Vec::new(),
+                            },
+                        );
+                    }
+                    Some(id)
+                }
+                Some(super::PlaneSource::Material { .. }) => {
+                    return Err(format!(
+                        "Input '{input}' of a layered stack reads an asset plane or the surface beneath, not another material."
+                    ));
+                }
+            },
+        };
+        if let Some(found) = found {
+            reads.push((input, found));
+        }
+    }
+    bound.nodes.insert(
+        id.clone(),
+        PlaneNode {
+            index,
+            name: name.to_owned(),
+            bound: Bound::Material {
+                material: producer.to_owned(),
+                value: value.to_owned(),
+            },
+            reads,
+        },
+    );
+    Ok(id)
 }
 
 /// What a plane baked from `value` of a material holds: the field's index, or the output's
@@ -487,11 +969,24 @@ fn source_value<'a>(
         return Some((Some(index), components, table.fields.get(value)?));
     }
     let components = match value {
-        "base_color" | "emissive" => 3,
+        "base_color" | "emissive" | "normal_offset" => 3,
         "roughness" | "metalness" | "height" | "opacity" => 1,
         _ => return None,
     };
     Some((None, components, table.outputs.get(value)?))
+}
+
+/// An output of an evaluation, as a plane holds it.
+fn output_of(result: &program::Outputs, value: &str) -> [f64; 3] {
+    match value {
+        "base_color" => result.base_color,
+        "emissive" => result.emissive,
+        "normal_offset" => result.normal_offset.unwrap_or_default(),
+        "roughness" => [result.roughness, 0., 0.],
+        "metalness" => [result.metalness, 0., 0.],
+        "height" => [result.height, 0., 0.],
+        _ => [result.opacity, 0., 0.],
+    }
 }
 
 /// Adds the nodes of receiver `index`'s bound planes, with the nodes of the materials they are
@@ -502,15 +997,19 @@ fn plane_nodes(
     assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
     nodes: &mut Vec<Node>,
     image_bytes: &mut BTreeMap<String, Arc<[u8]>>,
+    layered: bool,
 ) -> Result<(), String> {
-    for (name, plane) in &bound[index] {
-        let mut dependencies = vec![
-            dependency("mapping", format!("layout/{index}")),
-            dependency("program", "program"),
-        ];
+    for (id, plane) in bound.nodes.iter().filter(|(_, plane)| plane.index == index) {
+        let name = &plane.name;
+        let mut dependencies = vec![dependency("mapping", format!("layout/{index}"))];
+        // A layered build's composite entry changes with the channels of its stack, which a
+        // plane of the stack never depends on.
+        if !layered {
+            dependencies.push(dependency("program", "program"));
+        }
         let mut inputs = name.as_bytes().to_vec();
         inputs.push(0);
-        let implementation = match plane {
+        let implementation = match &plane.bound {
             Bound::Asset(bytes) => {
                 inputs.extend(image_digest(bytes));
                 "material-plane-v1"
@@ -552,17 +1051,352 @@ fn plane_nodes(
                 }
                 dependencies.push(dependency("source", program_id));
                 dependencies.push(dependency("source-assets", assets_id));
-                "material-plane-bake-v1"
+                if PlaneNode::layered(id) {
+                    // What the layer follows is part of what it reads; the planes beneath are
+                    // dependencies, so an edit below bakes this again and one above never does.
+                    inputs.push(0);
+                    inputs.extend(json(&source.follow));
+                    for (input, beneath) in &plane.reads {
+                        dependencies.push(dependency(&format!("plane/{input}"), beneath.clone()));
+                    }
+                    "material-layer-plane-v1"
+                } else {
+                    "material-plane-bake-v1"
+                }
             }
         };
-        nodes.push(node(
-            format!("plane/{index}/{name}"),
-            implementation,
-            inputs,
-            dependencies,
-        ));
+        nodes.push(node(id.clone(), implementation, inputs, dependencies));
     }
     Ok(())
+}
+
+/// What one block of rows of an output plane bake found, in the order the planes take it.
+#[derive(Default)]
+struct OutputRows {
+    /// Texels of new sample points, each with a value of every wanted output in `values`.
+    sets: Vec<usize>,
+    values: Vec<[f64; 3]>,
+    /// Points one step along a chart leg that are no texel's center: texel and leg, each with a
+    /// value of every wanted output in `leg_values`.
+    legs: Vec<(usize, usize)>,
+    leg_values: Vec<[f64; 3]>,
+    /// Texels that repeat the texel before them in their row, in order.
+    repeats: Vec<usize>,
+    /// Values for the intrinsic rasters: wanted slot, lattice point, value.
+    kept: Vec<(usize, LatticePoint, [f64; 3])>,
+    /// Points read from the rasters, and points evaluated.
+    held: usize,
+    evaluated: usize,
+}
+
+/// Evaluates `outputs` at `points` (texel or leg index for the planes, and sample), taking the
+/// values of samples every raster holds from the rasters and adding to `out` the values of the
+/// wanted outputs for each point, in order.
+#[allow(clippy::too_many_arguments)]
+fn output_points(
+    evaluator: &mut program::Evaluator<'_>,
+    points: &[(usize, program::Sample)],
+    outputs: program::OutputSet,
+    values: &[&str],
+    externals: &[&program::Plane],
+    rasters: &[Option<&IntrinsicRaster>],
+    out: &mut Vec<[f64; 3]>,
+    kept: &mut Vec<(usize, LatticePoint, [f64; 3])>,
+    counts: &mut [usize; 2],
+) -> Result<(), Diagnostic> {
+    let any_raster = rasters.iter().any(Option::is_some);
+    let every_raster = !rasters.is_empty() && rasters.iter().all(Option::is_some);
+    let mut lattice: Vec<Option<LatticePoint>> = Vec::with_capacity(points.len());
+    let mut held: Vec<bool> = Vec::with_capacity(points.len());
+    let mut samples = Vec::with_capacity(points.len());
+    let mut texels = Vec::with_capacity(points.len());
+    for (texel, sample) in points {
+        let point = if any_raster {
+            IntrinsicRaster::point(sample)
+        } else {
+            None
+        };
+        let found = every_raster
+            && point.is_some_and(|point| {
+                rasters
+                    .iter()
+                    .all(|raster| raster.is_some_and(|raster| raster.get(point).is_some()))
+            });
+        lattice.push(point);
+        held.push(found);
+        if !found {
+            samples.push(sample.clone());
+            texels.push(*texel);
+        }
+    }
+    counts[0] += points.len() - samples.len();
+    counts[1] += samples.len();
+    let results = if samples.is_empty() {
+        Vec::new()
+    } else {
+        let mut scratch = Vec::new();
+        evaluator
+            .fill_row(
+                &samples,
+                &texels,
+                outputs,
+                &program::FieldSelection::default(),
+                &mut scratch,
+                externals,
+                &mut [],
+            )
+            .map_err(Diagnostic::from)?
+    };
+    let mut results = results.iter();
+    for (point, found) in lattice.into_iter().zip(held) {
+        if found {
+            let point = point.expect("a held point is on the lattice");
+            for raster in rasters {
+                let value = raster.expect("every raster").get(point).expect("held");
+                out.push([value[0], value[1], value[2]]);
+            }
+            continue;
+        }
+        let result = results.next().expect("a result for each evaluated point");
+        for (slot, value) in values.iter().enumerate() {
+            let value = output_of(result, value);
+            out.push(value);
+            if let (Some(point), Some(raster)) = (point, rasters.get(slot).copied().flatten()) {
+                if raster.get(point).is_none() {
+                    kept.push((slot, point, value));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Evaluates the rows of an output plane bake (see [`bake_output_planes`]).
+#[allow(clippy::too_many_arguments)]
+fn output_rows(
+    evaluator: &mut program::Evaluator<'_>,
+    atlas: &Atlas,
+    rows: &[(usize, usize)],
+    outputs: program::OutputSet,
+    values: &[&str],
+    externals: &[&program::Plane],
+    rasters: &[Option<&IntrinsicRaster>],
+    entry: &str,
+) -> Result<OutputRows, Diagnostic> {
+    let failure = |message: String| Diagnostic::message(entry, message);
+    let pixels = atlas.width * atlas.height;
+    let mut found = OutputRows::default();
+    let mut counts = [0; 2];
+    for &(chart_index, y) in rows {
+        let chart = &atlas.charts[chart_index];
+        evaluator.replenish_row(chart.width);
+        let mut before: Option<(usize, u64, u64)> = None;
+        let mut fresh = Vec::with_capacity(chart.width);
+        let mut points = Vec::with_capacity(chart.width);
+        for x in 0..chart.width {
+            let (triangle, u, v) = atlas.texel(chart, x, y);
+            let key = (triangle, u.to_bits(), v.to_bits());
+            let texel = (chart.y + y) * atlas.width + chart.x + x;
+            fresh.push(before != Some(key));
+            if before != Some(key) {
+                points.push((texel, atlas.sample(triangle, u, v).map_err(&failure)?));
+                found.sets.push(texel);
+            } else {
+                found.repeats.push(texel);
+            }
+            before = Some(key);
+        }
+        output_points(
+            evaluator,
+            &points,
+            outputs,
+            values,
+            externals,
+            rasters,
+            &mut found.values,
+            &mut found.kept,
+            &mut counts,
+        )?;
+        // A relief over these values needs them one step along each chart leg too, where that
+        // point is no adjacent texel's center (see `bake_block`): the values are evaluated at
+        // exactly the samples a bake of this material alone takes there, reading the planes
+        // beneath at their own leg points.
+        let mut legs = Vec::new();
+        for (x, _) in fresh.iter().enumerate().filter(|(_, new)| **new) {
+            let (triangle, u, v) = atlas.texel(chart, x, y);
+            let [step_u, step_v] = atlas.steps(triangle);
+            for (leg, target) in [[u + step_u, v], [u, v + step_v]].into_iter().enumerate() {
+                let adjacent = neighbor_texel(
+                    |nx, ny| atlas.texel(chart, nx, ny),
+                    chart,
+                    [x, y],
+                    triangle,
+                    target,
+                );
+                if adjacent.is_none() {
+                    let texel = (chart.y + y) * atlas.width + chart.x + x;
+                    let sample = atlas.sample(triangle, target[0], target[1]);
+                    legs.push((
+                        program::Plane::leg(pixels, texel, leg),
+                        sample.map_err(&failure)?,
+                    ));
+                    found.legs.push((texel, leg));
+                }
+            }
+        }
+        if !legs.is_empty() {
+            evaluator.replenish_row(legs.len());
+            output_points(
+                evaluator,
+                &legs,
+                outputs,
+                values,
+                externals,
+                rasters,
+                &mut found.leg_values,
+                &mut found.kept,
+                &mut counts,
+            )?;
+        }
+    }
+    [found.held, found.evaluated] = counts;
+    Ok(found)
+}
+
+/// Bakes outputs of a material over a receiver's atlas into planes bound to the external inputs
+/// `wanted` names (input name, output), exactly as that material's own bake evaluates them at
+/// each texel, with no filtering estimate: in the exact form, with the values one step along a
+/// chart leg a relief over them needs. The material reads `externals` (the planes of a layered
+/// stack beneath it) at each texel and leg point. Rows are split across `threads` and written
+/// back in order, so threads never change a value; values on the lattice of an intrinsic output
+/// are read from and added to its raster (`rasters`, by wanted slot), which never changes one
+/// either.
+#[allow(clippy::too_many_arguments)]
+fn bake_output_planes(
+    program: &Program,
+    table: &program::DependencyTable,
+    inputs: &Inputs,
+    atlas: &Atlas,
+    named: &program::NamedFeatures,
+    wanted: &[(&str, &str)],
+    externals: &[&program::Plane],
+    threads: usize,
+    rasters: &mut [Option<&mut IntrinsicRaster>],
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<program::Plane>, Diagnostic> {
+    #[cfg(test)]
+    PLANE_BAKES.with(|bakes| {
+        let values = wanted.iter().map(|(_, value)| (*value).to_owned());
+        bakes.borrow_mut().push(values.collect())
+    });
+    let entry = program.metadata().entry.as_str();
+    let failure = |message: String| Diagnostic::message(entry, message);
+    let pixels = atlas.width * atlas.height;
+    let mut outputs = program::OutputSet::NONE;
+    let mut planes = Vec::with_capacity(wanted.len());
+    let mut values = Vec::with_capacity(wanted.len());
+    for (name, value) in wanted {
+        let (field, components, _) = source_value(program, table, value)
+            .ok_or_else(|| failure(format!("No output '{value}'.")))?;
+        if field.is_some() || pixels * components * 8 + 64 > PLANE_NODE_BYTES {
+            return Err(failure(format!(
+                "Output plane '{name}' is not an output or exceeds what a plane may hold."
+            )));
+        }
+        outputs = outputs.union(program::OutputSet::named(value));
+        planes.push(program::Plane::exact_external(name, components, pixels).map_err(&failure)?);
+        values.push(*value);
+    }
+    let rows = atlas_rows(atlas);
+    let evaluator = || -> Result<program::Evaluator<'_>, Diagnostic> {
+        static NONE: std::sync::OnceLock<program::FeatureSet> = std::sync::OnceLock::new();
+        let features = if queries_features(program) {
+            atlas.features().0
+        } else {
+            NONE.get_or_init(program::FeatureSet::default)
+        };
+        program
+            .evaluator_with_feature_sets(inputs, features, named)
+            .map_err(Diagnostic::from)
+    };
+    let threads = threads.max(1);
+    let mut serial = (threads == 1).then(&evaluator).transpose()?;
+    // Points read from the rasters and points evaluated, for tests and reports.
+    let mut points = [0usize; 2];
+    for batch in rows.chunks(threads * BLOCK_ROWS) {
+        if cancelled() {
+            return Err(failure("Material authoring cancelled.".into()));
+        }
+        let reading: Vec<Option<&IntrinsicRaster>> =
+            rasters.iter().map(|raster| raster.as_deref()).collect();
+        let results: Vec<Result<OutputRows, Diagnostic>> = match &mut serial {
+            Some(evaluator) => vec![output_rows(
+                evaluator, atlas, batch, outputs, &values, externals, &reading, entry,
+            )],
+            None => std::thread::scope(|scope| {
+                let handles: Vec<_> = batch
+                    .chunks(batch.len().div_ceil(threads))
+                    .map(|share| {
+                        let (evaluator, values, reading) = (&evaluator, &values, &reading);
+                        scope.spawn(move || -> Result<OutputRows, Diagnostic> {
+                            let mut evaluator = evaluator()?;
+                            output_rows(
+                                &mut evaluator,
+                                atlas,
+                                share,
+                                outputs,
+                                values,
+                                externals,
+                                reading,
+                                entry,
+                            )
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().expect("plane rows do not panic"))
+                    .collect()
+            }),
+        };
+        drop(reading);
+        let count = values.len();
+        for result in results {
+            let found = result?;
+            points[0] += found.held;
+            points[1] += found.evaluated;
+            for (at, texel) in found.sets.iter().enumerate() {
+                for (slot, plane) in planes.iter_mut().enumerate() {
+                    plane.set(*texel, &found.values[at * count + slot]);
+                }
+            }
+            for (at, (texel, leg)) in found.legs.iter().enumerate() {
+                for (slot, plane) in planes.iter_mut().enumerate() {
+                    plane.set_leg(*texel, *leg, None, &found.leg_values[at * count + slot]);
+                }
+            }
+            for texel in &found.repeats {
+                for plane in planes.iter_mut() {
+                    plane.repeat(texel - 1, *texel);
+                }
+            }
+            for (slot, point, value) in found.kept {
+                if let Some(raster) = rasters.get_mut(slot).and_then(Option::as_deref_mut) {
+                    raster.put(point, [value[0], value[1], value[2], 0.]);
+                }
+            }
+        }
+    }
+    #[cfg(test)]
+    LAYER_BAKES.with(|bakes| {
+        let values = values.iter().map(|value| (*value).to_owned()).collect();
+        bakes
+            .borrow_mut()
+            .push((entry.to_owned(), values, points[0], points[1]))
+    });
+    #[cfg(not(test))]
+    let _ = points;
+    Ok(planes)
 }
 
 /// Bakes values of another material of the request over a receiver's atlas into planes bound to
@@ -617,7 +1451,7 @@ fn bake_source_planes(
             None => {
                 outputs = outputs.union(program::OutputSet::named(value));
                 let plane =
-                    program::Plane::empty_external(name, components, pixels).map_err(&failure)?;
+                    program::Plane::exact_external(name, components, pixels).map_err(&failure)?;
                 order.push((false, output_planes.len()));
                 output_planes.push((slot, value, plane));
             }
@@ -657,16 +1491,6 @@ fn bake_source_planes(
                     &mut filled,
                 )
                 .map_err(Diagnostic::from)?;
-            let output_of = |result: &program::Outputs, value: &str| -> [f64; 3] {
-                match value {
-                    "base_color" => result.base_color,
-                    "emissive" => result.emissive,
-                    "roughness" => [result.roughness, 0., 0.],
-                    "metalness" => [result.metalness, 0., 0.],
-                    "height" => [result.height, 0., 0.],
-                    _ => [result.opacity, 0., 0.],
-                }
-            };
             for (result, texel) in results.iter().zip(&texels) {
                 for (_, value, plane) in output_planes.iter_mut() {
                     plane.set(*texel, &output_of(result, value));
@@ -784,25 +1608,34 @@ fn baked_plane(
     Ok(Arc::new(BakedReceiver::Plane(plane)))
 }
 
-/// A `plane/` node's artifact: the decoded plane, checked against the atlas it covers and the
-/// type the program reads it as.
-fn decoded_plane(
-    program: &Program,
-    name: &str,
-    bytes: &[u8],
-    atlas: &Atlas,
-) -> Result<(Artifact, usize), String> {
-    let plane = program::Plane::decode_external(name, bytes, atlas.width, atlas.height)?;
-    let wanted = program
-        .metadata()
-        .externals
-        .iter()
+/// The components a program of the build reads the external input `name` as: the entry, or
+/// else a material planes are baked from.
+fn plane_components(program: &Program, planes: &BoundPlanes, name: &str) -> Option<usize> {
+    std::iter::once(program)
+        .chain(
+            planes
+                .sources
+                .values()
+                .map(|source| source.program.as_ref()),
+        )
+        .flat_map(|program| &program.metadata().externals)
         .find(|external| external.name == name)
         .map(|external| match external.kind {
             program::Type::Scalar => 1,
             program::Type::Vec2 => 2,
             _ => 3,
-        });
+        })
+}
+
+/// A `plane/` node's artifact: the decoded plane, checked against the atlas it covers and the
+/// components it is read as (`wanted`).
+fn decoded_plane(
+    wanted: Option<usize>,
+    name: &str,
+    bytes: &[u8],
+    atlas: &Atlas,
+) -> Result<(Artifact, usize), String> {
+    let plane = program::Plane::decode_external(name, bytes, atlas.width, atlas.height)?;
     if wanted != Some(plane.components()) {
         return Err(format!(
             "External plane '{name}' holds {} components where the program reads {}.",
@@ -894,6 +1727,7 @@ impl BakedReceiver {
 fn assemble(
     groups: &BTreeMap<Group, Arc<BakedReceiver>>,
     inspecting: bool,
+    declared: &program::Metadata,
 ) -> Result<(Material, BTreeMap<String, ImageResource>), String> {
     let missing = || "A baked map is missing.".to_owned();
     let mut images = BTreeMap::new();
@@ -922,6 +1756,15 @@ fn assemble(
         alpha_mode: blend.then_some(AlphaMode::Blend),
         ..Default::default()
     };
+    // What the recipe declares about how it is drawn. A cutout is drawn where its opacity
+    // reaches the cutoff, whatever the opacities are.
+    if let (Some(cutoff), false) = (declared.alpha_cutoff, inspecting) {
+        material.alpha_mode = Some(AlphaMode::Mask);
+        material.alpha_cutoff = Some(cutoff);
+    }
+    if declared.double_sided {
+        material.double_sided = Some(true);
+    }
     if inspecting {
         material.color = "#000000".into();
         material.emissive = Some("#ffffff".into());
@@ -1343,6 +2186,41 @@ impl Session {
         share: Option<Share<'_>>,
     ) -> Result<Built, Vec<Diagnostic>> {
         let compiled = self.program(request)?;
+        // A decal is baked on its own rectangle, in meters from its lower left corner, whatever
+        // the request's domain and mapping: it is the same picture wherever it is placed.
+        let decal;
+        let request = match (compiled.metadata().kind, compiled.metadata().size) {
+            (program::RecipeKind::Decal, Some(size)) => {
+                if !request.receivers.is_empty() {
+                    return Err(vec![Diagnostic::message(
+                        &request.entry,
+                        "A decal is baked on its own rectangle, without receivers; its owner places it.",
+                    )]);
+                }
+                decal = Request {
+                    domain: size,
+                    mapping: super::Mapping::Object,
+                    ..request.clone()
+                };
+                &decal
+            }
+            _ => request,
+        };
+        // A layered slot bakes a composite that reads its stack's planes; what the slot declares
+        // about how it is drawn is its base's.
+        let layered = self.layered(request)?;
+        let declared = compiled.metadata().clone();
+        let (request, chain, compiled) = match &layered {
+            Some((composite, chain, _)) => {
+                let mut program = self.program(composite)?;
+                if !chain.live.is_empty() {
+                    let fail = |message| vec![Diagnostic::message(&composite.entry, message)];
+                    program = Arc::new(program.with_live(chain.live.clone()).map_err(fail)?);
+                }
+                (composite, Some(chain), program)
+            }
+            None => (request, None, compiled),
+        };
         let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
         let receivers = if request.receivers.is_empty() {
             vec![receiver::swatch(request.domain)]
@@ -1376,14 +2254,14 @@ impl Session {
         let compact = request.profile == super::Profile::Production;
         // Planes bound to the program's external inputs enter the graph by content: a map is
         // keyed by the planes of only the inputs its outputs read.
-        let planes = self.bound_planes(&compiled, request, &receivers, assets)?;
+        let planes = self.bound_planes(&compiled, request, &receivers, assets, chain)?;
         // Images only the materials planes are baked from read.
         let mut source_images: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
         let plane_dependencies = |i: usize, read: Option<&program::Dependencies>| {
             planes[i]
                 .iter()
                 .filter(|(name, _)| read.is_none_or(|read| read.externals.contains(name)))
-                .map(|(name, _)| dependency(&format!("plane/{name}"), format!("plane/{i}/{name}")))
+                .map(|(name, id)| dependency(&format!("plane/{name}"), id.clone()))
                 .collect::<Vec<_>>()
         };
         let mut targets = vec![];
@@ -1391,7 +2269,15 @@ impl Session {
             let layout = format!("layout/{i}");
             let bake = format!("bake/{i}");
             nodes.push(layout_node(i, receiver, request));
-            plane_nodes(&planes, i, assets, &mut nodes, &mut source_images).map_err(&fail)?;
+            plane_nodes(
+                &planes,
+                i,
+                assets,
+                &mut nodes,
+                &mut source_images,
+                chain.is_some(),
+            )
+            .map_err(&fail)?;
             let mut bake_dependencies = vec![
                 dependency("mapping", layout.clone()),
                 dependency("program", "program"),
@@ -1448,11 +2334,7 @@ impl Session {
                 targets.push(id);
             }
         }
-        let plane_ids = |i: usize| {
-            planes[i]
-                .iter()
-                .map(move |(name, _)| format!("plane/{i}/{name}"))
-        };
+        let plane_ids = |i: usize| planes[i].iter().map(|(_, id)| id.clone());
         let dependencies_only = share.is_some().then(|| {
             // A share needs the program, inputs, layouts and bound planes, but never bakes or
             // caches a receiver.
@@ -1593,10 +2475,7 @@ impl Session {
                 let layout_key = plan.key(&format!("layout/{i}")).expect("planned layout");
                 let plane_keys: Vec<(String, ContentKey)> = planes[i]
                     .iter()
-                    .map(|(name, _)| {
-                        let key = plan.key(&format!("plane/{i}/{name}"));
-                        (name.clone(), key.expect("planned plane"))
-                    })
+                    .map(|(name, id)| (name.clone(), plan.key(id).expect("planned plane")))
                     .collect();
                 let mut chosen = FieldPlan::default();
                 let mut missing = Vec::new();
@@ -1688,14 +2567,92 @@ impl Session {
         let mut dirty = dirty;
         // Planes baked alongside the one a producer was asked for, and the planes no retained
         // artifact holds.
-        let mut baked_planes: BTreeMap<(usize, String), Arc<BakedReceiver>> = BTreeMap::new();
-        let mut plane_dirty: std::collections::BTreeSet<(usize, String)> = (0..receivers.len())
-            .flat_map(|i| planes[i].iter().map(move |(name, _)| (i, name.clone())))
-            .filter(|(i, name)| {
-                let key = plan.key(&format!("plane/{i}/{name}"));
-                !self.runtime.holds(&key.expect("planned plane"))
+        let mut baked_planes: BTreeMap<String, Arc<BakedReceiver>> = BTreeMap::new();
+        // Planes of a layered stack an earlier build kept apart from the graph's store, by id.
+        let mut kept_layer_planes: BTreeMap<String, Arc<BakedReceiver>> = BTreeMap::new();
+        // The rasters of the stack's intrinsic outputs this build reads and adds to, and which
+        // plane each serves.
+        let mut output_rasters: Rasters = Rasters::new();
+        let mut raster_of: BTreeMap<String, ContentKey> = BTreeMap::new();
+        for (id, plane) in &planes.nodes {
+            let (true, Bound::Material { material, value }) =
+                (PlaneNode::layered(id), &plane.bound)
+            else {
+                continue;
+            };
+            let Some(key) = plan.key(id) else { continue };
+            if let Some(found) = self.runtime.lookup(LAYER_PLANES, &key) {
+                if let Artifact::Material(baked) = found.as_ref() {
+                    kept_layer_planes.insert(id.clone(), baked.clone());
+                    continue;
+                }
+            }
+            let source = &planes.sources[material];
+            let Some((None, _, reads)) = source_value(&source.program, &source.table, value) else {
+                continue;
+            };
+            if !reads.intrinsic() || !reads.externals.is_empty() {
+                continue;
+            }
+            // Keyed by the material, its images and what the output reads of its parameters
+            // and seed: by no layout, no feature and nothing beneath it.
+            let mut digest = Sha256::new();
+            digest.update(b"material-intrinsic-output-v1");
+            for part in [
+                plan.key(&format!("program:{material}")),
+                plan.key(&format!("assets:{material}")),
+            ] {
+                digest.update(part.expect("planned source"));
+            }
+            digest.update((value.len() as u64).to_le_bytes());
+            digest.update(value.as_bytes());
+            match source.program.input_fingerprint(
+                &Inputs {
+                    parameters: source.request.parameters.clone(),
+                    seed: source.request.seed,
+                    edges: source.request.edges.clone(),
+                    ..Inputs::default()
+                },
+                reads,
+            ) {
+                Ok(fingerprint) => digest.update(fingerprint),
+                Err(_) => continue,
+            }
+            let raster: ContentKey = digest.finalize().into();
+            raster_of.insert(id.clone(), raster);
+            if !output_rasters.contains_key(&raster) {
+                let kept = self.runtime.lookup(INTRINSIC_OUTPUTS, &raster);
+                let kept = kept.and_then(|found| match found.as_ref() {
+                    Artifact::Material(baked) => match baked.as_ref() {
+                        BakedReceiver::Intrinsic(raster) => Some(raster.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                let raster_value = kept.unwrap_or(IntrinsicRaster {
+                    cap: INTRINSIC_OUTPUT_BYTES,
+                    ..Default::default()
+                });
+                output_rasters.insert(
+                    raster,
+                    WorkingRaster {
+                        raster: raster_value,
+                        shared: true,
+                        changed: false,
+                    },
+                );
+            }
+        }
+        let mut plane_dirty: std::collections::BTreeSet<String> = planes
+            .nodes
+            .keys()
+            .filter(|id| {
+                let key = plan.key(id).expect("planned plane");
+                !self.runtime.holds(&key) && !kept_layer_planes.contains_key(*id)
             })
+            .cloned()
             .collect();
+        let mut made_layer_planes: Vec<(String, Arc<BakedReceiver>)> = Vec::new();
         let mips = self.mips.clone();
         let complete = self
             .runtime
@@ -1760,38 +2717,62 @@ impl Session {
                     }
                     "assets" => decoded_assets(&image_bytes, dependencies, &mips),
                     id if id.starts_with("plane/") => {
-                        let (index, name) = id["plane/".len()..]
-                            .split_once('/')
-                            .expect("a planned plane");
-                        let index = index.parse::<usize>().unwrap();
+                        let plane = &planes.nodes[id];
+                        let index = plane.index;
                         let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
                             unreachable!()
                         };
-                        let (material, value) = match planes.bound(index, name) {
+                        let (material, value) = match &plane.bound {
                             Bound::Asset(bytes) => {
-                                return decoded_plane(&compiled, name, bytes, atlas);
+                                let components = plane_components(&compiled, &planes, &plane.name);
+                                return decoded_plane(components, &plane.name, bytes, atlas);
                             }
                             Bound::Material { material, value } => (material, value),
                         };
-                        if let Some(done) = baked_planes.remove(&(index, name.to_owned())) {
+                        if let Some(done) = baked_planes.remove(id) {
+                            if PlaneNode::layered(id) {
+                                made_layer_planes.push((id.to_owned(), done.clone()));
+                            }
                             let bytes = done.bytes();
                             return Ok((Artifact::Material(done), bytes));
                         }
-                        // One pass bakes every plane of this material the build still needs
-                        // for the receiver, so what the values share is evaluated once.
-                        let mut wanted = vec![(name, value.as_str())];
-                        for (other, bound) in &planes[index] {
-                            if let Bound::Material {
+                        if let Some(done) = kept_layer_planes.get(id) {
+                            let bytes = done.bytes();
+                            return Ok((Artifact::Material(done.clone()), bytes));
+                        }
+                        // One pass bakes every plane of this material the build still needs for
+                        // the receiver whose inputs this node holds, so what the values share is
+                        // evaluated once.
+                        let layered = PlaneNode::layered(id);
+                        let held: Vec<&String> = plane.reads.iter().map(|(_, id)| id).collect();
+                        let mut wanted: Vec<(&str, &str, &str)> = vec![(id, &plane.name, value)];
+                        let source = &planes.sources[material];
+                        // A stack's field planes (a base's live inputs) and output planes are
+                        // baked apart: outputs have the faster pass.
+                        let field = |value: &str| {
+                            matches!(
+                                source_value(&source.program, &source.table, value),
+                                Some((Some(_), _, _))
+                            )
+                        };
+                        let own_field = field(value);
+                        for (other_id, other) in &planes.nodes {
+                            let Bound::Material {
                                 material: from,
                                 value,
-                            } = bound
+                            } = &other.bound
+                            else {
+                                continue;
+                            };
+                            if from == material
+                                && other_id != id
+                                && other.index == index
+                                && PlaneNode::layered(other_id) == layered
+                                && plane_dirty.contains(other_id)
+                                && other.reads.iter().all(|(_, read)| held.contains(&read))
+                                && (!layered || field(value) == own_field)
                             {
-                                if from == material
-                                    && other != name
-                                    && plane_dirty.contains(&(index, other.clone()))
-                                {
-                                    wanted.push((other, value));
-                                }
+                                wanted.push((other_id, &other.name, value));
                             }
                         }
                         let Artifact::Inputs(decoded) = dependencies["source-assets"].as_ref()
@@ -1799,23 +2780,100 @@ impl Session {
                             unreachable!()
                         };
                         let source = &planes.sources[material];
-                        let baked = bake_source_planes(source, decoded, atlas, &wanted, stopped)
-                            .map_err(|error| {
-                                let message = error.message.clone();
-                                evaluation_error = Some(error);
-                                message
-                            })?;
+                        let pairs: Vec<(&str, &str)> = wanted
+                            .iter()
+                            .map(|(_, name, value)| (*name, *value))
+                            .collect();
+                        let outputs_only = pairs.iter().all(|(_, value)| {
+                            matches!(
+                                source_value(&source.program, &source.table, value),
+                                Some((None, _, _))
+                            )
+                        });
+                        let baked = if outputs_only {
+                            let inputs = Inputs {
+                                parameters: source.request.parameters.clone(),
+                                seed: source.request.seed,
+                                images: decoded.images.clone(),
+                                edges: source.request.edges.clone(),
+                                features: Vec::new(),
+                                mips: decoded.mips.clone(),
+                            };
+                            let renamed;
+                            let named = if source.follow.is_empty() {
+                                &atlas.named
+                            } else {
+                                let features = request
+                                    .features
+                                    .get(&receivers[index].id)
+                                    .map_or(&[][..], Vec::as_slice);
+                                renamed = followed(features, &source.follow)?;
+                                &renamed
+                            };
+                            let externals = external_planes(dependencies);
+                            // The rasters of the intrinsic outputs, out of the build's map while
+                            // this pass reads and fills them.
+                            let mut taken: Vec<Option<(ContentKey, WorkingRaster)>> = wanted
+                                .iter()
+                                .map(|(made, _, _)| {
+                                    let key = raster_of.get(*made)?;
+                                    Some((*key, output_rasters.remove(key)?))
+                                })
+                                .collect();
+                            let before: Vec<usize> = taken
+                                .iter()
+                                .map(|taken| taken.as_ref().map_or(0, |(_, w)| w.raster.points))
+                                .collect();
+                            let mut reading: Vec<Option<&mut IntrinsicRaster>> = taken
+                                .iter_mut()
+                                .map(|taken| taken.as_mut().map(|(_, w)| &mut w.raster))
+                                .collect();
+                            let baked = bake_output_planes(
+                                &source.program,
+                                &source.table,
+                                &inputs,
+                                atlas,
+                                named,
+                                &pairs,
+                                &externals,
+                                request.profile.threads(),
+                                &mut reading,
+                                stopped,
+                            );
+                            drop(reading);
+                            for (taken, before) in taken.into_iter().zip(before) {
+                                if let Some((key, mut working)) = taken {
+                                    working.changed |= working.raster.points != before;
+                                    output_rasters.insert(key, working);
+                                }
+                            }
+                            baked
+                        } else {
+                            bake_source_planes(source, decoded, atlas, &pairs, stopped)
+                        }
+                        .map_err(|error| {
+                            let message = error.message.clone();
+                            evaluation_error = Some(error);
+                            message
+                        })?;
                         let mut requested = None;
-                        for ((made, _), plane) in wanted.iter().zip(baked) {
-                            plane_dirty.remove(&(index, (*made).to_owned()));
-                            let plane = baked_plane(&compiled, made, plane)?;
-                            if *made == name {
+                        for ((made, name, _), plane) in wanted.iter().zip(baked) {
+                            plane_dirty.remove(*made);
+                            let plane = if layered {
+                                Arc::new(BakedReceiver::Plane(plane))
+                            } else {
+                                baked_plane(&compiled, name, plane)?
+                            };
+                            if *made == id {
                                 requested = Some(plane);
                             } else {
-                                baked_planes.insert((index, (*made).to_owned()), plane);
+                                baked_planes.insert((*made).to_owned(), plane);
                             }
                         }
                         let plane = requested.expect("the requested plane was baked");
+                        if layered {
+                            made_layer_planes.push((id.to_owned(), plane.clone()));
+                        }
                         let bytes = plane.bytes();
                         Ok((Artifact::Material(plane), bytes))
                     }
@@ -1969,6 +3027,24 @@ impl Session {
                 );
             }
         }
+        for (key, working) in output_rasters {
+            if working.changed {
+                let bytes = working.raster.bytes();
+                self.runtime.retain(
+                    INTRINSIC_OUTPUTS,
+                    key,
+                    Artifact::Material(Arc::new(BakedReceiver::Intrinsic(working.raster))),
+                    bytes,
+                    true,
+                );
+            }
+        }
+        for (id, plane) in made_layer_planes {
+            let key = plan.key(&id).expect("planned plane");
+            let bytes = plane.bytes();
+            self.runtime
+                .retain(LAYER_PLANES, key, Artifact::Material(plane), bytes, false);
+        }
         if let Some(share) = share {
             let Artifact::Program(program) = complete["program"].as_ref() else {
                 unreachable!()
@@ -2016,6 +3092,7 @@ impl Session {
         };
         let mut layouts = Vec::with_capacity(receivers.len());
         let mut dropped = Vec::with_capacity(receivers.len());
+        let mut decal_rectangle = None;
         for (i, receiver) in receivers.iter().enumerate() {
             let Artifact::Receiver(atlas) = complete[&format!("layout/{i}")].as_ref() else {
                 unreachable!()
@@ -2037,8 +3114,17 @@ impl Session {
                 };
                 maps.insert(group, baked.clone());
             }
-            let (material, images) = assemble(&maps, inspecting).map_err(&fail)?;
+            let (material, images) = assemble(&maps, inspecting, &declared).map_err(&fail)?;
             layouts.push([atlas.width as f64, atlas.height as f64, atlas.density]);
+            if compiled.metadata().kind == program::RecipeKind::Decal {
+                let bound = |pick: fn(f64, f64) -> f64, start: f64| {
+                    [0, 1].map(|axis| atlas.mesh.uvs.iter().map(|uv| uv[axis]).fold(start, pick))
+                };
+                decal_rectangle = Some([
+                    bound(f64::min, f64::INFINITY),
+                    bound(f64::max, f64::NEG_INFINITY),
+                ]);
+            }
             // A receiver with more features than a bake reads lost some: say so, never silently.
             dropped.push(queries_features(&compiled) && atlas.features().1);
             let mesh = format!(
@@ -2070,8 +3156,29 @@ impl Session {
                 collidable: false,
             });
         }
-        let mut metadata = serde_json::to_value(compiled.metadata()).unwrap();
+        // A layered slot reports its base, with each layer's own metadata and the material each
+        // channel of the result comes from.
+        let mut metadata = serde_json::to_value(&declared).unwrap();
+        if let Some((_, chain, programs)) = &layered {
+            metadata["layers"] = programs[1..]
+                .iter()
+                .map(|program| serde_json::to_value(program.metadata()).unwrap())
+                .collect();
+            metadata["channels"] = chain
+                .entry
+                .iter()
+                .filter_map(|(input, (producer, _))| {
+                    let channel = input.strip_prefix(program::BASE_PLANE)?;
+                    Some((channel.to_owned(), serde_json::json!(producer)))
+                })
+                .collect::<serde_json::Map<_, _>>()
+                .into();
+        }
         metadata["mapping"] = serde_json::to_value(request.mapping).unwrap();
+        // Where a decal's rectangle lies in its texture, for whoever places it.
+        if let Some([low, high]) = decal_rectangle {
+            metadata["decal"] = serde_json::json!({ "uvMin": low, "uvMax": high });
+        }
         // Each receiver's texture size and detail, for hosts that report or budget them.
         metadata["atlases"] = receivers
             .iter()
@@ -2102,6 +3209,9 @@ thread_local! {
     static INTRINSIC: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The values each bake of another material's planes evaluated on this thread.
     static PLANE_BAKES: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Each output plane bake on this thread: the material's entry, its outputs, and the points
+    /// read from intrinsic rasters and evaluated.
+    static LAYER_BAKES: std::cell::RefCell<Vec<(String, Vec<String>, usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Field planes (read, kept) of each bake that evaluated rows on this thread.
     static PLANES: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -3671,13 +4781,18 @@ impl Session {
         let (mut nodes, image_bytes) = source_nodes(&program, request, assets).map_err(&fail)?;
         nodes.push(layout_node(0, &receiver, request));
         // Planes bound to the program's external inputs, as a build of the request binds them.
-        let bound =
-            self.bound_planes(&program, request, std::slice::from_ref(&receiver), assets)?;
+        let bound = self.bound_planes(
+            &program,
+            request,
+            std::slice::from_ref(&receiver),
+            assets,
+            None,
+        )?;
         let planes = &bound[0];
         let mut targets: Vec<String> = vec!["program".into(), "assets".into(), "layout/0".into()];
         let mut source_images: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
-        plane_nodes(&bound, 0, assets, &mut nodes, &mut source_images).map_err(&fail)?;
-        targets.extend(planes.iter().map(|(name, _)| format!("plane/0/{name}")));
+        plane_nodes(&bound, 0, assets, &mut nodes, &mut source_images, false).map_err(&fail)?;
+        targets.extend(planes.iter().map(|(_, id)| id.clone()));
         let plan = Plan::new(nodes, targets).map_err(|e| fail(e.to_string()))?;
         let mips = self.mips.clone();
         let complete = self
@@ -3704,12 +4819,15 @@ impl Session {
                     "assets" => decoded_assets(&image_bytes, dependencies, &mips),
                     "layout/0" => receiver_layout(&receiver, request),
                     id if id.starts_with("plane/0/") => {
-                        let name = &id["plane/0/".len()..];
+                        let name = bound.nodes[id].name.as_str();
                         let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
                             unreachable!()
                         };
-                        match bound.bound(0, name) {
-                            Bound::Asset(bytes) => decoded_plane(&program, name, bytes, atlas),
+                        match &bound.nodes[id].bound {
+                            Bound::Asset(bytes) => {
+                                let components = plane_components(&program, &bound, name);
+                                decoded_plane(components, name, bytes, atlas)
+                            }
                             Bound::Material { material, value } => {
                                 let Artifact::Inputs(decoded) =
                                     dependencies["source-assets"].as_ref()
@@ -3736,22 +4854,17 @@ impl Session {
             .map_err(&fail)?;
         let plane_keys: Vec<(String, ContentKey)> = planes
             .iter()
-            .map(|(name, _)| {
-                let key = plan.key(&format!("plane/0/{name}"));
-                (name.clone(), key.expect("planned plane"))
-            })
+            .map(|(name, id)| (name.clone(), plan.key(id).expect("planned plane")))
             .collect();
         let externals: Vec<&program::Plane> = planes
             .iter()
-            .filter_map(
-                |(name, _)| match complete[&format!("plane/0/{name}")].as_ref() {
-                    Artifact::Material(baked) => match baked.as_ref() {
-                        BakedReceiver::Plane(plane) => Some(plane),
-                        _ => None,
-                    },
+            .filter_map(|(_, id)| match complete[id].as_ref() {
+                Artifact::Material(baked) => match baked.as_ref() {
+                    BakedReceiver::Plane(plane) => Some(plane),
                     _ => None,
                 },
-            )
+                _ => None,
+            })
             .collect();
         let Artifact::Inputs(decoded) = complete["assets"].as_ref() else {
             unreachable!()
@@ -4728,3 +5841,7 @@ output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
 #[cfg(test)]
 #[path = "material_planes_tests.rs"]
 mod plane_tests;
+
+#[cfg(test)]
+#[path = "material_layers_tests.rs"]
+mod layer_tests;

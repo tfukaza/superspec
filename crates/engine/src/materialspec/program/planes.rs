@@ -44,6 +44,11 @@ pub struct Plane {
     /// Single form, one number per component and texel at single precision, with no footprint
     /// estimate. A texel without a value holds NaN as its first component.
     single: Vec<f32>,
+    /// Exact form, one number per component and texel at full precision, with no footprint
+    /// estimate (the estimate of every value is zero): an output of another material, which has
+    /// none, in a quarter to a half of the full form's bytes. A texel without a value holds NaN as
+    /// its first component.
+    exact: Vec<f64>,
     /// Values one step along a chart leg from a texel, where that point is no texel's center,
     /// by [`Self::leg`] index: the four numbers of the full form. A relief needs the height
     /// there, and a plane has no value between texels unless it holds these.
@@ -75,6 +80,7 @@ impl Plane {
             kind: if components == 0 { 4 } else { components as u8 },
             full: [0., 0., 0., f64::NAN].repeat(texels),
             single: Vec::new(),
+            exact: Vec::new(),
             legs: BTreeMap::new(),
             stored: 0,
             added: 0,
@@ -106,6 +112,7 @@ impl Plane {
             kind: components as u8,
             full: Vec::new(),
             single: values,
+            exact: Vec::new(),
             legs: BTreeMap::new(),
             stored,
             added: 0,
@@ -125,15 +132,52 @@ impl Plane {
         }
     }
 
-    /// Gives `texel` of a full-precision plane the finite numbers `value` (one per component),
-    /// with no filtering estimate. Texels outside the plane and planes of host numbers are left
-    /// alone.
+    /// An empty plane for the external input `name` in the exact form (see [`Self::set`]):
+    /// `components` (1 to 3) numbers per texel at full precision, every value with a zero
+    /// filtering estimate, as the outputs of a material have.
+    pub fn exact_external(name: &str, components: usize, texels: usize) -> Result<Self, String> {
+        if !(1..=3).contains(&components) {
+            return Err(format!("External plane '{name}' needs 1 to 3 components."));
+        }
+        let mut exact = vec![0.; components * texels];
+        for texel in exact.chunks_exact_mut(components) {
+            texel[0] = f64::NAN;
+        }
+        Ok(Self {
+            binding: Binding::External(Arc::from(name)),
+            kind: components as u8,
+            full: Vec::new(),
+            single: Vec::new(),
+            exact,
+            legs: BTreeMap::new(),
+            stored: 0,
+            added: 0,
+            missed: 0,
+        })
+    }
+
+    /// Gives `texel` of a full-precision or exact plane the finite numbers `value` (one per
+    /// component), with no filtering estimate. Texels outside the plane and planes of host
+    /// numbers are left alone.
     pub fn set(&mut self, texel: usize, value: &[f64]) {
         let mut components = [0.; 3];
         for (slot, component) in components.iter_mut().zip(value) {
             *slot = *component;
         }
-        if self.full_at(texel).is_some() && components.iter().all(|v| v.is_finite()) {
+        if !components.iter().all(|v| v.is_finite()) {
+            return;
+        }
+        if let Some(at) = self.exact_at_mut(texel) {
+            let fresh = at[0].is_nan();
+            let count = at.len();
+            at.copy_from_slice(&components[..count]);
+            if fresh {
+                self.stored += 1;
+                self.added += 1;
+            }
+            return;
+        }
+        if self.full_at(texel).is_some() {
             self.store(
                 texel,
                 &Value::Number(components, self.kind.clamp(1, 3) as usize, 0.),
@@ -172,7 +216,8 @@ impl Plane {
                 numbers
             }
         };
-        if texel < self.texels() && !self.full.is_empty() && numbers.iter().all(|v| v.is_finite()) {
+        let filled = !self.full.is_empty() || !self.exact.is_empty();
+        if texel < self.texels() && filled && numbers.iter().all(|v| v.is_finite()) {
             self.legs.insert(index, numbers);
         }
     }
@@ -200,6 +245,26 @@ impl Plane {
     /// Gives texel `to` the value of texel `from` (none, if `from` holds none), for texels that
     /// repeat another's sample.
     pub fn repeat(&mut self, from: usize, to: usize) {
+        if !self.exact.is_empty() {
+            let count = self.kind.clamp(1, 3) as usize;
+            let texels = self.exact.len() / count;
+            if from >= texels || to >= texels {
+                return;
+            }
+            let had = !self.exact[to * count].is_nan();
+            let has = !self.exact[from * count].is_nan();
+            self.exact
+                .copy_within(from * count..(from + 1) * count, to * count);
+            match (had, has) {
+                (false, true) => {
+                    self.stored += 1;
+                    self.added += 1;
+                }
+                (true, false) => self.stored -= 1,
+                _ => {}
+            }
+            return;
+        }
         if self.full_at(to).is_none() {
             return;
         }
@@ -339,11 +404,18 @@ impl Plane {
     }
     /// Bytes this plane holds.
     pub fn bytes(&self) -> usize {
-        self.full.len() * 8 + self.single.len() * 4 + self.legs.len() * 56 + 64
+        (self.full.len() + self.exact.len()) * 8 + self.single.len() * 4 + self.legs.len() * 56 + 64
     }
     /// Texels this plane covers.
     pub fn texels(&self) -> usize {
-        self.full.len() / 4 + self.single.len() / (self.kind.clamp(1, 3) as usize)
+        self.full.len() / 4
+            + (self.single.len() + self.exact.len()) / (self.kind.clamp(1, 3) as usize)
+    }
+    /// The numbers of `texel` in the exact form; `None` outside it and for other forms.
+    fn exact_at_mut(&mut self, texel: usize) -> Option<&mut [f64]> {
+        let count = self.kind.clamp(1, 3) as usize;
+        let start = texel.checked_mul(count)?;
+        self.exact.get_mut(start..start.checked_add(count)?)
     }
     /// The four numbers of `texel` in the full form; `None` outside it, and for every texel of
     /// a plane in the single form.
@@ -359,7 +431,7 @@ impl Plane {
     pub(super) fn has(&self, texel: usize) -> bool {
         match self.full_at(texel) {
             Some(at) => !at[3].is_nan(),
-            None => self.single_at(texel).is_some(),
+            None => self.single_at(texel).is_some() || self.exact_at(texel).is_some(),
         }
     }
     /// The value at `texel`, if it holds one. Texels outside the plane hold none.
@@ -392,7 +464,23 @@ impl Plane {
             }
             return self.value(texel % texels);
         }
+        if !self.exact.is_empty() {
+            return self.exact_at(texel);
+        }
         self.single_at(texel)
+    }
+    /// The value at `texel` of a plane in the exact form.
+    #[inline(never)]
+    fn exact_at<'a>(&self, texel: usize) -> Option<Value<'a>> {
+        let components = self.kind.clamp(1, 3) as usize;
+        let start = texel.checked_mul(components)?;
+        let at = self.exact.get(start..start.checked_add(components)?)?;
+        if at[0].is_nan() {
+            return None;
+        }
+        let mut value = [0.; 3];
+        value[..components].copy_from_slice(at);
+        Some(Value::Number(value, components, 0.))
     }
     /// The value at `texel` of a plane in the single form.
     #[inline(never)]
@@ -483,6 +571,35 @@ mod tests {
         assert!(Plane::external("shade", 1, vec![f32::INFINITY]).is_err());
         assert!(Plane::external("shade", 2, vec![0.5, f32::NAN]).is_err());
         assert!(Plane::external("shade", 4, vec![0.; 4]).is_err());
+    }
+
+    #[test]
+    fn an_exact_plane_reads_as_a_full_plane_of_the_same_values_in_fewer_bytes() {
+        let mut exact = Plane::exact_external("base.base_color", 3, 4).unwrap();
+        let mut full = Plane::empty_external("base.base_color", 3, 4).unwrap();
+        for plane in [&mut exact, &mut full] {
+            plane.set(1, &[0.1, 0.2, 0.3]);
+            plane.set(2, &[0.4, f64::NAN, 0.]);
+            plane.repeat(1, 3);
+            plane.set_leg(1, 0, None, &[0.7, 0.8, 0.9]);
+        }
+        assert!(exact.bytes() < full.bytes());
+        assert_eq!((exact.texels(), exact.stored()), (4, 2));
+        for texel in 0..12 {
+            assert_eq!(
+                exact.value(texel).map(|value| value.data()),
+                full.value(texel).map(|value| value.data()),
+                "{texel}"
+            );
+            assert_eq!(exact.has(texel), full.has(texel), "{texel}");
+        }
+        assert_eq!(
+            exact.value(Plane::leg(4, 1, 0)).unwrap().data().0,
+            [0.7, 0.8, 0.9]
+        );
+        exact.repeat(0, 3);
+        assert_eq!((exact.stored(), exact.value(3).is_none()), (1, true));
+        assert!(Plane::exact_external("x", 4, 1).is_err());
     }
 
     #[test]

@@ -888,6 +888,9 @@ impl<'a> Context<'a, '_> {
                 Kind::Text(s) => *out = Value::Text(s),
                 Kind::Local(index) => *out = locals[*index],
                 Kind::Input(input) => {
+                    if input.render_only() {
+                        Err(render_only(self.program, &node.mark))?;
+                    }
                     let sample = self.sample;
                     *out = match input {
                         Input::Uv => Value::vector(&sample.uv, sample.uv_footprint.unwrap_or(0.)),
@@ -900,6 +903,9 @@ impl<'a> Context<'a, '_> {
                         Input::BoundsMax => Value::vector(&sample.bounds_max, 0.),
                         Input::Footprint => Value::scalar(sample.footprint),
                         Input::UvFootprint => Value::scalar(sample.uv_footprint.unwrap_or(0.)),
+                        Input::Time | Input::Instance | Input::InstanceW => {
+                            unreachable!("refused above")
+                        }
                     }
                 }
                 Kind::Parameter(index) => *out = self.parameters[*index],
@@ -1020,6 +1026,58 @@ impl<'a> Context<'a, '_> {
         }
         Ok(())
     }
+    /// `ramp(mode, t, position, color, ...)`: the color of a ramp at `t`.
+    #[inline(never)]
+    fn ramp(&mut self, a: &[Value<'a>], mark: &Mark, out: &mut Value<'a>) -> Done {
+        let error = |message: &str| self.program.diagnostic("MS_INPUT", message, mark);
+        let mode = a[0].text();
+        let display = mode.starts_with("display");
+        let constant = mode.ends_with("constant");
+        let (t, _, width) = a[1].data();
+        let stops = (a.len() - 2) / 2;
+        let position = |stop: usize| a[2 + stop * 2].first();
+        let color = |stop: usize| a[3 + stop * 2].data().0;
+        for stop in 0..stops {
+            let at = position(stop);
+            if !at.is_finite() || (stop > 0 && at < position(stop - 1)) {
+                Err(error(
+                    "Ramp stops need finite positions in ascending order.",
+                ))?;
+            }
+            if display && color(stop).iter().any(|c| !(0.0..=1.0).contains(c)) {
+                Err(error(
+                    "Display-referred ramp stops are sRGB-encoded colors in [0, 1].",
+                ))?;
+            }
+        }
+        if !t[0].is_finite() {
+            Err(error("A ramp needs a finite coordinate."))?;
+        }
+        let t = t[0].clamp(position(0), position(stops - 1));
+        // The last stop at or below t; stops at one position take the later one.
+        let mut below = 0;
+        for stop in 1..stops {
+            if position(stop) <= t {
+                below = stop;
+            }
+        }
+        let (mut value, mut slope) = (color(below), 0f64);
+        if !constant && below + 1 < stops {
+            let (from, to) = (position(below), position(below + 1));
+            let (first, second) = (color(below), color(below + 1));
+            let part = (t - from) / (to - from);
+            for channel in 0..3 {
+                value[channel] = first[channel] + (second[channel] - first[channel]) * part;
+                slope = slope.max(((second[channel] - first[channel]) / (to - from)).abs());
+            }
+        }
+        if display {
+            value = value.map(super::numeric::srgb_to_linear);
+        }
+        *out = Value::Number(value, 3, (width * slope).min(1e9));
+        Ok(())
+    }
+
     /// `feature_distance(name, limit)` and `feature_tangent(name, limit)`: the nearest segment of
     /// the receiver's features of that name, found through the name's own grid and charged for
     /// the segments visited like a crease query. A receiver with no feature of the name answers
@@ -1579,6 +1637,28 @@ impl<'a> Context<'a, '_> {
                 };
                 *out = Value::Number([combined, 0., 0.], 1, (xw + yw).min(1.));
             }
+            B::AlphaCutout => {
+                let (coverage, _, w) = a[0].data();
+                let cutoff = a[1].first();
+                if !(0.0..=1.0).contains(&cutoff) {
+                    Err(error("An alpha cutoff lies in [0, 1]."))?;
+                }
+                *out = Value::Number([coverage[0].clamp(0., 1.), 0., 0.], 1, w);
+            }
+            B::AuthoredMask => {
+                let id = a[0].text();
+                let Some((image, _)) = self.image(id, false) else {
+                    return Err(Box::new(error(&format!(
+                        "Mask image '{id}' was not supplied."
+                    ))));
+                };
+                let uv = a[1].data().0;
+                *out = Value::scalar(mask_sample(image, [uv[0], uv[1]]));
+            }
+            B::Ramp => return self.ramp(a, mark, out),
+            B::InstanceAttribute | B::VertexAttribute => {
+                return Err(Box::new(render_only(self.program, mark)));
+            }
             B::Unknown => unreachable!("typechecked builtin"),
         };
         Ok(())
@@ -1755,6 +1835,39 @@ fn image_sample(image: &Image, uv: [f64; 2], color: bool) -> [f64; 4] {
             })
             .sum()
     })
+}
+/// The diagnostic of a value that reads a render-only input (`time`, `instance`, an instance or
+/// vertex attribute) where a bake evaluates it.
+fn render_only(program: &Program, mark: &Mark) -> ProgramDiagnostic {
+    program.diagnostic(
+        "MS_INPUT",
+        "This reads a render-only input (time, instance or an instance or vertex attribute), which exists only where the material is drawn: a baked channel cannot read it. Read it in values only the shader evaluates.",
+        mark,
+    )
+}
+
+/// The red channel of a mask image at a coordinate of its unit square (V up): bilinear between
+/// texel centers, the edge texels continuing to the square's edge, and zero outside the square.
+fn mask_sample(image: &Image, uv: [f64; 2]) -> f64 {
+    if !(0.0..=1.0).contains(&uv[0]) || !(0.0..=1.0).contains(&uv[1]) {
+        return 0.;
+    }
+    let x = uv[0] * image.width as f64 - 0.5;
+    let y = (1. - uv[1]) * image.height as f64 - 0.5;
+    let (fx, fy) = (x - x.floor(), y - y.floor());
+    let edge = |v: f64, size: usize| v.clamp(0., (size - 1) as f64) as usize;
+    let (left, right) = (
+        edge(x.floor(), image.width),
+        edge(x.floor() + 1., image.width),
+    );
+    let (top, bottom) = (
+        edge(y.floor(), image.height),
+        edge(y.floor() + 1., image.height),
+    );
+    let red =
+        |row: usize, column: usize| f64::from(image.rgba[(row * image.width + column) * 4]) / 255.;
+    (red(top, left) * (1. - fx) + red(top, right) * fx) * (1. - fy)
+        + (red(bottom, left) * (1. - fx) + red(bottom, right) * fx) * fy
 }
 fn runoff(sample: &Sample, edges: &[Edge], width: f64, extent: f64) -> f64 {
     let normal = sample.normal.map(|v| v / length(sample.normal));

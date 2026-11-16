@@ -6,7 +6,8 @@
 //! shared. Spans stay byte offsets into the recipe text; `diagnostic` converts them to UTF-16.
 use super::{
     super::catalog::{self, Group},
-    LiveOperation, ProgramDiagnostic, Source, Sources, Type, diagnostic,
+    BASE_PLANE, Blend, LAYER_CHANNELS, LiveOperation, ProgramDiagnostic, RecipeKind, Source,
+    Sources, Traits, Type, diagnostic,
     syntax::{self, Definition, Expr, Expression, Mark, Module},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -740,6 +741,8 @@ struct Lower<'a> {
     declared: BTreeSet<String>,
     groups: BTreeMap<String, &'static Group>,
     layer_nodes: BTreeMap<String, Node>,
+    /// Channels of the surface beneath that the recipe reads (`below.<channel>`), with where.
+    below: BTreeMap<&'static str, Mark>,
     errors: Vec<ProgramDiagnostic>,
     out: Module,
 }
@@ -769,12 +772,14 @@ pub(super) fn parse(sources: &Sources, module: &str) -> Result<Module, Vec<Progr
         declared: BTreeSet::new(),
         groups: BTreeMap::new(),
         layer_nodes: BTreeMap::new(),
+        below: BTreeMap::new(),
         errors: Vec::new(),
         out: Module {
             imports: Vec::new(),
             declarations: Vec::new(),
             outputs: Vec::new(),
             live: Vec::new(),
+            traits: Default::default(),
         },
     }
     .run(statements)
@@ -844,6 +849,7 @@ impl Lower<'_> {
         for statement in statements {
             self.statement(statement);
         }
+        self.below_fields();
         if self.errors.is_empty() {
             scope::qualify(&mut self.out, self.module, self.sources, &self.bindings);
             Ok(self.out)
@@ -1256,11 +1262,298 @@ impl Lower<'_> {
         self.out.declarations.extend(declarations);
     }
 
+    /// A literal `true` or `false` property, such as `doubleSided`.
+    fn flag(&mut self, property: Option<&Property>) -> bool {
+        match property.map(|property| (&property.value.kind, &property.value.mark)) {
+            None => false,
+            Some((NodeKind::Bool(value), _)) => *value,
+            Some((_, at)) => {
+                let at = at.clone();
+                self.error("MT_PROPERTY", "Expected the literal true or false.", &at);
+                false
+            }
+        }
+    }
+
+    /// The `blend` property of a decal or layer: a rule for some of the channels it outputs.
+    fn blend_rules(
+        &mut self,
+        property: Option<&Property>,
+        channels: &[(&'static str, &'static str)],
+    ) -> BTreeMap<&'static str, Blend> {
+        let mut rules = BTreeMap::new();
+        let Some(property) = property else {
+            return rules;
+        };
+        let keys: Vec<&str> = channels.iter().map(|(key, _)| *key).collect();
+        let Some(entries) = self.properties(&property.value, "blend", &keys) else {
+            return rules;
+        };
+        for entry in entries {
+            let rule = match &entry.value.kind {
+                NodeKind::Text(name) => Blend::named(name),
+                _ => None,
+            };
+            let Some(rule) = rule else {
+                self.error(
+                    "MT_PROPERTY",
+                    format!("A blend rule is one of {}.", Blend::NAMES.join(", ")),
+                    &entry.value.mark,
+                );
+                continue;
+            };
+            let (_, ms) = channels
+                .iter()
+                .find(|(key, _)| *key == entry.key)
+                .expect("a listed key");
+            rules.insert(*ms, rule);
+        }
+        rules
+    }
+
+    /// `defineDecal({ size, baseColor, opacity, ..., blend })`: a bounded appearance sized in
+    /// meters. Its channels are its own values; `blend` says how whoever places it combines
+    /// each with the surface beneath, by the decal's opacity.
+    fn decal(&mut self, node: &Node, args: &[Node]) {
+        if !self.require_import("defineDecal", &node.mark) {
+            return;
+        }
+        let [options] = args else {
+            self.error(
+                "MT_SUBSET",
+                "defineDecal takes one options object.",
+                &node.mark,
+            );
+            return;
+        };
+        const DECAL: [&str; 6] = [
+            "baseColor",
+            "roughness",
+            "metalness",
+            "height",
+            "emissive",
+            "opacity",
+        ];
+        let mut allowed = vec!["name", "size", "blend", "doubleSided"];
+        allowed.extend(DECAL);
+        let Some(properties) = self.properties(options, "defineDecal", &allowed) else {
+            return;
+        };
+        let find = |key: &str| properties.iter().find(|p| p.key == key);
+        let size = match find("size").map(|property| &property.value.kind) {
+            Some(NodeKind::Array(items)) => match items.as_slice() {
+                [
+                    Node {
+                        kind: NodeKind::Number(width),
+                        ..
+                    },
+                    Node {
+                        kind: NodeKind::Number(height),
+                        ..
+                    },
+                ] if *width > 0. && *height > 0. && width.is_finite() && height.is_finite() => {
+                    Some([*width, *height])
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if size.is_none() {
+            self.error(
+                "MT_PROPERTY",
+                "A decal needs size: [width, height], positive numeric literals in meters.",
+                find("size").map_or(&options.mark, |property| &property.value.mark),
+            );
+        }
+        if find("baseColor").is_none() {
+            self.error("MT_BASE", "A decal needs a baseColor.", &options.mark);
+        }
+        let mut blended = Vec::new();
+        for (key, ms, kind) in CHANNELS {
+            let Some(entry) = find(key).filter(|_| DECAL.contains(&key)) else {
+                continue;
+            };
+            let Some(value) = self.expr(&entry.value, &BTreeSet::new()) else {
+                continue;
+            };
+            let field = format!("decal.{ms}");
+            self.out.declarations.push((
+                field.clone(),
+                Definition::Field {
+                    value,
+                    kind: Some(kind),
+                    mark: entry.mark.clone(),
+                },
+            ));
+            self.out
+                .outputs
+                .push((ms.into(), self.name_expr(&field, &entry.mark)));
+            if ms != "opacity" {
+                blended.push((key, ms));
+            }
+        }
+        let rules = self.blend_rules(find("blend"), &blended);
+        self.out.traits = Traits {
+            kind: RecipeKind::Decal,
+            double_sided: self.flag(find("doubleSided")),
+            size,
+            blend: blended
+                .iter()
+                .map(|(_, ms)| {
+                    (
+                        (*ms).to_owned(),
+                        rules.get(ms).copied().unwrap_or(Blend::Mix),
+                    )
+                })
+                .collect(),
+        };
+    }
+
+    /// The field that reads a channel of the surface beneath a layer.
+    fn below_field(ms: &str) -> String {
+        format!("below.{ms}")
+    }
+
+    /// `defineLayer({ coverage, baseColor, ..., blend })`: a weathering layer. Each channel it
+    /// gives becomes the surface beneath combined with it by the layer's coverage, under the
+    /// channel's blend rule; the other channels are not outputs, and pass through.
+    fn weathering(&mut self, node: &Node, args: &[Node]) {
+        if !self.require_import("defineLayer", &node.mark) {
+            return;
+        }
+        let [options] = args else {
+            self.error(
+                "MT_SUBSET",
+                "defineLayer takes one options object.",
+                &node.mark,
+            );
+            return;
+        };
+        let channels: Vec<(&'static str, &'static str, Type)> = CHANNELS
+            .into_iter()
+            .filter(|(_, ms, _)| LAYER_CHANNELS.contains(ms))
+            .collect();
+        let mut allowed = vec!["name", "coverage", "blend"];
+        allowed.extend(channels.iter().map(|(key, _, _)| *key));
+        let Some(properties) = self.properties(options, "defineLayer", &allowed) else {
+            return;
+        };
+        let find = |key: &str| properties.iter().find(|p| p.key == key);
+        let Some(coverage) = find("coverage") else {
+            self.error("MT_PROPERTY", "A layer needs a coverage.", &options.mark);
+            return;
+        };
+        let Some(value) = self.expr(&coverage.value, &BTreeSet::new()) else {
+            return;
+        };
+        let at = &coverage.value.mark;
+        let clamped = self.call_expr("clamp", vec![value, self.num(0., at), self.num(1., at)], at);
+        self.out.declarations.push((
+            "layer.coverage".into(),
+            Definition::Field {
+                value: clamped,
+                kind: Some(Type::Scalar),
+                mark: at.clone(),
+            },
+        ));
+        let given: Vec<(&'static str, &'static str)> = channels
+            .iter()
+            .filter(|(key, _, _)| find(key).is_some())
+            .map(|(key, ms, _)| (*key, *ms))
+            .collect();
+        let rules = self.blend_rules(find("blend"), &given);
+        let mut blend = BTreeMap::new();
+        for (key, ms, kind) in channels {
+            let Some(entry) = find(key) else { continue };
+            let Some(value) = self.expr(&entry.value, &BTreeSet::new()) else {
+                continue;
+            };
+            let at = &entry.value.mark;
+            let field = format!("layer.{ms}");
+            self.out.declarations.push((
+                field.clone(),
+                Definition::Field {
+                    value,
+                    kind: Some(kind),
+                    mark: entry.mark.clone(),
+                },
+            ));
+            self.below.entry(ms).or_insert_with(|| at.clone());
+            let beneath = || self.name_expr(&Self::below_field(ms), at);
+            let own = self.name_expr(&field, at);
+            let rule = rules.get(ms).copied().unwrap_or(Blend::Mix);
+            let binary = |symbol: &str| {
+                Expr::make(
+                    Expression::Binary(symbol.into(), Box::new(beneath()), Box::new(own.clone())),
+                    at.clone(),
+                )
+            };
+            let combined = match rule {
+                Blend::Mix => own.clone(),
+                Blend::Add => binary("+"),
+                Blend::Multiply => binary("*"),
+                Blend::Max => self.call_expr("max", vec![beneath(), own.clone()], at),
+                Blend::Min => self.call_expr("min", vec![beneath(), own.clone()], at),
+            };
+            let cover = self.name_expr("layer.coverage", at);
+            self.out.outputs.push((
+                ms.into(),
+                self.call_expr("mix", vec![beneath(), combined, cover], at),
+            ));
+            blend.insert(ms.to_owned(), rule);
+        }
+        self.out.traits = Traits {
+            kind: RecipeKind::Layer,
+            blend,
+            ..Traits::default()
+        };
+    }
+
+    /// The fields that read the surface beneath, for every channel a layer reads or changes.
+    fn below_fields(&mut self) {
+        let below = std::mem::take(&mut self.below);
+        if self.out.traits.kind != RecipeKind::Layer {
+            if let Some(at) = below.values().next() {
+                self.error(
+                    "MT_SUBSET",
+                    "Only a layer (defineLayer) reads the surface beneath it.",
+                    at,
+                );
+            }
+            return;
+        }
+        for (ms, at) in below {
+            let fallback = match ms {
+                "base_color" => self.call_expr("vec3", vec![self.num(0.5, &at)], &at),
+                _ => self.default_channel(ms, &at),
+            };
+            let name = Expr::make(Expression::Text(format!("{BASE_PLANE}{ms}")), at.clone());
+            let kind = CHANNELS
+                .iter()
+                .find(|(_, known, _)| *known == ms)
+                .map(|(_, _, kind)| *kind);
+            self.out.declarations.push((
+                Self::below_field(ms),
+                Definition::Field {
+                    value: self.call_expr("external", vec![name, fallback], &at),
+                    kind,
+                    mark: at,
+                },
+            ));
+        }
+    }
+
     fn material(&mut self, node: &Node) {
+        if let Some(args) = is_call_to(node, "defineDecal") {
+            return self.decal(node, args);
+        }
+        if let Some(args) = is_call_to(node, "defineLayer") {
+            return self.weathering(node, args);
+        }
         let Some(args) = is_call_to(node, "defineMaterial") else {
             self.error(
                 "MT_SUBSET",
-                "The default export must be defineMaterial({ ... }).",
+                "The default export must be defineMaterial({ ... }), defineDecal({ ... }) or defineLayer({ ... }).",
                 &node.mark,
             );
             return;
@@ -1279,11 +1572,12 @@ impl Lower<'_> {
         let Some(properties) = self.properties(
             options,
             "defineMaterial",
-            &["name", "base", "layers", "channels", "live"],
+            &["name", "base", "layers", "channels", "live", "doubleSided"],
         ) else {
             return;
         };
         let find = |key: &str| properties.iter().find(|p| p.key == key);
+        self.out.traits.double_sided = self.flag(find("doubleSided"));
         let channel_keys: Vec<&str> = CHANNELS.iter().map(|c| c.0).collect();
         let mut current: BTreeMap<&'static str, String> = BTreeMap::new();
 
@@ -1638,6 +1932,29 @@ impl Lower<'_> {
             NodeKind::Name(name) => self.binding(name, &node.mark, locals)?,
             NodeKind::Member(base, member) => {
                 if let NodeKind::Name(instance) = &base.kind {
+                    // A channel of the surface beneath a layer.
+                    if instance == "below"
+                        && !locals.contains(instance)
+                        && !self.declared.contains(instance)
+                        && !self.bindings.contains_key(instance)
+                    {
+                        if !self.require_import("below", &node.mark) {
+                            return None;
+                        }
+                        let channel = CHANNELS
+                            .iter()
+                            .find(|(key, ms, _)| key == member && LAYER_CHANNELS.contains(ms));
+                        let Some((_, ms, _)) = channel else {
+                            self.error(
+                                "MS_NAME",
+                                "The surface beneath has baseColor, roughness, metalness, height, opacity and normalOffset.",
+                                &node.mark,
+                            );
+                            return None;
+                        };
+                        self.below.entry(ms).or_insert_with(|| node.mark.clone());
+                        return Some(self.name_expr(&Self::below_field(ms), &node.mark));
+                    }
                     if !locals.contains(instance) {
                         if let Some(group) = self.groups.get(instance).copied() {
                             if group.outputs.iter().any(|o| o.name == member) {

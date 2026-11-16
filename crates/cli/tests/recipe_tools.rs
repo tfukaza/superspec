@@ -244,7 +244,7 @@ fn sdk_and_catalog_commands_publish_the_generated_contract() {
     let catalog = json_of(&studio(temp.path(), &["catalog"]).stdout);
     assert_eq!(
         catalog["catalog"]["operations"].as_array().unwrap().len(),
-        52
+        57
     );
     assert_eq!(catalog["catalog"]["module"], "@superspec/material/v1");
 }
@@ -671,4 +671,54 @@ fn live_operations_export_as_material_extras_with_texture_arguments() {
     assert!(texture < document["textures"].as_array().unwrap().len());
     assert!(mask["channel"].as_u64().unwrap() < 4);
     assert!(mask["scale"].as_f64().unwrap() > 0.);
+}
+
+const STICKER: &str = r#"import { defineDecal, alphaCutout, ramp, softThreshold, fbm, seed, surface, uv, vec2, vec3, sub, mul, length } from "@superspec/material/v1";
+
+// A paper sticker torn along a noisy edge.
+const torn = softThreshold(fbm(mul(surface, 40), seed("tear"), 3), 0.42, 0.05);
+const faded = ramp("display-linear", length(sub(uv, vec2(0.5, 0.5))), 0, vec3(0.9, 0.8, 0.2), 0.7, vec3(0.6, 0.2, 0.1));
+
+export default defineDecal({
+  size: [0.3, 0.2],
+  baseColor: faded,
+  opacity: alphaCutout(torn, 0.4),
+  roughness: 0.7,
+  blend: { roughness: "max" },
+  doubleSided: true,
+});
+"#;
+
+#[test]
+fn a_torn_sticker_decal_exports_as_a_cutout_with_its_declared_cutoff() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("sticker.material.ts");
+    fs::write(&path, STICKER).unwrap();
+    let glb = studio(
+        temp.path(),
+        &["glb", path.to_str().unwrap(), "--resolution", "64"],
+    );
+    assert!(
+        glb.status.success(),
+        "{}",
+        String::from_utf8_lossy(&glb.stderr)
+    );
+    let length = u32::from_le_bytes(glb.stdout[12..16].try_into().unwrap()) as usize;
+    let document: Value = serde_json::from_slice(&glb.stdout[20..20 + length]).unwrap();
+    let materials = document["materials"].as_array().unwrap();
+    assert_eq!(materials.len(), 1, "{materials:?}");
+    assert_eq!(materials[0]["alphaMode"], "MASK");
+    assert_eq!(materials[0]["alphaCutoff"], 0.4);
+    assert_eq!(materials[0]["doubleSided"], true);
+    // A cutoff outside [0, 1] is refused where it is written.
+    let wrong = STICKER.replace("alphaCutout(torn, 0.4)", "alphaCutout(torn, 1.5)");
+    fs::write(&path, wrong).unwrap();
+    let refused = studio(temp.path(), &["check", path.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    let report = String::from_utf8_lossy(&refused.stdout).into_owned()
+        + &String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        report.contains("An alpha cutoff is a constant in [0, 1]."),
+        "{report}"
+    );
 }
