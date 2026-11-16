@@ -647,6 +647,74 @@ fn a_layer_over_planes_baked_from_a_base_equals_the_two_written_as_one_program()
 }
 
 #[test]
+fn a_relief_over_a_height_baked_from_a_base_is_the_relief_of_one_program() {
+    let base = "material 1;
+let bumps = fbm(surface * 30, seed(\"r\"), 3);
+let pits = cellular(surface * 18, seed(\"p\"));
+output base_color = vec3(0.4);
+output height = 0.002 * bumps;";
+    let layer = "material 1;
+param depth: scalar = 0.5 range(0, 1);
+let pits = external(\"base.pits\", 0.0);
+output base_color = vec3(0.4);
+output roughness = pits;
+output metalness = 0;
+output height = external(\"base.height\", 0.0) - 0.001 * depth * soft_threshold(pits, 0.3, 0.05);";
+    let one = "material 1;
+param depth: scalar = 0.5 range(0, 1);
+let bumps = fbm(surface * 30, seed(\"r\"), 3);
+let pits = cellular(surface * 18, seed(\"p\"));
+output base_color = vec3(0.4);
+output roughness = pits;
+output metalness = 0;
+output height = 0.002 * bumps - 0.001 * depth * soft_threshold(pits, 0.3, 0.05);";
+    let layered = |profile: Profile, resolution: usize| {
+        let mut request = request(layer.into(), resolution);
+        request.profile = profile;
+        request.modules.insert("base.ms".into(), base.into());
+        request.materials.insert(
+            "base".into(),
+            program::MaterialRequest {
+                entry: "base.ms".into(),
+                parameters: BTreeMap::new(),
+                seed: 0,
+            },
+        );
+        let bound = request.planes.entry("studio/swatch".into()).or_default();
+        for (input, value) in [("base.pits", "pits"), ("base.height", "height")] {
+            let source = crate::authoring::PlaneSource::Material {
+                material: "base".into(),
+                value: value.into(),
+            };
+            bound.insert(input.into(), source);
+        }
+        request
+    };
+    let whole = |profile: Profile, resolution: usize| {
+        let mut request = request(one.into(), resolution);
+        request.profile = profile;
+        request
+    };
+    for (profile, resolution) in [
+        (Profile::Preview, 48),
+        (Profile::Preview, 80),
+        (Profile::Production, 96),
+    ] {
+        let over = fresh(&layered(profile, resolution), &Assets::default());
+        let expected = fresh(&whole(profile, resolution), &Assets::default());
+        // Every map, the relief normal among them, at chart edges and gutters too.
+        assert_same(&over, &expected, &format!("{profile:?} at {resolution}"));
+        let normal = &pixels(&over)["normal"];
+        assert!(
+            normal
+                .chunks_exact(4)
+                .any(|texel| texel[0] != 128 || texel[1] != 128),
+            "the relief is not flat"
+        );
+    }
+}
+
+#[test]
 fn an_edit_bakes_only_the_planes_and_maps_it_can_change() {
     let mut session = Session::default();
     let (first, _, _) = layered_build(&mut session, 1, &layered(0.5, 0.4, 48));
@@ -792,6 +860,219 @@ fn planes_baked_from_a_material_stay_local_fail_clearly_and_recover() {
     revision += 1;
     let (recovered, _) = build(&mut session, revision, &edited, &Assets::default());
     assert_same(&recovered, &expected, "after failures and cancellations");
+}
+
+const GRAINED: &str = "material 1;
+param tint: scalar = 0.5 range(0, 1);
+param zoom: scalar = 12 range(1, 40);
+let heavy = fbm(surface * zoom, seed(\"g\"), 4);
+output base_color = vec3(clamp(heavy * tint, 0, 1));
+output roughness = clamp(heavy, 0, 1);
+output metalness = 0;";
+
+/// An upright wall `width` by `height` meters with its lower left corner at `corner`.
+fn wall(id: &str, corner: [f64; 3], width: f64, height: f64) -> crate::authoring::Receiver {
+    let [x, y, z] = corner;
+    crate::authoring::Receiver {
+        id: id.into(),
+        object_id: id.into(),
+        positions: vec![
+            x,
+            y,
+            z,
+            x + width,
+            y,
+            z,
+            x + width,
+            y,
+            z + height,
+            x,
+            y,
+            z + height,
+        ],
+        normals: [0., -1., 0.].repeat(4),
+        uvs: vec![0., 0., 1., 0., 1., 1., 0., 1.],
+        indices: vec![0, 1, 2, 0, 2, 3],
+        object_to_world: None,
+        contacts: Vec::new(),
+    }
+}
+
+/// The grained material on walls at 64 texels a meter, in world coordinates so that walls
+/// share one domain.
+fn grained(walls: Vec<crate::authoring::Receiver>, zoom: f64) -> Request {
+    let mut request = request(GRAINED.into(), 512);
+    request.mapping = crate::authoring::Mapping::World;
+    request.texel_density = Some(64.);
+    request.parameters.insert("zoom".into(), zoom.into());
+    request.receivers = walls;
+    request
+}
+
+/// A build with, for each intrinsic plane it filled, the receiver's lattice texels and how
+/// many of them the raster already held.
+fn intrinsic_build(
+    session: &mut Session,
+    revision: u64,
+    request: &Request,
+) -> (Output, Vec<(usize, usize)>) {
+    INTRINSIC.with(|log| log.borrow_mut().clear());
+    let (output, _) = build(session, revision, request, &Assets::default());
+    (
+        output,
+        INTRINSIC.with(|log| std::mem::take(&mut *log.borrow_mut())),
+    )
+}
+
+#[test]
+fn an_intrinsic_field_is_baked_once_for_every_receiver_and_size_that_samples_the_same_points() {
+    let fresh_of = |request: &Request| fresh(request, &Assets::default());
+    let mut session = Session::default();
+    // A wall one meter wide: 64 by 32 texels of surface, every one on the lattice.
+    // The first layout to bake the field only leaves a mark: most fields never see a second.
+    let first = grained(vec![wall("a", [0., 0., 0.], 1., 0.5)], 12.);
+    let (output, log) = intrinsic_build(&mut session, 1, &first);
+    assert!(log.is_empty(), "{log:?}");
+    assert_same(&output, &fresh_of(&first), "the first wall");
+    // The wall made two meters wide is a second layout: its values are kept by position.
+    let wider = grained(vec![wall("a", [0., 0., 0.], 2., 0.5)], 12.);
+    let (output, log) = intrinsic_build(&mut session, 2, &wider);
+    assert_eq!(log.len(), 1, "one intrinsic field: {log:?}");
+    let (points, found) = log[0];
+    assert!(points >= 128 * 32, "{points} texels on the lattice");
+    assert_eq!(found, 0, "nothing was kept yet");
+    assert_same(&output, &fresh_of(&wider), "the resized wall");
+    // Made four meters wide: the old half is read, the new half computed, and the maps are the
+    // bytes a session that shares nothing bakes.
+    let widest = grained(vec![wall("a", [0., 0., 0.], 4., 0.5)], 12.);
+    let (output, log) = intrinsic_build(&mut session, 3, &widest);
+    let (wide_points, found) = log[0];
+    assert!(wide_points > points && found >= 128 * 32, "{log:?}");
+    assert!(found < wide_points, "the new half was not kept: {log:?}");
+    assert_same(&output, &fresh_of(&widest), "the wall resized again");
+    // Another receiver over the same stretch of the domain, a meter behind: everything is read.
+    let behind = grained(vec![wall("b", [0.5, 1., 0.], 1., 0.5)], 12.);
+    let (output, log) = intrinsic_build(&mut session, 13, &behind);
+    assert_eq!(log[0].1, log[0].0, "every lattice texel was kept: {log:?}");
+    assert!(log[0].0 >= 64 * 32);
+    assert_same(&output, &fresh_of(&behind), "another receiver");
+    // Two receivers of one build share what the first computes.
+    let pair = grained(
+        vec![
+            wall("c", [8., 0., 0.], 1., 0.5),
+            wall("d", [8., 2., 0.], 1., 0.5),
+        ],
+        12.,
+    );
+    let (output, log) = intrinsic_build(&mut session, 14, &pair);
+    assert_eq!(log.len(), 2);
+    assert_eq!((log[0].1, log[1].1), (0, log[1].0), "{log:?}");
+    assert_same(&output, &fresh_of(&pair), "two receivers of one build");
+    // A parameter the field reads makes another raster; one it does not read changes nothing
+    // the field's plane or raster hold.
+    let zoomed = grained(vec![wall("a", [0., 0., 0.], 1., 0.5)], 20.);
+    let (output, log) = intrinsic_build(&mut session, 15, &zoomed);
+    assert!(
+        log.is_empty(),
+        "another zoom is another raster, not yet shared: {log:?}"
+    );
+    assert_same(&output, &fresh_of(&zoomed), "zoomed");
+    let mut tinted = first.clone();
+    tinted.parameters.insert("tint".into(), 0.9.into());
+    let (output, log) = intrinsic_build(&mut session, 16, &tinted);
+    assert!(
+        log.is_empty(),
+        "the kept plane of the layout serves: {log:?}"
+    );
+    assert_same(&output, &fresh_of(&tinted), "tinted");
+    // A wall whose texels fall beside the lattice shares nothing and bakes the same bytes.
+    let odd = grained(vec![wall("e", [0.013, 0., 0.007], 0.3, 0.21)], 12.);
+    let (output, log) = intrinsic_build(&mut session, 17, &odd);
+    assert_eq!(log[0].1, 0, "{log:?}");
+    assert_same(&output, &fresh_of(&odd), "beside the lattice");
+    // A cancelled build keeps nothing: the next one finds what the last finished build left.
+    let far = grained(vec![wall("f", [16., 0., 0.], 1., 0.5)], 12.);
+    let polls = Cell::new(0);
+    let cancelled = session.build(&far, 18, &|name| Assets::default().get(name), &|| {
+        polls.set(polls.get() + 1);
+        polls.get() > 4
+    });
+    assert!(cancelled.is_err());
+    let (output, log) = intrinsic_build(&mut session, 19, &far);
+    assert_eq!(log[0].1, 0, "the cancelled build kept nothing: {log:?}");
+    assert_same(&output, &fresh_of(&far), "after a cancelled build");
+}
+
+/// How much of the washroom's surface samples its footprint's lattice exactly, which is what
+/// shares intrinsic values between receivers today:
+/// `WASHROOM_PROJECT=<studio.json> cargo test --release -p superspec-engine --lib
+/// report_washroom_lattice -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn report_washroom_lattice() {
+    let path = std::env::var("WASHROOM_PROJECT").expect("WASHROOM_PROJECT names a bundled project");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let decode = |text: &str| -> Arc<[u8]> {
+        let mut bytes = Vec::with_capacity(text.len() / 4 * 3);
+        let (mut bits, mut count) = (0u32, 0);
+        for c in text.bytes().filter(|c| *c != b'=') {
+            let six = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'a'..=b'z' => c - b'a' + 26,
+                b'0'..=b'9' => c - b'0' + 52,
+                b'+' => 62,
+                _ => 63,
+            };
+            bits = bits << 6 | u32::from(six);
+            count += 6;
+            if count >= 8 {
+                count -= 8;
+                bytes.push((bits >> count) as u8);
+            }
+        }
+        bytes.into()
+    };
+    let assets: BTreeMap<String, Arc<[u8]>> = value["assets"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, text)| (name.clone(), decode(text.as_str().unwrap())))
+        .collect();
+    value.as_object_mut().unwrap().remove("assets");
+    let project: crate::authoring::Project = serde_json::from_value(value).unwrap();
+    let layouts = Session::default()
+        .project_layouts(
+            &project,
+            1,
+            &|name| assets.get(name).cloned().ok_or_else(|| name.to_owned()),
+            &|| false,
+        )
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    let mut by_material: BTreeMap<String, [usize; 4]> = BTreeMap::new();
+    for receiver in &layouts.receivers {
+        let counts = by_material.entry(receiver.material.clone()).or_default();
+        for (index, chart) in receiver.surface.chunks_exact(10).enumerate() {
+            let record = &layouts.records[receiver.offset..];
+            // Texels of the chart, from the record of a triangle that lies in it.
+            let texels = (0..receiver.triangles)
+                .map(|triangle| &record[triangle * layouts.record..][..4])
+                .find(|rect| f64::from(rect[0]) == chart[0] && f64::from(rect[1]) == chart[1])
+                .map_or(0, |rect| (rect[2] * rect[3]) as usize);
+            let _ = index;
+            counts[0] += 1;
+            counts[1] += texels;
+            if chart[9] == 1. {
+                counts[2] += 1;
+                counts[3] += texels;
+            }
+        }
+    }
+    for (material, [charts, texels, on_charts, on_texels]) in by_material {
+        eprintln!(
+            "{{\"material\":\"{material}\",\"charts\":{charts},\"texels\":{texels},\"latticeCharts\":{on_charts},\"latticeTexels\":{on_texels}}}"
+        );
+    }
 }
 
 const GRIMED: &str = "material 1;

@@ -16,7 +16,7 @@
 //! An external's plane is an input like an image: its content decides the result, so hosts key
 //! what they bake by it.
 use super::eval::Value;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// What a plane's values stand for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +44,10 @@ pub struct Plane {
     /// Single form, one number per component and texel at single precision, with no footprint
     /// estimate. A texel without a value holds NaN as its first component.
     single: Vec<f32>,
+    /// Values one step along a chart leg from a texel, where that point is no texel's center,
+    /// by [`Self::leg`] index: the four numbers of the full form. A relief needs the height
+    /// there, and a plane has no value between texels unless it holds these.
+    legs: BTreeMap<usize, [f64; 4]>,
     /// Texels holding a value.
     stored: usize,
     /// Texels given a value since the plane was made or last taken up for completion.
@@ -71,6 +75,7 @@ impl Plane {
             kind: if components == 0 { 4 } else { components as u8 },
             full: [0., 0., 0., f64::NAN].repeat(texels),
             single: Vec::new(),
+            legs: BTreeMap::new(),
             stored: 0,
             added: 0,
             missed: 0,
@@ -101,6 +106,7 @@ impl Plane {
             kind: components as u8,
             full: Vec::new(),
             single: values,
+            legs: BTreeMap::new(),
             stored,
             added: 0,
             missed: 0,
@@ -133,6 +139,62 @@ impl Plane {
                 &Value::Number(components, self.kind.clamp(1, 3) as usize, 0.),
             );
         }
+    }
+
+    /// The index of the point one step along chart leg `leg` (0 or 1) from `texel`, in a plane
+    /// of `texels` texels. Reading it gives the value stored for that point
+    /// ([`Self::set_leg`]), or the texel's own where none is: a plane without leg values is
+    /// flat between texels.
+    pub fn leg(texels: usize, texel: usize, leg: usize) -> usize {
+        texels * (1 + leg.min(1)) + texel
+    }
+
+    /// Stores the value at the point one step along `leg` from `texel`: the value `from` holds
+    /// at its texel `at` (nothing, if it holds none there), or the finite numbers `value`.
+    pub fn set_leg(
+        &mut self,
+        texel: usize,
+        leg: usize,
+        from: Option<(&Plane, usize)>,
+        value: &[f64],
+    ) {
+        let index = Self::leg(self.texels(), texel, leg);
+        let numbers = match from {
+            Some((plane, at)) => match plane.full_at(at) {
+                Some(found) if !found[3].is_nan() => [found[0], found[1], found[2], found[3]],
+                _ => return,
+            },
+            None => {
+                let mut numbers = [0.; 4];
+                for (slot, component) in numbers.iter_mut().zip(value.iter().take(3)) {
+                    *slot = *component;
+                }
+                numbers
+            }
+        };
+        if texel < self.texels() && !self.full.is_empty() && numbers.iter().all(|v| v.is_finite()) {
+            self.legs.insert(index, numbers);
+        }
+    }
+
+    /// The four numbers a full-precision plane holds at `texel` (components, padding included,
+    /// and the filtering estimate), if it holds a value there: what [`Self::put_raw`] takes, for
+    /// a host that keeps a field's values by something other than a receiver's texels.
+    pub fn raw(&self, texel: usize) -> Option<[f64; 4]> {
+        let at = self.full_at(texel).filter(|at| !at[3].is_nan())?;
+        Some([at[0], at[1], at[2], at[3]])
+    }
+
+    /// Gives `texel` of a full-precision plane the numbers [`Self::raw`] returned for the same
+    /// value elsewhere. Texels outside the plane are left alone.
+    pub fn put_raw(&mut self, texel: usize, raw: [f64; 4]) {
+        if raw[3].is_nan() || self.full_at(texel).is_none() {
+            return;
+        }
+        if !self.has(texel) {
+            self.stored += 1;
+        }
+        self.full[texel * 4..texel * 4 + 4].copy_from_slice(&raw);
     }
 
     /// Gives texel `to` the value of texel `from` (none, if `from` holds none), for texels that
@@ -277,7 +339,7 @@ impl Plane {
     }
     /// Bytes this plane holds.
     pub fn bytes(&self) -> usize {
-        self.full.len() * 8 + self.single.len() * 4 + 64
+        self.full.len() * 8 + self.single.len() * 4 + self.legs.len() * 56 + 64
     }
     /// Texels this plane covers.
     pub fn texels(&self) -> usize {
@@ -304,7 +366,7 @@ impl Plane {
     #[inline(always)]
     pub(super) fn value<'a>(&self, texel: usize) -> Option<Value<'a>> {
         let Some(at) = self.full_at(texel) else {
-            return self.single_at(texel);
+            return self.beyond(texel);
         };
         if at[3].is_nan() {
             return None;
@@ -314,6 +376,23 @@ impl Plane {
         } else {
             Value::Number([at[0], at[1], at[2]], self.kind as usize, at[3])
         })
+    }
+    /// The value at an index outside the full form: a leg point's (see [`Self::leg`]), or a
+    /// texel of the single form.
+    #[inline(never)]
+    fn beyond<'a>(&self, texel: usize) -> Option<Value<'a>> {
+        let texels = self.texels();
+        if texels > 0 && texel >= texels && texel / texels < 3 {
+            if let Some(at) = self.legs.get(&texel).filter(|_| self.kind != 4) {
+                return Some(Value::Number(
+                    [at[0], at[1], at[2]],
+                    self.kind as usize,
+                    at[3],
+                ));
+            }
+            return self.value(texel % texels);
+        }
+        self.single_at(texel)
     }
     /// The value at `texel` of a plane in the single form.
     #[inline(never)]
@@ -368,7 +447,10 @@ mod tests {
             plane.value(1).is_none() && !plane.has(1),
             "NaN marks no value"
         );
-        assert!(plane.value(6).is_none() && plane.value(usize::MAX).is_none());
+        // Past the texels come their leg points, flat without leg values; then nothing.
+        assert_eq!(plane.value(6).unwrap().data().0[0], 0.25);
+        assert!(plane.value(7).is_none() && plane.value(13).is_none());
+        assert!(plane.value(18).is_none() && plane.value(usize::MAX).is_none());
         let vectors =
             Plane::encode_external(1, 2, 3, &[f32::NAN, 0., 0., 0.5, 0.125, 0.75]).unwrap();
         let plane = Plane::decode_external("tint", &vectors, 1, 2).unwrap();

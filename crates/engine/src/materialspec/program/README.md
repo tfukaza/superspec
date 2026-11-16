@@ -91,6 +91,33 @@ and a program measures to them with `feature_distance("name", maxDistance)` and
   opening-edge, sill, base, top) into named features under the item's placement;
   `Request::features` and `Project::features` bind them to receivers.
 
+## Intrinsic values
+
+A value is intrinsic (`Dependencies::intrinsic`) when it reads nothing of a sample but its
+`surface` position and footprint, and no features, edges or planes. Two samples with the same
+bits of both then have the same value on any receiver, so it can be kept by position of the
+material's own domain instead of by a receiver's texels.
+
+- A serial receiver bake keeps each costly intrinsic field in an intrinsic raster
+  (`authoring/material.rs`, `IntrinsicRaster`), keyed by the program, the decoded images, the
+  field and the parameters and seed it reads, and by no layout. Inside, values are found by
+  lattice point: the footprint's bits (the lattice step) and whole numbers `i`, `j` with
+  `surface = ((i, j) + 0.5) * footprint` exactly, in tiles of 64 by 64.
+- A receiver's mapping reads the raster wherever one of its samples is exactly on its
+  footprint's lattice, as it reads a kept plane, and computes the rest; what it computes at
+  lattice points goes to the raster when the build finishes. A sample beside the lattice is
+  never looked up or kept, so sharing cannot change a baked value: the maps are the bytes a
+  bake that shares nothing makes. Another receiver over the same stretch of the domain, the
+  same receiver resized, and a second receiver of the same build all read what was computed.
+- Samples are on the lattice when a chart is axis-aligned in the surface domain, starts at a
+  multiple of the texel size and has edge lengths whose arithmetic lands exactly (a power of
+  two of texels is the sure case); `ReceiverLayout::surface` says so for each chart. Other
+  charts share nothing. Sharing them needs sample positions snapped to the lattice, or
+  resampling for charts that are turned or scaled, and either changes baked pixels.
+- For a GPU host, `Shader::reads` flags intrinsic outputs, and the entry points
+  `ms_evaluate_intrinsic` and `ms_evaluate_remainder` evaluate the two halves.
+  `ReceiverLayout::surface` gives each chart's map from atlas texels to the surface domain.
+
 ## Planes
 
 A plane (`planes.rs`, `Plane`) holds one value per texel of a receiver's atlas and is bound to
@@ -127,8 +154,10 @@ evaluation, and both evaluators read it at the texel a sample is given with.
   other materials of its modules (`Request::materials`), and a plane node bakes one of their
   fields or outputs over the receiver, keyed by what that value reads of that material's
   parameters, seed and images. A layer over planes of a base bakes the bytes the two written
-  as one program bake, for maps whose relief does not come from a plane: a plane has no value
-  between texels, so heights read from one are flat across a chart's edge. Such bakes are not
+  as one program bake, the relief normal included: a relief needs heights one step along each
+  chart leg, and where that point is no texel's center the plane bake evaluates the base there
+  too and keeps the values as leg points (`Plane::leg`, `Plane::set_leg`). A plane a host
+  supplies has none, so a height read from it is flat between texels. Such bakes are not
   distributed (a session baking a share would bake the planes again), and the materials planes
   are baked from read no planes themselves.
 - **What a shader's outputs read.** `Shader::reads` lists, for each output and each live

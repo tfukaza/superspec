@@ -134,7 +134,9 @@ pub fn item_features(
 ) -> Vec<program::NamedFeature> {
     let place = |p: &[f64; 3]| -> [f64; 3] {
         std::array::from_fn(|row| {
-            transform[row] * p[0] + transform[4 + row] * p[1] + transform[8 + row] * p[2]
+            transform[row] * p[0]
+                + transform[4 + row] * p[1]
+                + transform[8 + row] * p[2]
                 + transform[12 + row]
         })
     };

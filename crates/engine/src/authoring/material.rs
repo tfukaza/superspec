@@ -164,6 +164,126 @@ struct FieldPlan {
     /// Kept planes that lack texels some earlier sample did not fill, with their keys: a bake that
     /// computes the field there completes a copy, which replaces the plane.
     completing: Vec<(ContentKey, Arc<BakedReceiver>)>,
+    /// The intrinsic fields among `capture`, by field index, with the key of the field's
+    /// raster, which no receiver's layout enters.
+    intrinsic: BTreeMap<usize, ContentKey>,
+}
+
+/// The intrinsic rasters a build reads and adds to, by key. They start as copies of the kept
+/// ones, every receiver of the build reads and fills the same copies, and a build that finishes
+/// keeps the ones that changed.
+type Rasters = BTreeMap<ContentKey, WorkingRaster>;
+
+#[derive(Default)]
+struct WorkingRaster {
+    raster: IntrinsicRaster,
+    /// Whether a second layout has asked for the field's values. Mapping a receiver onto the
+    /// lattice costs a pass over its samples, and most fields are only ever baked for one
+    /// layout, so the first layout leaves just this mark (an empty raster) and the raster is
+    /// filled from the second on.
+    shared: bool,
+    /// Whether the build changed what is kept: values, or the mark.
+    changed: bool,
+}
+
+/// Retention of intrinsic rasters (see [IntrinsicRaster]).
+const INTRINSIC_RASTERS: Retention = Retention {
+    name: "material-intrinsic",
+    bytes: 64 * 1024 * 1024,
+    // Most entries are the marks of fields one layout has baked, which hold nothing.
+    entries: 512,
+};
+/// Bytes one intrinsic raster holds at most; values beyond are simply not kept.
+const INTRINSIC_RASTER_BYTES: usize = 24 * 1024 * 1024;
+/// Lattice points along a raster tile's edge.
+const RASTER_TILE: i64 = 64;
+
+/// A point of the lattice an intrinsic raster is indexed by: the bits of the sample's footprint
+/// (the lattice step), and the whole numbers `i`, `j` with `surface = ((i, j) + 0.5) * step`
+/// exactly.
+type LatticePoint = (u64, i64, i64);
+
+/// The values an intrinsic field takes at positions of the material's own domain, kept apart
+/// from any receiver: the field reads nothing of a sample but its surface position and
+/// footprint, so two samples with the same bits of both have the same value, on whatever
+/// receiver and at whatever texel they fall. The raster is keyed by the program, the decoded
+/// images, the field and the parameters and seed it reads; inside, values are found by lattice
+/// point, in tiles. A sample that is not exactly on its footprint's lattice is never looked up or
+/// kept, so reading the raster cannot change a baked value.
+#[derive(Clone, Default)]
+pub(crate) struct IntrinsicRaster {
+    /// By footprint bits and tile; each tile holds the four numbers of a plane texel for
+    /// `RASTER_TILE` squared points, NaN in the fourth where it holds none.
+    tiles: BTreeMap<LatticePoint, Box<[f64]>>,
+}
+
+impl IntrinsicRaster {
+    /// The lattice point `sample` is exactly on, if it is on one.
+    fn point(sample: &program::Sample) -> Option<LatticePoint> {
+        let step = sample.footprint;
+        if !(step.is_finite() && step > 0.) {
+            return None;
+        }
+        let along = |position: f64| {
+            let index = (position / step - 0.5).round();
+            ((index + 0.5) * step == position && index.abs() < 1e12).then_some(index as i64)
+        };
+        Some((
+            step.to_bits(),
+            along(sample.surface[0])?,
+            along(sample.surface[1])?,
+        ))
+    }
+    fn slot((step, i, j): LatticePoint) -> (LatticePoint, usize) {
+        let tile = (step, i.div_euclid(RASTER_TILE), j.div_euclid(RASTER_TILE));
+        let within = j.rem_euclid(RASTER_TILE) * RASTER_TILE + i.rem_euclid(RASTER_TILE);
+        (tile, within as usize * 4)
+    }
+    fn get(&self, point: LatticePoint) -> Option<[f64; 4]> {
+        let (tile, at) = Self::slot(point);
+        let values = &self.tiles.get(&tile)?[at..at + 4];
+        (!values[3].is_nan()).then(|| [values[0], values[1], values[2], values[3]])
+    }
+    fn put(&mut self, point: LatticePoint, value: [f64; 4]) {
+        let (tile, at) = Self::slot(point);
+        if !self.tiles.contains_key(&tile) && self.bytes() >= INTRINSIC_RASTER_BYTES {
+            return;
+        }
+        let values = self.tiles.entry(tile).or_insert_with(|| {
+            [0., 0., 0., f64::NAN]
+                .repeat((RASTER_TILE * RASTER_TILE) as usize)
+                .into()
+        });
+        values[at..at + 4].copy_from_slice(&value);
+    }
+    fn bytes(&self) -> usize {
+        self.tiles.len() * ((RASTER_TILE * RASTER_TILE) as usize * 32 + 64) + 64
+    }
+}
+
+/// The texels of an atlas whose samples are exactly on their footprint's lattice, with their
+/// lattice points. A chart whose first inner texel is not is skipped whole, so a receiver that
+/// does not qualify costs a sample a chart.
+fn lattice_points(atlas: &Atlas) -> Vec<(usize, LatticePoint)> {
+    let mut points = Vec::new();
+    let point = |chart: &Chart, x: usize, y: usize| {
+        let (triangle, u, v) = atlas.texel(chart, x, y);
+        IntrinsicRaster::point(&atlas.sample(triangle, u, v).ok()?)
+    };
+    for chart in &atlas.charts {
+        let inner = receiver::GUTTER.min(chart.width - 1).min(chart.height - 1);
+        if point(chart, inner, inner).is_none() {
+            continue;
+        }
+        for y in 0..chart.height {
+            for x in 0..chart.width {
+                if let Some(found) = point(chart, x, y) {
+                    points.push(((chart.y + y) * atlas.width + chart.x + x, found));
+                }
+            }
+        }
+    }
+    points
 }
 
 /// The key of a field's plane: the layout whose samples it covers, the program and decoded images,
@@ -537,15 +657,71 @@ fn bake_source_planes(
                     &mut filled,
                 )
                 .map_err(Diagnostic::from)?;
+            let output_of = |result: &program::Outputs, value: &str| -> [f64; 3] {
+                match value {
+                    "base_color" => result.base_color,
+                    "emissive" => result.emissive,
+                    "roughness" => [result.roughness, 0., 0.],
+                    "metalness" => [result.metalness, 0., 0.],
+                    "height" => [result.height, 0., 0.],
+                    _ => [result.opacity, 0., 0.],
+                }
+            };
             for (result, texel) in results.iter().zip(&texels) {
                 for (_, value, plane) in output_planes.iter_mut() {
-                    match *value {
-                        "base_color" => plane.set(*texel, &result.base_color),
-                        "emissive" => plane.set(*texel, &result.emissive),
-                        "roughness" => plane.set(*texel, &[result.roughness]),
-                        "metalness" => plane.set(*texel, &[result.metalness]),
-                        "height" => plane.set(*texel, &[result.height]),
-                        _ => plane.set(*texel, &[result.opacity]),
+                    plane.set(*texel, &output_of(result, value));
+                }
+            }
+            // A relief over these values needs them one step along each chart leg too, where
+            // that point is no adjacent texel's center (see `bake_block`): the values are
+            // evaluated at exactly the samples a bake of this material alone takes there.
+            let mut leg_samples = Vec::new();
+            let mut leg_of = Vec::new();
+            for (x, _) in fresh.iter().enumerate().filter(|(_, new)| **new) {
+                let (triangle, u, v) = atlas.texel(chart, x, y);
+                let [step_u, step_v] = atlas.steps(triangle);
+                for (leg, target) in [[u + step_u, v], [u, v + step_v]].into_iter().enumerate() {
+                    let adjacent = neighbor_texel(
+                        |nx, ny| atlas.texel(chart, nx, ny),
+                        chart,
+                        [x, y],
+                        triangle,
+                        target,
+                    );
+                    if adjacent.is_none() {
+                        let sample = atlas.sample(triangle, target[0], target[1]);
+                        leg_samples.push(sample.map_err(&failure)?);
+                        leg_of.push(((chart.y + y) * atlas.width + chart.x + x, leg));
+                    }
+                }
+            }
+            if !leg_samples.is_empty() {
+                let ordinals: Vec<usize> = (0..leg_samples.len()).collect();
+                let mut beside: Vec<program::Plane> = filled
+                    .iter()
+                    .map(|plane| {
+                        let field = plane.field().expect("a field's plane");
+                        program::Plane::new(field, plane.components(), leg_samples.len())
+                    })
+                    .collect();
+                evaluator.replenish_row(leg_samples.len());
+                let results = evaluator
+                    .fill_row(
+                        &leg_samples,
+                        &ordinals,
+                        outputs,
+                        &selection,
+                        &mut values,
+                        &[],
+                        &mut beside,
+                    )
+                    .map_err(Diagnostic::from)?;
+                for (at, ((texel, leg), result)) in leg_of.iter().zip(&results).enumerate() {
+                    for (plane, beside) in filled.iter_mut().zip(&beside) {
+                        plane.set_leg(*texel, *leg, Some((beside, at)), &[]);
+                    }
+                    for (_, value, plane) in output_planes.iter_mut() {
+                        plane.set_leg(*texel, *leg, None, &output_of(result, value));
                     }
                 }
             }
@@ -679,6 +855,8 @@ pub(crate) enum BakedReceiver {
     },
     /// The values of one field at every texel, kept for later bakes (see [FieldPlan]).
     Plane(program::FieldPlane),
+    /// The values of one intrinsic field by position of the material's domain.
+    Intrinsic(IntrinsicRaster),
     /// One field of a field bake (see [FieldBake]): four `f32` per texel of the atlas.
     Texels(Vec<f32>),
 }
@@ -691,7 +869,7 @@ impl BakedReceiver {
             }
             Self::Emissive(emission) => emission.iter().map(|(_, image)| image).collect(),
             Self::Live { images, .. } => images.iter().collect(),
-            Self::Plane(_) | Self::Texels(_) => Vec::new(),
+            Self::Plane(_) | Self::Texels(_) | Self::Intrinsic(_) => Vec::new(),
         }
     }
 
@@ -699,6 +877,7 @@ impl BakedReceiver {
     fn bytes(&self) -> usize {
         match self {
             Self::Plane(plane) => return plane.bytes(),
+            Self::Intrinsic(raster) => return raster.bytes(),
             Self::Texels(texels) => return texels.len() * 4 + 64,
             _ => {}
         }
@@ -774,7 +953,8 @@ fn assemble(
                 BakedReceiver::Live { operations, .. } => material.live = operations.clone(),
                 BakedReceiver::Color { .. }
                 | BakedReceiver::Plane(_)
-                | BakedReceiver::Texels(_) => return Err(missing()),
+                | BakedReceiver::Texels(_)
+                | BakedReceiver::Intrinsic(_) => return Err(missing()),
             }
         }
     }
@@ -1379,6 +1559,7 @@ impl Session {
         // fields this bake keeps for the next one. Planes are keyed by the inputs the field reads,
         // so an edit that cannot change a field finds its values; only serial previews keep them.
         let mut field_plans: Vec<FieldPlan> = Vec::new();
+        let mut rasters = Rasters::new();
         if share.is_none() && !inspecting && request.profile.threads() == 1 {
             let field_names: Vec<&str> = compiled
                 .metadata()
@@ -1447,6 +1628,41 @@ impl Session {
                         _ => 0,
                     };
                     chosen.capture.push((field, components, key));
+                    // A field that reads only the surface position and footprint has the same
+                    // value wherever a sample has the same bits of both: its raster is keyed
+                    // like its plane, but by no layout.
+                    let reads = &dependency_table.fields[field_names[field]];
+                    if reads.intrinsic() && components > 0 {
+                        let mut digest = Sha256::new();
+                        digest.update(b"material-intrinsic-v1");
+                        digest.update(field_plane_key(
+                            &compiled,
+                            reads,
+                            request,
+                            [&[0; 32], &program_key, &assets_key],
+                            &[],
+                            field,
+                        ));
+                        let raster: ContentKey = digest.finalize().into();
+                        chosen.intrinsic.insert(field, raster);
+                        if !rasters.contains_key(&raster) {
+                            let kept = self.runtime.lookup(INTRINSIC_RASTERS, &raster);
+                            let kept = kept.and_then(|found| match found.as_ref() {
+                                Artifact::Material(baked) => match baked.as_ref() {
+                                    BakedReceiver::Intrinsic(raster) => Some(raster.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                            // Several receivers of one build are several layouts already.
+                            let working = WorkingRaster {
+                                shared: kept.is_some() || receivers.len() > 1,
+                                raster: kept.unwrap_or_default(),
+                                changed: false,
+                            };
+                            rasters.insert(raster, working);
+                        }
+                    }
                 }
                 field_plans.push(chosen);
             }
@@ -1677,6 +1893,7 @@ impl Session {
                             field_plans.get(index),
                             &externals,
                             &mut capture_budget,
+                            &mut rasters,
                             stopped,
                         ) {
                             Ok((results, planes)) => {
@@ -1727,6 +1944,24 @@ impl Session {
                 bytes,
                 completes,
             );
+        }
+        for (
+            key,
+            WorkingRaster {
+                raster, changed, ..
+            },
+        ) in rasters
+        {
+            if changed {
+                let bytes = raster.bytes();
+                self.runtime.retain(
+                    INTRINSIC_RASTERS,
+                    key,
+                    Artifact::Material(Arc::new(BakedReceiver::Intrinsic(raster))),
+                    bytes,
+                    true,
+                );
+            }
         }
         if let Some(share) = share {
             let Artifact::Program(program) = complete["program"].as_ref() else {
@@ -1856,6 +2091,9 @@ thread_local! {
     static BAKED: std::cell::RefCell<Vec<Groups>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Fields each field bake on this thread had to evaluate (the others were kept).
     static FIELDS_BAKED: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// For each intrinsic field a bake filled a plane of on this thread: the receiver's texels
+    /// on the lattice, and how many of them the field's raster already held.
+    static INTRINSIC: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The values each bake of another material's planes evaluated on this thread.
     static PLANE_BAKES: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Field planes (read, kept) of each bake that evaluated rows on this thread.
@@ -2606,8 +2844,9 @@ fn bake_block(
         // The heights one step along each leg that no adjacent texel already has, for the texels
         // that need new slopes, are evaluated together; the texels below take them in order.
         let mut direct = Vec::new();
-        // A plane has no value between texels: a point one step along a leg that is no texel's
-        // center reads external planes at the texel the step starts from.
+        // A point one step along a leg that is no texel's center reads external planes at that
+        // texel's leg point: the value a plane baked from another material holds for it, or
+        // the texel's own in a plane that has none between texels.
         let mut direct_texels = Vec::new();
         // The adjacent texel, if any, at each of those two points, for each such texel in order.
         let mut neighbors: Vec<[Option<[usize; 2]>; 2]> = Vec::new();
@@ -2647,7 +2886,12 @@ fn bake_block(
                                 .map_err(&failure)?,
                         );
                         if reads_planes {
-                            direct_texels.push((chart.y + y) * atlas.width + chart.x + x);
+                            let own = (chart.y + y) * atlas.width + chart.x + x;
+                            direct_texels.push(program::Plane::leg(
+                                atlas.width * atlas.height,
+                                own,
+                                leg,
+                            ));
                         }
                     }
                 }
@@ -2959,6 +3203,7 @@ fn bake_groups(
     field_plan: Option<&FieldPlan>,
     externals: &[&program::Plane],
     capture_budget: &mut usize,
+    rasters: &mut Rasters,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<
     (
@@ -3064,19 +3309,6 @@ fn bake_groups(
     };
     // Planes of fields kept from earlier bakes are read, and planes of fields this bake computes are
     // filled, by the serial evaluator only. Planes of external inputs are read by every evaluator.
-    let mut injected_planes: Vec<&program::Plane> = field_plan
-        .map(|plan| {
-            plan.injected
-                .iter()
-                .filter_map(|baked| match baked.as_ref() {
-                    BakedReceiver::Plane(plane) => Some(plane),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let kept_planes = injected_planes.len();
-    injected_planes.extend(externals);
     // Planes are sized by this atlas. As many are filled as the run's budget still allows, and
     // none when a plane could not be kept or the rows cannot be evaluated together (only that
     // path fills planes).
@@ -3106,6 +3338,59 @@ fn bake_groups(
             }
         }
     }
+    // The intrinsic fields among the planes being filled: the values their rasters hold at
+    // this receiver's lattice points are read instead of computed (as a kept plane's are), and
+    // what this bake computes at lattice points goes to the rasters when it finishes.
+    let mut lattice: Vec<(usize, LatticePoint)> = Vec::new();
+    let mut mapped: Vec<program::Plane> = Vec::new();
+    let mut intrinsic: Vec<(usize, ContentKey)> = Vec::new();
+    if let Some(plan) = field_plan.filter(|plan| !plan.intrinsic.is_empty()) {
+        for (slot, plane) in captured.iter_mut().enumerate() {
+            let Some(key) = plane.field().and_then(|field| plan.intrinsic.get(&field)) else {
+                continue;
+            };
+            let Some(working) = rasters.get_mut(key) else {
+                continue;
+            };
+            if !working.shared {
+                // The first layout to bake the field: leave the mark for the next.
+                working.shared = true;
+                working.changed = true;
+                continue;
+            }
+            if intrinsic.is_empty() {
+                lattice = lattice_points(atlas);
+            }
+            let raster = &working.raster;
+            let mut found = 0;
+            for (texel, point) in &lattice {
+                if let Some(value) = raster.get(*point) {
+                    plane.put_raw(*texel, value);
+                    found += 1;
+                }
+            }
+            if found > 0 {
+                mapped.push(plane.completing());
+            }
+            #[cfg(test)]
+            INTRINSIC.with(|log| log.borrow_mut().push((lattice.len(), found)));
+            intrinsic.push((slot, *key));
+        }
+    }
+    let mut injected_planes: Vec<&program::Plane> = field_plan
+        .map(|plan| {
+            plan.injected
+                .iter()
+                .filter_map(|baked| match baked.as_ref() {
+                    BakedReceiver::Plane(plane) => Some(plane),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let kept_planes = injected_planes.len();
+    injected_planes.extend(&mapped);
+    injected_planes.extend(externals);
     #[cfg(test)]
     PLANES.with(|planes| planes.borrow_mut().push((kept_planes, captured.len())));
     #[cfg(not(test))]
@@ -3305,6 +3590,20 @@ fn bake_groups(
                 Group::Inspection => unreachable!("handled above"),
             };
             encodings.push((group, encoding));
+        }
+    }
+    // What this bake computed of intrinsic fields at lattice points goes to the build's rasters.
+    for (slot, key) in intrinsic {
+        let Some(working) = rasters.get_mut(&key) else {
+            continue;
+        };
+        for (texel, point) in &lattice {
+            if let Some(value) = captured[slot].raw(*texel) {
+                if working.raster.get(*point).is_none() {
+                    working.raster.put(*point, value);
+                    working.changed = true;
+                }
+            }
         }
     }
     let planes = captured_keys

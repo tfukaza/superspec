@@ -601,4 +601,40 @@ fn the_shader_record_names_the_parameter_uniforms_and_live_arguments_each_value_
     assert_eq!(reads["roughness"].sample, ["world", "normal", "footprint"]);
     assert!(reads["height"].edges && reads["height"].parameters.is_empty());
     assert!(shader.reads.live.is_empty());
+    // No output of it is intrinsic, so there is nothing to split.
+    assert!(
+        shader
+            .entries
+            .iter()
+            .all(|entry| !entry.function.contains("intrinsic"))
+    );
+}
+
+#[test]
+fn a_program_with_both_kinds_of_outputs_has_an_entry_point_for_each() {
+    let program = source(
+        "material 1;
+         let grain = fbm(surface * 12, seed(\"g\"), 3);
+         output base_color = vec3(grain);
+         output roughness = clamp(grain + crease_distance(\"convex\", 30.0, 0.05), 0, 1);
+         output metalness = 0;",
+    );
+    let shader = program.shader().unwrap();
+    let entry = |name: &str| {
+        let found = shader.entries.iter().find(|entry| entry.function == name);
+        found.unwrap_or_else(|| panic!("{name}"))
+    };
+    let intrinsic = entry("ms_evaluate_intrinsic");
+    assert_eq!(intrinsic.outputs, ["base_color", "metalness"]);
+    assert!(
+        !intrinsic.source.contains("ms_crease_distance"),
+        "it reads no receiver"
+    );
+    let remainder = entry("ms_evaluate_remainder");
+    assert_eq!(remainder.outputs, ["roughness"]);
+    assert!(remainder.source.contains("ms_crease_distance"));
+    for name in &intrinsic.outputs {
+        assert!(shader.reads.outputs[name].intrinsic, "{name}");
+    }
+    assert!(!shader.reads.outputs["roughness"].intrinsic);
 }

@@ -36,6 +36,60 @@ pub struct ReceiverLayout {
     pub triangles: usize,
     /// Index of the receiver's first number in [`ProjectLayouts::records`].
     pub offset: usize,
+    /// How each chart maps atlas texels to the material's surface domain, ten numbers a chart
+    /// in chart order: the chart rectangle's x and y in atlas texels; the surface position (in
+    /// meters, the `surface` a program reads) of the first inner texel's center, at
+    /// (x + gutter, y + gutter); the change of that position one texel along atlas +x and one
+    /// along +y (rows down), which also says how the chart's frame is turned; the sample
+    /// footprint in meters; and 1 where the first inner texel is exactly on the lattice of its
+    /// footprint (surface = (whole numbers + 0.5) * footprint), 0 otherwise. Intrinsic values
+    /// (see `Shader::reads`) are shared between receivers only at lattice points with equal
+    /// footprints, so a chart with a 0 here shares nothing with the CPU bake's rasters.
+    pub surface: Vec<f64>,
+}
+
+/// One chart's entry of [`ReceiverLayout::surface`].
+fn chart_surface(atlas: &Atlas, chart: &super::receiver::Chart) -> [f64; 10] {
+    let at = |x: usize, y: usize| {
+        let (triangle, u, v) = atlas.texel(chart, x, y);
+        atlas.sample(triangle, u, v).ok()
+    };
+    let inner = GUTTER.min(chart.width - 1).min(chart.height - 1);
+    let (Some(first), Some(along), Some(down)) = (
+        at(inner, inner),
+        at((inner + 1).min(chart.width - 1), inner),
+        at(inner, (inner + 1).min(chart.height - 1)),
+    ) else {
+        return [
+            chart.x as f64,
+            chart.y as f64,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+            0.,
+        ];
+    };
+    let step = first.footprint;
+    let on = |position: f64| {
+        let index = (position / step - 0.5).round();
+        step > 0. && (index + 0.5) * step == position
+    };
+    [
+        chart.x as f64,
+        chart.y as f64,
+        first.surface[0],
+        first.surface[1],
+        along.surface[0] - first.surface[0],
+        along.surface[1] - first.surface[1],
+        down.surface[0] - first.surface[0],
+        down.surface[1] - first.surface[1],
+        step,
+        f64::from(u8::from(on(first.surface[0]) && on(first.surface[1]))),
+    ]
 }
 
 /// The atlases of every assigned receiver of a scene project.
@@ -142,6 +196,11 @@ impl Session {
                     density: atlas.density,
                     triangles: atlas.receiver.indices.len() / 3,
                     offset,
+                    surface: atlas
+                        .charts
+                        .iter()
+                        .flat_map(|chart| chart_surface(&atlas, chart))
+                        .collect(),
                 });
             }
         }

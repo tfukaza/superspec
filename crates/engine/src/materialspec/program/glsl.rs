@@ -1642,6 +1642,19 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
     if !live_roots.is_empty() {
         add("ms_evaluate_live", &[], true);
     }
+    // The outputs that are the same at a surface position on every receiver, and the others:
+    // a host bakes the first once for a stretch of the material's domain (they read only
+    // `ms_surface` and `ms_footprint`) and maps the result onto receivers, and draws the second
+    // for each receiver. `Shader::reads` says which is which.
+    let all = program.dependency_table();
+    let (intrinsic, remainder): (Vec<&str>, Vec<&str>) = names
+        .iter()
+        .partition(|name| all.outputs.get(**name).is_some_and(|read| read.intrinsic()));
+    // A program whose outputs are all of one kind has nothing to split: `ms_evaluate` is it.
+    if !intrinsic.is_empty() && !remainder.is_empty() {
+        add("ms_evaluate_intrinsic", &intrinsic, false);
+        add("ms_evaluate_remainder", &remainder, false);
+    }
     let uniforms: Vec<UniformDeclaration> = source
         .lines()
         .filter_map(|line| {
@@ -1679,7 +1692,6 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
                 .collect()
         })
         .unwrap_or_default();
-    let all = program.dependency_table();
     let reads_of = |found: &super::Dependencies| Reads {
         parameters: found
             .parameters
