@@ -14,6 +14,26 @@ pub struct Authoring {
     field_texels: Vec<Vec<f32>>,
     layout_records: Vec<f32>,
     staged: crate::staged::StagedExport,
+    /// Whether the host answers [`host_cancelled`] (see [`Authoring::set_cancellable`]).
+    cancellable: bool,
+}
+
+#[wasm_bindgen]
+extern "C" {
+    /// The host's answer to "has the request this session is running been cancelled?", polled by
+    /// the engine while it builds and bakes. A worker cannot receive a message while a call into
+    /// this module runs, so the host answers from something it can read synchronously.
+    #[wasm_bindgen(js_namespace = globalThis, js_name = superspecCancelled, catch)]
+    fn host_cancelled() -> Result<JsValue, JsValue>;
+}
+
+/// Whether the host says the running request is cancelled; never, unless the host opted in.
+fn cancelled_by_host(enabled: bool) -> bool {
+    enabled
+        && host_cancelled()
+            .ok()
+            .and_then(|answer| answer.as_bool())
+            .unwrap_or(false)
 }
 
 #[wasm_bindgen]
@@ -21,6 +41,14 @@ impl Authoring {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Lets builds, bakes and exports of this session stop early when the host's
+    /// `globalThis.superspecCancelled()` returns true: they then fail with a cancellation
+    /// diagnostic and leave the session's retained artifacts usable for the next request. The
+    /// host defines that function before enabling this, and keeps it cheap (it is called often).
+    pub fn set_cancellable(&mut self, enabled: bool) {
+        self.cancellable = enabled;
     }
 
     pub fn clear_assets(&mut self) {
@@ -75,7 +103,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )?;
             let scene = output
                 .scene(revision)
@@ -126,7 +154,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )
         })();
         match result {
@@ -182,7 +210,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )
         })();
         match result {
@@ -216,7 +244,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )
         })();
         match result {
@@ -347,7 +375,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )?;
             let scene = output
                 .scene(revision)
@@ -386,7 +414,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )?;
             let scene = output
                 .scene(revision)
@@ -514,7 +542,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| false,
+                &|| cancelled_by_host(self.cancellable),
             )
             .map_err(|errors| JsValue::from_str(&serde_json::to_string(&errors).unwrap()))
     }

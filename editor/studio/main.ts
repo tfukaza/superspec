@@ -779,7 +779,7 @@ class Studio {
     element("scene-title").textContent = packet.manifest.name || candidate.entry;
     element("model-details").textContent = `${packet.manifest.meshes.filter(mesh => mesh.visible).length} meshes · ${packet.manifest.vertexCount.toLocaleString()} vertices · meters, Z up`;
     element("viewport").dataset.inputRevision = String(revision);
-    this.guides(); this.ready(`Revision ${revision} ready · shader preview`);
+    this.guides(); this.ready(`Revision ${revision} ready · ${element("viewport").dataset.preview === "gpu-bake" ? "GPU-baked preview" : "shader preview"}`);
     return true;
   }
 
@@ -790,14 +790,36 @@ class Studio {
   private async sceneFields(requests: { mesh: string; names: string[] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[] }> | null> {
     const project = this.bakeProject;
     if (!project) return null;
+    // Fields are kept by everything they are baked from, so a scene rebuilt for an edit to another material (or a value
+    // set back) asks the CPU for nothing. Parameters count whole: finer than that is the engine's to know.
+    const scene = JSON.stringify([project.modules, project.models, project.mapping, project.domain, project.gravity, project.edges,
+      project.resolution, project.texelDensity, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
+    const key = (request: { mesh: string; names: string[] }): string => {
+      const material = project.materials?.find(candidate => candidate.meshes.includes(request.mesh));
+      return JSON.stringify([scene, request.mesh, request.names, material?.entry, material?.seed, material?.parameters]);
+    };
+    const found = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
+    const missing = requests.filter(request => {
+      const kept = this.sceneFieldCache.get(key(request));
+      if (kept) { this.sceneFieldCache.delete(key(request)); this.sceneFieldCache.set(key(request), kept); found.set(request.mesh, kept); }
+      return !kept;
+    });
+    if (!missing.length) return found;
     let result;
-    try { result = await this.lane.bakeProjectFields(project, requests, this.revision); }
+    try { result = await this.lane.bakeProjectFields(project, missing, this.revision); }
     catch (error) { if (error instanceof DOMException && error.name === "AbortError") return null; throw error; }
     if (result.error || !result.projectFields) throw new Error(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
-    const found = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
-    for (const baked of result.projectFields) if ("fields" in baked) found.set(baked.mesh, baked);
+    for (const baked of result.projectFields) {
+      if (!("fields" in baked)) continue;
+      found.set(baked.mesh, baked);
+      const request = missing.find(candidate => candidate.mesh === baked.mesh);
+      if (request) this.sceneFieldCache.set(key(request), baked);
+    }
+    // Least recently used first; a field set is a few megabytes at most.
+    while (this.sceneFieldCache.size > 32) this.sceneFieldCache.delete(this.sceneFieldCache.keys().next().value!);
     return found;
   }
+  private readonly sceneFieldCache = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
 
   /** Exports only a captured ready revision; a newer edit cancels delivery without changing the viewport. */
   private async exportGlb(): Promise<void> {
@@ -1111,7 +1133,7 @@ class Studio {
   }
 
   /** Releases workers, staged inputs, URLs and renderer resources on page departure. */
-  private dispose(): void { clearTimeout(this.timer); this.authoring.cancel(); this.lane.close(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.channels.clear(); this.scene.dispose(); }
+  private dispose(): void { clearTimeout(this.timer); this.authoring.close(); this.lane.close(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.channels.clear(); this.scene.dispose(); }
 }
 
 const kind = document.body.dataset.studio === "item" ? "item" : "material";

@@ -167,11 +167,10 @@ uniform vec2 msExtent;
 uniform int msMapping;
 uniform float msFootprint;
 uniform float msUvFootprint;
-layout(location = 0) out vec4 msBaseColor;
-layout(location = 1) out vec4 msProperties;
-layout(location = 2) out vec4 msEmissive;
-layout(location = 3) out vec4 msHeight;
-layout(location = 4) out vec4 msOffset;
+// Which texture this draw writes (see \`pass1Source\`): 0 base color, 1 properties, 2 emissive, 3 height, 4 normal
+// offset, then the live argument textures.
+uniform int msOutput;
+layout(location = 0) out vec4 msOut;
 `;
 
 const PASS1_MAIN = `
@@ -198,31 +197,26 @@ void main() {
   ms_texel = ivec2(int(texel.x), int(texel.y));
   ms_evaluate();
   // The base color target is an sRGB attachment: the hardware encodes these linear values on write.
-  msBaseColor = vec4(clamp(ms_base_color, 0.0, 1.0), 1.0);
-  msProperties = vec4(1.0, clamp(ms_roughness, 0.0, 1.0), clamp(ms_metalness, 0.0, 1.0), 1.0);
-  msEmissive = vec4(max(ms_emissive, vec3(0.0)), 1.0);
+  if (msOutput == 0) msOut = vec4(clamp(ms_base_color, 0.0, 1.0), 1.0);
+  else if (msOutput == 1) msOut = vec4(1.0, clamp(ms_roughness, 0.0, 1.0), clamp(ms_metalness, 0.0, 1.0), 1.0);
+  else if (msOutput == 2) msOut = vec4(max(ms_emissive, vec3(0.0)), 1.0);
   // Height in meters, with the world-space receiver_normal output beside it; the normal pass turns the relief by it.
-  msHeight = vec4(ms_height, ms_receiver_normal);
-  msOffset = vec4(ms_normal_offset, 0.0);
-}
+  else if (msOutput == 3) msOut = vec4(ms_height, ms_receiver_normal);
+  else if (msOutput == 4) msOut = vec4(ms_normal_offset, 0.0);
 `;
 
-/** The pass-1 inputs and per-texel setup, shared with the pass that evaluates live renderer arguments. */
-const INPUT_UNIFORMS = PASS1_HEAD.slice(0, PASS1_HEAD.indexOf("layout(location = 0)"));
-const TEXEL_SETUP = PASS1_MAIN.slice(0, PASS1_MAIN.indexOf("  // The base color target"));
+/** Textures pass 1 writes besides live arguments: base color, properties, emissive, height, normal offset. */
+const PASS1_TEXTURES = 5;
 /**
  * Texture units a viewer material uses besides live arguments when the viewer does not say (`BakeOptions.viewerUnits`):
  * base color, normal, roughness, metalness (the packed properties texture is bound once per sampler), emissive, the
  * environment and the sun's shadow map.
  */
 const VIEWER_UNITS = 7;
-/** Compiled programs kept per kind (bake programs, live-argument programs), least recently used dropped first. */
+/** Compiled bake programs kept, least recently used dropped first. */
 const KEPT_PASSES = 8;
-const KEPT_LIVE_PASSES = 16;
 /** Sources whose compile failed, remembered so an edit that keeps the source does not compile it again. */
 const KEPT_FAILURES = 16;
-/** Live argument textures one draw writes. */
-const LIVE_PER_DRAW = 4;
 
 /** Cells per side of the grid that reports failed normal texels. */
 const FAIL_GRID = 16;
@@ -280,7 +274,8 @@ type Uniforms = Record<string, THREE.IUniform>;
 
 /** One shader's compiled bake material, shared by every bake of that source. */
 interface Pass { material: THREE.ShaderMaterial; scene: THREE.Scene; mesh: THREE.Mesh }
-interface Target { width: number; height: number; color: THREE.WebGLRenderTarget; normal: THREE.WebGLRenderTarget; flatNormal: boolean }
+/** A swatch bake's textures of one size: pass 1's five (`PASS1_TEXTURES`, each its own target) and the normals. */
+interface Target { width: number; height: number; color: THREE.WebGLRenderTarget[]; normal: THREE.WebGLRenderTarget; flatNormal: boolean }
 
 /**
  * Texels drawn per band. A draw longer than the driver's watchdog (typically a second or two) loses the
@@ -289,11 +284,8 @@ interface Target { width: number; height: number; color: THREE.WebGLRenderTarget
 export const BAND_TEXELS = 1 << 17;
 /** At most this many target sets (one per size) stay allocated: the low-resolution and full-size bake of a swatch. */
 const KEPT_TARGETS = 3;
-/** Live-argument targets kept (up to four textures each, per size). */
-const KEPT_LIVE_TARGETS = 8;
-
-/** One draw of live arguments: the textures `first`.. of a bake, with the program that writes them. */
-interface LiveDraw { first: number; target: THREE.WebGLRenderTarget; pass: Pass }
+/** Live-argument textures kept (one target each, per size). */
+const KEPT_LIVE_TARGETS = 16;
 
 /** A program's live renderer arguments in order: four to a texel, textures in sequence. */
 function liveArguments(shading: MaterialShading): { operationIndex: number; name: string; expression: string }[] {
@@ -381,8 +373,6 @@ export class GpuBaker {
     if (this.lost) return "the WebGL context is lost";
     if (!this.renderer.capabilities.isWebGL2) return "WebGL2 is not available";
     if (!this.renderer.extensions.has("EXT_color_buffer_float")) return "float render targets are not available";
-    const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    if (gl.getParameter(gl.MAX_DRAW_BUFFERS) < 5) return "fewer than five draw buffers";
     return null;
   }
 
@@ -404,7 +394,6 @@ export class GpuBaker {
     this.passes.clear();
     this.normalPass = undefined;
     this.failureCheck = undefined;
-    this.livePasses.clear();
     this.liveTargets.clear();
     this.atlasPasses.clear();
     this.atlasNormalPass = undefined;
@@ -449,7 +438,7 @@ export class GpuBaker {
 
   /** Drops the least recently used programs beyond what is kept; one a bake is using waits for the next trim. */
   private trim(): void {
-    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.livePasses, KEPT_LIVE_PASSES], [this.atlasPasses, KEPT_PASSES]] as const) {
+    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.atlasPasses, KEPT_PASSES]] as const) {
       for (const [key, pass] of [...passes]) {
         if (passes.size <= kept) break;
         if (!this.evictable(pass)) continue;
@@ -461,8 +450,19 @@ export class GpuBaker {
     }
   }
 
-  /** The fragment shader of pass 1 for a program's shader source (also used by diagnostics). */
-  static pass1Source(source: string): string { return `${PASS1_HEAD}\n${source}\n${PASS1_MAIN}`; }
+  /**
+   * The fragment shader of pass 1 for a program's shader source (also used by diagnostics). It has ONE color output:
+   * `msOutput` chooses which texture a draw writes, and a bake draws the grid once per texture. `live` are the GLSL
+   * expressions of the program's live renderer arguments, four to a texture after the first five. Several draws of one
+   * program cost its pixels again (a millisecond or so), where one draw into several buffers costs the compile again:
+   * ANGLE's Direct3D backend compiles a pixel shader for a single color output when a program links, and recompiles it,
+   * on the page's thread, at the first draw into several draw buffers (measured: as long as the link itself).
+   */
+  static pass1Source(source: string, live: string[] = []): string {
+    const writes = Array.from({ length: Math.ceil(live.length / 4) }, (_, texture) =>
+      `  else if (msOutput == ${PASS1_TEXTURES + texture}) msOut = vec4(${[0, 1, 2, 3].map(channel => live[texture * 4 + channel] ?? "0.0").join(", ")});`);
+    return `${PASS1_HEAD}\n${source}\n${PASS1_MAIN}${writes.join("\n")}\n}\n`;
+  }
 
   /** The cache key of a bake: everything that changes a pixel, with the profile and version. */
   static key(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, fieldIds: string[] = []): string {
@@ -480,11 +480,12 @@ export class GpuBaker {
     for (const [other, candidate] of [...this.targets]) {
       if (this.targets.size < KEPT_TARGETS) break;
       if (!this.evictable(candidate)) continue;
-      candidate.color.dispose(); candidate.normal.dispose(); this.targets.delete(other);
+      for (const texture of candidate.color) texture.dispose();
+      candidate.normal.dispose(); this.targets.delete(other);
     }
-    // One draw writes base color (sRGB), packed properties, emissive (HDR) and height (meters).
-    const color = new THREE.WebGLRenderTarget(width, height, { count: 5, depthBuffer: false, stencilBuffer: false });
-    const [base, properties, emissive, height1, offset] = color.textures;
+    // Base color (sRGB), packed properties, emissive (HDR), height (meters) and normal offset: a target each (see `pass1Source`).
+    const color = Array.from({ length: PASS1_TEXTURES }, () => new THREE.WebGLRenderTarget(width, height, { depthBuffer: false, stencilBuffer: false }));
+    const [base, properties, emissive, height1, offset] = color.map(target => target.texture);
     offset.format = THREE.RGBAFormat; offset.type = THREE.HalfFloatType; offset.colorSpace = THREE.NoColorSpace;
     offset.minFilter = offset.magFilter = THREE.NearestFilter; offset.generateMipmaps = false; offset.name = "gpu-preview normal offset";
     base.format = THREE.RGBAFormat; base.type = THREE.UnsignedByteType; base.colorSpace = THREE.SRGBColorSpace;
@@ -512,15 +513,13 @@ export class GpuBaker {
   }
 
   private disposeTargets(): void {
-    for (const target of this.targets.values()) { target.color.dispose(); target.normal.dispose(); }
+    for (const target of this.targets.values()) { for (const texture of target.color) texture.dispose(); target.normal.dispose(); }
     this.targets.clear();
     this.featureData?.texture.dispose();
     this.featureData = undefined;
     for (const texture of this.fieldTextures.values()) texture.dispose();
     this.fieldTextures.clear();
-    for (const pass of this.livePasses.values()) pass.material.dispose();
     for (const target of this.liveTargets.values()) target.dispose();
-    this.livePasses.clear();
     this.liveTargets.clear();
   }
 
@@ -554,6 +553,44 @@ export class GpuBaker {
         this.renderer.render(scene, this.camera);
       } finally {
         target.scissorTest = false;
+        this.renderer.setRenderTarget(before);
+        this.renderer.autoClear = clear;
+      }
+    }
+    return bands;
+  }
+
+  /**
+   * Draws a program that chooses its output by `msOutput` (see `pass1Source`) into `targets`, output `first` onwards,
+   * in bands: every target gets a band before the browser gets a turn. `bound` is assigned again after each turn,
+   * since another bake may have used the program meanwhile. Returns the number of bands, or -1 if `current` went false.
+   */
+  private async drawOutputs(targets: THREE.WebGLRenderTarget[], pass: Pass, first: number, bound: Uniforms, bandRows: number,
+    current: () => boolean): Promise<number> {
+    if (!targets.length) return 0;
+    const { width, height } = targets[0];
+    const bands = Math.ceil(height / bandRows);
+    for (let band = 0; band < bands; band++) {
+      if (band > 0) {
+        await yieldToBrowser();
+        if (!current()) return -1;
+      }
+      Object.assign(pass.material.uniforms, bound);
+      const before = this.renderer.getRenderTarget(), clear = this.renderer.autoClear;
+      try {
+        // Restored before every await: the viewer's own frames render with these settings in between.
+        this.renderer.autoClear = false;
+        for (const [index, target] of targets.entries()) {
+          pass.material.uniforms.msOutput = { value: first + index };
+          pass.material.uniformsNeedUpdate = true;
+          target.scissorTest = bands > 1;
+          if (bands > 1) target.scissor.set(0, band * bandRows, width, Math.min(bandRows, height - band * bandRows));
+          this.renderer.setRenderTarget(target);
+          this.renderer.render(pass.scene, this.camera);
+          target.scissorTest = false;
+        }
+      } finally {
+        for (const target of targets) target.scissorTest = false;
         this.renderer.setRenderTarget(before);
         this.renderer.autoClear = clear;
       }
@@ -596,7 +633,8 @@ export class GpuBaker {
   }
 
   /** The shader's bake material, compiled on first use of its source (asynchronously where the driver allows). */
-  private async pass(source: string, target: Target): Promise<Pass> {
+  private async pass(shading: MaterialShading, target: Target): Promise<Pass> {
+    const source = shading.shader.source;
     const cached = this.passes.get(source);
     if (cached) { this.passes.delete(source); this.passes.set(source, cached); return cached; }
     // One compile per source, however many bakes (a late first preview and the next edit) wait for it.
@@ -605,11 +643,12 @@ export class GpuBaker {
     const material = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,
       vertexShader: VERTEX,
-      fragmentShader: GpuBaker.pass1Source(source),
+      // The program's live renderer arguments are further outputs of the same program (a shader's source fixes them).
+      fragmentShader: GpuBaker.pass1Source(source, liveArguments(shading).map(argument => argument.expression)),
       uniforms: {},
       depthTest: false, depthWrite: false, blending: THREE.NoBlending,
     });
-    const started: Promise<Pass> = this.compiled(material, target.color, this.passes, source)
+    const started: Promise<Pass> = this.compiled(material, target.color[0], this.passes, source)
       .finally(() => { if (this.compiling.get(source) === started) this.compiling.delete(source); });
     this.compiling.set(source, started);
     return started;
@@ -618,7 +657,11 @@ export class GpuBaker {
   private compiling = new Map<string, Promise<Pass>>();
   /** Why a source's program did not compile, by the key it would be cached under: it is not compiled again. */
   private failed = new Map<string, string>();
-  /** Sources whose program has been drawn once: the driver finishes compiling at the first draw, so a program is warm only then. */
+  /**
+   * Sources whose program has been drawn once. A program is complete when its parallel compile says so (each has a
+   * single color output, and is compiled for the kind of geometry it draws: see `pass1Source` and `compiled`); the
+   * first draw still creates its uniform and texture state, so a program is counted warm only after it.
+   */
   private drawn = new Set<string>();
 
   /** Whether the program has been compiled and drawn once, so the next bake pays only for its pixels. */
@@ -728,77 +771,53 @@ export class GpuBaker {
     return false;
   }
 
-  private livePasses = new Map<string, Pass>();
+  /** Live argument textures by size and index, least recently used first. */
   private liveTargets = new Map<string, THREE.WebGLRenderTarget>();
 
   /**
    * Evaluates the program's live renderer arguments (fields the shader already computes) into half-float textures, four
-   * to a texel, so a viewer's lighting effects follow an edit instead of the last CPU build's baked arguments.
+   * to a texel, so a viewer's lighting effects follow an edit instead of the last CPU build's baked arguments. They are
+   * further outputs of pass 1's own program (`pass1Source`): no other program is compiled for them.
    * Null when `current` went false.
    */
-  private async bakeLive(draws: LiveDraw[], shading: MaterialShading, bound: Uniforms, bandRows: number,
+  private async bakeLive(targets: THREE.WebGLRenderTarget[], pass: Pass, shading: MaterialShading, bound: Uniforms, bandRows: number,
     current: () => boolean): Promise<NonNullable<GpuBake["live"]> | null> {
     const args = liveArguments(shading);
     const textures: Record<string, THREE.Texture> = {};
     const operations: LiveArgumentOperation[] = shading.shader.live.map(operation => ({ id: operation.id, arguments: {} }));
-    for (const { first, target, pass } of draws) {
-      Object.assign(pass.material.uniforms, bound);
-      pass.material.uniformsNeedUpdate = true;
-      if (await this.draw(target, pass.scene, bandRows, current) < 0) return null;
-      target.textures.forEach((texture, slot) => { textures[`gpu-live-${first + slot}`] = texture; });
-    }
+    if (await this.drawOutputs(targets, pass, PASS1_TEXTURES, bound, bandRows, current) < 0) return null;
+    targets.forEach((target, index) => { textures[`gpu-live-${index}`] = target.texture; });
     args.forEach((argument, index) => {
       operations[argument.operationIndex].arguments[argument.name] = { texture: `gpu-live-${Math.floor(index / 4)}`, channel: index % 4, scale: 1, offset: 0 };
     });
     return { key: JSON.stringify(operations.map(operation => [operation.id, Object.keys(operation.arguments)])), operations, textures };
   }
 
-  /**
-   * The targets and compiled programs the live-argument draws of a bake need, made before anything is drawn: a first
-   * compile takes a while, and a viewer must not show half of a new bake during it. Everything is held for the bake.
-   */
-  private async prepareLive(shading: MaterialShading, domain: BakeDomain, holds: object[]): Promise<LiveDraw[]> {
-    const args = liveArguments(shading);
-    const count = Math.ceil(args.length / 4);
-    const draws: LiveDraw[] = [];
-    for (let first = 0; first < count; first += LIVE_PER_DRAW) {
-      const here = Math.min(LIVE_PER_DRAW, count - first);
-      const name = `${domain.width}x${domain.height}:${first}:${here}`;
+  /** The targets the live-argument draws of a bake write, one per texture, held for the bake. */
+  private prepareLive(shading: MaterialShading, domain: BakeDomain, holds: object[]): THREE.WebGLRenderTarget[] {
+    const count = Math.ceil(liveArguments(shading).length / 4);
+    const targets: THREE.WebGLRenderTarget[] = [];
+    for (let index = 0; index < count; index++) {
+      const name = `${domain.width}x${domain.height}:${index}`;
       let target = this.liveTargets.get(name);
       if (target) this.liveTargets.delete(name);
       else {
-        target = new THREE.WebGLRenderTarget(domain.width, domain.height, { count: here, depthBuffer: false, stencilBuffer: false,
+        target = new THREE.WebGLRenderTarget(domain.width, domain.height, { depthBuffer: false, stencilBuffer: false,
           format: THREE.RGBAFormat, type: THREE.HalfFloatType, colorSpace: THREE.NoColorSpace,
           minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false });
       }
       this.liveTargets.set(name, target);
       this.hold(target, holds);
-      // Least recently used first; one on screen or in use is skipped (the set may exceed its size instead).
-      for (const [other, candidate] of [...this.liveTargets]) {
-        if (this.liveTargets.size <= KEPT_LIVE_TARGETS) break;
-        if (!this.evictable(candidate)) continue;
-        candidate.dispose(); this.liveTargets.delete(other);
-      }
-      const outputs = Array.from({ length: here }, (_, slot) => `layout(location = ${slot}) out vec4 msLive${slot};`).join("\n");
-      const writes = Array.from({ length: here }, (_, slot) => {
-        const channels = [0, 1, 2, 3].map(channel => args[(first + slot) * 4 + channel]?.expression ?? "0.0");
-        return `  msLive${slot} = vec4(${channels.join(", ")});`;
-      }).join("\n");
-      const key = `${shading.shader.source}#live:${first}:${here}:${hash(writes)}`;
-      let pass = this.livePasses.get(key);
-      if (pass) { this.livePasses.delete(key); this.livePasses.set(key, pass); }
-      else {
-        const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: VERTEX,
-          fragmentShader: `${INPUT_UNIFORMS}\n${outputs}\n${shading.shader.source}\n${TEXEL_SETUP}${writes}\n}\n`,
-          uniforms: {}, depthTest: false, depthWrite: false, blending: THREE.NoBlending });
-        pass = await this.compiled(material, target, this.livePasses, key);
-      }
-      this.hold(pass, holds);
-      draws.push({ first, target, pass });
+      targets.push(target);
     }
-    return draws;
+    // Least recently used first; one on screen or in use is skipped (the set may exceed its size instead).
+    for (const [other, candidate] of [...this.liveTargets]) {
+      if (this.liveTargets.size <= KEPT_LIVE_TARGETS) break;
+      if (!this.evictable(candidate)) continue;
+      candidate.dispose(); this.liveTargets.delete(other);
+    }
+    return targets;
   }
-
   /** Whether the shader source is already compiled, so a parameter or seed edit needs no recompile. */
   compiledFor(shading: MaterialShading): boolean {
     return this.passes.has(shading.shader.source);
@@ -855,11 +874,11 @@ export class GpuBaker {
     // on screen, and a viewer frame in between must not show some maps of the new bake with others of the old.
     const targets = this.target(domain.width, domain.height);
     this.hold(targets, holds);
-    const pass = await this.pass(shading.shader.source, targets);
+    const pass = await this.pass(shading, targets);
     this.hold(pass, holds);
     const normals = await this.normals(targets.normal);
     if (orient) await this.failureChecker();
-    const liveDraws = shading.shader.live.length ? await this.prepareLive(shading, domain, holds) : [];
+    const liveTargets = shading.shader.live.length ? this.prepareLive(shading, domain, holds) : [];
     if (!current()) return null;
     targets.flatNormal = targets.flatNormal && !outputs.includes("height");
     const compiled = clock();
@@ -903,13 +922,13 @@ export class GpuBaker {
     const bindTime = clock();
 
     const bandRows = Math.max(1, Math.floor(bandTexels / domain.width));
-    const bands = await this.draw(targets.color, pass.scene, bandRows, current);
+    const bands = await this.drawOutputs(targets.color, pass, 0, bound, bandRows, current);
     if (bands < 0) return null;
-    settle(targets.color);
+    for (const target of targets.color) settle(target);
     const first = clock();
-    const [baseColor, properties, emissive, heightMap, offsetMap] = targets.color.textures;
+    const [baseColor, properties, emissive, heightMap, offsetMap] = targets.color.map(target => target.texture);
     this.mips([baseColor, properties, emissive]);
-    settle(targets.color);
+    settle(targets.color[0]);
     const mipped = clock();
     // A program without a height output (or receiver-normal outputs) has a flat normal, drawn once per target.
     const flat = !outputs.includes("height") && !orient && !bend;
@@ -939,11 +958,11 @@ export class GpuBaker {
     settle(targets.normal);
     const normalsDone = clock();
     let live: GpuBake["live"];
-    if (liveDraws.length) {
-      const baked = await this.bakeLive(liveDraws, shading, bound, bandRows, current);
+    if (liveTargets.length) {
+      const baked = await this.bakeLive(liveTargets, pass, shading, bound, bandRows, current);
       if (!baked) return null;
       live = baked;
-      for (const draw of liveDraws) settle(draw.target);
+      for (const target of liveTargets) settle(target);
     }
     const done = clock();
     const key = GpuBaker.key(shading, uniforms, domain, fieldIds);
@@ -956,7 +975,7 @@ export class GpuBaker {
       live,
       units: { bake: bakeUnits, viewer: viewerUnits, limit: unitLimit },
     };
-    this.drewInto.set(bake, { target: targets, live: liveDraws.map(draw => draw.target) });
+    this.drewInto.set(bake, { target: targets, live: liveTargets });
     return bake;
   }
 
@@ -1161,18 +1180,12 @@ export class GpuBaker {
     maps.key = "";
     let bands = 0;
     try {
-      // One draw per texture, the program choosing its output by a uniform (see `atlasFragment`).
-      for (let index = 0; index < maps.targets.length; index++) {
-        if (index > 0 && bands > 1) { await yieldToBrowser(); if (!current()) return null; }
-        // Another bake may have used the program while this one yielded.
-        Object.assign(pass.material.uniforms, bound);
-        pass.material.uniforms.msOutput = { value: index };
-        pass.material.uniformsNeedUpdate = true;
-        pass.mesh.geometry = atlas.geometry;
-        bands = await this.draw(maps.targets[index], pass.scene, bandRows, current);
-        if (bands < 0) return null;
-        settle(maps.targets[index]);
-      }
+      // One draw per texture, the program choosing its output by a uniform (see `atlasFragment`). Atlas bakes run one
+      // at a time (the scene's baker awaits each), so the pass's geometry stays this receiver's across the bands.
+      pass.mesh.geometry = atlas.geometry;
+      bands = await this.drawOutputs(maps.targets, pass, 0, bound, bandRows, current);
+      if (bands < 0) return null;
+      for (const target of maps.targets) settle(target);
     } finally { pass.mesh.geometry = this.atlasIdle; }
     const evaluated = performance.now();
     if (normals) {
@@ -1212,11 +1225,11 @@ export class GpuBaker {
     const count = targets.width * targets.height;
     const baseColor = new Uint8Array(count * 4), normal = new Uint8Array(count * 4), height = new Float32Array(count * 4);
     // The base color attachment decodes sRGB on read in some drivers; reading it as bytes returns the stored encoding.
-    this.renderer.readRenderTargetPixels(targets.color, 0, 0, targets.width, targets.height, baseColor, undefined, 0);
+    this.renderer.readRenderTargetPixels(targets.color[0], 0, 0, targets.width, targets.height, baseColor);
     this.renderer.readRenderTargetPixels(targets.normal, 0, 0, targets.width, targets.height, normal);
-    this.renderer.readRenderTargetPixels(targets.color, 0, 0, targets.width, targets.height, height, undefined, 3);
+    this.renderer.readRenderTargetPixels(targets.color[3], 0, 0, targets.width, targets.height, height);
     const properties = new Uint8Array(count * 4);
-    this.renderer.readRenderTargetPixels(targets.color, 0, 0, targets.width, targets.height, properties, undefined, 1);
+    this.renderer.readRenderTargetPixels(targets.color[1], 0, 0, targets.width, targets.height, properties);
     return { baseColor, normal, properties, height: height.filter((_, index) => index % 4 === 0) };
   }
 
@@ -1230,16 +1243,14 @@ export class GpuBaker {
       return sign * 2 ** (exponent - 15) * (1 + fraction / 1024);
     };
     const found: { min: number; max: number; mean: number }[] = [];
-    for (const target of this.liveTargets.values()) {
-      if (target.width !== bake.width || target.height !== bake.height) continue;
-      for (let slot = 0; slot < target.textures.length; slot++) {
-        const bits = new Uint16Array(target.width * target.height * 4);
-        this.renderer.readRenderTargetPixels(target, 0, 0, target.width, target.height, bits, undefined, slot);
-        for (let channel = 0; channel < 4; channel++) {
-          let min = Infinity, max = -Infinity, sum = 0;
-          for (let index = channel; index < bits.length; index += 4) { const value = half(bits[index]); min = Math.min(min, value); max = Math.max(max, value); sum += value; }
-          found.push({ min, max, mean: sum / (bits.length / 4) });
-        }
+    // The bake's own live targets, in texture order.
+    for (const target of this.drewInto.get(bake)?.live ?? []) {
+      const bits = new Uint16Array(target.width * target.height * 4);
+      this.renderer.readRenderTargetPixels(target, 0, 0, target.width, target.height, bits);
+      for (let channel = 0; channel < 4; channel++) {
+        let min = Infinity, max = -Infinity, sum = 0;
+        for (let index = channel; index < bits.length; index += 4) { const value = half(bits[index]); min = Math.min(min, value); max = Math.max(max, value); sum += value; }
+        found.push({ min, max, mean: sum / (bits.length / 4) });
       }
     }
     return found;

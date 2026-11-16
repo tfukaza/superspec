@@ -8,7 +8,7 @@ import { applyLiveOperations, liveTextures } from "./live.ts";
 import { hasPixelRelief, programMaterial, programTexture, setParameters, setSeeds, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
 import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
-import { SceneBaker, type FieldSource, type SceneBakeTarget } from "./scene-bake.ts";
+import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
 import type { ShadowStyle } from "./shadow-style.ts";
 import type { AmbientOcclusion } from "./ambient-occlusion.ts";
 import type { Lighting } from "./lighting.ts";
@@ -88,6 +88,17 @@ export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSourc
 export interface SceneLook { commit(): void; discard(): void }
 /** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
 const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msMapping"];
+
+/**
+ * How long a newly shaded scene waits for its baked maps alone before its per-pixel looks start compiling beside them
+ * (whichever is ready first is then shown first).
+ */
+const FIRST_LOOK_HEDGE_MS = 2000;
+
+/** The geometry a scene's packet gave a mesh, whichever look the mesh shows (scene-bake.ts keeps it beside a baked look's). */
+function sourceGeometry(mesh: THREE.Mesh): THREE.BufferGeometry {
+  return (mesh.userData.sourceGeometry as THREE.BufferGeometry | undefined) ?? mesh.geometry;
+}
 
 /** A small content hash of numbers (FNV-1a over their float bits), for cache keys. */
 function hashNumbers(values: number[]): string {
@@ -452,21 +463,17 @@ export class RustScene {
       const refine: ReliefRefinement[] = [];
       const targets: SceneBakeTarget[] = [];
       const made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[] = [];
-      // The programs the bakes will draw with start compiling now, beside the first look's (the driver compiles in parallel).
+      // The programs the bakes will draw with start compiling at once (the driver compiles them off the page's thread).
       if (bake) {
         const baker = this.bakerInstance ??= this.newBaker();
         for (const entry of prepared.values()) baker.precompileAtlas((entry.plan ?? entry).material);
       }
-      const stage = new THREE.Group();
       for (const mesh of meshes) {
         const spec = shading.meshes[mesh.name];
         const entry = spec && prepared.get(spec.material);
         if (!spec || !entry) continue;
         const material = make(entry, spec, "quad");
         made.push({ mesh, material, shaded: spec.material });
-        const twin = new THREE.Mesh(mesh.geometry, material);
-        twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
-        stage.add(twin);
         if (this.pixelRelief && hasPixelRelief(entry.material)) {
           refine.push({ mesh, first: material, source: entry.material.shader.source, make: () => make(entry, spec, "pixel") });
         }
@@ -476,23 +483,72 @@ export class RustScene {
           const own = material.userData.programUniforms as Record<string, THREE.IUniform>;
           // The program's shared uniforms (the plan's, when it bakes from one) with this receiver's own.
           const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
-          targets.push({ mesh, material: spec.material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
+          targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
             receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1] });
         }
       }
-      // Compiled as the meshes that will show them, with the displayed scene's lights, shadows and environment, and
-      // without blocking the page: drawn uncompiled, each program would stall the first frame for as long as it compiles.
+      // The per-pixel looks, compiled as the meshes that will show them and without blocking the page: drawn
+      // uncompiled, each program would stall a frame for as long as it compiles (seconds for a heavy one).
+      const looks = made.map(item => ({ mesh: item.mesh, geometry: sourceGeometry(item.mesh), material: item.material as THREE.Material }));
+      let shaders: Promise<void> | undefined, discarded = false;
+      const compileShaders = () => shaders ??= discarded ? Promise.resolve() : this.compileLooks(looks).catch(() => { /* compiled at the first draw instead */ });
+      delete this.host.dataset.firstLook;
       const started = performance.now();
-      const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
-      try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { /* compiled at the first draw instead */ }
-      this.host.dataset.firstLookCompileMs = String(Math.round(performance.now() - started));
-      return { discard: () => { for (const item of made) item.material.dispose(); }, commit: () => this.commitShading(prepared, made, refine, targets, bake) };
+      let shaderReady = false;
+      // The baked looks are prepared from here on, while the scene before this one stays on screen.
+      const baked = bake ? (this.sceneBaker ??= this.newSceneBaker()).prepare(targets, bake.fields) : undefined;
+      if (!baked) { await compileShaders(); shaderReady = true; }
+      else if (this.shaderFirst) {
+        // `?firstlook=shader`: the per-pixel look always comes first and the maps follow it.
+        await compileShaders(); shaderReady = true;
+      } else {
+        // Whichever look is ready first is the first on screen. The maps usually are (their programs are the lighter
+        // ones), and they are what a settled scene shows anyway; then the per-pixel looks compile behind them, for
+        // edits. Those start compiling beside the bake only when the maps take long, so a light scene never has the
+        // two sets of programs compete for the driver.
+        const hedge = new Promise<void>(done => setTimeout(done, FIRST_LOOK_HEDGE_MS)).then(compileShaders).then(() => "shader" as const);
+        const first = await Promise.race([baked.ready.then(() => "baked" as const), hedge]);
+        if (first === "shader") shaderReady = true;
+        else {
+          // Meshes that get no maps (or have no atlas) show their per-pixel look from the start.
+          const withMaps = new Set(targets.map(target => target.mesh));
+          for (const mesh of baked.unprepared()) withMaps.delete(mesh);
+          const unbaked = looks.filter(look => !withMaps.has(look.mesh));
+          if (unbaked.length) await this.compileLooks(unbaked).catch(() => {});
+        }
+        this.host.dataset.firstLook = first;
+      }
+      this.host.dataset.firstLookMs = String(Math.round(performance.now() - started));
+      return {
+        discard: () => { discarded = true; baked?.discard(); for (const item of made) item.material.dispose(); },
+        commit: () => {
+          const run = this.commitShading(prepared, made, refine, baked, shaderReady);
+          if (!shaderReady) void compileShaders().then(() => { if (run === this.reliefRun && !this.closed) this.sceneBaker?.shadersReady(); });
+        },
+      };
     };
   }
 
-  /** Puts prepared per-pixel materials on their meshes and starts what follows the first look: baked maps, or the per-pixel relief. */
+  /** The per-pixel look first, whatever is ready first (`?firstlook=shader`). */
+  private readonly shaderFirst = new URLSearchParams(location.search).get("firstlook") === "shader";
+
+  /** Compiles materials as the meshes that will show them, with the displayed scene's lights, shadows and environment, without blocking the page. */
+  private async compileLooks(items: { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material }[]): Promise<void> {
+    if (!items.length) return;
+    const stage = new THREE.Group();
+    for (const { mesh, geometry, material } of items) {
+      const twin = new THREE.Mesh(geometry, material);
+      twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
+      stage.add(twin);
+    }
+    // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
+    const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
+    await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile());
+  }
+
+  /** Puts prepared per-pixel materials on their meshes and starts what follows them: baked maps, or the per-pixel relief. Returns the run it started. */
   private commitShading(prepared: Map<string, ShadedMaterial>, made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[],
-    refine: ReliefRefinement[], targets: SceneBakeTarget[], bake?: SceneBakeRequest): void {
+    refine: ReliefRefinement[], baked: PreparedScene | undefined, shaderReady: boolean): number {
     {
       // Meshes kept from the scene before may show baked looks; they get their per-pixel ones back before those are replaced.
       this.sceneBaker?.reset();
@@ -505,7 +561,7 @@ export class RustScene {
       }
       const run = ++this.reliefRun;
       delete this.host.dataset.reliefMs;
-      if (bake) {
+      if (baked) {
         delete this.host.dataset.relief;
         // Meshes that cannot be baked keep the per-pixel look and get its better relief once the others show their maps.
         this.unbakedRefinement = () => {
@@ -514,13 +570,15 @@ export class RustScene {
           const left = refine.filter(item => unbaked.has(item.mesh));
           if (left.length && run === this.reliefRun) void this.refineRelief(left, run);
         };
-        (this.sceneBaker ??= this.newSceneBaker()).begin(targets, bake.fields);
-        return;
+        // The scene prepared for these meshes takes the place of the one before it: maps that are ready show at once.
+        baked.commit(shaderReady);
+        return run;
       }
       delete this.host.dataset.sceneBake;
       this.host.dataset.relief = refine.length ? "quad" : this.pixelRelief ? "pixel" : "quad";
       // After `apply` has drawn the first look.
       if (refine.length) setTimeout(() => void this.refineRelief(refine, run), 0);
+      return run;
     }
   }
 
@@ -531,18 +589,9 @@ export class RustScene {
     return new SceneBaker({
       baker: () => this.bakerInstance ??= this.newBaker(),
       style: material => { this.shadowStyle?.apply(material); material.wireframe = this.view.wireframe; },
-      compile: async (mesh, geometry, material) => {
-        // Compiled as the mesh that will show it, with the displayed scene's lights, shadows and environment.
-        const stage = new THREE.Group();
-        const twin = new THREE.Mesh(geometry, material);
-        twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
-        stage.add(twin);
-        const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
-        await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile());
-      },
+      compile: items => this.compileLooks(items),
       displayed: mesh => !this.closed && this.models.children.includes(mesh),
       draw: () => this.invalidate(),
-      finished: () => this.gpuFinished(),
       report: status => {
         this.host.dataset.sceneBake = JSON.stringify(status);
         if (status.state === "baked") this.unbakedRefinement?.();

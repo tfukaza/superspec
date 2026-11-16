@@ -166,20 +166,23 @@ export interface ExportProgress { encoded: number; textures: number }
 /** An interim worker message; the request stays pending. */
 export interface AuthoringProgress { requestId: number; progress: ExportProgress }
 
+/** How long a worker may go on with a cancelled request before it is replaced. */
+const CANCEL_GRACE_MS = 1500;
+
 /** Owns a real Rust/Wasm authoring worker and rejects superseded requests before publication. */
 export class AuthoringCompiler {
   private worker?: Worker;
 
   /**
-   * `keepWorker` makes cancellation abandon a request without terminating its worker. The Studio gives the GPU preview
-   * lane (shader plans, field bakes) a compiler of its own with it, so the lane never terminates the worker that runs the
-   * authoritative CPU build, and the CPU build never terminates the lane's.
+   * `keepWorker` never replaces the worker, however long a cancelled request runs on. The Studio gives the GPU preview
+   * lane (shader plans, field bakes) a compiler of its own with it, so the lane's requests and the authoritative CPU
+   * build never wait for, or cancel, each other.
    */
   constructor(private readonly options: { keepWorker?: boolean } = {}) {}
   private pending?: { requestId: number; resolve: (result: AuthoringResult) => void; reject: (error: Error) => void;
     progress?: (progress: ExportProgress) => void };
 
-  /** An idle worker can retain compiler state; replacing busy work releases its Wasm allocations. */
+  /** Builds one request. The worker keeps its session (compiled programs, decoded images, retained bakes) between requests. */
   compile(request: AuthoringRequest): Promise<AuthoringResult> {
     return this.dispatch(request);
   }
@@ -222,69 +225,97 @@ export class AuthoringCompiler {
   private dispatch(request: AuthoringMessage, progress?: (progress: ExportProgress) => void): Promise<AuthoringResult> {
     if (this.pending) this.cancel();
     return new Promise((resolve, reject) => {
-      if (!this.worker) {
-        const worker = new Worker(new URL("./authoring-worker.ts", import.meta.url), { type: "module" });
-        this.worker = worker;
-        worker.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress>) => {
-          if (this.worker !== worker) return;
-          // A kept worker answers every request it was sent, abandoned ones too; each answer frees it for the newest one waiting.
-          if (!("progress" in event.data) && this.options.keepWorker) {
-            this.running = false;
-            const next = this.waiting;
-            this.waiting = undefined;
-            if (next) { this.running = true; worker.postMessage(next); }
-          }
-          if (this.pending?.requestId !== event.data.requestId) return;
-          if ("progress" in event.data) {
-            this.pending.progress?.(event.data.progress);
-            return;
-          }
-          const pending = this.pending;
-          this.pending = undefined;
-          pending.resolve(event.data);
-        };
-        worker.onerror = event => {
-          if (this.worker !== worker) return;
-          this.pending?.reject(new Error(event.message || "Authoring worker failed."));
-          this.pending = undefined;
-          worker.terminate();
-          this.worker = undefined;
-          this.running = false; this.waiting = undefined;
-        };
-      }
       this.pending = { requestId: request.requestId, resolve, reject, progress };
-      // A kept worker still running an abandoned request gets the next one when it answers; only the newest waits, so a
-      // burst of edits costs the request in flight and one more, not one each (and one copy of the assets, not one each).
-      if (this.options.keepWorker && this.running) { this.waiting = request; return; }
-      this.running = true;
-      this.worker.postMessage(request);
+      // A worker still running a cancelled request gets the next one when it answers; only the newest waits, so a burst
+      // of edits costs the request in flight and one more, not one each (and one copy of the assets, not one each).
+      if (this.running) { this.waiting = request; return; }
+      this.start(request);
     });
   }
 
-  /** A kept worker has a request it has not answered, and the newest request made meanwhile. */
+  private start(request: AuthoringMessage): void {
+    let worker = this.worker;
+    if (!worker) {
+      const created = worker = this.worker = new Worker(new URL("./authoring-worker.ts", import.meta.url), { type: "module" });
+      created.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress>) => {
+        if (this.worker !== created) return;
+        // The worker answers every request it was sent, cancelled ones too; each answer frees it for the newest one waiting.
+        if (!("progress" in event.data)) {
+          this.settled();
+          const next = this.waiting;
+          this.waiting = undefined;
+          if (next) this.start(next);
+        }
+        if (this.pending?.requestId !== event.data.requestId) return;
+        if ("progress" in event.data) {
+          this.pending.progress?.(event.data.progress);
+          return;
+        }
+        const pending = this.pending;
+        this.pending = undefined;
+        pending.resolve(event.data);
+      };
+      created.onerror = event => {
+        if (this.worker !== created) return;
+        this.pending?.reject(new Error(event.message || "Authoring worker failed."));
+        this.pending = undefined;
+        this.close();
+      };
+    }
+    // The worker cannot hear a message while it computes, but it can ask whether this URL still exists (see `cancel`).
+    this.token = URL.createObjectURL(new Blob(["1"]));
+    this.running = true;
+    worker.postMessage({ ...request, cancelToken: this.token });
+  }
+
+  /** The worker has a request it has not answered, and the newest request made meanwhile. */
   private running = false;
   private waiting?: AuthoringMessage;
+  /** The URL the worker reads to learn that its request is still wanted; revoking it cancels the request. */
+  private token?: string;
+  private watchdog?: ReturnType<typeof setTimeout>;
+
+  /** The worker answered the request it was running. */
+  private settled(): void {
+    this.running = false;
+    if (this.token) URL.revokeObjectURL(this.token);
+    this.token = undefined;
+    clearTimeout(this.watchdog);
+    this.watchdog = undefined;
+  }
 
   /**
-   * Cancels the consumer's request and releases the worker, including after navigation. A compiler made with
-   * `keepWorker` (the GPU preview lane's) only abandons the request: its worker finishes the stale work, whose reply
-   * is ignored, and stays warm for the next request instead of restarting the Wasm module.
+   * Cancels the consumer's request. The worker is kept: it holds the session's compiled programs, decoded images and
+   * retained bakes, and a new worker would start the Wasm module again and build cold. A request it is running is asked
+   * to stop (the engine polls for that while it builds and bakes, and stops within a few tens of milliseconds); its
+   * reply is ignored and frees the worker for the next request. A worker that does not stop in time is replaced,
+   * unless the compiler was made with `keepWorker` (the GPU preview lane's short requests are simply left to finish).
    */
   cancel(): void {
     this.pending?.reject(new DOMException("Authoring request superseded.", "AbortError"));
     this.pending = undefined;
-    // An abandoned request that has not started never does.
+    // A cancelled request that has not started never does.
     this.waiting = undefined;
-    if (!this.options.keepWorker) this.close();
+    if (!this.running) return;
+    if (this.token) { URL.revokeObjectURL(this.token); this.token = undefined; }
+    if (this.options.keepWorker || this.watchdog) return;
+    this.watchdog = setTimeout(() => {
+      this.watchdog = undefined;
+      if (!this.running) return;
+      // Still computing a request nobody wants: a new worker serves the newest one waiting.
+      const next = this.waiting;
+      this.close();
+      if (next) this.start(next);
+    }, CANCEL_GRACE_MS);
   }
 
-  /** Releases the worker whatever it is doing. */
+  /** Releases the worker whatever it is doing (on leaving the page). */
   close(): void {
     this.worker?.terminate();
     this.worker = undefined;
-    this.running = false; this.waiting = undefined;
+    this.settled();
+    this.waiting = undefined;
   }
-
   /** Supersedes active work while allowing an idle compiler to retain compatible programs. */
   cancelPending(): void { if (this.pending) this.cancel(); }
 }

@@ -9,6 +9,53 @@ let ready: Promise<unknown> | undefined;
 let session: Authoring | undefined;
 
 /**
+ * Cooperative cancellation. While the engine computes, this worker cannot receive a message, so "stop" cannot be sent
+ * to it. Each request instead comes with a blob URL that the page revokes to cancel it, and the engine's cancellation
+ * poll (`globalThis.superspecCancelled`, see `Authoring::set_cancellable`) asks, at most every `PROBE_MS`, whether the
+ * URL still loads: a synchronous request, which a worker may make. A cancelled build fails with a diagnostic the page
+ * ignores, and the worker, with everything its session retains, is free for the next request.
+ */
+// The engine polls a few hundred to a few thousand times per build (about once per atlas row); a probe goes through
+// the browser's blob registry, so probes are spaced: a cancelled build stops within this long, plus one row.
+const PROBE_MS = 100;
+let cancelToken: string | undefined;
+let cancelled = false;
+let lastProbe = 0;
+
+/** Whether a blob URL still loads; revoked ones fail. */
+function loads(url: string): boolean {
+  try {
+    const request = new XMLHttpRequest();
+    request.open("GET", url, false);
+    request.send();
+    return request.status === 200;
+  } catch { return false; }
+}
+
+/** Checked once: a live URL loads and a revoked one does not. Elsewhere requests are simply never cancelled early. */
+let probing: boolean | undefined;
+function canProbe(): boolean {
+  if (probing !== undefined) return probing;
+  try {
+    const url = URL.createObjectURL(new Blob(["1"]));
+    const live = loads(url);
+    URL.revokeObjectURL(url);
+    probing = live && !loads(url);
+  } catch { probing = false; }
+  return probing;
+}
+
+function requestCancelled(): boolean {
+  if (cancelled || !cancelToken) return cancelled;
+  const now = performance.now();
+  if (now - lastProbe < PROBE_MS) return false;
+  lastProbe = now;
+  cancelled = !loads(cancelToken);
+  return cancelled;
+}
+(globalThis as unknown as { superspecCancelled: () => boolean }).superspecCancelled = requestCancelled;
+
+/**
  * Runs one engine call, sharing large material bakes with helper workers. The engine stops a
  * build at its uncached large bakes and describes them; the helpers' rows are handed back and the
  * same call runs again, normally once. If helpers fail, the bakes run here, which also reports
@@ -21,6 +68,8 @@ async function distributed<T>(active: Authoring, assets: Record<string, Uint8Arr
     for (;;) {
       let result: T | undefined;
       let failure: { error: unknown } | undefined;
+      // The helpers' turn is over: a request cancelled meanwhile does not build again.
+      if (requestCancelled()) throw new Error("Authoring request cancelled.");
       try { result = run(); } catch (error) { failure = { error }; }
       // A project reports every large bake of one build; take them all before building again.
       const pending: string[] = [];
@@ -58,11 +107,14 @@ self.onmessage = (event: MessageEvent<AuthoringMessage>) => { turn = turn.then((
 
 /** Answers one request with exactly one final message; it never rejects. */
 async function handle(message: AuthoringMessage): Promise<void> {
-  const { requestId, assets, ...request } = message;
+  const { requestId, assets, cancelToken: token, ...request } = message as AuthoringMessage & { cancelToken?: string };
   try {
     await (ready ??= initialize({ module_or_path: wasmUrl }));
     session ??= new Authoring();
     const active = session;
+    cancelToken = token && canProbe() ? token : undefined;
+    cancelled = false; lastProbe = 0;
+    active.set_cancellable(cancelToken !== undefined);
     active.clear_assets();
     // GLBs may carry KTX2 textures, which admission validates with the texture codec module.
     if (Object.keys(assets).some(name => /\.(glb|ktx2)$/i.test(name))) await prepareTextures();
