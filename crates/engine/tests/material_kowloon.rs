@@ -524,6 +524,124 @@ fn only_the_production_profile_admits_large_textures() {
     assert!(format!("{error:?}").contains("16–2048"), "{error:?}");
 }
 
+/// A host that distributes a bake across several sessions gets the bytes of an undistributed one.
+#[test]
+fn rows_baked_by_other_sessions_give_the_same_material() {
+    for (entry, receiver) in [
+        (
+            "kowloon-concrete.material.ts",
+            cuboid("wall", [-0.6, -0.11, 0.], [0.6, 0.11, 1.1]),
+        ),
+        (
+            "kowloon-rusted-steel.material.ts",
+            cuboid("block", [0., 0., 0.], [0.4, 0.3, 0.25]),
+        ),
+    ] {
+        let (whole, _) = bake(entry, receiver.clone(), serde_json::json!({}));
+        let modules: BTreeMap<String, String> = [
+            "kowloon-noise.material.ts",
+            "kowloon-concrete.material.ts",
+            "kowloon-rusted-steel.material.ts",
+        ]
+        .into_iter()
+        .map(|name| (name.to_owned(), read(name)))
+        .collect();
+        let request = Request {
+            kind: "material".into(),
+            entry: entry.into(),
+            source: modules[entry].clone(),
+            modules,
+            seed: 7,
+            resolution: 128,
+            receivers: vec![receiver],
+            ..Request::default()
+        };
+        let mut session = Session::default();
+        session.distribute_bakes(true);
+        let stopped = session
+            .build(&request, 1, &asset, &|| false)
+            .err()
+            .expect("a large uncached bake is reported, not evaluated");
+        assert_eq!(stopped[0].code, "BAKE_PENDING");
+        let pending = session.take_pending_bake().expect("the pending bake");
+        assert_eq!(pending.keys.len(), 1);
+        // The description survives the JSON trip between workers.
+        let pending: superspec_engine::authoring::PendingBake =
+            serde_json::from_str(&serde_json::to_string(&pending).unwrap()).unwrap();
+        for index in 0..3 {
+            let share = Session::default()
+                .bake_share(&pending, index, 3, &asset, &|| false)
+                .unwrap_or_else(|e| panic!("{e:?}"));
+            session.provide_bake_share(&share).unwrap();
+        }
+        let distributed = session
+            .build(&request, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(session.take_pending_bake().is_none());
+        assert_eq!(
+            distributed.model.materials.keys().collect::<Vec<_>>(),
+            whole.model.materials.keys().collect::<Vec<_>>(),
+            "{entry}: material identities hash every map and live argument"
+        );
+        // The finished bake is cached: building again neither stops nor needs rows.
+        session
+            .build(&request, 2, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        // An incomplete set of rows is reported again rather than baked with holes.
+        let mut partial = Session::default();
+        partial.distribute_bakes(true);
+        assert!(partial.build(&request, 1, &asset, &|| false).is_err());
+        let pending = partial.take_pending_bake().unwrap();
+        let share = Session::default()
+            .bake_share(&pending, 0, 3, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        partial.provide_bake_share(&share).unwrap();
+        assert!(partial.build(&request, 1, &asset, &|| false).is_err());
+        assert!(partial.take_pending_bake().is_some());
+        // Turning distribution off bakes here.
+        partial.distribute_bakes(false);
+        let local = partial
+            .build(&request, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(
+            local.model.materials.keys().collect::<Vec<_>>(),
+            whole.model.materials.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+/// Serial bake time and an output fingerprint for both recipes, for checking that an evaluator
+/// optimization changes speed but no byte: `cargo test --release ... bench_fingerprint -- --ignored
+/// --nocapture`. Material identities hash every encoded map and live argument.
+#[test]
+#[ignore]
+fn bench_fingerprint() {
+    let resolution = std::env::var("BENCH_RESOLUTION")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256);
+    for (entry, receiver) in [
+        (
+            "kowloon-concrete.material.ts",
+            cuboid("wall", [-0.6, -0.11, 0.], [0.6, 0.11, 1.1]),
+        ),
+        (
+            "kowloon-rusted-steel.material.ts",
+            cuboid("block", [0., 0., 0.], [0.4, 0.3, 0.25]),
+        ),
+    ] {
+        // BENCH_PARAMETERS (JSON) overrides parameters, to time one part of a recipe.
+        let parameters = std::env::var("BENCH_PARAMETERS")
+            .ok()
+            .filter(|_| entry.contains("concrete"))
+            .map_or(serde_json::json!({}), |v| serde_json::from_str(&v).unwrap());
+        let (output, seconds) =
+            bake_with(entry, receiver, parameters, Profile::Preview, resolution);
+        let identity: Vec<&String> = output.model.materials.keys().collect();
+        eprintln!("{entry} at {resolution}: {seconds:.2}s {identity:?}");
+    }
+}
+
 /// Serial and threaded wall-clock for one larger bake: `cargo test --release ... bench_profiles -- --ignored --nocapture`.
 #[test]
 #[ignore]

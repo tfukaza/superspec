@@ -1,5 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
-use superspec_engine::authoring::{Diagnostic, Output, Project, Request, Session};
+use superspec_engine::authoring::{Diagnostic, Output, Project, ProjectOutput, Request, Session};
 use wasm_bindgen::prelude::*;
 
 /// Worker-local authored sources and immutable generation artifacts share the native engine.
@@ -10,6 +10,7 @@ pub struct Authoring {
     assets: BTreeMap<String, Arc<[u8]>>,
     accepted: Option<Output>,
     packet: Vec<u8>,
+    staged: crate::staged::StagedExport,
 }
 
 #[wasm_bindgen]
@@ -234,13 +235,89 @@ impl Authoring {
         revision: u32,
         ktx2: bool,
     ) -> Result<Vec<u8>, JsValue> {
+        let output = self.export_build(source, revision)?;
+        let options = superspec_export::Options {
+            textures: crate::textures(ktx2),
+            ..Default::default()
+        };
+        superspec_export::world_glb(&output.model, revision, &options)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    /// Browser Wasm has no threads, so large material bakes are shared with helper workers. While
+    /// enabled, a build that needs a large uncached bake fails with a `BAKE_PENDING` diagnostic
+    /// and `take_pending_bake` describes it; helpers run `bake_share`, their results go to
+    /// `provide_bake_share`, and the same build is called again. The output is byte-identical.
+    pub fn distribute_bakes(&mut self, enabled: bool) {
+        self.session.distribute_bakes(enabled);
+    }
+
+    /// JSON of the bake the last build stopped for (request, keys and image names), or empty.
+    pub fn take_pending_bake(&mut self) -> String {
+        self.session
+            .take_pending_bake()
+            .map_or(String::new(), |pending| {
+                serde_json::to_string(&pending).expect("finite admitted request")
+            })
+    }
+
+    /// One helper's rows of a pending bake, from the assets set on this helper's session.
+    pub fn bake_share(
+        &mut self,
+        pending: &str,
+        index: u32,
+        count: u32,
+    ) -> Result<Vec<u8>, JsValue> {
+        let pending: superspec_engine::authoring::PendingBake =
+            serde_json::from_str(pending).map_err(|error| JsValue::from_str(&error.to_string()))?;
+        self.session
+            .bake_share(
+                &pending,
+                index as usize,
+                count as usize,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| false,
+            )
+            .map_err(|errors| JsValue::from_str(&serde_json::to_string(&errors).unwrap()))
+    }
+
+    pub fn provide_bake_share(&mut self, bytes: &[u8]) -> Result<(), JsValue> {
+        self.session
+            .provide_bake_share(bytes)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    /// Stages a KTX2 project export so the host can encode its textures in parallel workers;
+    /// returns the texture list. Then `staged_texture`, `encodeTexture` and `finish_project`.
+    pub fn stage_project(&mut self, source: &str, revision: u32) -> Result<String, JsValue> {
+        let output = self.export_build(source, revision)?;
+        let scene = output
+            .model
+            .scene_cancellable(revision, &|| false)
+            .map_err(|error| JsValue::from_str(&error))?;
+        self.staged.stage(scene)
+    }
+    pub fn staged_texture(&self, index: usize) -> Result<Vec<u8>, JsValue> {
+        self.staged.source(index)
+    }
+    pub fn finish_project(&mut self, encoded: &[u8], lengths: &[u32]) -> Result<Vec<u8>, JsValue> {
+        self.staged.finish(encoded, lengths)
+    }
+}
+
+impl Authoring {
+    fn export_build(&mut self, source: &str, revision: u32) -> Result<ProjectOutput, JsValue> {
         if source.len() > 32 * 1024 * 1024 {
             return Err(JsValue::from_str("Authoring project allowance exceeded."));
         }
         let project: Project =
             serde_json::from_str(source).map_err(|error| JsValue::from_str(&error.to_string()))?;
-        let output = self
-            .session
+        self.session
             .build_project(
                 &project,
                 revision as u64,
@@ -252,12 +329,6 @@ impl Authoring {
                 },
                 &|| false,
             )
-            .map_err(|errors| JsValue::from_str(&serde_json::to_string(&errors).unwrap()))?;
-        let options = superspec_export::Options {
-            textures: crate::textures(ktx2),
-            ..Default::default()
-        };
-        superspec_export::world_glb(&output.model, revision, &options)
-            .map_err(|error| JsValue::from_str(&error))
+            .map_err(|errors| JsValue::from_str(&serde_json::to_string(&errors).unwrap()))
     }
 }

@@ -4,6 +4,7 @@ pub(crate) mod material;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
+pub use material::PendingBake;
 pub use project::{
     Base, MAX_ASSIGNMENTS, MAX_MODELS, MaterialAssignment, ModelSource, Project, ProjectOutput,
     Target,

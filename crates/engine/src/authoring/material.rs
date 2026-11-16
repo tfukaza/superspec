@@ -4,7 +4,10 @@ use super::{
 };
 use crate::{
     materialspec::program::{self, FieldValue, Inputs, Program},
-    runtime::dependencies::{Dependency, Node, Plan},
+    runtime::{
+        dependencies::{Dependency, Node, Plan},
+        store::ContentKey,
+    },
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
@@ -42,14 +45,114 @@ fn json(value: &impl serde::Serialize) -> Vec<u8> {
     serde_json::to_vec(value).expect("finite admitted authoring request")
 }
 
+/// What one material build produced.
+enum Built {
+    Output(Output),
+    /// Encoded rows of one share of the requested bakes (see [`Distribution`]).
+    Share(Vec<u8>),
+}
+
+/// One worker's part of a distributed bake: run `index` of `count` equal runs of consecutive
+/// rows, for the bakes with these content keys.
+struct Share<'a> {
+    index: usize,
+    count: usize,
+    keys: &'a [ContentKey],
+}
+
 impl Session {
     pub(super) fn material(
+        &mut self,
+        request: &Request,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Output, Vec<Diagnostic>> {
+        match self.material_with(request, revision, assets, cancelled, None)? {
+            Built::Output(output) => Ok(output),
+            Built::Share(_) => unreachable!("no share was requested"),
+        }
+    }
+
+    /// Lets a host that can run several engine instances (browser workers) bake rows in
+    /// parallel. While enabled, a build that needs a large uncached bake stops with a
+    /// `BAKE_PENDING` diagnostic and [`Self::take_pending_bake`] describes the work; the host
+    /// has other sessions compute [`Self::bake_share`]s, hands them to
+    /// [`Self::provide_bake_share`] and builds again. Rows are the same bytes wherever they are
+    /// evaluated, so the result is identical to an undistributed build.
+    pub fn distribute_bakes(&mut self, enabled: bool) {
+        self.distribution.enabled = enabled;
+        if !enabled {
+            self.distribution.pending = None;
+            self.distribution.provided.clear();
+        }
+    }
+
+    /// The bake the last build stopped for, if any.
+    pub fn take_pending_bake(&mut self) -> Option<PendingBake> {
+        self.distribution.pending.take()
+    }
+
+    /// Evaluates one share of a pending bake. Runs in any session given the same assets; the
+    /// result goes to [`Self::provide_bake_share`] of the session that reported the bake.
+    pub fn bake_share(
+        &mut self,
+        pending: &PendingBake,
+        index: usize,
+        count: usize,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, Vec<Diagnostic>> {
+        let fail = |message: &str| vec![Diagnostic::message(&pending.request.entry, message)];
+        if count == 0 || index >= count || count > 64 {
+            return Err(fail(
+                "A bake share needs an index below a count of at most 64.",
+            ));
+        }
+        let keys = pending
+            .keys
+            .iter()
+            .map(|key| parse_key(key))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| fail("Invalid bake key."))?;
+        let revision = self.authoring_revision.get().unwrap_or(0);
+        self.begin_authoring(revision, &pending.request.entry)?;
+        let share = Share {
+            index,
+            count,
+            keys: &keys,
+        };
+        match self.material_with(&pending.request, revision, assets, cancelled, Some(share))? {
+            Built::Share(bytes) => Ok(bytes),
+            Built::Output(_) => unreachable!("a share was requested"),
+        }
+    }
+
+    /// Accepts rows computed by [`Self::bake_share`] for a bake this session reported.
+    pub fn provide_bake_share(&mut self, bytes: &[u8]) -> Result<(), String> {
+        for (key, total, rows) in read_shares(bytes)? {
+            let slots = self.distribution.provided.entry(key).or_default();
+            if slots.len() != total {
+                slots.clear();
+                slots.resize_with(total, || None);
+            }
+            for (ordinal, row) in rows {
+                *slots
+                    .get_mut(ordinal)
+                    .ok_or("A provided row is outside its bake.")? = Some(row);
+            }
+        }
+        Ok(())
+    }
+
+    fn material_with(
         &mut self,
         request: &Request,
         _revision: u64,
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<Output, Vec<Diagnostic>> {
+        share: Option<Share<'_>>,
+    ) -> Result<Built, Vec<Diagnostic>> {
         let compiled = self.program(request)?;
         let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
         let receivers = if request.receivers.is_empty() {
@@ -132,7 +235,7 @@ impl Session {
             ));
             nodes.push(node(
                 bake.clone(),
-                "material-receiver-v2",
+                "material-receiver-v3",
                 // Production bakes compress their PNG maps harder: same pixels, different bytes.
                 json(&(
                     &request.inspection,
@@ -146,13 +249,76 @@ impl Session {
             ));
             targets.push(bake);
         }
+        let dependencies_only = share.is_some().then(|| {
+            // A share needs the program, inputs and layouts, but never bakes or caches a receiver.
+            let nodes: Vec<Node> = nodes
+                .iter()
+                .filter(|node| !node.id.starts_with("bake/"))
+                .cloned()
+                .collect();
+            let targets = (0..receivers.len())
+                .map(|i| format!("layout/{i}"))
+                .chain(["program".to_owned(), "inputs".to_owned()])
+                .collect();
+            Plan::new(nodes, targets)
+        });
         let plan = Plan::new(nodes, targets).map_err(|e| fail(e.to_string()))?;
+        let bake_keys: Vec<ContentKey> = (0..receivers.len())
+            .map(|i| plan.key(&format!("bake/{i}")).expect("planned bake"))
+            .collect();
+        if share.is_none() && self.distribution.enabled {
+            let complete = |key: &ContentKey| {
+                self.distribution
+                    .provided
+                    .get(key)
+                    .is_some_and(|rows| rows.iter().all(Option::is_some))
+            };
+            let missing: Vec<String> = bake_keys
+                .iter()
+                .filter(|key| !self.runtime.holds(key) && !complete(key))
+                .map(format_key)
+                .collect();
+            // Small bakes finish sooner here than a round trip through other workers.
+            let texels = request.resolution * request.resolution * receivers.len();
+            if !missing.is_empty() && texels >= DISTRIBUTE_TEXELS {
+                // Rows for other bakes were never used (their inputs changed); only this
+                // request's partial rows are worth keeping. Rows for a later material of the
+                // same project stay until that material is built.
+                self.distribution
+                    .provided
+                    .retain(|key, _| bake_keys.contains(key));
+                self.distribution.pending = Some(PendingBake {
+                    request: request.clone(),
+                    keys: missing,
+                    images: image_bytes.keys().cloned().collect(),
+                });
+                return Err(vec![Diagnostic {
+                    code: "BAKE_PENDING".into(),
+                    ..Diagnostic::message(&request.entry, "Material bake is being distributed.")
+                }]);
+            }
+        }
+        // Rows provided for these bakes are used once; a later build with other inputs has other keys.
+        let mut provided: BTreeMap<ContentKey, Vec<Row>> = BTreeMap::new();
+        if share.is_none() {
+            for key in &bake_keys {
+                if let Some(rows) = self.distribution.provided.remove(key) {
+                    if let Some(rows) = rows.into_iter().collect::<Option<Vec<Row>>>() {
+                        provided.insert(*key, rows);
+                    }
+                }
+            }
+        }
+        let run_plan = match &dependencies_only {
+            Some(plan) => plan.as_ref().map_err(|e| fail(e.to_string()))?,
+            None => &plan,
+        };
         let mut evaluation_error = None;
         let complete = self
             .runtime
             .run(
                 self.build_epoch(),
-                &plan,
+                run_plan,
                 cancelled,
                 |node, dependencies, stopped| match node.id.as_str() {
                     "program" => Ok((
@@ -228,6 +394,7 @@ impl Session {
                         let Artifact::Receiver(atlas) = dependencies["mapping"].as_ref() else {
                             unreachable!()
                         };
+                        let index = id[5..].parse::<usize>().unwrap();
                         match bake(
                             program,
                             inputs,
@@ -235,6 +402,7 @@ impl Session {
                             request.inspection.as_deref(),
                             request.profile.threads(),
                             request.profile == super::Profile::Production,
+                            provided.remove(&bake_keys[index]),
                             stopped,
                         ) {
                             Ok(value) => {
@@ -262,6 +430,34 @@ impl Session {
                     .map(|e| vec![e])
                     .unwrap_or_else(|| fail(e))
             })?;
+        if let Some(share) = share {
+            let Artifact::Program(program) = complete["program"].as_ref() else {
+                unreachable!()
+            };
+            let Artifact::Inputs(inputs) = complete["inputs"].as_ref() else {
+                unreachable!()
+            };
+            let mut bytes = Vec::new();
+            for (i, key) in bake_keys.iter().enumerate() {
+                if !share.keys.contains(key) {
+                    continue;
+                }
+                let Artifact::Receiver(atlas) = complete[&format!("layout/{i}")].as_ref() else {
+                    unreachable!()
+                };
+                let (total, rows) = bake_rows(
+                    program,
+                    inputs,
+                    atlas,
+                    request.inspection.as_deref(),
+                    (share.index, share.count),
+                    cancelled,
+                )
+                .map_err(|error| vec![error])?;
+                write_share(&mut bytes, key, total, &rows);
+            }
+            return Ok(Built::Share(bytes));
+        }
         let mut model = Model {
             id: "studio/material".into(),
             name: "Material preview".into(),
@@ -302,8 +498,155 @@ impl Session {
         }
         let mut metadata = serde_json::to_value(compiled.metadata()).unwrap();
         metadata["mapping"] = serde_json::to_value(request.mapping).unwrap();
-        Ok(Output { model, metadata })
+        Ok(Built::Output(Output { model, metadata }))
     }
+}
+
+/// Bakes below this many requested texels are evaluated where they are requested.
+const DISTRIBUTE_TEXELS: usize = 8192;
+
+/// A session's state for baking rows in other sessions (see [`Session::distribute_bakes`]).
+#[derive(Default)]
+pub(crate) struct Distribution {
+    enabled: bool,
+    pending: Option<PendingBake>,
+    /// Rows received so far for a reported bake, by row ordinal.
+    provided: BTreeMap<ContentKey, Vec<Option<Row>>>,
+}
+
+/// A bake other sessions can share: the material request, the content keys of its receivers'
+/// uncached bakes and the images the request reads.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBake {
+    pub request: Request,
+    pub keys: Vec<String>,
+    pub images: Vec<String>,
+}
+
+fn format_key(key: &ContentKey) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn parse_key(text: &str) -> Option<ContentKey> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut key = [0u8; 32];
+    for (slot, pair) in key.iter_mut().zip(text.as_bytes().chunks(2)) {
+        *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(key)
+}
+
+const SHARE_MAGIC: &[u8; 4] = b"SBR1";
+
+/// Appends one bake's rows: key, total row count, then each row with its ordinal. Numbers are
+/// little-endian and floats keep their bits, so a row is the same wherever it is merged.
+fn write_share(bytes: &mut Vec<u8>, key: &ContentKey, total: usize, rows: &[(usize, Row)]) {
+    let word = |bytes: &mut Vec<u8>, value: usize| bytes.extend((value as u32).to_le_bytes());
+    bytes.extend(SHARE_MAGIC);
+    bytes.extend(key);
+    word(bytes, total);
+    word(bytes, rows.len());
+    for (ordinal, row) in rows {
+        word(bytes, *ordinal);
+        word(bytes, row.roughness.len());
+        word(bytes, row.live.len());
+        bytes.push(u8::from(row.blend) | u8::from(row.emits) << 1);
+        bytes.extend(row.strength.to_le_bytes());
+        bytes.extend(&row.color);
+        bytes.extend(&row.normal);
+        bytes.extend(&row.roughness);
+        bytes.extend(&row.metalness);
+        if row.emits {
+            for value in row.emitted.iter().flatten() {
+                bytes.extend(value.to_le_bytes());
+            }
+        }
+        for value in row.live.iter().flatten() {
+            bytes.extend(value.to_le_bytes());
+        }
+    }
+}
+
+type Shares = Vec<(ContentKey, usize, Vec<(usize, Row)>)>;
+
+fn read_shares(mut bytes: &[u8]) -> Result<Shares, String> {
+    fn take<'a>(bytes: &mut &'a [u8], count: usize) -> Result<&'a [u8], String> {
+        if bytes.len() < count {
+            return Err("Truncated bake share.".into());
+        }
+        let (head, tail) = bytes.split_at(count);
+        *bytes = tail;
+        Ok(head)
+    }
+    fn word(bytes: &mut &[u8]) -> Result<usize, String> {
+        Ok(u32::from_le_bytes(take(bytes, 4)?.try_into().unwrap()) as usize)
+    }
+    fn floats(bytes: &mut &[u8], count: usize) -> Result<Vec<f64>, String> {
+        Ok(
+            take(bytes, count.checked_mul(8).ok_or("Invalid bake share.")?)?
+                .chunks_exact(8)
+                .map(|chunk| f64::from_le_bytes(chunk.try_into().unwrap()))
+                .collect(),
+        )
+    }
+    let mut shares = Vec::new();
+    while !bytes.is_empty() {
+        if take(&mut bytes, 4)? != SHARE_MAGIC {
+            return Err("This is not a bake share.".into());
+        }
+        let key: ContentKey = take(&mut bytes, 32)?.try_into().unwrap();
+        let total = word(&mut bytes)?;
+        let count = word(&mut bytes)?;
+        if total > 1 << 20 || count > total {
+            return Err("Invalid bake share row count.".into());
+        }
+        let mut rows = Vec::with_capacity(count);
+        for _ in 0..count {
+            let ordinal = word(&mut bytes)?;
+            let cell = word(&mut bytes)?;
+            let live = word(&mut bytes)?;
+            if cell > 4096 || live > 256 {
+                return Err("Invalid bake share row.".into());
+            }
+            let flags = take(&mut bytes, 1)?[0];
+            let strength = floats(&mut bytes, 1)?[0];
+            let color = take(&mut bytes, cell * 4)?.to_vec();
+            let normal = take(&mut bytes, cell * 4)?.to_vec();
+            let roughness = take(&mut bytes, cell)?.to_vec();
+            let metalness = take(&mut bytes, cell)?.to_vec();
+            let emits = flags & 2 != 0;
+            let emitted = if emits {
+                floats(&mut bytes, cell * 3)?
+                    .chunks_exact(3)
+                    .map(|rgb| [rgb[0], rgb[1], rgb[2]])
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let live = (0..live)
+                .map(|_| floats(&mut bytes, cell))
+                .collect::<Result<Vec<_>, _>>()?;
+            rows.push((
+                ordinal,
+                Row {
+                    color,
+                    normal,
+                    roughness,
+                    metalness,
+                    emitted,
+                    live,
+                    blend: flags & 1 != 0,
+                    emits,
+                    strength,
+                },
+            ));
+        }
+        shares.push((key, total, rows));
+    }
+    Ok(shares)
 }
 
 fn byte(value: f64) -> u8 {
@@ -437,6 +780,7 @@ struct Row {
     normal: Vec<u8>,
     roughness: Vec<u8>,
     metalness: Vec<u8>,
+    /// Linear emission per texel; empty until a texel of the row emits, as most materials never do.
     emitted: Vec<[f64; 3]>,
     live: Vec<Vec<f64>>,
     blend: bool,
@@ -444,101 +788,302 @@ struct Row {
     strength: f64,
 }
 
-/// Evaluates one atlas row: channels, the relief normal and any live arguments.
-fn bake_row(
-    evaluator: &mut program::Evaluator<'_>,
-    atlas: &Atlas,
-    chart: &Chart,
-    y: usize,
-    inspect: Option<&str>,
-    live_fields: &[&str],
-    entry: &str,
-) -> Result<Row, Diagnostic> {
-    let failure = |message: String| Diagnostic::message(entry, message);
-    let cell = chart.width;
-    let mut row = Row {
-        color: vec![0; cell * 4],
-        normal: vec![0; cell * 4],
-        roughness: vec![0; cell],
-        metalness: vec![0; cell],
-        emitted: vec![[0.; 3]; cell],
-        live: vec![vec![f64::NAN; cell]; live_fields.len()],
-        blend: false,
-        emits: false,
-        strength: 1.,
-    };
-    // Each row of texels has its own operation allowance; every sample keeps its step budget.
-    evaluator.replenish(64_000_000);
-    let mut previous: Option<[f64; 3]> = None;
-    for x in 0..cell {
-        let (triangle, u, v) = atlas.texel(chart, x, y);
-        let sample = atlas.sample(triangle, u, v).map_err(&failure)?;
-        // Fields are computed only when inspected; channel values are the same either way.
-        let value = if live_fields.is_empty() {
-            evaluator.evaluate_channels(&sample, inspect)
-        } else {
-            evaluator.evaluate_channels_with(&sample, live_fields)
-        }
-        .map_err(Diagnostic::from)?;
-        let [step_u, step_v] = atlas.steps(triangle);
-        let hu = evaluator
-            .evaluate_height(&atlas.sample(triangle, u + step_u, v).map_err(&failure)?)
-            .map_err(Diagnostic::from)?;
-        let hv = evaluator
-            .evaluate_height(&atlas.sample(triangle, u, v + step_v).map_err(&failure)?)
-            .map_err(Diagnostic::from)?;
-        let mut direction = atlas
-            .normal(
-                triangle,
-                (hu - value.height) / step_u,
-                (hv - value.height) / step_v,
-            )
-            .map_err(&failure)?;
-        if let Some(adjusted) = value.receiver_normal {
-            let [tangent, bitangent] = atlas.frame(triangle).map_err(&failure)?;
-            direction =
-                program::orient_relief(direction, tangent, bitangent, sample.normal, adjusted)
-                    .map_err(|message| failure(message.into()))?;
-        }
-        if let Some(offset) = value.normal_offset {
-            let [tangent, bitangent] = atlas.frame(triangle).map_err(&failure)?;
-            direction = program::bend_shaded(direction, tangent, bitangent, sample.normal, offset)
-                .map_err(|message| failure(message.into()))?;
-        }
-        let rgb = if let Some(field) = inspect {
-            inspection(&value, field, direction, sample.normal).map_err(&failure)?
-        } else {
-            value.base_color
-        };
-        row.color[x * 4..x * 4 + 3].copy_from_slice(&rgb.map(srgb));
-        row.color[x * 4 + 3] = byte(value.opacity);
-        let texel = [chart.x + x, chart.y + y];
-        for (channel, v) in direction.into_iter().enumerate() {
-            // Full dither on plateaus (under a step per texel), none where relief already varies.
-            let step = previous.map_or(0., |p: [f64; 3]| (v - p[channel]).abs() * 127.5);
-            let amount = (1. - step).clamp(0., 1.);
-            row.normal[x * 4 + channel] = dithered(v * 0.5 + 0.5, texel, channel, amount);
-        }
-        previous = Some(direction);
-        row.normal[x * 4 + 3] = 255;
-        row.roughness[x] = byte(value.roughness);
-        row.metalness[x] = byte(value.metalness);
-        row.emitted[x] = value.emissive;
-        row.strength = value.emissive.into_iter().fold(row.strength, f64::max);
-        row.blend |= value.opacity < 1.;
-        row.emits |= value.emissive.iter().any(|v| *v > 0.);
-        for (values, field) in row.live.iter_mut().zip(live_fields) {
-            values[x] = match &value.fields[*field] {
-                FieldValue::Scalar(v) => *v,
-                FieldValue::Bool(v) => f64::from(u8::from(*v)),
-                FieldValue::Vec2(v) => v[0],
-                FieldValue::Vec3(v) => v[0],
-            };
-        }
-    }
-    Ok(row)
+/// Rows a block evaluates together. Larger blocks reuse more neighbor heights; smaller ones bound
+/// the working memory and the time between cancellation checks.
+const BLOCK_ROWS: usize = 32;
+
+/// One texel's evaluated center.
+struct Center {
+    triangle: usize,
+    u: f64,
+    v: f64,
+    normal: [f64; 3],
+    value: program::Outputs,
 }
 
+/// The texel of `chart` next to (x, y) whose center is the sample (triangle, u, v), if there is
+/// one. Texel centers are one leg step apart, so the height one step along a leg is usually an
+/// adjacent texel's own height; gutters, the far side of a chart's diagonal and projected
+/// texels have no such neighbor.
+fn neighbor_texel(
+    atlas: &Atlas,
+    chart: &Chart,
+    [x, y]: [usize; 2],
+    triangle: usize,
+    [u, v]: [f64; 2],
+) -> Option<[usize; 2]> {
+    [[1i64, 0], [-1, 0], [0, 1], [0, -1]]
+        .into_iter()
+        .filter_map(|[dx, dy]| {
+            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+            (nx >= 0 && ny >= 0 && (nx as usize) < chart.width && (ny as usize) < chart.height)
+                .then_some([nx as usize, ny as usize])
+        })
+        .find(|&[nx, ny]| {
+            let (other, ou, ov) = atlas.texel(chart, nx, ny);
+            other == triangle && (ou - u).abs() <= 1e-9 && (ov - v).abs() <= 1e-9
+        })
+}
+
+/// Evaluates consecutive atlas rows: channels, the relief normal and any live arguments.
+///
+/// A normal needs the height one texel along each chart leg. Where that point is an adjacent
+/// texel's center, the adjacent texel's height is used instead of evaluating the height graph
+/// again, which is most of a bake's work otherwise. A neighbor row outside `rows` has its heights
+/// evaluated here, at the same centers, so the result never depends on how rows are grouped
+/// into blocks, threads or workers.
+fn bake_block(
+    evaluator: &mut program::Evaluator<'_>,
+    atlas: &Atlas,
+    rows: &[(usize, usize)],
+    inspect: Option<&str>,
+    live_fields: &program::FieldSelection,
+    entry: &str,
+) -> Result<Vec<Row>, Diagnostic> {
+    let failure = |message: String| Diagnostic::message(entry, message);
+    let live_count = live_fields.len();
+    let mut live = vec![FieldValue::Scalar(0.); live_count];
+    let mut baked: Vec<Row> = Vec::with_capacity(rows.len());
+    let mut centers: Vec<Vec<Center>> = Vec::with_capacity(rows.len());
+    // Center heights by (chart, row): this block's rows, then neighbor rows as they are needed.
+    let mut heights: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
+    for &(chart_index, y) in rows {
+        let chart = &atlas.charts[chart_index];
+        let cell = chart.width;
+        let mut row = Row {
+            color: vec![0; cell * 4],
+            normal: vec![0; cell * 4],
+            roughness: vec![0; cell],
+            metalness: vec![0; cell],
+            emitted: Vec::new(),
+            live: vec![vec![f64::NAN; cell]; live_count],
+            blend: false,
+            emits: false,
+            strength: 1.,
+        };
+        // Each row of texels has its own operation allowance; every sample keeps its step budget.
+        evaluator.replenish(64_000_000);
+        let mut row_centers = Vec::with_capacity(cell);
+        let mut row_heights = Vec::with_capacity(cell);
+        for x in 0..cell {
+            let (triangle, u, v) = atlas.texel(chart, x, y);
+            let sample = atlas.sample(triangle, u, v).map_err(&failure)?;
+            // Fields are computed only when inspected; channel values are the same either way.
+            let value = if live_count == 0 {
+                evaluator.evaluate_channels(&sample, inspect)
+            } else {
+                evaluator.evaluate_selected(&sample, live_fields, &mut live)
+            }
+            .map_err(Diagnostic::from)?;
+            row.roughness[x] = byte(value.roughness);
+            row.metalness[x] = byte(value.metalness);
+            row.strength = value.emissive.into_iter().fold(row.strength, f64::max);
+            row.blend |= value.opacity < 1.;
+            if value.emissive.iter().any(|v| *v > 0.) {
+                row.emits = true;
+                if row.emitted.is_empty() {
+                    row.emitted = vec![[0.; 3]; cell];
+                }
+                row.emitted[x] = value.emissive;
+            }
+            for (values, field) in row.live.iter_mut().zip(&live) {
+                values[x] = match field {
+                    FieldValue::Scalar(v) => *v,
+                    FieldValue::Bool(v) => f64::from(u8::from(*v)),
+                    FieldValue::Vec2(v) => v[0],
+                    FieldValue::Vec3(v) => v[0],
+                };
+            }
+            row_heights.push(value.height);
+            row_centers.push(Center {
+                triangle,
+                u,
+                v,
+                normal: sample.normal,
+                value,
+            });
+        }
+        heights.insert((chart_index, y), row_heights);
+        centers.push(row_centers);
+        baked.push(row);
+    }
+    for ((&(chart_index, y), row), row_centers) in rows.iter().zip(&mut baked).zip(&centers) {
+        let chart = &atlas.charts[chart_index];
+        evaluator.replenish(64_000_000);
+        let mut previous: Option<[f64; 3]> = None;
+        for (x, center) in row_centers.iter().enumerate() {
+            let (triangle, u, v) = (center.triangle, center.u, center.v);
+            let value = &center.value;
+            let [step_u, step_v] = atlas.steps(triangle);
+            let mut height_at = |target: [f64; 2]| -> Result<f64, Diagnostic> {
+                let Some([nx, ny]) = neighbor_texel(atlas, chart, [x, y], triangle, target) else {
+                    return evaluator
+                        .evaluate_height(
+                            &atlas
+                                .sample(triangle, target[0], target[1])
+                                .map_err(&failure)?,
+                        )
+                        .map_err(Diagnostic::from);
+                };
+                if !heights.contains_key(&(chart_index, ny)) {
+                    // A neighbor row of another block: its center heights, as that block has them.
+                    let mut row_heights = Vec::with_capacity(chart.width);
+                    for other in 0..chart.width {
+                        let (triangle, u, v) = atlas.texel(chart, other, ny);
+                        row_heights.push(
+                            evaluator
+                                .evaluate_height(&atlas.sample(triangle, u, v).map_err(&failure)?)
+                                .map_err(Diagnostic::from)?,
+                        );
+                    }
+                    heights.insert((chart_index, ny), row_heights);
+                }
+                Ok(heights[&(chart_index, ny)][nx])
+            };
+            let hu = height_at([u + step_u, v])?;
+            let hv = height_at([u, v + step_v])?;
+            let mut direction = atlas
+                .normal(
+                    triangle,
+                    (hu - value.height) / step_u,
+                    (hv - value.height) / step_v,
+                )
+                .map_err(&failure)?;
+            if let Some(adjusted) = value.receiver_normal {
+                let [tangent, bitangent] = atlas.frame(triangle).map_err(&failure)?;
+                direction =
+                    program::orient_relief(direction, tangent, bitangent, center.normal, adjusted)
+                        .map_err(|message| failure(message.into()))?;
+            }
+            if let Some(offset) = value.normal_offset {
+                let [tangent, bitangent] = atlas.frame(triangle).map_err(&failure)?;
+                direction =
+                    program::bend_shaded(direction, tangent, bitangent, center.normal, offset)
+                        .map_err(|message| failure(message.into()))?;
+            }
+            let rgb = if let Some(field) = inspect {
+                inspection(value, field, direction, center.normal).map_err(&failure)?
+            } else {
+                value.base_color
+            };
+            row.color[x * 4..x * 4 + 3].copy_from_slice(&rgb.map(srgb));
+            row.color[x * 4 + 3] = byte(value.opacity);
+            let texel = [chart.x + x, chart.y + y];
+            for (channel, v) in direction.into_iter().enumerate() {
+                // Full dither on plateaus (under a step per texel), none where relief already varies.
+                let step = previous.map_or(0., |p: [f64; 3]| (v - p[channel]).abs() * 127.5);
+                let amount = (1. - step).clamp(0., 1.);
+                row.normal[x * 4 + channel] = dithered(v * 0.5 + 0.5, texel, channel, amount);
+            }
+            previous = Some(direction);
+            row.normal[x * 4 + 3] = 255;
+        }
+    }
+    Ok(baked)
+}
+
+/// Feature queries see this receiver's own creases and open edges, from the same world-space
+/// positions the atlas samples; they are part of the receiver layout's cached identity.
+fn receiver_features(program: &Program, atlas: &Atlas) -> Vec<program::Feature> {
+    if !program
+        .metadata()
+        .required_inputs
+        .iter()
+        .any(|input| input == "features")
+    {
+        return Vec::new();
+    }
+    let receiver = &atlas.receiver;
+    let mut features = program::receiver_features(&receiver.positions, &receiver.indices);
+    features.extend(program::receiver_seams(
+        &receiver.positions,
+        &receiver.uvs,
+        &receiver.indices,
+    ));
+    features.extend(receiver.contacts.iter().map(|contact| program::Feature {
+        start: contact.start,
+        end: contact.end,
+        kind: program::FeatureKind::Contact,
+        angle: 0.,
+        normal: None,
+    }));
+    features.truncate(program::MAX_FEATURES);
+    features
+}
+
+/// Live renderer arguments are fields; previews of a single field carry no live operations.
+fn live_field_names<'a>(program: &'a Program, inspect: Option<&str>) -> Vec<&'a str> {
+    let mut live_fields: Vec<&str> = Vec::new();
+    if inspect.is_none() {
+        for operation in &program.metadata().live {
+            for field in operation.inputs.values() {
+                if !live_fields.contains(&field.as_str()) {
+                    live_fields.push(field);
+                }
+            }
+        }
+    }
+    live_fields
+}
+
+/// Every chart row of an atlas as (chart, row), in the order rows are merged.
+fn atlas_rows(atlas: &Atlas) -> Vec<(usize, usize)> {
+    atlas
+        .charts
+        .iter()
+        .enumerate()
+        .flat_map(|(chart, placed)| (0..placed.height).map(move |y| (chart, y)))
+        .collect()
+}
+
+/// Evaluates share `share.0` of `share.1` equal runs of consecutive rows, with the total row count.
+fn bake_rows(
+    program: &Program,
+    inputs: &Inputs,
+    atlas: &Atlas,
+    inspect: Option<&str>,
+    share: (usize, usize),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(usize, Vec<(usize, Row)>), Diagnostic> {
+    let entry = program.metadata().entry.as_str();
+    let failure = |message: String| Diagnostic::message(entry, message);
+    let features = receiver_features(program, atlas);
+    let live_fields = live_field_names(program, inspect);
+    let live_selection = program.select_fields(&live_fields).map_err(&failure)?;
+    let rows = atlas_rows(atlas);
+    let mut evaluator = program
+        .evaluator_with_features(inputs, &features)
+        .map_err(Diagnostic::from)?;
+    // Shares are consecutive rows, so only a share's first and last rows look outside it.
+    let (first, last) = (
+        rows.len() * share.0 / share.1,
+        rows.len() * (share.0 + 1) / share.1,
+    );
+    let mut baked = Vec::with_capacity(last - first);
+    for (block, block_rows) in rows[first..last].chunks(BLOCK_ROWS).enumerate() {
+        if cancelled() {
+            return Err(failure("Material authoring cancelled.".into()));
+        }
+        let start = first + block * BLOCK_ROWS;
+        let block = bake_block(
+            &mut evaluator,
+            atlas,
+            block_rows,
+            inspect,
+            &live_selection,
+            entry,
+        )?;
+        baked.extend(
+            block
+                .into_iter()
+                .enumerate()
+                .map(|(i, row)| (start + i, row)),
+        );
+    }
+    Ok((rows.len(), baked))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn bake(
     program: &Program,
     inputs: &Inputs,
@@ -546,6 +1091,7 @@ fn bake(
     inspect: Option<&str>,
     threads: usize,
     compact: bool,
+    provided: Option<Vec<Row>>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<BakedReceiver, Diagnostic> {
     let failure = |message: String| Diagnostic::message(&program.metadata().entry, message);
@@ -560,55 +1106,37 @@ fn bake(
     // average across a chart's gutter never pull in an invalid direction.
     let mut normal = [128u8, 128, 255, 0].repeat(pixels);
     let mut properties = vec![0u8; pixels * 4];
-    let mut emitted = vec![[0.; 3]; pixels];
+    // Emission is rare and costs 24 bytes a texel, so its buffer exists only once a row emits.
+    let mut emitted: Vec<[f64; 3]> = Vec::new();
     let mut blend = false;
     let mut emits = false;
-    // Feature queries see this receiver's own creases and open edges, from the same world-space
-    // positions the atlas samples; they are part of the receiver layout's cached identity.
-    let features = if program
-        .metadata()
-        .required_inputs
-        .iter()
-        .any(|input| input == "features")
-    {
-        let receiver = &atlas.receiver;
-        let mut features = program::receiver_features(&receiver.positions, &receiver.indices);
-        features.extend(program::receiver_seams(
-            &receiver.positions,
-            &receiver.uvs,
-            &receiver.indices,
-        ));
-        features.extend(receiver.contacts.iter().map(|contact| program::Feature {
-            start: contact.start,
-            end: contact.end,
-            kind: program::FeatureKind::Contact,
-            angle: 0.,
-            normal: None,
-        }));
-        features.truncate(program::MAX_FEATURES);
-        features
-    } else {
-        Vec::new()
-    };
     let mut emission_strength = 1f64;
-    // Live renderer arguments are fields; previews of a single field carry no live operations.
-    let mut live_fields: Vec<&str> = Vec::new();
-    if inspect.is_none() {
-        for operation in &program.metadata().live {
-            for field in operation.inputs.values() {
-                if !live_fields.contains(&field.as_str()) {
-                    live_fields.push(field);
-                }
-            }
-        }
-    }
+    let live_fields = live_field_names(program, inspect);
     let mut live_values = vec![vec![f64::NAN; pixels]; live_fields.len()];
-    let rows: Vec<(usize, usize)> = atlas
-        .charts
-        .iter()
-        .enumerate()
-        .flat_map(|(chart, placed)| (0..placed.height).map(move |y| (chart, y)))
-        .collect();
+    let live_selection = program.select_fields(&live_fields).map_err(&failure)?;
+    let rows = atlas_rows(atlas);
+    // Rows evaluated elsewhere are merged exactly like rows evaluated here; a set that does not
+    // fit this atlas is ignored and the rows are evaluated here instead.
+    let mut provided = provided
+        .filter(|provided| {
+            provided.len() == rows.len()
+                && provided.iter().zip(&rows).all(|(row, &(chart, _))| {
+                    let cell = atlas.charts[chart].width;
+                    row.color.len() == cell * 4
+                        && row.normal.len() == cell * 4
+                        && row.roughness.len() == cell
+                        && row.metalness.len() == cell
+                        && row.live.len() == live_fields.len()
+                        && row.live.iter().all(|values| values.len() == cell)
+                        && (!row.emits || row.emitted.len() == cell)
+                })
+        })
+        .map(Vec::into_iter);
+    let features = if provided.is_some() {
+        Vec::new()
+    } else {
+        receiver_features(program, atlas)
+    };
     let evaluator = || {
         program
             .evaluator_with_features(inputs, &features)
@@ -616,29 +1144,35 @@ fn bake(
     };
     let entry = program.metadata().entry.as_str();
     let threads = threads.max(1);
-    let mut serial = if threads == 1 {
+    let mut serial = if threads == 1 && provided.is_none() {
         Some(evaluator()?)
     } else {
         None
     };
     // Rows are evaluated independently and written back in order, so threads never change bytes.
-    for batch in rows.chunks(threads * 2) {
+    for batch in rows.chunks(threads * BLOCK_ROWS) {
         if cancelled() {
             return Err(failure("Material authoring cancelled.".into()));
         }
         let results: Vec<Result<Row, Diagnostic>> = match &mut serial {
-            Some(evaluator) => batch
-                .iter()
-                .map(|&(chart, y)| {
-                    let chart = &atlas.charts[chart];
-                    bake_row(evaluator, atlas, chart, y, inspect, &live_fields, entry)
-                })
+            None if provided.is_some() => provided
+                .as_mut()
+                .expect("provided rows")
+                .by_ref()
+                .take(batch.len())
+                .map(Ok)
                 .collect(),
+            Some(evaluator) => {
+                match bake_block(evaluator, atlas, batch, inspect, &live_selection, entry) {
+                    Ok(rows) => rows.into_iter().map(Ok).collect(),
+                    Err(error) => vec![Err(error)],
+                }
+            }
             None => std::thread::scope(|scope| {
                 let handles: Vec<_> = batch
                     .chunks(batch.len().div_ceil(threads))
                     .map(|share| {
-                        let live_fields = &live_fields;
+                        let live_selection = &live_selection;
                         let evaluator = &evaluator;
                         scope.spawn(move || -> Vec<Result<Row, Diagnostic>> {
                             let mut evaluator = match evaluator() {
@@ -647,20 +1181,17 @@ fn bake(
                                     return share.iter().map(|_| Err(error.clone())).collect();
                                 }
                             };
-                            share
-                                .iter()
-                                .map(|&(chart, y)| {
-                                    bake_row(
-                                        &mut evaluator,
-                                        atlas,
-                                        &atlas.charts[chart],
-                                        y,
-                                        inspect,
-                                        live_fields,
-                                        entry,
-                                    )
-                                })
-                                .collect()
+                            match bake_block(
+                                &mut evaluator,
+                                atlas,
+                                share,
+                                inspect,
+                                live_selection,
+                                entry,
+                            ) {
+                                Ok(rows) => rows.into_iter().map(Ok).collect(),
+                                Err(error) => vec![Err(error)],
+                            }
                         })
                     })
                     .collect();
@@ -672,6 +1203,9 @@ fn bake(
         };
         for (&(chart, y), result) in batch.iter().zip(results) {
             let row = result?;
+            if row.emits && emitted.is_empty() {
+                emitted = vec![[0.; 3]; pixels];
+            }
             let chart = &atlas.charts[chart];
             let start = (chart.y + y) * atlas.width + chart.x;
             for x in 0..chart.width {
@@ -684,7 +1218,9 @@ fn bake(
                     row.metalness[x],
                     255,
                 ]);
-                emitted[texel] = row.emitted[x];
+                if row.emits {
+                    emitted[texel] = row.emitted[x];
+                }
                 for (values, samples) in live_values.iter_mut().zip(&row.live) {
                     values[texel] = samples[x];
                 }

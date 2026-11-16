@@ -34,6 +34,8 @@ pub struct Session {
     epoch: AtomicU64,
     images: RefCell<ImageCache>,
     pub(crate) producer_states: ProducerStates,
+    /// Rows of material bakes evaluated by other sessions, when a host distributes them.
+    pub(crate) distribution: crate::authoring::material::Distribution,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -52,6 +54,7 @@ impl Session {
             authoring_revision: Cell::new(None),
             epoch: AtomicU64::new(0),
             producer_states: ProducerStates::default(),
+            distribution: Default::default(),
             runtime,
             images: RefCell::new(images),
         })

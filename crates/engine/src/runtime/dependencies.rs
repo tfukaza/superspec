@@ -285,6 +285,13 @@ impl<T> Runtime<T> {
         self.store.lock().ok()?.get(retention, key)
     }
 
+    /// Whether a planned node's artifact is retained, so running its plan would not produce it.
+    pub(crate) fn holds(&self, key: &ContentKey) -> bool {
+        self.store
+            .lock()
+            .is_ok_and(|mut store| store.get(self.retention, key).is_some())
+    }
+
     pub(crate) fn retain(
         &self,
         retention: Retention,
