@@ -575,7 +575,7 @@ impl Session {
             ));
             nodes.push(node(
                 bake.clone(),
-                "material-receiver-v4",
+                "material-receiver-v5",
                 // Production bakes compress their PNG maps harder: same pixels, different bytes.
                 json(&(
                     &request.inspection,
@@ -614,7 +614,7 @@ impl Session {
                 let id = format!("bake/{i}/{}", group.name());
                 nodes.push(node(
                     id.clone(),
-                    "material-group-v1",
+                    "material-group-v2",
                     inputs_identity,
                     vec![
                         dependency("mapping", layout.clone()),

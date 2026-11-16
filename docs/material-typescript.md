@@ -470,7 +470,7 @@ the CPU draft alone (`data-gpu-preview-fallback` names the reason); `?gpupreview
 
 **Bake profiles.** Requests and projects carry `profile`: `"preview"` (the default) or
 `"production"`. Both evaluate the same program with the same seeds and write the same pixels
-for a given resolution; production compresses its PNG maps harder (balanced DEFLATE with adaptive
+for a given resolution; production compresses its PNG maps harder (DEFLATE level 3 with adaptive
 filters), so its files are smaller and differ in bytes, and the bake cache keeps the two apart. Preview admits textures up to 512 px per receiver and bakes on the
 calling thread. Production admits up to 2048 px, the 4 MiB-texel atlas allowance, and splits a
 receiver's texel rows across up to eight native threads, each with its own evaluator. Rows are

@@ -358,6 +358,10 @@ fn write_parity_fixture() {
         let mut reseeded = request(&case, serde_json::json!({}), resolution);
         reseeded.seed = 11;
         requests.push(("seed", reseeded));
+        // The production encoder too: its bytes must be the same on every target.
+        let mut production = request(&case, serde_json::json!({}), 96);
+        production.profile = Profile::Production;
+        requests.push(("production", production));
         let mut session = Session::default();
         let mut hashes = Vec::new();
         for (i, (label, request)) in requests.iter().enumerate() {
@@ -461,5 +465,53 @@ fn bench_encode_share() {
                 .collect::<Vec<_>>(),
             together.elapsed().as_secs_f64()
         );
+    }
+}
+
+/// The decoded pixels and encoded sizes of every map of a production bake of each example at
+/// 256, 512 and 2048 px, one JSON line per build (`MAPS_OUT=<file>` also writes them there). Two
+/// encoders that keep pixels give equal `pixels` lists; only `bytes` and `seconds` may differ.
+#[test]
+#[ignore]
+fn dump_production_maps() {
+    use sha2::{Digest, Sha256};
+    let mut out = std::env::var("MAPS_OUT")
+        .ok()
+        .map(|path| std::fs::File::create(path).unwrap());
+    for case in cases() {
+        for resolution in [256, 512, 2048] {
+            let mut production = request(&case, serde_json::json!({}), resolution);
+            production.profile = Profile::Production;
+            let started = Instant::now();
+            let output = Session::default()
+                .build(&production, 1, &asset, &|| false)
+                .unwrap_or_else(|e| panic!("{e:?}"));
+            let seconds = started.elapsed().as_secs_f64();
+            let mut pixels: Vec<String> = output
+                .model
+                .images
+                .values()
+                .map(|image| {
+                    let decoded = superspec_geometry::image::decode(&image.bytes).unwrap();
+                    format!(
+                        "{}x{}:{:x}",
+                        decoded.width,
+                        decoded.height,
+                        Sha256::digest(&decoded.rgba)
+                    )
+                })
+                .collect();
+            pixels.sort();
+            let line = serde_json::json!({
+                "case": case.name, "resolution": resolution, "seconds": seconds,
+                "bytes": output.model.images.values().map(|image| image.bytes.len()).sum::<usize>(),
+                "maps": pixels.len(), "pixels": pixels, "material_identity": identity(&output),
+            })
+            .to_string();
+            eprintln!("{line}");
+            if let Some(file) = out.as_mut() {
+                writeln!(file, "{line}").unwrap();
+            }
+        }
     }
 }
