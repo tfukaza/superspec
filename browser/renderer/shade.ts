@@ -33,15 +33,37 @@ export interface ProgramShader {
    */
   entries?: { function: string; outputs: string[]; live: boolean; source: string }[];
   /**
-   * NOT EMITTED YET: the uniforms each output reads (through everything upstream of it), by output name, with `live`
-   * for the fields live renderer operations read. When the engine states them, a bake's textures are keyed by them
-   * (`attachmentReads` in atlas.ts is the one place that reads this); until then that function derives them from `entries`.
+   * What each output and each live argument reads, through everything upstream of it (`ShaderReads` in the engine's
+   * `program/glsl.rs`): by output name for every output the program sets, and by live operation id, then argument
+   * name (absent when the program has no live operation). A bake's textures are keyed by them (`attachmentReads` in
+   * atlas.ts is the one place that reads this); for a record without it that function derives them from `entries`.
    */
-  reads?: Record<string, string[]>;
+  reads?: { outputs: Record<string, Reads>; live?: Record<string, Record<string, Reads>> };
   /** Present on a hybrid plan: fields the CPU bakes, read by the shader from float textures. */
   cpuFields?: CpuField[];
   /** Outputs that read a CPU field. */
   cpuOutputs?: string[];
+}
+/** Everything one value of a program reads (`Reads` in the engine's `program/glsl.rs`). */
+export interface Reads {
+  /** Parameter uniforms (`ProgramShader.parameters[].uniform`). */
+  parameters: string[];
+  /** Whether any named seed is read. */
+  seed: boolean;
+  /** Supplied images, by name. */
+  images: string[];
+  /** Whether the supplied source edges are read. */
+  edges: boolean;
+  /** Whether receiver features are read. */
+  features: boolean;
+  /** The parts of a sample read (`uv`, `surface`, `world`, `normal`, `bounds`, ...). */
+  sample: string[];
+  /** CPU fields read, by name; empty outside a plan. */
+  cpuFields: string[];
+  /** External inputs read, whose planes belong to one receiver. */
+  planes: string[];
+  /** Whether the value is the same at a surface position on every receiver. */
+  intrinsic: boolean;
 }
 /** A field a hybrid shader reads from a texture the host bakes on the CPU, and what it must be baked again for. */
 export interface CpuField {
@@ -52,6 +74,8 @@ export interface CpuField {
   seed: boolean;
   images: string[];
   edges: boolean;
+  /** External inputs the field reads; absent when it reads none. */
+  planes?: string[];
 }
 /** One material of a shaded scene: its shader, seed values and parameter defaults. */
 export interface MaterialShading {

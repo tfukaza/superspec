@@ -31,8 +31,51 @@ void main() {
 };
 
 /**
+ * Cosines of the angle between a vertex normal and its face's own normal: at `NORMAL_KEPT` and above the vertex normal
+ * is what the occlusion reads, at `NORMAL_REPLACED` and below the face's, with a blend between. A smoothed normal of a
+ * solid stays well above (a hexagonal tube's is at 0.87).
+ */
+const NORMAL_KEPT = 0.8, NORMAL_REPLACED = 0.5;
+
+/**
+ * Makes the normal the occlusion reads the normal of the surface THE CAMERA SEES, whatever the mesh stores: turned to
+ * the camera's side of the face, and the face's own normal (from the depth's slope) where the vertex normal is far
+ * from it. Without this a mesh's stored normals decide the occlusion in two ways that are not about its shape:
+ *
+ * - A two-sided part delivered with both faces (foliage: each triangle twice, wound both ways, sharing vertices, so no
+ *   renderer turns its shade normals over) has two coincident faces under this two-sided material. The one wound away
+ *   from the camera is drawn with its normal turned over, and being drawn last it is the one kept: a normal pointing
+ *   away from the camera, which the occlusion reads as a surface that sees nothing. Such foliage came out nearly black.
+ * - Vertex normals that are shade normals (a leaf cluster lit as part of a canopy) say nothing of the leaf's own
+ *   facing. The same foliage flattened into one mesh (shade normals in its vertices) and as an instanced batch (the
+ *   cluster's geometric normals) then got different occlusion.
+ *
+ * A solid's smoothed normals are on the camera's side of their faces and near them, so they are read as they are.
+ */
+function faceNormals(material: THREE.Material): void {
+  material.onBeforeCompile = shader => {
+    const vertex = "#include <project_vertex>", fragment = "#include <normal_fragment_begin>";
+    // If three.js changes what this patches, the pass keeps its own normals.
+    if (!shader.vertexShader.includes(vertex) || !shader.fragmentShader.includes(fragment)) return;
+    shader.vertexShader = `varying vec3 msViewPoint;\n${shader.vertexShader.replace(vertex, `${vertex}\n  msViewPoint = mvPosition.xyz;`)}`;
+    shader.fragmentShader = `varying vec3 msViewPoint;\n${shader.fragmentShader.replace(fragment, `${fragment}
+  {
+    // The face's own normal in view space: it is toward the camera whichever way the triangle is wound.
+    vec3 msFace = cross( dFdx( msViewPoint ), dFdy( msViewPoint ) );
+    float msArea = dot( msFace, msFace );
+    if ( msArea > 0.0 ) {
+      msFace *= inversesqrt( msArea );
+      float msAlong = dot( normal, msFace );
+      normal = normalize( mix( msFace, sign( msAlong ) * normal, smoothstep( ${NORMAL_REPLACED.toFixed(2)}, ${NORMAL_KEPT.toFixed(2)}, abs( msAlong ) ) ) );
+    }
+  }`)}`;
+  };
+  material.customProgramCacheKey = () => "ms-face-normals";
+}
+
+/**
  * Screen-space ambient occlusion for a scene view: soft darkening in creases and where objects meet, from the depth and
- * geometric normals the camera sees (three.js's GTAO pass with its denoise). A global rendering setting of the scene
+ * geometric normals the camera sees (three.js's GTAO pass with its denoise; `faceNormals` makes its normals those). A global rendering setting of the scene
  * (`ambientOcclusion` in the lighting record), never part of a material; the planned baked `occlusion()` material
  * field is a different thing.
  *
@@ -68,6 +111,7 @@ export class AmbientOcclusion {
     this.pass = new GTAOPass(scene, camera, size.x, size.y);
     // Both faces of a thin part write depth and a normal, as the scene's materials draw them.
     this.pass.normalMaterial.side = THREE.DoubleSide;
+    faceNormals(this.pass.normalMaterial);
     const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void };
     const hide = internals._overrideVisibility.bind(this.pass), restore = internals._restoreVisibility.bind(this.pass);
     let hidden: THREE.Object3D[] = [];

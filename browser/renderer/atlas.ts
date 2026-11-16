@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { MaterialShading, ProgramShader } from "./shade.ts";
+import type { MaterialShading, ProgramShader, Reads } from "./shade.ts";
 import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
 
 /**
@@ -272,12 +272,40 @@ const ATTACHMENT_OUTPUTS: Record<string, string[]> = {
 };
 
 /**
+ * The program's own uniforms that a value with the engine's stated reads depends on, or undefined when the record is
+ * not one this understands (the value may then read anything). Parameters are uniforms already; a read seed is every
+ * named seed's uniform (the record does not say which); images and CPU fields are named and found in the shader's
+ * lists. Source edges and external planes reach a shader only through CPU fields, so a value that reads them reads
+ * every CPU field that does, besides the fields it lists. Features and the parts of a sample are the receiver's, which
+ * is in every key.
+ */
+function statedUniforms(shader: ProgramShader, read: Reads): Set<string> | undefined {
+  if (typeof read !== "object" || read === null) return undefined;
+  if ([read.parameters, read.images ?? [], read.cpuFields ?? [], read.planes ?? []].some(list => !Array.isArray(list))) return undefined;
+  const found = new Set<string>(read.parameters);
+  if (read.seed) for (const seed of shader.seeds) found.add(seed.uniform);
+  for (const name of read.images ?? []) {
+    const image = shader.images.find(image => image.name === name);
+    // An image the shader does not bind is not on the GPU path (a CPU field reads it): the field's uniform carries it.
+    if (image) found.add(image.uniform);
+  }
+  const planes = new Set(read.planes ?? []);
+  for (const field of shader.cpuFields ?? []) {
+    if (read.cpuFields?.includes(field.name) || (read.edges && field.edges) || field.planes?.some(plane => planes.has(plane))) found.add(field.uniform);
+  }
+  return found;
+}
+
+/**
  * The uniforms of the program (parameters, named seeds, images, CPU fields) that each texture of its evaluate pass
  * reads, by attachment; an attachment missing from the answer may read any of them. A bake keys each texture by the
  * values of what it reads (`GpuBaker.atlasNodes`), so a changed parameter draws only the textures it reaches. THE ONE
  * PLACE that says what an output depends on:
  *
- * - `shader.reads`, per-output dependencies stated by the engine, when it emits them (it does not yet);
+ * - `shader.reads`, the dependencies the engine states (`ShaderReads` in `program/glsl.rs`): `outputs[name]` for each
+ *   output the program sets and `live[operation][argument]` for each live argument. A texture reads what the outputs
+ *   it holds read; a live texture reads what every argument given one of its channels reads (arguments that are one
+ *   value share a channel). `statedUniforms` turns one such record into uniforms.
  * - else the record's entry points (`shader.entries`): each is the code of some outputs alone, helpers expanded, so
  *   the uniforms its text names are the ones those outputs can read. (`ms_evaluate_height` is part of the shader's
  *   source and carries no text; the relief entry covers the height texture.)
@@ -289,6 +317,27 @@ export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayou
   const own = [...shader.parameters, ...shader.seeds, ...shader.images, ...(shader.cpuFields ?? [])].map(entry => entry.uniform);
   const reads: Partial<Record<AtlasAttachment, ReadonlySet<string>>> = {};
   const stated = shader.reads;
+  if (stated) {
+    // A record of another shape (not the engine's `outputs` by name) says nothing this can use: every texture may read anything.
+    if (typeof stated !== "object" || typeof stated.outputs !== "object" || stated.outputs === null) return reads;
+    for (const attachment of layout.attachments) {
+      const found: (Reads | undefined)[] = [];
+      if (attachment.startsWith("live")) {
+        const texture = `gpu-live-${attachment.slice(4)}`;
+        for (const operation of layout.liveOperations) {
+          for (const [name, argument] of Object.entries(operation.arguments)) {
+            if ("texture" in argument && argument.texture === texture) found.push(stated.live?.[operation.id]?.[name]);
+          }
+        }
+      } else {
+        // An output the program does not set reads nothing; one the engine does not list may read anything.
+        for (const output of ATTACHMENT_OUTPUTS[attachment]) if (stated.outputs[output] || shader.outputs.includes(output)) found.push(stated.outputs[output]);
+      }
+      const uniforms = found.map(read => read && statedUniforms(shader, read));
+      if (uniforms.every(set => set)) reads[attachment] = new Set(uniforms.flatMap(set => [...set!]));
+    }
+    return reads;
+  }
   // The uniforms an entry point's text names, found once per entry.
   const named = new Map<string, Set<string>>();
   const namedBy = (entry: NonNullable<ProgramShader["entries"]>[number]): Set<string> => {
@@ -302,11 +351,6 @@ export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayou
   for (const attachment of layout.attachments) {
     const live = attachment.startsWith("live");
     const outputs = live ? ["live"] : ATTACHMENT_OUTPUTS[attachment];
-    if (stated) {
-      // An output the program does not set reads nothing; one the engine does not list may read anything.
-      if (outputs.every(output => stated[output] || (!live && !shader.outputs.includes(output)))) reads[attachment] = new Set(outputs.flatMap(output => stated[output] ?? []));
-      continue;
-    }
     const entry = shader.entries?.find(entry => entry.source && (live ? entry.live : outputs.every(output => entry.outputs.includes(output))));
     if (entry) reads[attachment] = namedBy(entry);
   }

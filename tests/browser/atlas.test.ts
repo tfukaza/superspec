@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { atlasLayouts, attachmentReads, bakeGeometry, displayGeometry, programLayout, type ProjectLayouts } from "../../browser/renderer/atlas.ts";
-import type { MaterialShading } from "../../browser/renderer/shade.ts";
+import type { MaterialShading, Reads } from "../../browser/renderer/shade.ts";
 
 /** One triangle record as `authoring/layout.rs` writes it (38 numbers). */
 function record(rect: number[], turn: number, samples: number[], role: number, positions: number[][], atlasUvs: number[][]): number[] {
@@ -119,11 +119,49 @@ test("each texture of the evaluate pass is said to read the uniforms its entry p
   // A name that only begins like a uniform is not that uniform.
   program.shader.entries[2].source = "void ms_evaluate_properties() { ms_roughness = ms_p10; }";
   assert.deepEqual([...attachmentReads(program.shader, layout).properties!], []);
-  // Reads the engine states take the place of the entry points' text; an output it does not list may read anything,
-  // and one the program does not set reads nothing.
-  program.shader.reads = { base_color: ["ms_p1"], roughness: ["ms_p0"], height: [], emissive: ["ms_p1", "ms_seed0"] };
-  assert.deepEqual(sets(attachmentReads(program.shader, layout)), { base: ["ms_p1"], properties: ["ms_p0"], height: [], emissive: ["ms_p1", "ms_seed0"] },
-    "the live fields are not listed, so the live texture is keyed by everything");
+  // Reads the engine states (`ShaderReads`) take the place of the entry points' text; an output it does not list may
+  // read anything, and one the program does not set reads nothing.
+  const reads = (parameters: string[], more: Partial<Reads> = {}): Reads =>
+    ({ parameters, seed: false, images: [], edges: false, features: false, sample: ["world"], cpuFields: [], planes: [], intrinsic: false, ...more });
+  program.shader.reads = { outputs: { base_color: reads(["ms_p1"], { images: ["decal"] }), roughness: reads(["ms_p0"]), height: reads([]),
+    emissive: reads(["ms_p1"], { seed: true }) } };
+  assert.deepEqual(sets(attachmentReads(program.shader, layout)), { base: ["ms_image0", "ms_p1"], properties: ["ms_p0"], height: [], emissive: ["ms_p1", "ms_seed0"] },
+    "a read seed is the named seeds' uniforms and an image its uniform; the live arguments are not listed, so the live texture is keyed by everything");
+  // A live texture reads what every argument given one of its channels reads; other arguments' reads are not its own.
+  program.shader.reads.live = { bandLuminance: { mask: reads(["ms_p0"], { seed: true }) } };
+  assert.deepEqual(sets(attachmentReads(program.shader, layout)).live0, ["ms_p0", "ms_seed0"]);
+  // An output of the texture that the record leaves out leaves the texture keyed by everything.
+  delete program.shader.reads.outputs.roughness;
+  assert.equal(attachmentReads(program.shader, layout).properties, undefined);
+  // A record of another shape says nothing.
+  program.shader.reads = { base_color: ["ms_p1"], live: ["ms_p0"] } as unknown as typeof program.shader.reads;
+  assert.deepEqual(attachmentReads(program.shader, layout), {});
+});
+
+test("arguments that share a live channel and CPU fields are among a texture's stated reads", () => {
+  const program = shading({ mask: "ms_f3", lift: "ms_f3", wide: "ms_f5", flat: "ms_f6" }, "", ["base_color", "height"]);
+  program.shader.live[0].classes = { mask: { varying: "ms_f3" }, lift: { varying: "ms_f3" }, wide: { varying: "ms_f5" }, flat: { parameters: ["ms_p0"], glsl: "ms_p0" } };
+  program.shader.cpuFields = [
+    { name: "runoff", uniform: "ms_cpu0", type: "scalar", parameters: [], seed: false, images: [], edges: true },
+    { name: "stain", uniform: "ms_cpu1", type: "scalar", parameters: [], seed: false, images: [], edges: false, planes: ["wet"] },
+    { name: "grime", uniform: "ms_cpu2", type: "scalar", parameters: ["ms_p1"], seed: false, images: [], edges: false },
+  ];
+  const layout = programLayout(program);
+  const reads = (parameters: string[], more: Partial<Reads> = {}): Reads =>
+    ({ parameters, seed: false, images: [], edges: false, features: false, sample: ["world"], cpuFields: [], planes: [], intrinsic: false, ...more });
+  const operation = program.shader.live[0].id;
+  program.shader.reads = {
+    outputs: { base_color: reads([], { cpuFields: ["grime"] }), height: reads([], { edges: true, planes: ["wet"] }) },
+    live: { [operation]: { mask: reads(["ms_p0"]), lift: reads(["ms_p1"]), wide: reads([], { cpuFields: ["runoff"], edges: true }), flat: reads(["ms_p0"]) } },
+  };
+  const found = attachmentReads(program.shader, layout);
+  assert.deepEqual([...found.base!].sort(), ["ms_cpu2"]);
+  assert.deepEqual([...found.height!].sort(), ["ms_cpu0", "ms_cpu1"], "edges and planes are the CPU fields that read them");
+  assert.deepEqual([...found.live0!].sort(), ["ms_cpu0", "ms_p0", "ms_p1"], "both arguments of the shared channel, and the other channel of the texture");
+  assert.deepEqual([...found.properties!], [], "outputs the program does not set read nothing");
+  // An argument with a channel that the record leaves out leaves the texture keyed by everything.
+  delete program.shader.reads.live![operation].lift;
+  assert.equal(attachmentReads(program.shader, layout).live0, undefined);
 });
 
 test("live arguments cost a texture channel only when they vary over the surface", () => {
