@@ -1,5 +1,8 @@
 # Next improvements after the GPU preview and bake-speed work
 
+**This file is the unordered backlog. The order of work is in
+[roadmap.md](roadmap.md)**; its "Suggested order" section below is superseded.
+
 Follows [gpu-bake-and-cpu-build-performance.md](gpu-bake-and-cpu-build-performance.md).
 That plan is done through the GPU preview tier, the hybrid CPU/GPU lane (`runoff`),
 GPU live-operation arguments, the dedicated lane worker, per-map and per-field
@@ -178,7 +181,11 @@ occluder service.
     world-stable, no texture unit) displaces the lookup (edge) and varies darkness and hue
     inside the shadow, only ever darkening; every parameter a uniform shared by all styled
     materials; the styled term exposed as the GLSL global `msShadowTerm`. A maximum
-    penumbra beyond about 0.4 m dissolves the washroom's longer shadows. Remaining: the
+    penumbra beyond about 0.4 m dissolves the washroom's longer shadows. The approved
+    look is tight and nearly neutral (spread 0.025, largest radius 0.06 m, tint strength
+    0.22, darkness 0.25) and is the Studio viewer's default; `?shadowstyle=plain` returns
+    three.js's shadows. The viewer keeps it, with ambient occlusion, in one scene-level
+    `RenderingSettings` record (`browser/renderer/rendering.ts`). Remaining: the
     portable contract (a scene-level rendering record carrying the style, stored with
     the project or scene and delivered in the model packet, never per material; reading
     the shadow term as a mask from a material is a separate, later question), the game

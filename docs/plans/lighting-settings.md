@@ -8,6 +8,12 @@ renderer and the three.js game runtime. Field names and defaults are proposals; 
 defaults are today's Studio viewer values (`browser/renderer/scene.ts`) and the
 approved shadow look, so adopting the record changes no picture.
 
+Sequencing is in [roadmap.md](roadmap.md): adoption steps 1 to 3 are stage 1, export
+and the game runtime are stage 4, material inputs are stage 5. This record is also
+the "scene lighting input" of [tree-item-roadmap.md](tree-item-roadmap.md) step 1C.3;
+there is one record, not two. An additional open question from that plan: whether
+ambient occlusion and tone mapping apply to `shading: painted` materials.
+
 ## Decided
 
 - Shadow styling and ambient occlusion are rendering settings: global to a scene or

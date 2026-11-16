@@ -1,5 +1,10 @@
 # Performance and shadow plan
 
+**Ordering: see [roadmap.md](roadmap.md).** Phase 0 here is roadmap stage 0; Phases 1
+and 2 are stage 1; Phase 3 and lighting export are stage 4; shadows as material
+inputs are stage 5. Sharing intrinsic appearance across receivers is now delivered
+through weathering layers (roadmap stage 2).
+
 This plan orders the remaining performance work for material compile, preview and
 production rendering together with the shadow features, because they share
 groundwork. It follows two independent reviews of the work in
@@ -25,12 +30,23 @@ export; a CPU optimization must not change baked bytes or native/Wasm parity.
 - **A confirmed correctness bug exists in the row-wise evaluator** (a field cached as
   uniform from a partial mask), plus memory-bound and share-parsing defects. Being
   fixed.
-- **GPU timings need re-measuring.** `settle()` reads the wrong framebuffer, so the
-  "~3 ms per edit" figure may exclude GPU execution. Cold compile is the real cost:
-  the driver finishes at first draw (0.7-0.9 s idle, 4-7 s beside a CPU build for the
-  heaviest program).
-- **Relief normals in the shader preview are half resolution** (screen derivatives
-  per 2x2 pixels). A per-pixel fix is in progress; baked maps do not have the issue.
+- **GPU timings, re-measured.** `settle()` used to read the canvas instead of the bake
+  target; it now reads a texel of the target each pass drew into. Re-measured on the
+  RTX 5060 Ti (D3D11), a warm 256 px bake is 3-4 ms in all (pass 1 about 1-3 ms, mips
+  0.5-2 ms, normals 0.4-0.9 ms) and a 512 px one about 3.6 ms in two bands, so the
+  "~3 ms per edit" figure stands. From the edit to the preview on screen: 19 ms for
+  the quick stage and 36 ms for the full 256 px stage of a light program, 80-85 ms at
+  512 px or after a source edit, about 120 ms when a CPU field is baked again, and
+  140-210 ms for the heaviest program (Kowloon concrete) with the default shadow style
+  and ambient occlusion in the viewer's frame. The washroom frame is 2.1 ms of GPU
+  time (timer query) with styled shadows and 2.7 ms with ambient occlusion as well.
+  Cold compile is the real cost: the driver finishes at first draw (0.7-0.9 s idle,
+  4-7 s beside a CPU build for the heaviest program).
+- **Relief normals in the shader preview were half resolution** (screen derivatives
+  per 2x2 pixels). They are per pixel now; because that about doubles the programs'
+  compile, the first look still uses the derivative relief and each program is swapped
+  in the background (washroom, real GPU: first look about 5 s, per-pixel after about
+  14 s). Baked maps do not have the issue.
 - **Illustration shadows cost little at runtime**: 2.1 ms to 2.3 ms per frame on the
   washroom. The look is being reworked (darker, bluer, wider gradient, visible noise).
 
@@ -40,12 +56,12 @@ export; a CPU optimization must not change baked bytes or native/Wasm parity.
    a lanes-vs-scalar check of every example and the washroom; bounded share rows;
    field-plane budget global to a run and sized from the real atlas; no retention of
    empty planes; SBR2 length and finiteness validation; allowance parity.
-2. Browser (next for the GPU agent): detect link failures at first use, not only at
+2. Browser (done, see `tests/material-gpu-preview-browser.mjs`): detect link failures at first use, not only at
    `compileAsync`; evict compiled programs; no field bake from a stale revision and no
    cancelling a newer revision's request; no GPU preview over a failed CPU build;
    redraw the shadow map and clear `drawn` on context restore; count viewer texture
    units correctly (7-8, not 6); a negative cache for sources that fail to compile.
-3. Measurement: bind the bake target (or use a fence / timer query) in `settle()` and
+3. Measurement (done; figures above): bind the bake target (or use a fence / timer query) in `settle()` and
    re-measure every GPU figure on the real GPU. Add timer-query frame time to the
    washroom test. No performance claim below is accepted without these.
 
@@ -114,7 +130,19 @@ The scene view is what authors look at, and it is the slowest path.
   not a `LiveOperation` or a MaterialSpec construct, and no material turns it on or
   parameterizes it. Then define the portable contract: a scene-level rendering record
   (`shadowStyle`) stored with the project or scene and delivered in the model packet,
-  implemented by the same module in Studio and the game runtime.
+  implemented by the same module in Studio and the game runtime. The Studio viewer
+  now holds these settings in one `RenderingSettings` record
+  (`browser/renderer/rendering.ts`), on by default, filled from the page URL.
+- **Screen-space ambient occlusion (done in the Studio viewer).** Also a global
+  rendering setting of the scene (`ambientOcclusion` in the same record, on by default,
+  `?ao=off`): three.js's GTAO pass with its denoise, a radius in scene meters, drawn
+  through a multisampled linear target with the renderer's tone mapping applied
+  afterwards. It is distinct from the planned baked `occlusion()` material field
+  below, which is authored per material and baked from the occluder service; the
+  screen-space pass knows only what the camera sees. It costs about 0.6 ms of GPU time
+  per washroom frame on the RTX 5060 Ti and about a third more frame time under
+  SwiftShader. Remaining: carry it in the same scene-level record as the shadow
+  style, and apply it to ambient light only (it multiplies the finished image).
 - **With Phase 1: instant preview of baked shadow fields.** The UV-space bake has each
   texel's world position, and the viewer already renders a sun shadow map. Sampling
   that map in the bake pass previews `shadow(...)` fields on the GPU at no extra
