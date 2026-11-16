@@ -247,7 +247,10 @@ export class RustScene {
           material.aoMap = await texture(definition.occlusionTexture ?? null, false);
           material.aoMapIntensity = definition.occlusionStrength ?? 1;
           // Live renderer operations execute in this material's shader on top of the baked maps.
-          mesh.userData.liveOperations = applyLiveOperations(material, definition.live ?? [], id => textures.get(`${id}:false`));
+          const lookup = (id: string) => textures.get(`${id}:false`);
+          mesh.userData.liveOperations = applyLiveOperations(material, definition.live ?? [], lookup);
+          // What a GPU preview needs to put these operations back.
+          mesh.userData.liveSource = { operations: definition.live ?? [], lookup };
         }
         mesh.name = descriptor.id;
         mesh.visible = descriptor.visible;
@@ -260,7 +263,7 @@ export class RustScene {
         // A reused mesh may still show a GPU preview; the build's own maps replace it.
         this.restoreBaked(item.mesh);
       }
-      delete this.host.dataset.gpuPreviewKey;
+      delete this.host.dataset.gpuPreviewKey; delete this.host.dataset.gpuLiveOperations;
       decorate?.(ordered);
       for (const mesh of ordered) next.add(mesh);
       this.scene.add(next);
@@ -440,6 +443,10 @@ export class RustScene {
   }
 
   /** Reads the last GPU preview's texels (tests and diagnostics only). */
+  readBakedLive(bake: GpuBake): ReturnType<GpuBaker["readLive"]> {
+    return this.bakerInstance!.readLive(bake);
+  }
+
   readBakedPreview(bake: GpuBake): ReturnType<GpuBaker["readBack"]> {
     return this.bakerInstance!.readBack(bake);
   }
@@ -464,10 +471,52 @@ export class RustScene {
     material.roughness = 1; material.metalness = 1;
     material.normalScale.setScalar(1);
     if (changed) material.needsUpdate = true;
+    this.showLive(mesh, material, bake);
     mesh.userData.bakedPreview = { key: bake.key, profile: bake.profile, original: shown };
     this.host.dataset.gpuPreviewKey = bake.key;
+    this.host.dataset.gpuLiveOperations = JSON.stringify(mesh.userData.liveOperations ?? []);
     // Draw now, as `apply` does, without the frame loop's control update (which can nudge the camera by a rounding step).
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Points the material's live renderer operations at the preview's own argument textures, so lighting effects follow the
+   * edit. The same operations and arguments only swap the textures in place; a different set replaces the operations (one
+   * shader recompile). Without live arguments in the bake, the build's own operations are put back.
+   */
+  private showLive(mesh: THREE.Mesh, material: THREE.MeshStandardMaterial, bake: GpuBake): void {
+    const live = bake.live;
+    if (!live) { this.restoreLive(mesh, material); return; }
+    const textures = new Map(Object.entries(live.textures));
+    if (mesh.userData.bakedLive?.key === live.key && material.userData.liveUniforms) {
+      const uniforms = material.userData.liveUniforms as Record<string, THREE.IUniform>;
+      for (const [id, slot] of material.userData.liveTextureSlots as Map<string, number>) {
+        const uniform = uniforms[`msLiveTex${slot}Map`];
+        if (uniform) uniform.value = textures.get(id);
+      }
+      return;
+    }
+    mesh.userData.liveOriginal ??= { onBeforeCompile: material.onBeforeCompile, customProgramCacheKey: material.customProgramCacheKey,
+      uniforms: material.userData.liveUniforms, slots: material.userData.liveTextureSlots, ids: mesh.userData.liveOperations };
+    // A material with no operations has the prototype's hooks; the operations chain onto whatever is installed.
+    material.onBeforeCompile = THREE.Material.prototype.onBeforeCompile;
+    material.customProgramCacheKey = THREE.Material.prototype.customProgramCacheKey;
+    delete material.userData.liveUniforms; delete material.userData.liveTextureSlots;
+    mesh.userData.liveOperations = applyLiveOperations(material, live.operations as never, id => textures.get(id));
+    mesh.userData.bakedLive = { key: live.key };
+  }
+
+  /** Puts the CPU build's live operations back on a mesh whose GPU preview replaced them. */
+  private restoreLive(mesh: THREE.Mesh, material: THREE.MeshStandardMaterial): void {
+    const original = mesh.userData.liveOriginal;
+    if (!original) return;
+    material.onBeforeCompile = original.onBeforeCompile;
+    material.customProgramCacheKey = original.customProgramCacheKey;
+    if (original.uniforms) { material.userData.liveUniforms = original.uniforms; material.userData.liveTextureSlots = original.slots; }
+    else { delete material.userData.liveUniforms; delete material.userData.liveTextureSlots; }
+    mesh.userData.liveOperations = original.ids;
+    material.needsUpdate = true;
+    delete mesh.userData.liveOriginal; delete mesh.userData.bakedLive;
   }
 
   /** Puts a mesh's CPU-baked maps back after a GPU preview. */
@@ -475,6 +524,7 @@ export class RustScene {
     const original = mesh.userData.bakedOriginal;
     if (!original) return;
     const material = mesh.material as THREE.MeshStandardMaterial;
+    this.restoreLive(mesh, material);
     material.map = original.map; material.normalMap = original.normalMap;
     material.roughnessMap = original.roughnessMap; material.metalnessMap = original.metalnessMap;
     material.emissiveMap = original.emissiveMap; material.emissive.copy(original.emissive); material.emissiveIntensity = original.emissiveIntensity;
@@ -486,7 +536,7 @@ export class RustScene {
   /** Removes any GPU preview from the displayed meshes, restoring their CPU-baked maps. */
   clearBakedPreview(): void {
     for (const object of this.models.children) this.restoreBaked(object as THREE.Mesh);
-    delete this.host.dataset.gpuPreviewKey;
+    delete this.host.dataset.gpuPreviewKey; delete this.host.dataset.gpuLiveOperations;
     this.invalidate();
   }
 

@@ -149,6 +149,13 @@ export interface AuthoringProgress { requestId: number; progress: ExportProgress
 /** Owns a real Rust/Wasm authoring worker and rejects superseded requests before publication. */
 export class AuthoringCompiler {
   private worker?: Worker;
+
+  /**
+   * `keepWorker` makes cancellation abandon a request without terminating its worker. The Studio gives the GPU preview
+   * lane (shader plans, field bakes) a compiler of its own with it, so the lane never terminates the worker that runs the
+   * authoritative CPU build, and the CPU build never terminates the lane's.
+   */
+  constructor(private readonly options: { keepWorker?: boolean } = {}) {}
   private pending?: { requestId: number; resolve: (result: AuthoringResult) => void; reject: (error: Error) => void;
     progress?: (progress: ExportProgress) => void };
 
@@ -215,10 +222,19 @@ export class AuthoringCompiler {
     });
   }
 
-  /** Cancels the consumer's request and releases the worker, including after navigation. */
+  /**
+   * Cancels the consumer's request and releases the worker, including after navigation. A compiler made with
+   * `keepWorker` (the GPU preview lane's) only abandons the request: its worker finishes the stale work, whose reply
+   * is ignored, and stays warm for the next request instead of restarting the Wasm module.
+   */
   cancel(): void {
     this.pending?.reject(new DOMException("Authoring request superseded.", "AbortError"));
     this.pending = undefined;
+    if (!this.options.keepWorker) this.close();
+  }
+
+  /** Releases the worker whatever it is doing. */
+  close(): void {
     this.worker?.terminate();
     this.worker = undefined;
   }

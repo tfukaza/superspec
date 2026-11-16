@@ -49,24 +49,50 @@ try {
     }).observe(viewport, { attributes: true, attributeFilter: ["data-gpu-preview", "data-gpu-preview-fallback", "data-gpu-preview-stats"] });
   });
   const take = () => page.evaluate(() => { const taken = window.__gpu; window.__gpu = []; return taken; });
-  const editAndWait = async edit => {
+  // The CPU draft is faster than it was and runs in parallel with the GPU lane, so which one a viewer sees first is a race. To test
+  // the GPU lane deterministically the 64 px CPU draft request is held until the lane has published (or given a reason).
+  await page.evaluate(() => {
+    const original = Worker.prototype.postMessage;
+    window.__hold = false; window.__held = [];
+    Worker.prototype.postMessage = function(message, ...options) {
+      if (window.__hold && message?.kind === "material" && message.resolution === 64) { window.__held.push(() => original.call(this, message, ...options)); return; }
+      return original.call(this, message, ...options);
+    };
+  });
+  /** Runs an edit with the CPU draft held until the GPU lane has finished its attempt, then lets the build end. */
+  const held = async edit => {
     await take();
+    await page.evaluate(() => { delete document.querySelector("#viewport").dataset.gpuPreviewFallback; window.__hold = true; });
     const started = await page.evaluate(() => performance.now());
     await edit();
-    await ready("edit");
+    await page.waitForFunction(() => {
+      const d = document.querySelector("#viewport").dataset;
+      if (d.gpuPreviewFallback) return true;
+      if (!d.gpuPreview) return false;
+      const preview = JSON.parse(d.gpuPreview);
+      return preview.stage === "full" && preview.fieldsFresh !== false;
+    }, {}, { timeout: 8000 }).catch(() => {});
+    await page.evaluate(() => { window.__hold = false; for (const send of window.__held.splice(0)) send(); });
+    await page.waitForFunction(() => ["ready", "error"].includes(document.querySelector("#status")?.dataset.state), {}, { timeout: 180000 });
     await waitForFrames(page);
-    return { events: await take(), started };
+    return { state: await page.locator("#status").getAttribute("data-state"), events: await take(), started };
   };
-
+  const editAndWait = async edit => {
+    const result = await held(edit);
+    assert.equal(result.state, "ready", `edit ${await page.locator("#status").textContent()} ${(await page.locator("#diagnostics button").allTextContents()).join(" | ")} for ${edit}`);
+    return result;
+  };
   const report = {};
   const firstUse = {};
   const starterStats = {};
+  let steelEvents = [];
   const starters = await page.locator("#starter option").evaluateAll(options => options.map(option => option.value).filter(value => !/yard/.test(value)));
   for (const starter of starters) {
     const { events } = await editAndWait(() => page.locator("#starter").selectOption(starter));
     const shown = events.find(event => event.preview);
     const fallback = events.findLast(event => event.fallback)?.fallback;
     report[starter] = shown ? "gpu" : `cpu (${fallback ?? "no event"})`;
+    if (starter === "kowloon-rusted-steel.material.ts") steelEvents = events;
     if (shown) { firstUse[starter] = shown.preview.timings; starterStats[starter] = events.findLast(event => event.stats)?.stats ?? shown.stats; }
     if (shown) {
       assert.equal(shown.preview.profile, "gpu-preview", `${starter}: own profile`);
@@ -89,12 +115,15 @@ try {
   for (const starter of ["kowloon-concrete.material.ts", "kowloon-rusted-steel.material.ts"]) {
     assert.equal(report[starter], "gpu", `${starter} previews on the GPU`);
   }
+  // Live renderer operations follow the edit: their arguments are baked on the GPU too, not kept from the last CPU build.
+  const steelFull = steelEvents.find(event => event.preview?.stage === "full");
+  assert.ok(steelFull.preview.timings.live > 0, "the steel's live arguments were evaluated on the GPU");
+  assert.doesNotMatch(steelFull.label, /last build/, "no stale lighting effects");
   // The concrete's relief is strong; the steel study's only varies near rims, which a swatch has little of.
   assert.ok(starterStats["kowloon-concrete.material.ts"].normalXDistinct > 3, "the concrete's relief varies its normals");
 
   // Parameter edits and structural edits, with per-stage latency.
-  await page.locator("#starter").selectOption("painted-metal.ms");
-  await ready("painted metal");
+  await editAndWait(() => page.locator("#starter").selectOption("painted-metal.ms"));
   const input = page.locator("#parameters input[type=number]").first();
   const timings = {};
   if (await input.count()) {
@@ -140,8 +169,7 @@ try {
   for (const starter of ["chipped-concrete.ms", "chipped-concrete.material.ts"]) {
     assert.equal(report[starter], "gpu", `${starter} previews on the GPU through the hybrid lane`);
   }
-  await page.locator("#starter").selectOption("chipped-concrete.ms");
-  await ready("chipped concrete");
+  await editAndWait(() => page.locator("#starter").selectOption("chipped-concrete.ms"));
   await page.evaluate(() => {
     window.__fieldBakes = 0;
     const original = Worker.prototype.postMessage;
@@ -173,13 +201,62 @@ try {
   timings.hybridFieldEdit = { fieldMs: stages[1].preview.fieldMs, ...stages[1].preview.timings, sinceEditMs: stages[1].at - edge.started };
   // What the shader cannot place is refused with its reason, and the CPU build alone follows.
   const unpartitionable = "material 1;\nlet shade = noise(surface * 4.0, seed(\"shade\"));\noutput base_color = vec3(shade * (1.0 - runoff(0.1, 0.5)));\noutput roughness = 0.5;\noutput metalness = 0;\n";
-  await take();
-  await page.locator("#code").fill(unpartitionable);
-  await ready("runoff used directly in an output");
+  const refused = await held(() => page.locator("#code").fill(unpartitionable));
+  assert.equal(refused.state, "ready", "the CPU build alone follows");
   assert.match(await page.locator("#viewport").getAttribute("data-gpu-preview-fallback"), /not partitionable: .*output uses runoff directly/);
   assert.equal(await page.locator("#viewport").getAttribute("data-gpu-preview"), null, "no GPU preview for a program that cannot be partitioned");
-  await page.locator("#starter").selectOption("painted-metal.ms");
-  await ready("painted metal again");
+  // Synthetic programs for the paths the starters do not reach. Each is a small source typed into the editor.
+  const tryProgram = code => held(() => page.locator("#code").fill(code));
+  const fullStage = events => events.findLast(event => event.preview?.stage === "full");
+  const levelInput = page.locator("#parameters input[type=number]").first();
+  const setLevel = value => held(async () => { await levelInput.fill(String(value)); await levelInput.press("Tab"); });
+
+  // A program with no height output: its normal is flat, drawn once per target size and then skipped.
+  const flat = await tryProgram(`material 1;\nparam level: scalar = 0.5 range(0, 1);\nlet grain = noise(surface * 8.0, seed("grain"));\noutput base_color = vec3(grain * level);\noutput roughness = 0.5;\noutput metalness = 0;\n`);
+  assert.equal(flat.state, "ready");
+  assert.ok(fullStage(flat.events), "a program with no height previews");
+  assert.ok(fullStage(flat.events).stats.normalXDistinct <= 2, "its normal map is flat");
+  const flatAgain = await setLevel(0.9);
+  assert.equal(fullStage(flatAgain.events).preview.timings.pass2, 0, "pass 2 is skipped once the flat normal exists");
+  assert.ok(fullStage(flatAgain.events).stats.colorMean > fullStage(flat.events).stats.colorMean, "the color still follows the parameter");
+
+  // A receiver_normal facing away from the receiver is a CPU bake error: the GPU preview gives way to the CPU's report.
+  const away = await tryProgram(`material 1;\noutput base_color = vec3(0.5);\noutput receiver_normal = vec3(0.0, 1.0, 0.0);\noutput roughness = 0.5;\noutput metalness = 0;\n`);
+  assert.equal(away.state, "error", "the CPU build reports the bake error");
+  assert.ok(!away.events.some(event => event.preview), "no GPU preview of a normal facing away");
+  assert.match(await page.locator("#viewport").getAttribute("data-gpu-preview-fallback"), /face the same side/, "the fallback names the reason");
+
+  // A swatch's four rim edges reach creaseDistance: a rim-distance gradient shows on the GPU, which an empty feature list would not give.
+  await editAndWait(() => page.locator("#starter").selectOption("painted-metal.material.ts"));
+  const rim = await tryProgram(`import { defineMaterial, vec3, creaseDistance, smoothstep } from "@superspec/material/v1";\nconst rim = creaseDistance("boundary", 10, 0.3);\nexport default defineMaterial({\n  base: { baseColor: vec3(0.5) },\n  channels: { baseColor: vec3(smoothstep(0.0, 0.3, rim)) },\n});\n`);
+  if (rim.state === "ready" && fullStage(rim.events)) {
+    const rimStats = fullStage(rim.events).stats;
+    assert.ok(rimStats.colorHigh - rimStats.colorLow > 60, `rim distance varies across the swatch (${rimStats.colorLow}..${rimStats.colorHigh})`);
+  } else timings.rimFeatures = `not exercised: ${rim.state} ${await page.locator("#viewport").getAttribute("data-gpu-preview-fallback")}`;
+
+  // A hybrid CPU field that reads a parameter: editing it bakes the field again, with the old one showing first.
+  // (The top edge set above is still in the project, so the new field has edges to read.)
+  await page.locator("#starter").selectOption("chipped-concrete.ms");
+  const reach = await tryProgram(`material 1;\nparam reach: scalar = 0.03 range(0.01, 0.4);\nlet wet = runoff(reach, 0.7);\noutput base_color = vec3(0.8 * (1.0 - wet * 0.6));\noutput roughness = 0.5;\noutput metalness = 0;\n`);
+  assert.equal(reach.state, "ready");
+  assert.equal(fullStage(reach.events)?.preview.lane, "hybrid");
+  // A short edge, so the runoff band's width matters at its sides (a full-width edge saturates the swatch either way).
+  const shortEdge = await held(() => page.locator("#environment").fill(JSON.stringify({ edges: [{ start: [0.4, 0, 1], end: [0.6, 0, 1] }], gravity: [0, 0, -1] })));
+  assert.equal(shortEdge.state, "ready");
+  const reachBakes = await page.evaluate(() => window.__fieldBakes);
+  const reachEdit = await setLevel(0.3);
+  const reachStages = reachEdit.events.filter(event => event.preview?.stage === "full");
+  assert.deepEqual(reachStages.map(event => event.preview.fieldsFresh), [false, true], "the field the parameter changes shows stale, then fresh");
+  assert.equal(await page.evaluate(() => window.__fieldBakes), reachBakes + 1, "one field bake for the parameter edit");
+  assert.ok(reachStages[1].stats.colorMean < reachStages[0].stats.colorMean, "a wider runoff band darkens more of the swatch");
+
+  // A hybrid CPU field that reads an image: the CPU bakes it with the image, the shader never needs the image for it.
+  const imaged = await tryProgram(`material 1;\nparam reach: scalar = 0.1 range(0.01, 0.4);\nlet rusty = dot(sample_data("superspec-material:rust.png", surface), vec3(1.0, 0.0, 0.0));\nlet wet = runoff(reach, 0.7) * rusty;\noutput base_color = vec3(0.8 * (1.0 - wet * 0.6));\noutput roughness = 0.5;\noutput metalness = 0;\n`);
+  assert.equal(imaged.state, "ready");
+  const imagedFull = fullStage(imaged.events);
+  assert.equal(imagedFull?.preview.lane, "hybrid", "a field that reads an image is a CPU field");
+  assert.ok(imagedFull.stats.colorHigh > imagedFull.stats.colorLow, "its texture carries the image-modulated runoff");
+  await editAndWait(() => page.locator("#starter").selectOption("painted-metal.ms"));
   // The label tells the viewer these textures are a preview, and it is gone once the CPU build is shown.
   assert.equal(await page.locator("#preview-label").isHidden(), true, "no preview label on a CPU build");
   console.log("GPU preview timings (ms, software rendering unless BROWSER_ARGS selects a GPU):", JSON.stringify(timings, null, 2));

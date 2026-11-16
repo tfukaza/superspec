@@ -30,6 +30,8 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
   const uniforms: Record<string, THREE.IUniform> = {};
   const declarations: string[] = [];
   const reads: string[] = [];
+  const fetches: string[] = [];
+  const slots = new Map<string, number>();
   /** A GLSL expression for an argument, or its default when the operation omits it. */
   const symbols = usable.map((operation, index) => {
     const named: Record<string, string> = {};
@@ -45,12 +47,19 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
         declarations.push(`uniform float ${symbol}Value;`);
         reads.push(`${symbol} = ${symbol}Value;`);
       } else {
-        const channel = new THREE.Vector4(); channel.setComponent(argument.channel, 1);
-        uniforms[`${symbol}Map`] = { value: texture(argument.texture) };
-        uniforms[`${symbol}Channel`] = { value: channel };
+        // Arguments packed in one texture share its sampler and its one fetch: a program has a few dozen arguments, and
+        // a fragment shader has a fixed number of texture units.
+        let slot = slots.get(argument.texture);
+        if (slot === undefined) {
+          slot = slots.size;
+          slots.set(argument.texture, slot);
+          uniforms[`msLiveTex${slot}Map`] = { value: texture(argument.texture) };
+          declarations.push(`uniform sampler2D msLiveTex${slot}Map;`, `vec4 msLiveTex${slot};`);
+          fetches.push(`msLiveTex${slot} = texture2D(msLiveTex${slot}Map, vMapUv);`);
+        }
         uniforms[`${symbol}Range`] = { value: new THREE.Vector2(argument.scale, argument.offset) };
-        declarations.push(`uniform sampler2D ${symbol}Map;`, `uniform vec4 ${symbol}Channel;`, `uniform vec2 ${symbol}Range;`);
-        reads.push(`${symbol} = dot(texture2D(${symbol}Map, vMapUv), ${symbol}Channel) * ${symbol}Range.x + ${symbol}Range.y;`);
+        declarations.push(`uniform vec2 ${symbol}Range;`);
+        reads.push(`${symbol} = msLiveTex${slot}[${argument.channel}] * ${symbol}Range.x + ${symbol}Range.y;`);
       }
     }
     return (name: string, fallback: string) => named[name] ?? fallback;
@@ -136,7 +145,7 @@ ${band ? `  {
     Object.assign(shader.uniforms, uniforms);
     let fragment = shader.fragmentShader
       .replace("#include <common>", `#include <common>\n${declarations.join("\n")}`)
-      .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${reads.join("\n")}`)
+      .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${fetches.concat(reads).join("\n")}`)
       .replace("#include <lights_physical_fragment>", `#include <lights_physical_fragment>\n${lighting.join("\n")}`)
       .replace("#include <aomap_fragment>", `#include <aomap_fragment>\n${diffuse.join("\n")}`);
     if (radiance) {
@@ -149,8 +158,11 @@ ${band ? `  {
     shader.fragmentShader = fragment;
   };
   const layout = usable.map(operation => [operation.id, Object.entries(operation.arguments)
-    .map(([name, argument]) => [name, "value" in argument ? "c" : "t"])]);
+    .map(([name, argument]) => [name, "value" in argument ? "c" : `t${slots.get((argument as { texture: string }).texture)}.${(argument as { channel: number }).channel}`])]);
   material.customProgramCacheKey = () => `materialSpec-live:${JSON.stringify(layout)}`;
+  // A viewer that swaps the textures behind an argument (a GPU preview) updates these in place, with no recompile.
+  material.userData.liveUniforms = uniforms;
+  material.userData.liveTextureSlots = slots;
   material.needsUpdate = true;
   return usable.map(operation => operation.id);
 }

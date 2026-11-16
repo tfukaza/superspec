@@ -106,36 +106,39 @@ Studio also has two GPU previews, which are approximations and never authoritati
   normal pass applies the `receiver_normal` and `normal_offset` outputs with the
   CPU's `orient_relief` and `bend_shaded` rules; a `receiver_normal` that faces away
   from the receiver is a bake error on the CPU, so the preview gives way to it.
-  Live renderer operations are not baked on the GPU: the viewer keeps running them
-  with the arguments of the last CPU build, which the label says ("lighting effects
-  from the last build"), so edits to the fields that feed them show only after the
-  CPU build. This makes the Kowloon concrete and rusted steel studies preview.
+  Live renderer operations follow the edit: the program's live arguments (fields the
+  shader already computes) are evaluated on the GPU into half-float textures, four to
+  a texel, and the viewer's lighting effects read those instead of the last CPU
+  build's baked arguments. This makes the Kowloon concrete and rusted steel studies
+  preview.
   Targets of 256 px or more show a
   quarter-size bake first and are drawn in bands (131072 texels each) so no draw
   approaches a driver watchdog; a newer edit cancels the refinement. The viewport
   shows "GPU preview" next to the title while these textures are displayed. GPU and
   CPU pixels are not compared or expected to match.
-- **Hybrid lane (CPU fields on the GPU).** Program::shader_plan places a program's
-  CPU-only operations (unoff, which reads the supplied source edges) on the CPU and
+- **Hybrid lane (CPU fields on the GPU).** `Program::shader_plan` places a program's
+  CPU-only operations (`runoff`, which reads the supplied source edges) on the CPU and
   the rest on the GPU, as a compile-time decision rather than a failure. Data flows
-  from the CPU to the GPU only: a field that uses unoff is evaluated by the CPU with
+  from the CPU to the GPU only: a field that uses `runoff` is evaluated by the CPU with
   everything upstream of it (so that math is absent from the shader unless something
   else needs it), and the shader reads its value from a float texture, one texel per
   bake texel, fetched with exact nearest alignment. Everything downstream stays in
   the shader. The plan lists each CPU field with the parameters, seed, images and
-  edges it reads, so the host knows when to bake it again: Session::bake_fields`n  (Wasm ake_fields) evaluates it over the same atlas a full bake uses. A GPU-side
+  edges it reads, so the host knows when to bake it again: `Session::bake_fields`
+  (Wasm `bake_fields`) evaluates it over the same atlas a full bake uses. A GPU-side
   edit reuses the cached field; an edit to what the field reads (the source edges,
   gravity, a parameter it reads) keeps showing the previous field until the new one
-  arrives, and the new field is baked before the CPU build of that edit starts, which
-  cancels it if it is still running. The caption and data-gpu-preview name the
-  channels that rest on CPU data (cpuChannels) and those that are GPU only. A CPU-only
-  operation inside a helper function the shader needs, or written directly in an
-  output rather than in a named field, is not supported in this prototype: the preview
-  falls back to the CPU build with that reason. Likewise a CPU field consumed at coordinates
+  arrives. The shader plan and the field bake run on a worker of their own, in
+  parallel with the CPU build: the CPU build never cancels them and they never
+  terminate the CPU build's worker (a newer edit abandons a stale request, whose
+  reply is ignored). The caption and `data-gpu-preview` name the channels that rest
+  on CPU data (`cpuChannels`) and those that are GPU only. A CPU-only operation
+  inside a helper function the shader needs, or written directly in an output rather
+  than in a named field, is not supported in this prototype: the preview falls back
+  to the CPU build with that reason. Likewise a CPU field consumed at coordinates
   other than the plain bake texel (for example through a warped coordinate) is not
-  supported and is refused, not approximated; unoff only reads the sample's world
+  supported and is refused, not approximated; `runoff` only reads the sample's world
   position, so today's CPU fields are always at the plain domain coordinates.
-
 ## TypeScript recipes
 
 Materials can also be written as `.material.ts` files: strict TypeScript against a

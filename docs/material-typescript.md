@@ -446,13 +446,14 @@ parameters); it is never ready, saved or exportable, and a newer edit cancels th
 refinement, so dragging a control stays cheap. The viewport swaps textures only when a
 build completes, and `tests/material-ts-browser.mjs` asserts that no frame shows an empty
 scene during rapid edits. Measured in headless Chromium with software rendering on a
-development machine (256 px texture, tiled courtyard, including the 180 ms debounce): the
-draft appears after about 0.45-0.55 s and the full-size build after about 3-4 s; a bake
-alone takes roughly 0.28 s at 32 px, 0.47 s at 64 px and 2.9 s at 256 px. Treat these as
-orders of magnitude, not benchmarks. A build rebakes only the maps an edit can reach: the color, normal,
+development machine (256 px texture, including the 180 ms debounce, a seed edit so every map
+rebakes): before the CPU-side speedups (tiled courtyard) the draft appeared after about 0.45-0.55 s
+and the full-size build after about 3-4 s; with them (chipped concrete, Kowloon concrete and
+rusted steel starters) the draft appears after about 0.20, 0.31 and 0.22 s and the full-size build
+after about 0.28, 0.65 and 0.40 s. Treat these as orders of magnitude, not benchmarks. A build rebakes only the maps an edit can reach: the color, normal,
 properties, emissive and live maps are each keyed by the parameters, seed and source edges of the outputs
-they are baked from (program/deps.rs), so changing a roughness parameter keeps the color and normal maps.
-Samples are also evaluated 64 at a time (program/lanes.rs) with bit-identical results. Not done: reusing
+they are baked from (`program/deps.rs`), so changing a roughness parameter keeps the color and normal maps.
+Samples are also evaluated 64 at a time (`program/lanes.rs`) with bit-identical results. Not done: reusing
 unchanged fields inside a map.
 
 For a swatch, Studio shows a **GPU preview** (`browser/renderer/bake.ts`) before the draft

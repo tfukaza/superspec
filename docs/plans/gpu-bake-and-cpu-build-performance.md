@@ -96,9 +96,10 @@ The CPU is not only a failure fallback: placement is a compile-time decision. `P
 Studio (`editor/studio/main.ts`, `browser/renderer/bake.ts`): the chipped-concrete starters, which fell back
 with "runoff needs finite source edges", now preview on the GPU. A GPU-side edit reuses the cached field;
 an edit to the source edges, gravity or a parameter the field reads shows the previous field at once and
-replaces it when the new one arrives (stale while revalidating); the field bake runs before the CPU build
-of that edit, which cancels it if it is still running. The quarter-size progressive stage box-filters the
-field. The caption and `data-gpu-preview` name the CPU-supplied channels (`cpuChannels`) and the GPU-only
+replaces it when the new one arrives (stale while revalidating). The lane's requests (shader plan, field
+bake) run on a worker of their own (`AuthoringCompiler` with `keepWorker`), in parallel with the CPU build:
+neither terminates the other's worker, and a newer edit abandons a stale lane request (its reply is ignored)
+instead of restarting the Wasm module. The quarter-size progressive stage box-filters the field. The caption and `data-gpu-preview` name the CPU-supplied channels (`cpuChannels`) and the GPU-only
 ones. Not supported, refused with a recorded reason rather than approximated: a CPU-only operation inside a
 helper function the shader needs or directly in an output (no named field to bake), and a CPU field consumed
 at coordinates other than the plain bake texel (warped coordinates). Receiver features stay on the GPU for a
@@ -108,9 +109,21 @@ Checks: `glsl.rs` tests (chipped concrete places only `runoff_mask` on the CPU; 
 respected; unplaceable programs are refused), `tests/material_fields.rs` (a field bake covers the atlas and
 follows the edges), and `tests/material-gpu-preview-browser.mjs` (hybrid starter previews, is not ready, is
 replaced by the CPU result; a GPU-side edit bakes no field; an edge edit bakes one and refreshes the preview).
-Software-rendering numbers, 256 px swatch: the field bake took about 12-13 ms; the first hybrid preview
-appeared about 100 ms after selecting the starter (including shader compile 22 ms and the engine call 16-18 ms),
-against the 0.3 s of the CPU draft.
+Live renderer operations: the program's live arguments (fields the shader already computes) are evaluated on
+the GPU into half-float textures (four arguments per texel), and the viewer's lighting effects read them, so
+a preview no longer shows the last CPU build's arguments. Arguments packed in one texture share one sampler
+(a 30-argument program had exceeded the 32 texture units). Unresolved: the rusted-steel preview is much
+darker than its CPU result (mean center RGB about 31/36/37 against 105/110/114 in one screenshot pair, with all seven
+operations applied and plausible argument values); the cause is not found, and that screenshot comparison is the only
+evidence.
+
+Software-rendering numbers (headless Chromium, 256 px swatch, seed edit so every map rebakes, 180 ms
+debounce included, three runs each). CPU only, after the CPU-side speedups: chipped concrete draft about 0.20 s and
+full build 0.27-0.28 s; Kowloon concrete 0.30-0.31 s and 0.65 s; rusted steel 0.21-0.23 s and 0.39-0.40 s
+(the courtyard figures of 0.45-0.55 s and 3-4 s above predate them). With the GPU lane: the first GPU preview
+appeared after about 0.06 s (chipped concrete, hybrid), 0.09-0.12 s (concrete) and 0.06 s (steel); the field bake
+took about 12-13 ms; shader compile on first use 22 ms. The GPU lane no longer delays the CPU draft, and the CPU
+build is not slowed by it beyond noise (draft 0.20-0.33 s, full 0.27-0.71 s with the lane on).
 
 CPU results that Lane H builds on (byte-identical output; `bench_fingerprint` identities unchanged:
 concrete `ce6e3a55...c561`, steel `b6b04aec...dfa1` at 256 px, native release 0.52 s and 0.17 s on this

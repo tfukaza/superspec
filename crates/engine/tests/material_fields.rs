@@ -69,6 +69,19 @@ fn a_field_bake_covers_the_atlas_and_follows_the_edges() {
         rows(2..30) != rows(34..62),
         "runoff is not uniform down the swatch"
     );
+    // A parameter the field reads changes its texels.
+    let mut wide = request(vec![Edge {
+        start: [0.2, 0., 1.],
+        end: [0.8, 0., 1.],
+    }]);
+    wide.parameters.insert("width".into(), 0.4.into());
+    let wider = session
+        .bake_fields(&wide, 4, &names, &assets, &|| false)
+        .unwrap();
+    let total = |bake: &superspec_engine::authoring::FieldBake| -> f32 {
+        bake.fields[0].chunks(4).map(|texel| texel[0]).sum()
+    };
+    assert_ne!(total(&wider), total(&wet), "the width parameter reaches the field");
     // A field that is not in the program is refused.
     assert!(
         session

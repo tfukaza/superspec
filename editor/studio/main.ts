@@ -33,7 +33,7 @@ const GPU_SOURCE_DEBOUNCE_MS = 40;
 const gpuSwatchModel = `<architecture version="1" id="s" name="s"><material id="m" color="#888888"/><box id="b" width="1" depth="1" height="1" material="m"/></architecture>`;
 
 /** Mean, spread and distinct values of a GPU preview's texels: evidence for tests that a bake is non-empty and varies. */
-function gpuStats(texels: { baseColor: Uint8Array; normal: Uint8Array; height: Float32Array }): Record<string, number> {
+function gpuStats(texels: { baseColor: Uint8Array; normal: Uint8Array; height: Float32Array; properties: Uint8Array }): Record<string, number> {
   const channel = (data: Uint8Array | Float32Array, offset: number, step: number) => {
     let sum = 0, low = Infinity, high = -Infinity;
     const distinct = new Set<number>();
@@ -43,7 +43,8 @@ function gpuStats(texels: { baseColor: Uint8Array; normal: Uint8Array; height: F
     return { mean: sum / (data.length / step), low, high, distinct: distinct.size };
   };
   const color = channel(texels.baseColor, 0, 4), normal = channel(texels.normal, 0, 4), height = channel(texels.height, 0, 1);
-  return { colorMean: color.mean, colorLow: color.low, colorHigh: color.high, colorDistinct: color.distinct,
+  const roughness = channel(texels.properties, 1, 4), metalness = channel(texels.properties, 2, 4);
+  return { roughnessMean: roughness.mean, metalnessMean: metalness.mean, colorMean: color.mean, colorLow: color.low, colorHigh: color.high, colorDistinct: color.distinct,
     normalXLow: normal.low, normalXHigh: normal.high, normalXDistinct: normal.distinct,
     heightLow: height.low, heightHigh: height.high, heightDistinct: height.distinct };
 }
@@ -66,6 +67,8 @@ class Studio {
   private draftVisible = false;
   private metadata?: AuthoringMetadata;
   private readonly authoring = new AuthoringCompiler();
+  /** The GPU preview lane's own worker (shader plans, field bakes): it never competes with, or cancels, the CPU build's. */
+  private readonly lane = new AuthoringCompiler({ keepWorker: true });
   private readonly recipeTools = new RecipeTools();
   private readonly typeChecker = new TypeChecker();
   private recipe?: RecipePanel;
@@ -406,7 +409,7 @@ class Studio {
   /** Starts a new input revision before asynchronous reads or Wasm work can publish. */
   private begin(message = "Compiling… Last valid preview remains visible."): number {
     clearTimeout(this.timer); clearTimeout(this.gpuTimer); cancelAnimationFrame(this.gpuFrame);
-    this.authoring.cancelPending(); this.aml.cancel();
+    this.authoring.cancelPending(); this.lane.cancelPending(); this.aml.cancel();
     this.status.dataset.state = "compiling"; this.status.textContent = message;
     element<HTMLButtonElement>("export-glb").disabled = true;
     return ++this.revision;
@@ -443,7 +446,8 @@ class Studio {
   private async compileProgressive(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false, fit = opened): Promise<void> {
     if (this.kind === "material" && candidate.resolution >= 128 && !this.liveScene(candidate)) {
       // A GPU preview of a swatch comes first when the browser can bake it; any failure leaves the CPU draft to run alone.
-      await this.gpuPreview(candidate, revision);
+      // It runs on the lane's own worker, in parallel with the CPU draft, which never waits for or cancels it.
+      void this.gpuPreview(candidate, revision);
       if (revision !== this.revision) return;
       const draft = { ...candidate, resolution: 64 };
       if (!await this.compile(draft, revision, base, baseMetadata, false, fit, true)) return;
@@ -507,7 +511,7 @@ class Studio {
         const shadeStarted = performance.now();
         const project = { ...copyProject(candidate), schemaVersion: 2 as const, models: [{ id: "s", kind: "aml" as const, source: gpuSwatchModel }],
           materials: [{ id: "gpu", entry: candidate.entry, parameters: candidate.parameters, seed: candidate.seed, meshes: ["s/b"] }] };
-        const result = await this.authoring.shadeProject(project, revision);
+        const result = await this.lane.shadeProject(project, revision);
         if (revision !== this.revision) return;
         type Planned = MaterialShading & { requiredInputs?: string[]; plan?: { shader: MaterialShading["shader"]; seedValues: number[] }; planError?: string };
         const material = (result.metadata?.materials as Record<string, Planned> | undefined)?.gpu;
@@ -560,8 +564,11 @@ class Studio {
           ...(hybrid ? { cpuFields: cpuFields.map(field => field.name), cpuChannels: cpuOutputs,
             gpuChannels: use.shader.outputs.filter(name => !cpuOutputs.includes(name)), fieldsFresh: fresh, fieldMs } : {}),
           timings: { ...shown.timings, images: imagesMs, shade: shadeMs, sinceStart: performance.now() - started, sinceEdit: performance.now() - this.editStarted } });
-        if (probe) viewport.dataset.gpuPreviewStats = JSON.stringify(gpuStats(this.scene.readBakedPreview(shown)));
-        this.previewLabel(true, stage, use.shader.live.length > 0, hybrid ? { fields: cpuFields.map(f => f.name), channels: cpuOutputs, fresh } : undefined);
+        if (probe) {
+          viewport.dataset.gpuPreviewStats = JSON.stringify(gpuStats(this.scene.readBakedPreview(shown)));
+          if (shown.live) viewport.dataset.gpuPreviewLive = JSON.stringify(this.scene.readBakedLive(shown));
+        }
+        this.previewLabel(true, stage, false, hybrid ? { fields: cpuFields.map(f => f.name), channels: cpuOutputs, fresh } : undefined);
         this.status.textContent = `Refining texture… GPU preview shown (${stage === "low" ? "quick, " : ""}approximate).`;
       };
       const current = () => revision === this.revision && this.cpuRevision !== revision;
@@ -575,7 +582,7 @@ class Studio {
           modules: candidate.modules, parameters: candidate.parameters, seed: candidate.seed, resolution, assets: candidate.assets,
           mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
         const fieldStarted = performance.now();
-        const result = await this.authoring.bakeFields(request, cpuFields.map(field => field.name), revision);
+        const result = await this.lane.bakeFields(request, cpuFields.map(field => field.name), revision);
         if (!current()) return;
         if (result.error || result.diagnostics?.length || !result.fields) return fallback(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
         const { width, height, texels } = result.fields;
@@ -592,8 +599,7 @@ class Studio {
       }
     } catch (error) {
       if (revision !== this.revision) return;
-      // The CPU build of this edit took the worker: the field bake gives way to it, and the preview stays as it was.
-      if (error instanceof DOMException && error.name === "AbortError") return fallback("the CPU build took priority over the field bake");
+      if (error instanceof DOMException && error.name === "AbortError") return;
       fallback(String(error instanceof Error ? error.message : error));
     }
   }
@@ -1044,7 +1050,7 @@ class Studio {
   }
 
   /** Releases workers, staged inputs, URLs and renderer resources on page departure. */
-  private dispose(): void { clearTimeout(this.timer); this.authoring.cancel(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.channels.clear(); this.scene.dispose(); }
+  private dispose(): void { clearTimeout(this.timer); this.authoring.cancel(); this.lane.close(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.channels.clear(); this.scene.dispose(); }
 }
 
 const kind = document.body.dataset.studio === "item" ? "item" : "material";
