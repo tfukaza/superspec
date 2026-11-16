@@ -148,11 +148,18 @@ Studio also has two GPU previews, which are approximations and never authoritati
   program keeps compiling in the background: a bake that gave way still compiles and
   draws its program once at a tiny size, so the next parameter or seed edit shows its
   preview within a few frames with no compile left (the concrete: a parameter edit
-  previewed 78 ms after the edit on the RTX once warm). The baking program and the
-  viewer material (four maps, the environment, the sun's shadow map and the packed live
-  argument textures) must each fit `MAX_TEXTURE_IMAGE_UNITS` (16 on that GPU, not 32
-  as under SwiftShader); a preview that would not fit falls back with that reason, and
-  `data-gpu-preview` reports the units used. Headless Playwright defaults to
+  previewed 140-210 ms after the edit on the RTX once warm, with the viewer's default
+  shadow style and ambient occlusion in the frame). A program the driver rejects is
+  caught when it is compiled (its link status is read; three.js only logs that at a
+  first draw), the preview falls back with the reason, and the source is not compiled
+  again. The baking program and the viewer material must each fit
+  `MAX_TEXTURE_IMAGE_UNITS` (16 on that GPU, not 32 as under SwiftShader). The viewer
+  material binds one unit per sampler: base color, normal, roughness and metalness (the
+  packed properties texture, once each), emissive, the environment and the sun's
+  shadow map make seven, an occlusion map eight, plus one per packed live argument
+  texture. The count is taken from the displayed material before anything is drawn
+  and read back from the drawn program afterwards; a preview that would not fit falls
+  back with that reason, and `data-gpu-preview` reports the units used. Headless Playwright defaults to
   SwiftShader, a software renderer, so timings there are order-of-magnitude only. To run
   the browser suites on a GPU set
   `BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist"` (PowerShell:
@@ -161,25 +168,49 @@ Studio also has two GPU previews, which are approximations and never authoritati
 - **Shadows.** The Studio viewer casts and receives shadows from its sun by default
   (a 2048 px PCF soft shadow map fitted to the loaded models, drawn when the models
   change rather than every frame). `?shadows=off` in the page URL turns them off for
-  debugging. `?shadowstyle=illustration` tries a stylized look (a prototype, not the
-  default): shadows darker than plain and clearly blue, including faces turned from the
-  sun; an edge gradient that stays tight where the caster touches the receiver and widens
-  with the distance between them; and a large-scale noise that makes the edge wobble and
-  varies darkness and hue inside the shadow. Overrides: `shadowdark` (extra darkness,
-  0-1), `shadowtint` and `shadowtint2` (the hue and the hue the noise drifts to, hex
-  colors without `#`), `shadowtintstrength` (saturation, 0-1), `shadowblur` (penumbra
-  radius at contact, meters), `shadowspread` (radius gained per meter to the caster),
-  `shadowblurmax` (largest radius, meters), `shadowwrap` (how far past the terminator a
-  face starts to shade, as a cosine), `shadowedge` (edge displacement, meters),
-  `shadownoise` (interior variation, 0-1), `shadownoisescale` (noise feature size,
-  meters) and `shadowseed`.
+  debugging.
+- **Rendering settings are global to the scene view.** How shadows look and whether
+  ambient occlusion is drawn are settings of the view (`RenderingSettings` in
+  `browser/renderer/rendering.ts`), never part of a material. The Studio fills them
+  from the page URL; both are on by default.
+- **Shadow style.** Shadows are styled by default: darker than three.js's plain shadow
+  and nearly neutral gray with a slight cool cast, including faces turned from the sun;
+  an edge that stays tight where the caster touches the receiver and widens a little
+  with the distance between them; and a large-scale noise that makes the edge wobble
+  and varies darkness and hue inside the shadow. `?shadowstyle=plain` (or `off`)
+  returns three.js's plain shadows. The preset: `shadowdark` 0.25 (extra darkness,
+  0-1), `shadowtint` 2f6fe0 and `shadowtint2` 3f4fd8 (the hue and the hue the noise
+  drifts to, hex colors without `#`), `shadowtintstrength` 0.22 (saturation, 0-1),
+  `shadowblur` 0.012 (penumbra radius at contact, meters), `shadowspread` 0.025 (radius
+  gained per meter to the caster), `shadowblurmax` 0.06 (largest radius, meters),
+  `shadowwrap` 0.3 (how far past the terminator a face starts to shade, as a cosine),
+  `shadowedge` 0.07 (edge displacement, meters), `shadownoise` 0.6 (interior variation,
+  0-1), `shadownoisescale` 1.1 (noise feature size, meters) and `shadowseed` 7. Each
+  name is also a URL parameter that overrides the value.
+- **Ambient occlusion.** The viewer darkens creases and contacts (where walls meet the
+  floor, under and behind objects) with screen-space ambient occlusion, in neutral
+  gray. `?ao=off` turns it off; the image is then drawn straight to the canvas,
+  exactly as before the setting existed. `aoradius` (0.35, meters in the scene, so the
+  look does not change with zoom) is how far around a point occluders count,
+  `aointensity` (2) the strength: up to 1 it is the share of the occlusion blended in,
+  above 1 creases deepen further while open surfaces stay as they are. `aothickness`
+  (0.5, meters) is how thick surfaces are taken to be, so thin parts cast no halo on
+  what is far behind them. It multiplies the finished image, direct light included,
+  which is why open, lit surfaces are kept free of it instead of being dimmed. With it
+  on, the scene is drawn into a multisampled linear target and tone mapped afterwards
+  (same tone mapping, exposure and output as the canvas path; the background color is
+  placed behind the image untouched). A material's relief does not affect it, alpha-cut
+  parts occlude as if solid, and inspection overlays neither cast nor receive it.
+  This is not the planned baked `occlusion()` material field.
 - **Relief in the shader preview.** A scene project's materials are computed per pixel,
   and their relief normal comes from the height at the pixel and at the surface points
   one pixel across and one pixel down (two extra evaluations of only the fields the
   height reaches), not from screen derivatives of the height, which a GPU shares within
   each 2x2 pixel block and so step in blocks. The extra height code about doubles the
-  first compile of a scene's programs on a real GPU; `?relief=quad` keeps the cheaper
-  derivative relief.
+  compile of a scene's programs on a real GPU, so the first look uses the derivative
+  relief and each program is swapped for the per-pixel one once it has compiled in the
+  background (`data-relief` on the viewport turns from `quad` to `pixel`).
+  `?relief=quad` keeps the derivative relief.
 ## TypeScript recipes
 
 Materials can also be written as `.material.ts` files: strict TypeScript against a

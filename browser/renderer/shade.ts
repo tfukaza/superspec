@@ -82,21 +82,39 @@ function featureTexture(features: number[]): THREE.DataTexture {
   return texture;
 }
 
+/** Program cache identities by shader source, most recently used last; a source that left the list gets a new identity. */
 const sourceIds = new Map<string, number>();
+let nextSourceId = 0;
+const KEPT_SOURCE_IDS = 64;
+
+function sourceId(source: string): number {
+  let id = sourceIds.get(source);
+  if (id === undefined) id = nextSourceId++;
+  else sourceIds.delete(source);
+  sourceIds.set(source, id);
+  while (sourceIds.size > KEPT_SOURCE_IDS) sourceIds.delete(sourceIds.keys().next().value!);
+  return id;
+}
+
+/** Whether a program's relief can be evaluated per pixel: the engine emits a height-only entry point when it has a height output. */
+export function hasPixelRelief(shading: MaterialShading): boolean {
+  return shading.shader.source.includes("void ms_evaluate_height()");
+}
 
 /**
  * A standard material whose channels a MaterialSpec program computes per pixel instead of reading
  * baked maps. `shared` holds the material's parameter, seed and image uniforms, so one update
  * reaches every mesh that shows it. Relief becomes a normal from the height's differences to the
- * neighbouring pixels' surface points.
+ * neighbouring pixels' surface points (`"pixel"`), or from the height's screen derivatives
+ * (`"quad"`): those step in 2x2 pixel blocks, but the program compiles in about half the time, so
+ * a viewer shows it first and swaps to the per-pixel program once that is ready.
  */
-export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms): THREE.MeshStandardMaterial {
+export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms,
+  mode: "pixel" | "quad" = "pixel"): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
   const shader = shading.shader;
   const features = featureTexture(mesh.features);
-  // The engine emits a height-only entry point when the program has a height output. `?relief=quad`
-  // keeps the cheaper screen-derivative relief, which steps in 2x2 pixel blocks but compiles in half the time.
-  const relief = shader.source.includes("void ms_evaluate_height()") && !new URLSearchParams(globalThis.location?.search ?? "").has("relief", "quad");
+  const relief = mode === "pixel" && hasPixelRelief(shading);
   const objectFromWorld = new THREE.Matrix4();
   if (mesh.objectToWorld) objectFromWorld.fromArray(mesh.objectToWorld).invert();
   else objectFromWorld.makeTranslation(-mesh.boundsMin[0], -mesh.boundsMin[1], -mesh.boundsMin[2]);
@@ -204,10 +222,9 @@ ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHe
     normal = normalize((viewMatrix * vec4(shaded, 0.0)).xyz) * faceDirection;
   }`);
   };
-  let id = sourceIds.get(shader.source);
-  if (id === undefined) { id = sourceIds.size; sourceIds.set(shader.source, id); }
+  const id = sourceId(shader.source);
   const liveKey = material.customProgramCacheKey();
-  material.customProgramCacheKey = () => `materialSpec-program:${id}:${liveKey}`;
+  material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${liveKey}`;
   material.userData.liveOperations = live;
   material.needsUpdate = true;
   return material;

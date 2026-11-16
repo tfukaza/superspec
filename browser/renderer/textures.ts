@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { loadKtx2 } from "./ktx2.ts";
 
+/**
+ * Anisotropic filtering of material maps in the viewer, for a build's textures and a GPU preview's alike, so a preview
+ * does not change sharpness when the build replaces it.
+ */
+export const MAP_ANISOTROPY = 1;
+
 interface Entry {
   texture: Promise<THREE.Texture>;
   users: number;
@@ -21,6 +27,7 @@ export class TexturePool {
       const configure = (value: THREE.Texture): THREE.Texture => {
         value.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
         value.wrapS = value.wrapT = THREE.RepeatWrapping;
+        value.anisotropy = MAP_ANISOTROPY;
         return value;
       };
       let texture: Promise<THREE.Texture>;

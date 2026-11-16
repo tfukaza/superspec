@@ -49,18 +49,25 @@ export interface ShadowStyleParameters {
   seed: number;
 }
 
-/** Named looks. `illustration` is the prototype's default look; the viewer's plain shadows use no style at all. */
+/**
+ * Named looks. `illustration` is the Studio viewer's default: a tight edge that still widens a little with distance, and
+ * a nearly neutral shade with a slight cool cast. `plain` (no style at all) is three.js's own shadow.
+ */
 export const SHADOW_STYLES: Record<string, ShadowStyleParameters> = {
   illustration: {
-    softness: 0.012, spread: 0.1, softnessMax: 0.28, noiseScale: 1.1, edgeNoise: 0.07, noiseAmount: 0.6,
-    tint: "#2f6fe0", tintAlt: "#3f4fd8", tintStrength: 0.85, darkness: 0.25, wrap: 0.3, seed: 7,
+    softness: 0.012, spread: 0.025, softnessMax: 0.06, noiseScale: 1.1, edgeNoise: 0.07, noiseAmount: 0.6,
+    tint: "#2f6fe0", tintAlt: "#3f4fd8", tintStrength: 0.22, darkness: 0.25, wrap: 0.3, seed: 7,
   },
 };
 
-/** A style from page parameters: `shadowstyle=<name>` with optional overrides, or null for plain shadows. */
+/**
+ * The style page parameters ask for: the default look unless `shadowstyle=plain` (or `off`) asks for three.js's plain
+ * shadows (null), with optional overrides of each value.
+ */
 export function shadowStyleFromQuery(query: URLSearchParams): ShadowStyleParameters | null {
-  const preset = SHADOW_STYLES[query.get("shadowstyle") ?? ""];
-  if (!preset) return null;
+  const name = query.get("shadowstyle") ?? "illustration";
+  if (name === "plain" || name === "off" || name === "none") return null;
+  const preset = SHADOW_STYLES[name] ?? SHADOW_STYLES.illustration;
   const number = (name: string, fallback: number, min: number, max: number): number => {
     const value = Number(query.get(name) ?? NaN);
     return Number.isFinite(value) ? Math.min(Math.max(value, min), max) : fallback;

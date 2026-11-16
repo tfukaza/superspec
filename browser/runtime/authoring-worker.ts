@@ -47,8 +47,18 @@ async function distributed<T>(active: Authoring, assets: Record<string, Uint8Arr
   }
 }
 
-self.onmessage = async (event: MessageEvent<AuthoringMessage>) => {
-  const { requestId, assets, ...request } = event.data;
+/**
+ * Requests run one at a time, in order. A handler awaits (the library's images, helper bakes, texture encoding) while
+ * it uses the one session, so a second request starting in the middle would replace the first one's assets and the
+ * first one's cleanup would clear the second's. A kept worker (the GPU preview lane's) does receive a request while an
+ * abandoned one is still running.
+ */
+let turn: Promise<void> = Promise.resolve();
+self.onmessage = (event: MessageEvent<AuthoringMessage>) => { turn = turn.then(() => handle(event.data)); };
+
+/** Answers one request with exactly one final message; it never rejects. */
+async function handle(message: AuthoringMessage): Promise<void> {
+  const { requestId, assets, ...request } = message;
   try {
     await (ready ??= initialize({ module_or_path: wasmUrl }));
     session ??= new Authoring();
@@ -118,4 +128,4 @@ self.onmessage = async (event: MessageEvent<AuthoringMessage>) => {
   } finally {
     session?.clear_assets();
   }
-};
+}

@@ -200,7 +200,15 @@ export class AuthoringCompiler {
         const worker = new Worker(new URL("./authoring-worker.ts", import.meta.url), { type: "module" });
         this.worker = worker;
         worker.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress>) => {
-          if (this.worker !== worker || this.pending?.requestId !== event.data.requestId) return;
+          if (this.worker !== worker) return;
+          // A kept worker answers every request it was sent, abandoned ones too; each answer frees it for the newest one waiting.
+          if (!("progress" in event.data) && this.options.keepWorker) {
+            this.running = false;
+            const next = this.waiting;
+            this.waiting = undefined;
+            if (next) { this.running = true; worker.postMessage(next); }
+          }
+          if (this.pending?.requestId !== event.data.requestId) return;
           if ("progress" in event.data) {
             this.pending.progress?.(event.data.progress);
             return;
@@ -215,12 +223,21 @@ export class AuthoringCompiler {
           this.pending = undefined;
           worker.terminate();
           this.worker = undefined;
+          this.running = false; this.waiting = undefined;
         };
       }
       this.pending = { requestId: request.requestId, resolve, reject, progress };
+      // A kept worker still running an abandoned request gets the next one when it answers; only the newest waits, so a
+      // burst of edits costs the request in flight and one more, not one each (and one copy of the assets, not one each).
+      if (this.options.keepWorker && this.running) { this.waiting = request; return; }
+      this.running = true;
       this.worker.postMessage(request);
     });
   }
+
+  /** A kept worker has a request it has not answered, and the newest request made meanwhile. */
+  private running = false;
+  private waiting?: AuthoringMessage;
 
   /**
    * Cancels the consumer's request and releases the worker, including after navigation. A compiler made with
@@ -230,6 +247,8 @@ export class AuthoringCompiler {
   cancel(): void {
     this.pending?.reject(new DOMException("Authoring request superseded.", "AbortError"));
     this.pending = undefined;
+    // An abandoned request that has not started never does.
+    this.waiting = undefined;
     if (!this.options.keepWorker) this.close();
   }
 
@@ -237,6 +256,7 @@ export class AuthoringCompiler {
   close(): void {
     this.worker?.terminate();
     this.worker = undefined;
+    this.running = false; this.waiting = undefined;
   }
 
   /** Supersedes active work while allowing an idle compiler to retain compatible programs. */

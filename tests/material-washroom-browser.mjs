@@ -54,6 +54,12 @@ try {
   await revision("inputRevision");
   await ready(); await waitForFrames(page);
   const loaded = Date.now() - started;
+  // The shader preview shows the fast-compiling relief first and swaps to the per-pixel one in the background.
+  let perPixel = "";
+  if (await page.evaluate(() => document.querySelector("#viewport").dataset.relief !== undefined) && !/relief=quad/.test(process.env.QUERY ?? "")) {
+    await page.waitForFunction(() => document.querySelector("#viewport").dataset.relief === "pixel", {}, { timeout: 900000 });
+    perPixel = `, per-pixel relief ${Date.now() - started} ms`;
+  }
 
   const bindings = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.bindings ?? "{}"));
   const expected = Object.fromEntries(project.materials.flatMap(material => material.meshes.map(mesh => [mesh, material.id])));
@@ -100,20 +106,37 @@ try {
   console.log(`Frame times (ms): ${JSON.stringify(frame)}`);
   // Draw time without the display's frame pacing: with QUERY containing gpuprobe, redraw directly and read one pixel
   // so the GPU has finished. (The frame times above wait two animation frames, so a GPU reads as about two refreshes.)
-  const draws = await page.evaluate(() => {
+  const draws = await page.evaluate(async () => {
     const scene = window.__scene;
     if (!scene) return null;
     const gl = scene.renderer.getContext(), pixel = new Uint8Array(4), times = [];
     for (let i = 0; i < 24; i++) {
       const start = performance.now();
-      scene.renderer.render(scene.scene, scene.camera);
+      scene.draw();
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
       times.push(performance.now() - start);
     }
     times.sort((a, b) => a - b);
-    return { median: +times[12].toFixed(2), min: +times[0].toFixed(2), max: +times[23].toFixed(2), shadowExtentMeters: scene.shadowStyle?.uniforms.msShadowExtent.value };
+    // The GPU's own time for a frame, where the browser offers timer queries: no read-back and no CPU time in it.
+    const timer = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    let gpu = "timer queries unavailable";
+    if (timer) {
+      const frames = [];
+      for (let i = 0; i < 12; i++) {
+        const query = gl.createQuery();
+        gl.beginQuery(timer.TIME_ELAPSED_EXT, query);
+        scene.draw();
+        gl.endQuery(timer.TIME_ELAPSED_EXT);
+        for (let waited = 0; waited < 500 && !gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE); waited++) await new Promise(done => setTimeout(done, 2));
+        if (gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE) && !gl.getParameter(timer.GPU_DISJOINT_EXT)) frames.push(gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6);
+        gl.deleteQuery(query);
+      }
+      frames.sort((a, b) => a - b);
+      gpu = frames.length ? { median: +frames[frames.length >> 1].toFixed(2), min: +frames[0].toFixed(2), max: +frames.at(-1).toFixed(2), frames: frames.length } : "no timer query completed";
+    }
+    return { median: +times[12].toFixed(2), min: +times[0].toFixed(2), max: +times[23].toFixed(2), gpuTimerQuery: gpu, shadowExtentMeters: scene.shadowStyle?.uniforms.msShadowExtent.value };
   });
-  if (draws) console.log(`Draw time (ms, finished on the GPU, 24 draws): ${JSON.stringify(draws)}`);
+  if (draws) console.log(`Draw time (ms; draw and one-pixel read, 24 draws; gpuTimerQuery is the GPU's time alone): ${JSON.stringify(draws)}`);
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
   // CLOSEUP names a PNG of the tall wall seen close, for judging relief and texture detail.
   if (process.env.CLOSEUP) {
@@ -123,7 +146,7 @@ try {
     await waitForFrames(page, 6);
     await writeFile(process.env.CLOSEUP, await page.locator("#viewport canvas").screenshot());
   }
-  console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
+  console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms${perPixel} (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
 } finally {
   await browser?.close();
   server.close();

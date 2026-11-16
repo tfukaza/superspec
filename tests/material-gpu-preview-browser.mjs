@@ -62,7 +62,9 @@ try {
     const original = Worker.prototype.postMessage;
     window.__hold = false; window.__held = [];
     Worker.prototype.postMessage = function(message, ...options) {
-      if (window.__hold && message?.kind === "material" && message.resolution === 64) { window.__held.push(() => original.call(this, message, ...options)); return; }
+      if (message?.kind === "material" && ((window.__hold && message.resolution === 64) || (window.__holdFull && message.resolution > 64))) {
+        window.__held.push(() => original.call(this, message, ...options)); return;
+      }
       return original.call(this, message, ...options);
     };
   });
@@ -79,7 +81,7 @@ try {
       const preview = JSON.parse(d.gpuPreview);
       return preview.stage === "full" && preview.fieldsFresh !== false;
     }, {}, { timeout: 8000 }).catch(() => {});
-    await page.evaluate(() => { window.__hold = false; for (const send of window.__held.splice(0)) send(); });
+    await page.evaluate(() => { window.__hold = window.__holdFull = false; for (const send of window.__held.splice(0)) send(); });
     await page.waitForFunction(() => ["ready", "error"].includes(document.querySelector("#status")?.dataset.state), {}, { timeout: 180000 });
     await waitForFrames(page);
     return { state: await page.locator("#status").getAttribute("data-state"), events: await take(), started };
@@ -134,6 +136,7 @@ try {
   const report = {};
   const firstUse = {};
   const starterStats = {};
+  const unitsUsed = {};
   let steelEvents = [];
   const starters = await page.locator("#starter option").evaluateAll(options => options.map(option => option.value).filter(value => !/yard/.test(value)));
   for (const starter of starters) {
@@ -148,6 +151,10 @@ try {
       // Texture units: the baking program and the viewer material (maps, environment, live argument textures) fit the device.
       assert.ok(shown.preview.units.bake <= shown.preview.units.limit && shown.preview.units.viewer <= shown.preview.units.limit, `${starter}: texture units ${JSON.stringify(shown.preview.units)}`);
       assert.ok(shown.preview.units.limit <= glInfo.textureUnits, `${starter}: the limit is the device limit`);
+      // The viewer figure is read from the drawn program: its maps (roughness and metalness bind the packed texture
+      // once each), the environment, the sun's shadow map and any live argument textures.
+      assert.ok(shown.preview.units.viewer >= 7, `${starter}: the viewer material binds at least seven units (${shown.preview.units.viewer})`);
+      unitsUsed[starter] = shown.preview.units;
       assert.match(shown.preview.key, /^gpu-preview:\d+:/, `${starter}: own cache key`);
       assert.equal(shown.status, "compiling", `${starter}: a GPU preview is never a ready revision`);
       const stats = events.findLast(event => event.stats)?.stats ?? shown.stats;
@@ -161,6 +168,7 @@ try {
     assert.equal(await page.locator("#export-glb").isDisabled(), false, `${starter}: a ready build can export`);
   }
   console.log("Per starter:", JSON.stringify(report, null, 2));
+  console.log("Texture units per GPU starter:", JSON.stringify(unitsUsed));
   console.log("First preview of each GPU starter (ms; compile is the shader's first compile):", JSON.stringify(firstUse));
   assert.ok(Object.values(report).some(value => value === "gpu"), "at least one starter previews on the GPU");
   // Receiver-normal outputs, rim-edge receiver features and live operations are all handled on the GPU.
@@ -211,6 +219,16 @@ try {
   assert.equal(bigFull.preview.timings.bands, 2, "512 px is drawn in two bands");
   assert.ok(bigFull.stats.colorDistinct > 8 && bigFull.stats.colorHigh > bigFull.stats.colorLow, "a banded bake has no empty band");
   timings.bands512 = { ...bigFull.preview.timings, sinceEditMs: bigFull.at - big.started };
+  // While a 64 px draft is what the viewport shows (its full build still running, as during a drag), the next edit's
+  // preview is drawn at the requested size on the draft's layout, not at 64 px.
+  await page.evaluate(() => { window.__holdFull = true; });
+  await input.fill(String(low512 + (high512 - low512) * 0.6)); await input.press("Tab");
+  await page.waitForFunction(() => /Draft shown/.test(document.querySelector("#status").textContent), {}, { timeout: 60000 });
+  await page.evaluate(() => { window.__holdFull = true; });
+  const overDraft = await editAndWait(async () => { await page.evaluate(() => { window.__holdFull = true; }); await input.fill(String(low512 + (high512 - low512) * 0.8)); await input.press("Tab"); });
+  const overDraftFull = overDraft.events.find(event => event.preview?.stage === "full");
+  assert.ok(overDraftFull, "an edit made while a draft is displayed previews");
+  assert.equal(overDraftFull.preview.width, 512, "at the requested size, not the draft's 64 px");
   await page.locator("#resolution").selectOption("256");
   await ready("256 px again");
   const code = await page.locator("#code").inputValue();
@@ -308,6 +326,62 @@ try {
   const imagedFull = fullStage(imaged.events);
   assert.equal(imagedFull?.preview.lane, "hybrid", "a field that reads an image is a CPU field");
   assert.ok(imagedFull.stats.colorHigh > imagedFull.stats.colorLow, "its texture carries the image-modulated runoff");
+
+  // A program the driver rejects (here: text that does not compile, appended through the baker's test seam) is caught
+  // when it is compiled, not shown as whatever the targets held: the CPU build alone follows, with the reason.
+  const grain = scale => `material 1;\nparam level: scalar = 0.5 range(0, 1);\nlet grain = noise(surface * ${scale}, seed("grain"));\noutput base_color = vec3(grain * level);\noutput roughness = 0.5;\noutput metalness = 0;\n`;
+  await page.evaluate(() => {
+    const scene = window.__scene;
+    scene.bakerInstance.inject = "\n#error injected failure\n";
+    window.__compiles = 0;
+    const compile = scene.renderer.compileAsync;
+    scene.renderer.compileAsync = function(...values) { window.__compiles++; return compile.apply(this, values); };
+  });
+  const rejected = await tryProgram(grain("11.0"));
+  assert.equal(rejected.state, "ready", "the CPU build alone follows a rejected shader");
+  assert.ok(!rejected.events.some(event => event.preview), "no GPU preview of a program that did not link");
+  assert.match(await page.locator("#viewport").getAttribute("data-gpu-preview-fallback"), /did not compile/, "the fallback names the reason");
+  assert.equal(await page.locator("#viewport").getAttribute("data-gpu-preview"), null);
+  // The same source is not compiled again on the next edit: the failure is remembered.
+  const compilesAfterFailure = await page.evaluate(() => window.__compiles);
+  assert.ok(compilesAfterFailure >= 1, "the rejected program was compiled once");
+  const rejectedAgain = await setLevel(0.8);
+  assert.equal(rejectedAgain.state, "ready");
+  assert.ok(!rejectedAgain.events.some(event => event.preview), "still no GPU preview for the rejected source");
+  assert.match(await page.locator("#viewport").getAttribute("data-gpu-preview-fallback"), /did not compile/);
+  assert.equal(await page.evaluate(() => window.__compiles), compilesAfterFailure, "a source that failed is not compiled again");
+  // Another source compiles and previews as usual once the seam is clear.
+  await page.evaluate(() => { window.__scene.bakerInstance.inject = ""; });
+  const mended = await tryProgram(grain("13.0"));
+  assert.ok(fullStage(mended.events), "a later program previews again");
+
+  // Context loss and restore: nothing compiled or drawn is remembered, the shadow map is asked for again, and the next
+  // edit previews on the new context.
+  const restored = await page.evaluate(async () => {
+    const scene = window.__scene, canvas = scene.renderer.domElement;
+    const lose = scene.renderer.getContext().getExtension("WEBGL_lose_context");
+    if (!lose) return null;
+    const seen = {};
+    canvas.addEventListener("webglcontextrestored", () => { seen.shadowMap = scene.renderer.shadowMap.needsUpdate; }, { once: true });
+    const lost = new Promise(done => canvas.addEventListener("webglcontextlost", done, { once: true }));
+    const back = new Promise(done => canvas.addEventListener("webglcontextrestored", done, { once: true }));
+    lose.loseContext(); await lost;
+    seen.during = scene.gpuPreviewUnavailable();
+    await new Promise(done => setTimeout(done, 50));
+    lose.restoreContext(); await back;
+    await new Promise(done => setTimeout(done, 200));
+    return { ...seen, after: scene.gpuPreviewUnavailable(), drawn: scene.bakerInstance.drawn.size, passes: scene.bakerInstance.passes.size };
+  });
+  if (restored) {
+    assert.match(restored.during, /context is lost/, "no baking while the context is lost");
+    assert.equal(restored.after, null, "baking is available again");
+    assert.deepEqual([restored.drawn, restored.passes], [0, 0], "no program of the lost context is taken for compiled or drawn");
+    assert.equal(restored.shadowMap, true, "the shadow map is drawn again");
+    const afterLoss = await setLevel(0.3);
+    assert.equal(afterLoss.state, "ready", "the build follows a restored context");
+    assert.ok(fullStage(afterLoss.events), "the GPU preview works on the restored context");
+    assert.ok(fullStage(afterLoss.events).stats.colorHigh > fullStage(afterLoss.events).stats.colorLow, "and draws real texels");
+  } else console.log("WEBGL_lose_context is not available: context restore not exercised.");
   await editAndWait(() => page.locator("#starter").selectOption("painted-metal.ms"));
   // The label tells the viewer these textures are a preview, and it is gone once the CPU build is shown.
   assert.equal(await page.locator("#preview-label").isHidden(), true, "no preview label on a CPU build");

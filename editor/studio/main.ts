@@ -3,7 +3,7 @@ import "./style.css";
 import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
-import { gpuBakeUnsupported, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
+import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
 import { decodePacket, type SceneMesh, type ScenePacket } from "../../browser/model/packet.ts";
 import { AuthoringCompiler, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type StudioMaterial } from "../../browser/runtime/authoring.ts";
@@ -462,21 +462,29 @@ class Studio {
   /** What the engine's swatch shader depends on: source, entry, seed (a named seed's value) and domain, but never parameters. */
   private shaderKey(candidate: StudioProject): string {
     return JSON.stringify([candidate.entry, candidate.modules, candidate.seed, candidate.mapping, candidate.domain, candidate.gravity,
-      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length])]);
+      Object.entries(candidate.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
   }
+
+  /** Names an asset's contents for the session: supplied bytes are replaced, never edited in place, so the array is the identity. */
+  private assetId(bytes: Uint8Array): number {
+    let id = this.assetIds.get(bytes);
+    if (id === undefined) this.assetIds.set(bytes, id = ++this.lastAssetId);
+    return id;
+  }
+  private readonly assetIds = new WeakMap<Uint8Array, number>();
+  private lastAssetId = 0;
 
   /** Whether the last shader (or the reason it cannot preview) still describes `candidate`, so only uniforms change. */
   private cachedShader(candidate: StudioProject): boolean { return this.gpuShadings.has(this.shaderKey(candidate)); }
 
   /** Labels (or clears the label of) textures that are a GPU preview, so they are never taken for a build. */
-  private previewLabel(shown: boolean, stage?: string, live = false, hybrid?: { fields: string[]; channels: string[]; fresh: boolean }): void {
+  private previewLabel(shown: boolean, stage?: string, hybrid?: { fields: string[]; channels: string[]; fresh: boolean }): void {
     const label = document.getElementById("preview-label");
     if (!label) return;
     label.hidden = !shown;
     // Hybrid previews say which channels rest on fields the CPU baked; the others are computed on the GPU alone.
     const lane = hybrid ? ` · hybrid: ${hybrid.channels.join(", ").replace(/_/g, " ")} use CPU-baked ${hybrid.fields.join(", ")}${hybrid.fresh ? "" : " (refreshing)"}; other channels GPU only` : "";
-    // Live renderer operations are not baked on the GPU: they keep the arguments of the last CPU build.
-    label.textContent = shown ? `GPU preview${stage === "low" ? " · quick" : ""} · approximate, not the saved bake${lane}${live ? " · lighting effects from the last build" : ""}` : "";
+    label.textContent = shown ? `GPU preview${stage === "low" ? " · quick" : ""} · approximate, not the saved bake${lane}` : "";
   }
   /**
    * Shows a swatch edit as GPU-baked textures on the mesh already displayed, ahead of the CPU draft. It follows the
@@ -486,14 +494,13 @@ class Studio {
    * cannot express, or a browser that cannot bake, leave the CPU path alone, with the reason in
    * `data-gpu-preview-fallback`.
    */
-  private async gpuPreview(candidate: StudioProject, revision: number, cachedOnly = false): Promise<void> {
+  private async gpuPreview(candidate: StudioProject, revision: number): Promise<void> {
     const viewport = element("viewport");
     // `?gpupreview=off` keeps the CPU path alone (for comparisons and debugging).
     if (new URLSearchParams(location.search).get("gpupreview") === "off") return;
     const fallback = (reason: string): void => { viewport.dataset.gpuPreviewFallback = reason; };
     // One attempt per revision: an edit that can skip the debounce tries first, the build flow only if it did not.
     if (this.gpuAttempted === revision) return;
-    if (cachedOnly && !this.cachedShader(candidate)) return;
     this.gpuAttempted = revision;
     delete viewport.dataset.gpuPreviewFallback;
     const meshes = this.visible?.manifest.meshes.filter(mesh => mesh.visible) ?? [];
@@ -501,9 +508,10 @@ class Studio {
       || candidate.texelDensity !== undefined || meshes.length !== 1 || !this.shownResolution) return fallback("not a swatch preview");
     const unavailable = this.scene.gpuPreviewUnavailable();
     if (unavailable) return fallback(unavailable);
+    // The displayed mesh fixes the layout: the atlas of the CPU build it came from (64 px for a draft).
     const resolution = this.shownResolution;
-    const domain = swatchDomain(candidate.domain, resolution, candidate.mapping, candidate.gravity);
-    if (!domain) return fallback("swatch layout is not modeled");
+    const layout = swatchDomain(candidate.domain, resolution, candidate.mapping, candidate.gravity);
+    if (!layout) return fallback("swatch layout is not modeled");
     const started = performance.now();
     try {
       const key = this.shaderKey(candidate);
@@ -536,13 +544,20 @@ class Studio {
       }
       if (known.unsupported) return fallback(known.unsupported);
       const use = known.hybrid ?? known.shading;
-      const shading = this.scene.gpuPreviewReady(use) ? undefined : use;
+      // The contents of the images the program samples: the same shader with another image must bind again.
+      const images = JSON.stringify(use.shader.images.map(entry => [entry.name, candidate.assets[entry.name] ? this.assetId(candidate.assets[entry.name]) : "library"]));
+      const shading = this.scene.gpuPreviewReady(use, images) ? undefined : use;
       const probe = new URLSearchParams(location.search).has("gpuprobe");
       // Hybrid: the CPU bakes the fields only it can evaluate, once per layout; a change to what they read bakes them again
       // while the previous ones keep showing (stale while revalidating). The CPU build of this edit waits for this, so the
       // field bake (a subset of that build) never competes with it; a newer edit cancels it.
       const cpuFields = use.shader.cpuFields ?? [];
       const hybrid = cpuFields.length > 0;
+      // The preview is drawn at the requested size. While the displayed mesh is a draft's, its layout is kept and its grid
+      // refined by a whole factor (the same atlas with more texels, gutter included), so the textures land on that mesh
+      // exactly. A hybrid preview stays on the displayed grid, the one the CPU bakes its fields on.
+      const finer = hybrid ? 1 : Math.floor(candidate.resolution / resolution);
+      const domain = finer > 1 ? scaledDomain(layout, 1 / finer) : layout;
       let fields: Record<string, FieldTexels> | undefined;
       let fieldsFresh = true, fieldMs = 0;
       const fieldKey = hybrid ? JSON.stringify([key, resolution, candidate.edges, candidate.gravity, cpuFields.map(field => [field.name,
@@ -572,16 +587,17 @@ class Studio {
           viewport.dataset.gpuPreviewStats = JSON.stringify(gpuStats(this.scene.readBakedPreview(shown)));
           if (shown.live) viewport.dataset.gpuPreviewLive = JSON.stringify(this.scene.readBakedLive(shown));
         }
-        this.previewLabel(true, stage, false, hybrid ? { fields: cpuFields.map(f => f.name), channels: cpuOutputs, fresh } : undefined);
+        this.previewLabel(true, stage, hybrid ?{ fields: cpuFields.map(f => f.name), channels: cpuOutputs, fresh } : undefined);
         this.status.textContent = `Refining texture… GPU preview shown (${stage === "low" ? "quick, " : ""}approximate).`;
       };
       const current = () => revision === this.revision && this.cpuRevision !== revision;
       // Without fields yet (nothing to show), a hybrid preview waits for them.
       if (!hybrid || fields) {
         await this.scene.bakePreview(meshes[0].id, domain, candidate.parameters, shading, image, probe, current,
-          (shown, stage, imagesMs) => show(shown, stage, imagesMs, fieldsFresh), fields);
+          (shown, stage, imagesMs) => show(shown, stage, imagesMs, fieldsFresh), fields, images);
       }
-      if (hybrid && !fieldsFresh) {
+      // A revision that is no longer current asks the lane for nothing: its request would cancel the current one's.
+      if (hybrid && !fieldsFresh && current()) {
         const request: Omit<AuthoringRequest, "requestId"> = { kind: this.kind, entry: candidate.entry, source: candidate.modules[candidate.entry],
           modules: candidate.modules, parameters: candidate.parameters, seed: candidate.seed, resolution, assets: candidate.assets,
           mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
@@ -599,7 +615,7 @@ class Studio {
         this.gpuFields = { key: fieldKey, layout: `${key}:${resolution}`, fields: baked };
         fieldMs = performance.now() - fieldStarted;
         await this.scene.bakePreview(meshes[0].id, domain, candidate.parameters, shading && !fields ? shading : undefined, image, probe, current,
-          (shown, stage, imagesMs) => show(shown, stage, imagesMs, true), baked);
+          (shown, stage, imagesMs) => show(shown, stage, imagesMs, true), baked, images);
       }
     } catch (error) {
       if (revision !== this.revision) return;
@@ -1029,6 +1045,8 @@ class Studio {
     if (error instanceof DOMException && error.name === "AbortError") return;
     element<HTMLButtonElement>("export-glb").disabled = true;
     const revision = this.revision;
+    // The revision is settled: a GPU preview of it arriving later must not replace the error or the restored preview.
+    this.cpuRevision = revision;
     const message = String(error instanceof Error ? error.message : error);
     const report = (restorationError?: unknown) => {
       if (revision !== this.revision) return;
