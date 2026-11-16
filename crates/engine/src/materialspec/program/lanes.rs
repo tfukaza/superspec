@@ -172,6 +172,10 @@ struct Lanes<'a, 'b> {
     /// Operations the per-sample evaluator would have charged the batch allowance for the work
     /// done so far: one per node visit of each active lane, plus the extra charges of builtins.
     consumed: usize,
+    /// Steps each lane's feature queries have added to its sample's step budget for the features
+    /// they visited, and how many such steps the program's other steps leave a sample.
+    visits: [usize; LANES],
+    room: usize,
 }
 
 /// Read access to a node's values by lane.
@@ -255,6 +259,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
         self.locals.clear();
         self.owned.clear();
         self.base = 0;
+        self.visits = [0; LANES];
     }
 
     fn eval(&mut self, node: &'a Node, mask: u64) -> Lane<Res<'a>> {
@@ -573,6 +578,13 @@ impl<'a, 'b> Lanes<'a, 'b> {
         let (program, compiled, inputs) = (self.program, self.compiled, self.inputs);
         let (features, index, parameters, samples) =
             (self.features, self.index, self.parameters, self.samples);
+        let query = matches!(
+            name,
+            Builtin::CreaseDistance
+                | Builtin::CreaseNormal
+                | Builtin::CreaseTangent
+                | Builtin::CreaseAdjacentNormal
+        );
         let result = if uniform {
             for (slot, operand) in gathered.iter_mut().zip(operands) {
                 if let Src::One(value) = operand.src {
@@ -627,6 +639,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                     }
                     context.set_sample(&samples[lane]);
                     let mut value = Value::EMPTY;
+                    let before = context.steps();
                     if context
                         .builtin(name, &gathered[..args.len()], &node.mark, &mut value)
                         .is_err()
@@ -634,6 +647,16 @@ impl<'a, 'b> Lanes<'a, 'b> {
                     {
                         failed = true;
                         break;
+                    }
+                    if query {
+                        // The query itself is one of the program's counted steps; the rest is
+                        // what the features it visited cost this sample.
+                        let visits = &mut self.visits[lane];
+                        *visits += (context.steps() - before).saturating_sub(1);
+                        if *visits > self.room {
+                            failed = true;
+                            break;
+                        }
                     }
                     buf[lane] = value;
                 }
@@ -766,16 +789,31 @@ pub(super) fn evaluate<'a>(
     done
 }
 
-/// Whether a program's cost bounds let its rows be evaluated together, given how many source
-/// edges and receiver features its queries may visit.
+/// Steps a sample may take when its row is evaluated together, under the per-sample limit.
+const STEPS: usize = 16_000;
+
+/// Whether a program's cost bounds keep every sample under the per-sample limits whatever its
+/// feature queries visit, given how many source edges and receiver features there are. Rows of
+/// such a program are evaluated together unless a sample fails, and may read kept field planes.
 pub(super) fn bounded(compiled: &Compiled, edges: usize, features: usize) -> bool {
+    room(compiled, edges)
+        .is_some_and(|room| compiled.cost.queries.saturating_mul(features / 16) <= room)
+}
+
+/// The steps a sample's feature queries may add for the features they visit, beyond one step
+/// each, before the program's bound reaches the per-sample limit; `None` for a program whose
+/// other steps or nesting already could. A program [`bounded`] does not cover is still evaluated
+/// together while every sample's queries, which mostly visit only nearby features, stay within
+/// this.
+fn room(compiled: &Compiled, edges: usize) -> Option<usize> {
     let cost = &compiled.cost;
-    let queries = cost.queries.saturating_mul(1 + features / 16);
     let steps = cost
         .steps
         .saturating_add(cost.runoffs.saturating_mul(edges).saturating_mul(16))
-        .saturating_add(queries);
-    steps <= 16_000 && cost.depth <= 120
+        .saturating_add(cost.queries);
+    (cost.depth <= 120)
+        .then(|| STEPS.checked_sub(steps))
+        .flatten()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -796,9 +834,14 @@ fn evaluate_together<'a>(
     injected: &[&FieldPlane],
     capture: &mut [FieldPlane],
 ) -> Option<Vec<Outputs>> {
-    if !bounded(compiled, inputs.edges.len(), features.len()) {
-        return None;
-    }
+    let room = room(compiled, inputs.edges.len())?;
+    // A kept plane spares a sample the queries of its field, so the steps counted here would
+    // depend on what was kept: planes serve only programs bounded whatever their queries visit.
+    let injected = if bounded(compiled, inputs.edges.len(), features.len()) {
+        injected
+    } else {
+        &[]
+    };
     let mut lanes = Lanes {
         program,
         compiled,
@@ -818,6 +861,8 @@ fn evaluate_together<'a>(
         locals: Vec::new(),
         base: 0,
         consumed: 0,
+        visits: [0; LANES],
+        room,
     };
     let mut results = Vec::with_capacity(samples.len());
     for (start, chunk) in samples

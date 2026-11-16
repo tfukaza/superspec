@@ -15,7 +15,7 @@ mod memory;
 mod numeric;
 mod syntax;
 mod ts;
-pub use deps::{Dependencies, DependencyTable};
+pub use deps::{Dependencies, DependencyTable, SampleInputs};
 pub use lanes::FieldPlane;
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{

@@ -4,13 +4,47 @@
 //! with a changed parameter, seed or image can tell from it which outputs the change cannot touch
 //! and keep their baked maps. It is conservative: both branches of `select` count, and a helper
 //! counts for everything its body reads.
-use super::compiled::{Builtin, Compiled, Kind, Node};
+use super::compiled::{Builtin, Compiled, Input, Kind, Node};
 use super::{Inputs, Program, ProgramDiagnostic, eval};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What evaluating one output or field can read from the request's inputs. Receiver geometry
-/// (coordinates, normals, creases, bounds, gravity) is not listed: it belongs to the layout a bake
-/// is keyed by anyway.
+/// The parts of a sample (see [`super::Sample`]) a value can depend on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SampleInputs(u16);
+
+impl SampleInputs {
+    pub const NONE: Self = Self(0);
+    pub const UV: Self = Self(1);
+    /// The position in the material's two-dimensional domain.
+    pub const SURFACE: Self = Self(1 << 1);
+    pub const OBJECT: Self = Self(1 << 2);
+    pub const WORLD: Self = Self(1 << 3);
+    pub const NORMAL: Self = Self(1 << 4);
+    pub const GRAVITY: Self = Self(1 << 5);
+    /// The sample's size in meters, which positions carry for filtering.
+    pub const FOOTPRINT: Self = Self(1 << 6);
+    pub const UV_FOOTPRINT: Self = Self(1 << 7);
+    pub const BOUNDS: Self = Self(1 << 8);
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+    /// These inputs without `other`.
+    pub const fn without(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+}
+
+/// What evaluating one output or field can read. A bake's key needs only the request's own
+/// inputs (parameters, seed, images, edges), since receiver geometry belongs to the layout a bake
+/// is keyed by anyway; `sample` and `features` say which parts of that geometry a value depends
+/// on at all, for hosts that share values between layouts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dependencies {
     /// Public parameters, by index into `Program::metadata().parameters`, ascending.
@@ -24,6 +58,11 @@ pub struct Dependencies {
     /// Fields read directly or through other fields and helpers, by index into
     /// `Program::metadata().fields`.
     pub fields: BTreeSet<usize>,
+    /// The parts of the sample read, directly or by `runoff` and the crease queries. A position
+    /// brings its footprint along.
+    pub sample: SampleInputs,
+    /// Whether crease queries read the receiver's features.
+    pub features: bool,
 }
 
 impl Dependencies {
@@ -33,6 +72,20 @@ impl Dependencies {
         self.images.extend(other.images.iter().cloned());
         self.edges |= other.edges;
         self.fields.extend(&other.fields);
+        self.sample = self.sample.union(other.sample);
+        self.features |= other.features;
+    }
+
+    /// Whether the value is the same at a domain position on every receiver: it reads nothing of
+    /// a sample but its `surface` position and footprint, and neither features nor source edges.
+    /// Such a value still changes with the texel size where what it reads is filtered by
+    /// footprint.
+    pub fn intrinsic(&self) -> bool {
+        self.sample
+            .without(SampleInputs::SURFACE.union(SampleInputs::FOOTPRINT))
+            .is_empty()
+            && !self.features
+            && !self.edges
     }
 
     /// Everything either side reads.
@@ -91,7 +144,21 @@ impl Walk<'_> {
     fn node(&mut self, node: &Node) -> Dependencies {
         let mut found = Dependencies::default();
         match &node.kind {
-            Kind::Number(_) | Kind::Bool(_) | Kind::Text(_) | Kind::Input(_) | Kind::Local(_) => {}
+            Kind::Number(_) | Kind::Bool(_) | Kind::Text(_) | Kind::Local(_) => {}
+            Kind::Input(input) => {
+                use SampleInputs as S;
+                found.sample = match input {
+                    Input::Uv => S::UV.union(S::UV_FOOTPRINT),
+                    Input::Surface => S::SURFACE.union(S::FOOTPRINT),
+                    Input::Object => S::OBJECT.union(S::FOOTPRINT),
+                    Input::World => S::WORLD.union(S::FOOTPRINT),
+                    Input::Normal => S::NORMAL,
+                    Input::Gravity => S::GRAVITY,
+                    Input::Footprint => S::FOOTPRINT,
+                    Input::UvFootprint => S::UV_FOOTPRINT,
+                    Input::BoundsMin | Input::BoundsMax => S::BOUNDS,
+                };
+            }
             Kind::Parameter(index) => {
                 found.parameters.insert(*index);
             }
@@ -121,7 +188,28 @@ impl Walk<'_> {
                 }
                 match builtin {
                     Builtin::Seed => found.seed = true,
-                    Builtin::Runoff => found.edges = true,
+                    Builtin::Runoff => {
+                        use SampleInputs as S;
+                        found.edges = true;
+                        found.sample = found
+                            .sample
+                            .union(S::WORLD)
+                            .union(S::NORMAL)
+                            .union(S::GRAVITY)
+                            .union(S::FOOTPRINT);
+                    }
+                    Builtin::CreaseDistance
+                    | Builtin::CreaseNormal
+                    | Builtin::CreaseTangent
+                    | Builtin::CreaseAdjacentNormal => {
+                        use SampleInputs as S;
+                        found.features = true;
+                        found.sample = found
+                            .sample
+                            .union(S::WORLD)
+                            .union(S::NORMAL)
+                            .union(S::FOOTPRINT);
+                    }
                     Builtin::SampleColor
                     | Builtin::SampleData
                     | Builtin::SampleAlpha
@@ -220,5 +308,61 @@ mod tests {
         assert!(table.outputs["metalness"].parameters.is_empty());
         assert!(!table.fields["shade"].parameters.contains(&index("unused")));
         assert!(table.fields["grain"].seed);
+    }
+
+    #[test]
+    fn values_report_the_parts_of_a_sample_and_the_features_they_read() {
+        use super::SampleInputs as S;
+        let program = program(
+            "material 1;
+             param tint: scalar = 0.5;
+             fn lift(p: vec2) -> scalar = noise(p * 8, seed(\"grain\"));
+             let grain = lift(surface);
+             let facing = normal.z * tint;
+             let worn = crease_distance(\"convex\", 30.0, 0.05);
+             let wet = runoff(0.1, 0.5);
+             let both = grain * facing;
+             let size = footprint + bounds_max.x - bounds_min.x;
+             output base_color = vec3(grain);
+             output roughness = worn;
+             output metalness = 0;
+             output height = wet + both + uv.x + object.y + gravity.z + size;",
+        );
+        let table = program.dependency_table();
+        let grain = &table.fields["grain"];
+        assert_eq!(grain.sample, S::SURFACE.union(S::FOOTPRINT));
+        assert!(grain.intrinsic() && !grain.features);
+        assert!(table.outputs["base_color"].intrinsic());
+        let facing = &table.fields["facing"];
+        assert_eq!(facing.sample, S::NORMAL);
+        assert!(!facing.intrinsic());
+        let worn = &table.fields["worn"];
+        assert!(worn.features && !worn.intrinsic());
+        assert_eq!(worn.sample, S::WORLD.union(S::NORMAL).union(S::FOOTPRINT));
+        assert!(table.outputs["roughness"].features);
+        let wet = &table.fields["wet"];
+        assert!(wet.edges && !wet.features && !wet.intrinsic());
+        assert!(wet.sample.contains(S::WORLD.union(S::GRAVITY)));
+        assert_eq!(
+            table.fields["both"].sample,
+            S::SURFACE.union(S::FOOTPRINT).union(S::NORMAL)
+        );
+        assert_eq!(table.fields["size"].sample, S::FOOTPRINT.union(S::BOUNDS));
+        let height = &table.outputs["height"];
+        for part in [
+            S::UV,
+            S::UV_FOOTPRINT,
+            S::SURFACE,
+            S::OBJECT,
+            S::WORLD,
+            S::NORMAL,
+            S::GRAVITY,
+            S::FOOTPRINT,
+            S::BOUNDS,
+        ] {
+            assert!(height.sample.contains(part), "{part:?}");
+        }
+        assert!(table.outputs["metalness"].sample.is_empty());
+        assert!(table.outputs["metalness"].intrinsic());
     }
 }

@@ -312,6 +312,9 @@ fn image_source<'a>(
     Ok((bytes, asset.mime))
 }
 
+/// Most threads one export encodes textures on; each holds one texture's encoder state.
+const MAX_ENCODE_THREADS: usize = 16;
+
 fn texture_payloads<'a>(
     scene: &'a Scene,
     assets: &BTreeMap<&str, &superspec_model::Asset>,
@@ -351,25 +354,58 @@ fn texture_payloads<'a>(
         && options.textures == crate::Textures::Ktx2
         && options.encoded.is_none();
     let results: Vec<Result<Payload<'a>, String>> = if parallel && jobs.len() > 1 {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(8));
+        // Threads take one texture at a time from a shared queue, costliest first (UASTC data
+        // maps, then by source size), so one thread is never left with all the slow textures.
+        // Each result lands in its job's slot: the output does not depend on thread count or
+        // on which thread encoded what.
+        let mut queue: Vec<usize> = (0..jobs.len()).collect();
+        let cost = |job: usize| {
+            let (id, kind) = jobs[job];
+            let size = image_source(scene, assets, id).map_or(0, |(bytes, _)| bytes.len());
+            (kind == ktx2::Kind::Data, size)
+        };
+        queue.sort_by_key(|job| std::cmp::Reverse(cost(*job)));
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(MAX_ENCODE_THREADS)
+            .min(jobs.len());
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let work = || {
+            let mut done = vec![];
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&job) = queue.get(at) else { break };
+                let (id, kind) = jobs[job];
+                done.push((job, convert(id, kind)));
+            }
+            done
+        };
+        let mut slots: Vec<Option<Result<Payload<'a>, String>>> =
+            jobs.iter().map(|_| None).collect();
         std::thread::scope(|scope| {
-            let handles: Vec<_> = jobs
-                .chunks(jobs.len().div_ceil(threads))
-                .map(|share| {
-                    let convert = &convert;
-                    scope.spawn(move || {
-                        share
-                            .iter()
-                            .map(|(id, kind)| convert(id, *kind))
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .collect();
-            handles
-                .into_iter()
-                .flat_map(|handle| handle.join().expect("texture encoding does not panic"))
-                .collect()
-        })
+            let handles: Vec<_> = (1..threads).map(|_| scope.spawn(work)).collect();
+            // This thread encodes too and is the only one that asks about cancellation.
+            let mut done = vec![];
+            while !(options.cancelled)() {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&job) = queue.get(at) else { break };
+                let (id, kind) = jobs[job];
+                done.push((job, convert(id, kind)));
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            for handle in handles {
+                done.extend(handle.join().expect("texture encoding does not panic"));
+            }
+            for (job, result) in done {
+                slots[job] = Some(result);
+            }
+        });
+        options.check(0)?;
+        slots
+            .into_iter()
+            .map(|slot| slot.unwrap_or_else(|| Err("Export cancelled.".into())))
+            .collect()
     } else {
         jobs.iter()
             .map(|(id, kind)| {

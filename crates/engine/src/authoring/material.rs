@@ -142,6 +142,13 @@ const FIELD_PLANES: Retention = Retention {
     bytes: 48 * 1024 * 1024,
     entries: 64,
 };
+/// Retention of field bakes (see [FieldBake]), by field: a GPU preview asks for the same fields
+/// after every edit, and most edits cannot change them.
+const FIELD_BAKES: Retention = Retention {
+    name: "material-field-bakes",
+    bytes: 32 * 1024 * 1024,
+    entries: 64,
+};
 /// Fields cheaper than this are recomputed rather than kept.
 const MIN_FIELD_STEPS: usize = 24;
 /// Most a single bake adds to the plane partition (it evicts the least recently used beyond it).
@@ -217,6 +224,8 @@ pub(crate) enum BakedReceiver {
     },
     /// The values of one field at every texel, kept for later bakes (see [FieldPlan]).
     Plane(program::FieldPlane),
+    /// One field of a field bake (see [FieldBake]): four `f32` per texel of the atlas.
+    Texels(Vec<f32>),
 }
 
 impl BakedReceiver {
@@ -227,14 +236,16 @@ impl BakedReceiver {
             }
             Self::Emissive(emission) => emission.iter().map(|(_, image)| image).collect(),
             Self::Live { images, .. } => images.iter().collect(),
-            Self::Plane(_) => Vec::new(),
+            Self::Plane(_) | Self::Texels(_) => Vec::new(),
         }
     }
 
     /// Bytes this result retains, for artifact admission.
     fn bytes(&self) -> usize {
-        if let Self::Plane(plane) = self {
-            return plane.bytes();
+        match self {
+            Self::Plane(plane) => return plane.bytes(),
+            Self::Texels(texels) => return texels.len() * 4 + 64,
+            _ => {}
         }
         self.images()
             .iter()
@@ -306,7 +317,9 @@ fn assemble(
                 }
                 BakedReceiver::Emissive(None) => {}
                 BakedReceiver::Live { operations, .. } => material.live = operations.clone(),
-                BakedReceiver::Color { .. } | BakedReceiver::Plane(_) => return Err(missing()),
+                BakedReceiver::Color { .. }
+                | BakedReceiver::Plane(_)
+                | BakedReceiver::Texels(_) => return Err(missing()),
             }
         }
     }
@@ -333,6 +346,189 @@ fn dependency(role: &str, node: impl Into<String>) -> Dependency {
         node: node.into(),
     }
 }
+
+/// Planned nodes, and the encoded images they read by name.
+type SourceNodes = (Vec<Node>, BTreeMap<String, Arc<[u8]>>);
+
+/// The nodes of a request's source modules, program, images and decoded images ("assets": every
+/// image without parameters, since a map or field depends on the images, not on parameters it
+/// never reads), with the encoded images by name. Every build and field bake of a request plans
+/// these the same way, so they share the compiled program and the decoded images.
+fn source_nodes(
+    compiled: &Program,
+    request: &Request,
+    assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+) -> Result<SourceNodes, String> {
+    let mut nodes = Vec::new();
+    let mut sources = request.modules.clone();
+    sources.insert(request.entry.clone(), request.source.clone());
+    let mut source_deps = Vec::new();
+    for name in std::iter::once(&compiled.metadata().entry).chain(&compiled.metadata().dependencies)
+    {
+        let id = format!("source/{name}");
+        let text = sources
+            .get(name)
+            .ok_or_else(|| format!("Missing source module {name}."))?;
+        nodes.push(node(
+            id.clone(),
+            "material-source-v1",
+            text.as_bytes().into(),
+            vec![],
+        ));
+        source_deps.push(dependency(name, id));
+    }
+    nodes.push(node(
+        "program".into(),
+        "material-language-v1",
+        request.entry.as_bytes().into(),
+        source_deps,
+    ));
+    let mut image_bytes = BTreeMap::new();
+    for name in compiled
+        .metadata()
+        .required_inputs
+        .iter()
+        .filter_map(|input| input.strip_prefix("image:"))
+    {
+        let bytes = assets(name).map_err(|e| format!("{name}: {e}"))?;
+        image_bytes.insert(name.to_owned(), bytes);
+    }
+    for (name, bytes) in &image_bytes {
+        nodes.push(node(
+            format!("image/{name}"),
+            "source-image-v2",
+            image_digest(bytes).to_vec(),
+            vec![],
+        ));
+    }
+    nodes.push(node(
+        "assets".into(),
+        "material-assets-v1",
+        Vec::new(),
+        image_bytes
+            .keys()
+            .map(|name| dependency(&format!("image/{name}"), format!("image/{name}")))
+            .collect(),
+    ));
+    Ok((nodes, image_bytes))
+}
+
+/// SHA-256 of an encoded image. Every build keys its image nodes by their bytes, and hosts hand
+/// the same allocation to build after build, so the digest of an allocation is computed once and
+/// found again by its address for as long as the host keeps it (an address is only compared while
+/// its entry holds the allocation, so it cannot be another image's).
+fn image_digest(bytes: &Arc<[u8]>) -> [u8; 32] {
+    type Known = Vec<(std::sync::Weak<[u8]>, [u8; 32])>;
+    static DIGESTS: std::sync::Mutex<Known> = std::sync::Mutex::new(Vec::new());
+    const KEPT: usize = 64;
+    let Ok(mut known) = DIGESTS.lock() else {
+        return Sha256::digest(bytes).into();
+    };
+    // Entries of images their hosts dropped would otherwise keep those allocations.
+    known.retain(|(owner, _)| owner.strong_count() > 0);
+    let found = known
+        .iter()
+        .position(|(owner, _)| std::ptr::addr_eq(owner.as_ptr(), Arc::as_ptr(bytes)));
+    if let Some(at) = found {
+        // Most recently used last.
+        let entry = known.remove(at);
+        let digest = entry.1;
+        known.push(entry);
+        return digest;
+    }
+    let digest: [u8; 32] = Sha256::digest(bytes).into();
+    if known.len() == KEPT {
+        known.remove(0);
+    }
+    known.push((Arc::downgrade(bytes), digest));
+    digest
+}
+
+/// The node of receiver `index`'s atlas: everything its layout and samples depend on, apart from
+/// the names the host gives the receiver.
+fn layout_node(index: usize, receiver: &super::Receiver, request: &Request) -> Node {
+    let mut identity = receiver.clone();
+    identity.id.clear();
+    identity.object_id.clear();
+    node(
+        format!("layout/{index}"),
+        "receiver-atlas-v3",
+        json(&(
+            identity,
+            request.resolution,
+            request.mapping,
+            request.domain,
+            request.gravity,
+            request.texel_density,
+        )),
+        vec![],
+    )
+}
+
+/// An `image/` node's artifact. Decoding depends only on the encoded bytes, so parameter edits
+/// reuse it.
+fn decoded_image(bytes: &[u8]) -> Result<(Artifact, usize), String> {
+    let image = image::decode(bytes)?;
+    // Filtered sampling may add mip levels of about the decoded size.
+    let retained = image.rgba.len() * 2;
+    Ok((
+        Artifact::Image(Arc::new(program::Image {
+            width: image.width,
+            height: image.height,
+            rgba: image.rgba,
+        })),
+        retained,
+    ))
+}
+
+/// The `assets` node's artifact: inputs holding only the decoded images.
+fn decoded_assets(
+    image_bytes: &BTreeMap<String, Arc<[u8]>>,
+    dependencies: &BTreeMap<String, Arc<Artifact>>,
+    mips: &program::MipCache,
+) -> Result<(Artifact, usize), String> {
+    let mut images = BTreeMap::new();
+    let mut count = 0usize;
+    for name in image_bytes.keys() {
+        let Artifact::Image(image) = dependencies[&format!("image/{name}")].as_ref() else {
+            unreachable!()
+        };
+        count += image.rgba.len();
+        if count > 64 * 1024 * 1024 {
+            return Err("Decoded material images exceed the authoring allowance.".into());
+        }
+        images.insert(name.clone(), image.clone());
+    }
+    Ok((
+        Artifact::Inputs(Arc::new(Inputs {
+            images,
+            mips: mips.clone(),
+            ..Inputs::default()
+        })),
+        1024,
+    ))
+}
+
+/// A `layout/` node's artifact: the receiver's atlas.
+fn receiver_layout(
+    receiver: &super::Receiver,
+    request: &Request,
+) -> Result<(Artifact, usize), String> {
+    let atlas = Atlas::new(
+        receiver.clone(),
+        request.resolution,
+        request.mapping,
+        request.domain,
+        request.gravity,
+        request.profile.max_resolution(),
+        request.texel_density,
+    )?;
+    let bytes = atlas.mesh.positions.len() * 88
+        + atlas.mesh.indices.len() * 4
+        + receiver.positions.len() * 8 * 3;
+    Ok((Artifact::Receiver(Arc::new(atlas)), bytes))
+}
+
 fn json(value: &impl serde::Serialize) -> Vec<u8> {
     serde_json::to_vec(value).expect("finite admitted authoring request")
 }
@@ -491,63 +687,19 @@ impl Session {
                 "Selected receivers exceed the authoring triangle allowance.".into(),
             ));
         }
-        let mut nodes = Vec::new();
-        let mut sources = request.modules.clone();
-        sources.insert(request.entry.clone(), request.source.clone());
-        let mut source_deps = Vec::new();
-        for name in
-            std::iter::once(&compiled.metadata().entry).chain(&compiled.metadata().dependencies)
-        {
-            let id = format!("source/{name}");
-            let text = sources
-                .get(name)
-                .ok_or_else(|| fail(format!("Missing source module {name}.")))?;
-            nodes.push(node(
-                id.clone(),
-                "material-source-v1",
-                text.as_bytes().into(),
-                vec![],
-            ));
-            source_deps.push(dependency(name, id));
-        }
-        nodes.push(node(
-            "program".into(),
-            "material-language-v1",
-            request.entry.as_bytes().into(),
-            source_deps,
-        ));
-        let mut image_bytes = BTreeMap::new();
-        for name in compiled
-            .metadata()
-            .required_inputs
-            .iter()
-            .filter_map(|input| input.strip_prefix("image:"))
-        {
-            let bytes = assets(name).map_err(|e| fail(format!("{name}: {e}")))?;
-            image_bytes.insert(name.to_owned(), bytes);
-        }
+        let (mut nodes, image_bytes) = source_nodes(&compiled, request, assets).map_err(&fail)?;
         let mut input_deps = vec![dependency("program", "program")];
-        for (name, bytes) in &image_bytes {
-            let id = format!("image/{name}");
-            nodes.push(node(id.clone(), "source-image-v1", bytes.to_vec(), vec![]));
-            input_deps.push(dependency(&format!("image/{name}"), id));
+        for name in image_bytes.keys() {
+            input_deps.push(dependency(
+                &format!("image/{name}"),
+                format!("image/{name}"),
+            ));
         }
         nodes.push(node(
             "inputs".into(),
             "material-inputs-v1",
             json(&(&request.parameters, request.seed, &request.edges)),
             input_deps,
-        ));
-        // Every decoded image, without parameters: a map baked from some outputs depends on the
-        // images, not on the parameters it never reads.
-        nodes.push(node(
-            "assets".into(),
-            "material-assets-v1",
-            Vec::new(),
-            image_bytes
-                .keys()
-                .map(|name| dependency(&format!("image/{name}"), format!("image/{name}")))
-                .collect(),
         ));
         let inspecting = request.inspection.is_some();
         let dependency_table = compiled.dependency_table();
@@ -557,22 +709,7 @@ impl Session {
         for (i, receiver) in receivers.iter().enumerate() {
             let layout = format!("layout/{i}");
             let bake = format!("bake/{i}");
-            let mut identity = receiver.clone();
-            identity.id.clear();
-            identity.object_id.clear();
-            nodes.push(node(
-                layout.clone(),
-                "receiver-atlas-v3",
-                json(&(
-                    identity,
-                    request.resolution,
-                    request.mapping,
-                    request.domain,
-                    request.gravity,
-                    request.texel_density,
-                )),
-                vec![],
-            ));
+            nodes.push(layout_node(i, receiver, request));
             nodes.push(node(
                 bake.clone(),
                 "material-receiver-v5",
@@ -807,18 +944,7 @@ impl Session {
                         compiled.retained_bytes(),
                     )),
                     id if id.starts_with("image/") => {
-                        // Decoding depends only on the encoded bytes, so parameter edits reuse it.
-                        let image = image::decode(&image_bytes[&id["image/".len()..]])?;
-                        // Filtered sampling may add mip levels of about the decoded size.
-                        let bytes = image.rgba.len() * 2;
-                        Ok((
-                            Artifact::Image(Arc::new(program::Image {
-                                width: image.width,
-                                height: image.height,
-                                rgba: image.rgba,
-                            })),
-                            bytes,
-                        ))
+                        decoded_image(&image_bytes[&id["image/".len()..]])
                     }
                     "inputs" => {
                         let mut images = BTreeMap::new();
@@ -855,47 +981,9 @@ impl Session {
                     }
                     id if id.starts_with("layout/") => {
                         let index = id[7..].parse::<usize>().unwrap();
-                        let atlas = Atlas::new(
-                            receivers[index].clone(),
-                            request.resolution,
-                            request.mapping,
-                            request.domain,
-                            request.gravity,
-                            request.profile.max_resolution(),
-                            request.texel_density,
-                        )?;
-                        let bytes = atlas.mesh.positions.len() * 88
-                            + atlas.mesh.indices.len() * 4
-                            + receivers[index].positions.len() * 8 * 3;
-                        Ok((Artifact::Receiver(Arc::new(atlas)), bytes))
+                        receiver_layout(&receivers[index], request)
                     }
-                    "assets" => {
-                        let mut images = BTreeMap::new();
-                        let mut count = 0usize;
-                        for name in image_bytes.keys() {
-                            let Artifact::Image(image) =
-                                dependencies[&format!("image/{name}")].as_ref()
-                            else {
-                                unreachable!()
-                            };
-                            count += image.rgba.len();
-                            if count > 64 * 1024 * 1024 {
-                                return Err(
-                                    "Decoded material images exceed the authoring allowance."
-                                        .into(),
-                                );
-                            }
-                            images.insert(name.clone(), image.clone());
-                        }
-                        Ok((
-                            Artifact::Inputs(Arc::new(Inputs {
-                                images,
-                                mips: mips.clone(),
-                                ..Inputs::default()
-                            })),
-                            1024,
-                        ))
-                    }
+                    "assets" => decoded_assets(&image_bytes, dependencies, &mips),
                     id if id.starts_with("bake/") => {
                         let Artifact::Program(program) = dependencies["program"].as_ref() else {
                             unreachable!()
@@ -1105,6 +1193,8 @@ impl Session {
 thread_local! {
     /// The groups each bake evaluated on this thread, for tests of what an edit rebakes.
     static BAKED: std::cell::RefCell<Vec<Groups>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Fields each field bake on this thread had to evaluate (the others were kept).
+    static FIELDS_BAKED: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Field planes (read, kept) of each bake that evaluated rows on this thread.
     static PLANES: std::cell::RefCell<Vec<(usize, usize)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -1553,9 +1643,10 @@ enum Repeat {
 /// The texel of `chart` next to (x, y) whose center is the sample (triangle, u, v), if there is
 /// one. Texel centers are one leg step apart, so the height one step along a leg is usually an
 /// adjacent texel's own height; gutters, the far side of a chart's diagonal and projected
-/// texels have no such neighbor.
+/// texels have no such neighbor. `texel` gives the sample of a texel of the chart, as
+/// [`Atlas::texel`] does.
 fn neighbor_texel(
-    atlas: &Atlas,
+    texel: impl Fn(usize, usize) -> (usize, f64, f64),
     chart: &Chart,
     [x, y]: [usize; 2],
     triangle: usize,
@@ -1569,7 +1660,7 @@ fn neighbor_texel(
                 .then_some([nx as usize, ny as usize])
         })
         .find(|&[nx, ny]| {
-            let (other, ou, ov) = atlas.texel(chart, nx, ny);
+            let (other, ou, ov) = texel(nx, ny);
             other == triangle && (ou - u).abs() <= 1e-9 && (ov - v).abs() <= 1e-9
         })
 }
@@ -1817,6 +1908,25 @@ fn bake_block(
         // The heights one step along each leg that no adjacent texel already has, for the texels
         // that need new slopes, are evaluated together; the texels below take them in order.
         let mut direct = Vec::new();
+        // The adjacent texel, if any, at each of those two points, for each such texel in order.
+        let mut neighbors: Vec<[Option<[usize; 2]>; 2]> = Vec::new();
+        // The sample of a texel of this chart: this block's rows already hold theirs.
+        let below = row_number + 1 < rows.len() && rows[row_number + 1] == (chart_index, y + 1);
+        let texel_of = |nx: usize, ny: usize| -> (usize, f64, f64) {
+            let held = if ny == y {
+                Some(row_centers)
+            } else if ny + 1 == y && above(row_number) {
+                Some(&centers[row_number - 1])
+            } else if ny == y + 1 && below {
+                Some(&centers[row_number + 1])
+            } else {
+                None
+            };
+            match held {
+                Some(held) => (held[nx].triangle, held[nx].u, held[nx].v),
+                None => atlas.texel(chart, nx, ny),
+            }
+        };
         if relief {
             for (x, center) in row_centers.iter().enumerate() {
                 let (triangle, u, v) = (center.triangle, center.u, center.v);
@@ -1826,8 +1936,10 @@ fn bake_block(
                     continue;
                 }
                 let [step_u, step_v] = atlas.steps(triangle);
-                for target in [[u + step_u, v], [u, v + step_v]] {
-                    if neighbor_texel(atlas, chart, [x, y], triangle, target).is_none() {
+                let mut found = [None; 2];
+                for (leg, target) in [[u + step_u, v], [u, v + step_v]].into_iter().enumerate() {
+                    found[leg] = neighbor_texel(texel_of, chart, [x, y], triangle, target);
+                    if found[leg].is_none() {
                         direct.push(
                             atlas
                                 .sample(triangle, target[0], target[1])
@@ -1835,8 +1947,10 @@ fn bake_block(
                         );
                     }
                 }
+                neighbors.push(found);
             }
         }
+        let mut neighbors = neighbors.into_iter();
         let mut direct_heights = heights_of(evaluator, &direct)?.into_iter();
         let mut previous: Option<[f64; 3]> = None;
         let mut row_slopes: Vec<[f64; 2]> = Vec::with_capacity(row_centers.len());
@@ -1846,9 +1960,8 @@ fn bake_block(
             let mut direction = [0.; 3];
             if relief {
                 let [step_u, step_v] = atlas.steps(triangle);
-                let mut height_at = |target: [f64; 2]| -> Result<f64, Diagnostic> {
-                    let Some([nx, ny]) = neighbor_texel(atlas, chart, [x, y], triangle, target)
-                    else {
+                let mut height_at = |neighbor: Option<[usize; 2]>| -> Result<f64, Diagnostic> {
+                    let Some([nx, ny]) = neighbor else {
                         return Ok(direct_heights.next().expect("a height for each new point"));
                     };
                     if !heights.contains_key(&(chart_index, ny)) {
@@ -1885,7 +1998,8 @@ fn bake_block(
                 } else if above(row_number) && centers[row_number - 1][x].samples(triangle, u, v) {
                     slopes[row_number - 1][x]
                 } else {
-                    [height_at([u + step_u, v])?, height_at([u, v + step_v])?]
+                    let [along_u, along_v] = neighbors.next().expect("neighbors of each new texel");
+                    [height_at(along_u)?, height_at(along_v)?]
                 };
                 row_slopes.push([hu, hv]);
                 direction = atlas
@@ -2530,99 +2644,204 @@ impl Session {
             .first()
             .cloned()
             .unwrap_or_else(|| receiver::swatch(request.domain));
-        let mut images = BTreeMap::new();
-        for name in program
-            .metadata()
-            .required_inputs
-            .iter()
-            .filter_map(|input| input.strip_prefix("image:"))
-        {
-            let bytes = assets(name).map_err(|e| fail(format!("{name}: {e}")))?;
-            let image = image::decode(&bytes).map_err(&fail)?;
-            images.insert(
-                name.to_owned(),
-                Arc::new(program::Image {
-                    width: image.width,
-                    height: image.height,
-                    rgba: image.rgba,
-                }),
-            );
-        }
+        // The program, decoded images and atlas are the artifacts a build of this request
+        // plans, under the same keys: whichever runs first decodes and lays out for both.
+        let (mut nodes, image_bytes) = source_nodes(&program, request, assets).map_err(&fail)?;
+        nodes.push(layout_node(0, &receiver, request));
+        let plan = Plan::new(
+            nodes,
+            vec!["program".into(), "assets".into(), "layout/0".into()],
+        )
+        .map_err(|e| fail(e.to_string()))?;
+        let mips = self.mips.clone();
+        let complete = self
+            .runtime
+            .run(
+                self.build_epoch(),
+                &plan,
+                cancelled,
+                |node, dependencies, _| match node.id.as_str() {
+                    "program" => Ok((Artifact::Program(program.clone()), program.retained_bytes())),
+                    id if id.starts_with("image/") => {
+                        decoded_image(&image_bytes[&id["image/".len()..]])
+                    }
+                    "assets" => decoded_assets(&image_bytes, dependencies, &mips),
+                    "layout/0" => receiver_layout(&receiver, request),
+                    _ => Ok((Artifact::Source, node.inputs.len())),
+                },
+            )
+            .map_err(&fail)?;
+        let Artifact::Inputs(decoded) = complete["assets"].as_ref() else {
+            unreachable!()
+        };
+        let Artifact::Receiver(atlas) = complete["layout/0"].as_ref() else {
+            unreachable!()
+        };
         let inputs = Inputs {
             parameters: request.parameters.clone(),
             seed: request.seed,
-            images,
+            images: decoded.images.clone(),
             edges: request.edges.clone(),
             features: Vec::new(),
-            mips: self.mips.clone(),
+            mips: decoded.mips.clone(),
         };
-        let atlas = Atlas::new(
-            receiver,
-            request.resolution,
-            request.mapping,
-            request.domain,
-            request.gravity,
-            request.profile.max_resolution(),
-            request.texel_density,
-        )
-        .map_err(&fail)?;
-        let features = receiver_features(&program, &atlas);
         let wanted: Vec<&str> = names.iter().map(String::as_str).collect();
-        let selection = program.select_fields(&wanted).map_err(&fail)?;
-        let mut evaluator = program
-            .evaluator_with_features(&inputs, &features)
+        program.select_fields(&wanted).map_err(&fail)?;
+        // The request is validated whether or not its fields are kept, so it fails the same way.
+        program
+            .evaluator(&inputs)
             .map_err(|e| vec![Diagnostic::from(e)])?;
-        let slots = selection.len();
-        if slots.saturating_mul(atlas.width * atlas.height * 16) > BAKED_FIELD_BYTES {
+        let pixels = atlas.width * atlas.height;
+        if wanted.len().saturating_mul(pixels * 16) > BAKED_FIELD_BYTES {
             return Err(fail(format!(
                 "These fields over this atlas exceed the {} MiB a field bake may return.",
                 BAKED_FIELD_BYTES >> 20
             )));
         }
-        let mut fields = vec![vec![0f32; atlas.width * atlas.height * 4]; slots];
-        let mut values = vec![FieldValue::Scalar(0.); slots];
-        for chart in &atlas.charts {
-            for y in 0..chart.height {
-                if cancelled() {
-                    return Err(fail("Field bake cancelled.".into()));
-                }
-                evaluator.replenish(64_000_000);
-                let mut before: Option<(usize, u64, u64)> = None;
-                for x in 0..chart.width {
-                    let (triangle, u, v) = atlas.texel(chart, x, y);
-                    let at = ((chart.y + y) * atlas.width + chart.x + x) * 4;
-                    let key = (triangle, u.to_bits(), v.to_bits());
-                    // A texel that samples its left neighbor's point repeats its values.
-                    if before == Some(key) && x > 0 {
-                        for field in fields.iter_mut() {
-                            field.copy_within(at - 4..at, at);
+        // A field's texels are kept under what the field reads: the atlas, the program, the
+        // decoded images and the effective values of only its own parameters, seed and edges.
+        let table = program.dependency_table();
+        let keys: Vec<ContentKey> = wanted
+            .iter()
+            .map(|name| {
+                let field = program
+                    .metadata()
+                    .fields
+                    .iter()
+                    .position(|field| field.name == *name)
+                    .expect("a selected field");
+                let plane = field_plane_key(
+                    &program,
+                    &table.fields[*name],
+                    request,
+                    ["layout/0", "program", "assets"]
+                        .map(|id| plan.key(id).expect("a planned node"))
+                        .each_ref(),
+                    field,
+                );
+                let mut digest = Sha256::new();
+                digest.update(b"material-field-bake-v1");
+                digest.update(plane);
+                digest.finalize().into()
+            })
+            .collect();
+        let mut fields: Vec<Option<Vec<f32>>> = keys
+            .iter()
+            .map(|key| {
+                let kept = self.runtime.lookup(FIELD_BAKES, key)?;
+                match kept.as_ref() {
+                    Artifact::Material(baked) => match baked.as_ref() {
+                        BakedReceiver::Texels(texels) if texels.len() == pixels * 4 => {
+                            Some(texels.clone())
                         }
-                        continue;
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
+            .collect();
+        #[cfg(test)]
+        FIELDS_BAKED.with(|baked| {
+            baked
+                .borrow_mut()
+                .push(fields.iter().filter(|field| field.is_none()).count())
+        });
+        // The fields no earlier bake kept, each once however often it is named.
+        let mut missing: Vec<&str> = Vec::new();
+        for (name, field) in wanted.iter().zip(&fields) {
+            if field.is_none() && !missing.contains(name) {
+                missing.push(name);
+            }
+        }
+        if !missing.is_empty() {
+            let features = receiver_features(&program, atlas);
+            let selection = program.select_fields(&missing).map_err(&fail)?;
+            let mut evaluator = program
+                .evaluator_with_features(&inputs, &features)
+                .map_err(|e| vec![Diagnostic::from(e)])?;
+            let slots = selection.len();
+            let mut computed = vec![vec![0f32; pixels * 4]; slots];
+            let mut values = Vec::new();
+            for chart in &atlas.charts {
+                for y in 0..chart.height {
+                    if cancelled() {
+                        return Err(fail("Field bake cancelled.".into()));
                     }
-                    before = Some(key);
-                    let sample = atlas.sample(triangle, u, v).map_err(&fail)?;
+                    evaluator.replenish(64_000_000);
+                    // A texel that samples its left neighbor's point repeats its values; the
+                    // others are evaluated together, as a bake's rows are.
+                    let mut before: Option<(usize, u64, u64)> = None;
+                    let mut fresh = Vec::with_capacity(chart.width);
+                    let mut samples = Vec::new();
+                    let mut sample_error = None;
+                    for x in 0..chart.width {
+                        let (triangle, u, v) = atlas.texel(chart, x, y);
+                        let key = (triangle, u.to_bits(), v.to_bits());
+                        let new = before != Some(key);
+                        before = Some(key);
+                        fresh.push(new);
+                        if new {
+                            match atlas.sample(triangle, u, v) {
+                                Ok(sample) => samples.push(sample),
+                                Err(message) => {
+                                    sample_error = Some(message);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Samples before one the atlas cannot place fail first, as in texel order.
                     evaluator
-                        .evaluate_outputs(
-                            &sample,
-                            program::OutputSet::NONE,
-                            &selection,
-                            &mut values,
-                        )
+                        .evaluate_row(&samples, program::OutputSet::NONE, &selection, &mut values)
                         .map_err(|e| vec![Diagnostic::from(e)])?;
-                    for (field, value) in fields.iter_mut().zip(&values) {
-                        let channels: [f64; 4] = match value {
-                            FieldValue::Scalar(a) => [*a, 0., 0., 0.],
-                            FieldValue::Bool(a) => [f64::from(u8::from(*a)), 0., 0., 0.],
-                            FieldValue::Vec2([a, b]) => [*a, *b, 0., 0.],
-                            FieldValue::Vec3([a, b, c]) => [*a, *b, *c, 0.],
-                        };
-                        for (slot, channel) in channels.iter().enumerate() {
-                            field[at + slot] = *channel as f32;
+                    if let Some(message) = sample_error {
+                        return Err(fail(message));
+                    }
+                    let mut next = 0;
+                    for (x, new) in fresh.into_iter().enumerate() {
+                        let at = ((chart.y + y) * atlas.width + chart.x + x) * 4;
+                        if !new {
+                            for field in computed.iter_mut() {
+                                field.copy_within(at - 4..at, at);
+                            }
+                            continue;
+                        }
+                        let row_values = &values[next * slots..(next + 1) * slots];
+                        next += 1;
+                        for (field, value) in computed.iter_mut().zip(row_values) {
+                            let channels: [f64; 4] = match value {
+                                FieldValue::Scalar(a) => [*a, 0., 0., 0.],
+                                FieldValue::Bool(a) => [f64::from(u8::from(*a)), 0., 0., 0.],
+                                FieldValue::Vec2([a, b]) => [*a, *b, 0., 0.],
+                                FieldValue::Vec3([a, b, c]) => [*a, *b, *c, 0.],
+                            };
+                            for (slot, channel) in channels.iter().enumerate() {
+                                field[at + slot] = *channel as f32;
+                            }
                         }
                     }
                 }
             }
+            // Only a finished bake keeps what it computed.
+            for (name, texels) in missing.iter().zip(computed) {
+                for ((wanted, key), field) in wanted.iter().zip(&keys).zip(fields.iter_mut()) {
+                    if wanted == name && field.is_none() {
+                        *field = Some(texels.clone());
+                        self.runtime.retain(
+                            FIELD_BAKES,
+                            *key,
+                            Artifact::Material(Arc::new(BakedReceiver::Texels(texels.clone()))),
+                            texels.len() * 4 + 64,
+                            false,
+                        );
+                    }
+                }
+            }
         }
+        let fields: Vec<Vec<f32>> = fields
+            .into_iter()
+            .map(|field| field.expect("every field kept or computed"))
+            .collect();
         Ok(FieldBake {
             width: atlas.width,
             height: atlas.height,
@@ -3282,5 +3501,130 @@ output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
             )
             .unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(baked.fields.len(), 2);
+    }
+
+    /// The fields a field bake evaluated, with its result.
+    fn fields_of(
+        session: &mut Session,
+        revision: u64,
+        request: &Request,
+        names: &[&str],
+    ) -> (FieldBake, usize) {
+        FIELDS_BAKED.with(|baked| baked.borrow_mut().clear());
+        let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        let baked = session
+            .bake_fields(request, revision, &names, &no_assets, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let evaluated = FIELDS_BAKED.with(|baked| baked.borrow().iter().sum());
+        (baked, evaluated)
+    }
+
+    #[test]
+    fn a_field_bake_evaluates_only_the_fields_an_edit_can_change() {
+        let mut session = Session::default();
+        let base = heavy_request(json!({}), 0);
+        let (first, evaluated) = fields_of(&mut session, 1, &base, &["heavy", "shade"]);
+        assert_eq!(evaluated, 2);
+        // Each field equals what the per-sample evaluator computes at the texel's sample.
+        let atlas = Atlas::new(
+            receiver::swatch(base.domain),
+            base.resolution,
+            base.mapping,
+            base.domain,
+            base.gravity,
+            base.profile.max_resolution(),
+            base.texel_density,
+        )
+        .unwrap();
+        let program = session.program(&base).unwrap();
+        let inputs = Inputs::default();
+        let selection = program.select_fields(&["heavy", "shade"]).unwrap();
+        let mut evaluator = program.evaluator(&inputs).unwrap();
+        let mut checked = 0;
+        for chart in &atlas.charts {
+            for y in 0..chart.height {
+                for x in 0..chart.width {
+                    let (triangle, u, v) = atlas.texel(chart, x, y);
+                    let sample = atlas.sample(triangle, u, v).unwrap();
+                    let mut values = [FieldValue::Scalar(0.), FieldValue::Scalar(0.)];
+                    evaluator.replenish(64_000_000);
+                    evaluator
+                        .evaluate_outputs(
+                            &sample,
+                            program::OutputSet::NONE,
+                            &selection,
+                            &mut values,
+                        )
+                        .unwrap();
+                    let at = ((chart.y + y) * atlas.width + chart.x + x) * 4;
+                    for (field, value) in first.fields.iter().zip(&values) {
+                        let FieldValue::Scalar(value) = value else {
+                            panic!("a scalar field")
+                        };
+                        assert_eq!(field[at].to_bits(), (*value as f32).to_bits());
+                        assert_eq!(field[at + 1..at + 4], [0.; 3]);
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 48 * 48 / 2, "{checked} texels");
+        // `heavy` reads the seed and `zoom`; `shade` also reads `tint`; nothing reads `shine`.
+        for (revision, (parameters, seed, expected)) in [
+            (json!({}), 0, 0),
+            (json!({ "shine": 0.7 }), 0, 0),
+            (json!({ "tint": 0.9 }), 0, 1),
+            (json!({ "zoom": 20 }), 0, 2),
+            (json!({ "zoom": 20 }), 5, 2),
+            (json!({ "zoom": 20, "shine": 0.1 }), 5, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let edited = heavy_request(parameters, seed);
+            let (kept, evaluated) = fields_of(
+                &mut session,
+                revision as u64 + 2,
+                &edited,
+                &["heavy", "shade"],
+            );
+            assert_eq!(evaluated, expected, "edit {revision}");
+            let (fresh, _) = fields_of(&mut Session::default(), 1, &edited, &["heavy", "shade"]);
+            assert_eq!((kept.width, kept.height), (fresh.width, fresh.height));
+            for (a, b) in kept.fields.iter().zip(&fresh.fields) {
+                assert!(
+                    a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "edit {revision}"
+                );
+            }
+        }
+        // A field named twice is evaluated once and returned twice; in another order it is kept.
+        let other = heavy_request(json!({ "zoom": 30 }), 0);
+        let (twice, evaluated) = fields_of(&mut session, 20, &other, &["heavy", "heavy"]);
+        assert_eq!(evaluated, 2, "both slots lacked it");
+        assert_eq!(twice.fields[0], twice.fields[1]);
+        let (again, evaluated) = fields_of(&mut session, 21, &other, &["shade", "heavy"]);
+        assert_eq!(evaluated, 1);
+        assert_eq!(again.fields[1], twice.fields[0]);
+        // An invalid parameter fails whatever is kept, and a failed bake keeps nothing.
+        let invalid = heavy_request(json!({ "shine": 7 }), 0);
+        let names = ["heavy".to_owned()];
+        assert!(
+            session
+                .bake_fields(&invalid, 30, &names, &no_assets, &|| false)
+                .is_err()
+        );
+        let cancelled = heavy_request(json!({ "zoom": 3 }), 0);
+        assert!(
+            session
+                .bake_fields(&cancelled, 31, &names, &no_assets, &|| true)
+                .is_err()
+        );
+        let (_, evaluated) = fields_of(&mut session, 32, &cancelled, &["heavy"]);
+        assert_eq!(evaluated, 1, "the cancelled bake kept nothing");
+        // A build of the same request shares the atlas and program with the field bake, and its
+        // maps are what a fresh session builds.
+        let (output, _) = build(&mut session, 33, &cancelled);
+        assert_same(&output, &fresh(&cancelled), "build after field bakes");
     }
 }

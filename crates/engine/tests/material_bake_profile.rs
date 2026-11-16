@@ -29,9 +29,18 @@ fn asset(name: &str) -> Result<Arc<[u8]>, String> {
             .join(catalog),
         None => examples().join(name),
     };
-    std::fs::read(&path)
+    // Hosts keep each asset's bytes and hand the same allocation to every build.
+    static KEPT: std::sync::Mutex<BTreeMap<String, Arc<[u8]>>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let mut kept = KEPT.lock().unwrap();
+    if let Some(bytes) = kept.get(name) {
+        return Ok(bytes.clone());
+    }
+    let bytes: Arc<[u8]> = std::fs::read(&path)
         .map(Arc::from)
-        .map_err(|e| format!("{name}: {e}"))
+        .map_err(|e| format!("{name}: {e}"))?;
+    kept.insert(name.to_owned(), bytes.clone());
+    Ok(bytes)
 }
 
 /// An axis-aligned box from `min` to `max` with flat-shaded outward faces, split per face.
@@ -309,6 +318,15 @@ fn bench_bake_profile() {
             let atlas_texels = texels(&output);
             emit(serde_json::json!({
                 "case": case.name, "resolution": resolution, "step": "cold",
+                "seconds": seconds, "atlas_texels": atlas_texels,
+                "ns_per_texel": seconds * 1e9 / atlas_texels.max(1) as f64,
+                "material_identity": identity(&output),
+            }));
+            // The same request again: every map is retained, so this is what a build costs
+            // before it bakes anything (keys, validation, assembling the output).
+            let (output, seconds) = run(&mut session, "retained", serde_json::json!({}));
+            emit(serde_json::json!({
+                "case": case.name, "resolution": resolution, "step": "retained",
                 "seconds": seconds, "atlas_texels": atlas_texels,
                 "ns_per_texel": seconds * 1e9 / atlas_texels.max(1) as f64,
                 "material_identity": identity(&output),

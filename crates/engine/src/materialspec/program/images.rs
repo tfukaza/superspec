@@ -64,6 +64,18 @@ fn linear(byte: u8) -> f64 {
     superspec_types::color::LINEAR[byte as usize]
 }
 
+/// A whole number of texels wrapped into `0..size`. Whole numbers below 2^53 are exact as
+/// integers and their integer remainder is the floating-point one, without its cost (a library
+/// call on every target); anything else takes the floating-point remainder as before.
+#[inline]
+fn wrap(v: f64, size: usize) -> usize {
+    if v.abs() < 9_007_199_254_740_992. {
+        (v as i64).rem_euclid(size as i64) as usize
+    } else {
+        v.rem_euclid(size as f64) as usize % size
+    }
+}
+
 impl Pyramid {
     fn build(image: &Image) -> Self {
         let (width, height) = (image.width.max(1), image.height.max(1));
@@ -142,7 +154,6 @@ impl Pyramid {
         let x = uv[0] * width as f64 - 0.5;
         let y = (1. - uv[1]) * height as f64 - 0.5;
         let (fx, fy) = (x - x.floor(), y - y.floor());
-        let wrap = |v: f64, size: usize| v.rem_euclid(size as f64) as usize % size;
         let (left, right) = (wrap(x.floor(), width), wrap(x.floor() + 1., width));
         let (top, bottom) = (wrap(y.floor(), height), wrap(y.floor() + 1., height));
         let corners = [
@@ -239,4 +250,55 @@ pub(super) fn varied(
     let energy = weights.iter().map(|w| w * w).sum::<f64>().sqrt().max(1e-6);
     let gain = 1. + (1. / energy - 1.) * correction.clamp(0., 1.);
     std::array::from_fn(|c| (pyramid.mean[c] + (blend[c] - pyramid.mean[c]) * gain).clamp(0., 1.))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn integer_wrapping_equals_the_floating_point_remainder() {
+        let float = |v: f64, size: usize| v.rem_euclid(size as f64) as usize % size;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut values = vec![
+            0.,
+            -0.,
+            1.,
+            -1.,
+            255.,
+            256.,
+            -256.,
+            -257.,
+            4294967296.,
+            -4294967297.,
+            9_007_199_254_740_991.,
+            -9_007_199_254_740_991.,
+            9_007_199_254_740_992.,
+            -9_007_199_254_740_992.,
+            1e300,
+            -1e300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ];
+        for _ in 0..20_000 {
+            let magnitude = (next() % 60) as i32;
+            let whole =
+                ((next() >> 11) as f64 / (1u64 << 53) as f64 * 2f64.powi(magnitude)).floor();
+            values.extend([whole, -whole, whole + 1., -whole - 1.]);
+        }
+        for size in [1, 2, 3, 7, 64, 255, 256, 1000, 4096, 16384] {
+            for &v in &values {
+                assert_eq!(
+                    super::wrap(v, size),
+                    float(v, size),
+                    "{v} wrapped into {size}"
+                );
+            }
+        }
+    }
 }

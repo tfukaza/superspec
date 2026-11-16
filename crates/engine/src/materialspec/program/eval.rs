@@ -664,6 +664,10 @@ impl<'a, 'b> Context<'a, 'b> {
     pub(super) fn set_sample(&mut self, sample: &'b Sample) {
         self.sample = sample;
     }
+    /// Steps the builtins evaluated through this context have added to a sample's step budget.
+    pub(super) fn steps(&self) -> usize {
+        self.steps
+    }
 }
 impl<'a> Context<'a, '_> {
     /// Charges a feature query for the features it visited: one operation per query plus one per

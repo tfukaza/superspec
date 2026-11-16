@@ -154,6 +154,67 @@ fn ktx2_export_compresses_each_texture_by_role() {
     assert!(png.get("extensionsRequired").is_none());
 }
 
+/// Textures encoded on threads inside `glb` give the same file as encoding each one separately,
+/// one at a time, and handing the results in; a cancelled export stops instead of finishing.
+#[test]
+fn threaded_ktx2_export_matches_one_at_a_time_and_cancels() {
+    let scene = scene();
+    let options = Options {
+        textures: Textures::Ktx2,
+        ..Options::default()
+    };
+    let jobs = superspec_export::texture_jobs(&scene, &options).unwrap();
+    assert_eq!(
+        jobs.iter().map(|job| job.id).collect::<Vec<_>>(),
+        ["color.png", "data.png", "normal.png"]
+    );
+    let encoded = jobs
+        .iter()
+        .map(|job| {
+            (
+                job.id.to_owned(),
+                superspec_export::encode_texture(job.source, job.kind).unwrap(),
+            )
+        })
+        .collect();
+    let supplied = glb(
+        &scene,
+        &Options {
+            encoded: Some(&encoded),
+            ..options
+        },
+    )
+    .unwrap();
+    assert_eq!(glb(&scene, &options).unwrap(), supplied);
+
+    // Cancelling after more and more of the export's checks, before, during and after texture
+    // encoding, stops it; only an export that is never cancelled returns a file, the same file.
+    let polls = std::sync::atomic::AtomicUsize::new(0);
+    let mut stopped = 0;
+    loop {
+        polls.store(0, std::sync::atomic::Ordering::Relaxed);
+        let cancelled = || polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= stopped;
+        let result = glb(
+            &scene,
+            &Options {
+                textures: Textures::Ktx2,
+                cancelled: &cancelled,
+                ..Options::default()
+            },
+        );
+        match result {
+            Ok(bytes) => {
+                assert_eq!(bytes, supplied);
+                break;
+            }
+            Err(error) => assert_eq!(error, "Export cancelled.", "after {stopped} polls"),
+        }
+        stopped = (stopped * 5 / 4).max(stopped + 1);
+        assert!(stopped < 1 << 40, "the export never finished");
+    }
+    assert!(stopped >= 3, "only {stopped} cancellation points");
+}
+
 #[test]
 fn ktx2_glbs_import_and_convert_back_to_png() {
     let exported = glb(

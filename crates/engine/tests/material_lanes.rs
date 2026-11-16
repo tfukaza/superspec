@@ -660,6 +660,222 @@ fn generated_programs_give_the_same_results_together_and_alone() {
     assert!(together > 100, "too few rows evaluate together: {together}");
 }
 
+/// A pleated sheet under the samples: thousands of fold creases and boundary edges.
+fn pleated_features() -> Vec<program::Feature> {
+    const FOLDS: usize = 1300;
+    let mut positions = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    for i in 0..=FOLDS {
+        let x = -0.6 + 1.2 * i as f64 / FOLDS as f64;
+        let z = if i % 2 == 0 { 0.3 } else { 0.3005 };
+        positions.extend([x, -0.11, z, x, 0.11, z]);
+        if i > 0 {
+            let at = (2 * i) as u32;
+            indices.extend([at - 2, at, at + 1, at - 2, at + 1, at - 1]);
+        }
+    }
+    program::receiver_features(&positions, &indices)
+}
+
+/// `count` feature queries reaching `reach` meters and a little further each.
+fn querying(count: usize, reach: f64) -> Program {
+    let terms: Vec<String> = (0..count)
+        .map(|i| {
+            format!(
+                "crease_distance(\"any\", 0.0, {:.6})",
+                reach + i as f64 * 0.0002
+            )
+        })
+        .collect();
+    // Sums of eight, so no expression nests deeply.
+    let sums: Vec<String> = terms
+        .chunks(8)
+        .enumerate()
+        .map(|(i, group)| format!("let near{i} = {};", group.join(" + ")))
+        .collect();
+    let names: Vec<String> = (0..sums.len()).map(|i| format!("near{i}")).collect();
+    source(&format!(
+        "material 1; {} output base_color = vec3(0.5); output height = {};",
+        sums.join(" "),
+        names.join(" + ")
+    ))
+}
+
+/// A receiver with thousands of features is evaluated a row at a time as long as each sample's
+/// queries visit few of them, which nearby queries do; a sample whose queries visit so many that
+/// it nears its step limit makes its row give way to one sample at a time, with the same values
+/// or the same error either way.
+#[test]
+fn rows_evaluate_together_on_receivers_with_thousands_of_features() {
+    let features = pleated_features();
+    assert!(
+        (3000..=program::MAX_FEATURES).contains(&features.len()),
+        "{} features",
+        features.len()
+    );
+    let inputs = Inputs {
+        seed: 3,
+        features: features.clone(),
+        ..Inputs::default()
+    };
+    // Queries of nearby creases: far more queries than could each visit every feature.
+    for count in [1, 16, 70, 200] {
+        let program = querying(count, 0.002);
+        for samples in [ordered(150), samples(150)] {
+            let what = format!("{count} nearby queries");
+            assert!(
+                agree(&program, &inputs, &samples, OutputSet::ALL, &what),
+                "{what}: evaluated together"
+            );
+        }
+    }
+    // Queries that reach every feature. Few enough stay inside a sample's budget and are still
+    // evaluated together; more decline; more still fail one at a time with the same error.
+    let mut together = Vec::new();
+    let mut failed = Vec::new();
+    for count in [8, 40, 60, 62, 63, 64, 65, 66, 67, 68, 70, 90] {
+        let program = querying(count, 5.);
+        let row = ordered(12);
+        together.push(agree(
+            &program,
+            &inputs,
+            &row,
+            OutputSet::ALL,
+            &format!("{count} far queries"),
+        ));
+        failed.push(
+            program
+                .evaluator(&inputs)
+                .unwrap()
+                .evaluate_row(
+                    &row,
+                    OutputSet::ALL,
+                    &FieldSelection::default(),
+                    &mut vec![],
+                )
+                .is_err(),
+        );
+    }
+    assert!(together[0] && together[1], "{together:?}");
+    assert!(!together[11] && failed[11], "{together:?} {failed:?}");
+    // Once a row declines or fails, every row with more queries does.
+    assert!(
+        together.windows(2).all(|pair| pair[0] || !pair[1]),
+        "{together:?}"
+    );
+    assert!(
+        failed.windows(2).all(|pair| !pair[0] || pair[1]),
+        "{failed:?}"
+    );
+    assert!(
+        together.iter().zip(&failed).any(|(t, f)| !t && !f),
+        "some row declines and still succeeds one sample at a time: {together:?} {failed:?}"
+    );
+}
+
+/// Timing of rows on a receiver with thousands of features, together and one sample at a time:
+/// `cargo test --release --test material_lanes bench_feature_heavy_rows -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_feature_heavy_rows() {
+    let features = pleated_features();
+    let concrete = compile(
+        "kowloon-concrete.material.ts",
+        &[
+            (
+                "kowloon-noise.material.ts",
+                read("kowloon-noise.material.ts"),
+            ),
+            (
+                "kowloon-concrete.material.ts",
+                read("kowloon-concrete.material.ts"),
+            ),
+        ],
+    );
+    let concrete_images = [
+        "textures/concrete-plain.png",
+        "textures/concrete-fine-sand.png",
+        "superspec-material:building-plaster-plain.png",
+    ];
+    let cases = [
+        ("kowloon-concrete", concrete, &concrete_images[..]),
+        ("16 nearby queries", querying(16, 0.002), &[][..]),
+        ("200 nearby queries", querying(200, 0.002), &[][..]),
+    ];
+    for (name, program, images) in cases {
+        let inputs = Inputs {
+            seed: 7,
+            images: images.iter().map(|n| ((*n).to_owned(), image(n))).collect(),
+            features: features.clone(),
+            ..Inputs::default()
+        };
+        // Rows across the sheet at several heights, close to its creases.
+        let rows: Vec<Vec<Sample>> = (0..64)
+            .map(|y| {
+                let mut row = ordered(64);
+                for sample in &mut row {
+                    sample.world[2] = 0.3 + 0.0001 * y as f64;
+                    sample.world[1] = -0.1 + 0.003 * y as f64;
+                    sample.object = sample.world;
+                    sample.surface = [sample.world[0], sample.world[1]];
+                }
+                row
+            })
+            .collect();
+        let selection = FieldSelection::default();
+        let mut unused = Vec::new();
+        let mut together = 0;
+        for row in &rows {
+            let mut evaluator = program.evaluator(&inputs).unwrap();
+            together += usize::from(
+                evaluator
+                    .evaluate_row_together(row, OutputSet::ALL, &selection, &mut unused)
+                    .is_some(),
+            );
+        }
+        let mut times = [Vec::new(), Vec::new()];
+        for _ in 0..5 {
+            let mut evaluator = program.evaluator(&inputs).unwrap();
+            let started = std::time::Instant::now();
+            for row in &rows {
+                evaluator.replenish(64_000_000);
+                evaluator
+                    .evaluate_row(row, OutputSet::ALL, &selection, &mut unused)
+                    .unwrap_or_else(|e| panic!("{e}"));
+            }
+            times[0].push(started.elapsed().as_secs_f64());
+            let mut evaluator = program.evaluator(&inputs).unwrap();
+            let started = std::time::Instant::now();
+            for row in &rows {
+                evaluator.replenish(64_000_000);
+                for sample in row {
+                    evaluator
+                        .evaluate_outputs(sample, OutputSet::ALL, &selection, &mut [])
+                        .unwrap();
+                }
+            }
+            times[1].push(started.elapsed().as_secs_f64());
+        }
+        let range = |times: &[f64]| {
+            let texels = (rows.len() * rows[0].len()) as f64;
+            let low = times.iter().copied().fold(f64::INFINITY, f64::min);
+            let high = times.iter().copied().fold(0., f64::max);
+            format!(
+                "{:.0}-{:.0} ns/sample",
+                low * 1e9 / texels,
+                high * 1e9 / texels
+            )
+        };
+        eprintln!(
+            "{name}: {} features, {together}/{} rows together; rows {}; one at a time {}",
+            features.len(),
+            rows.len(),
+            range(&times[0]),
+            range(&times[1]),
+        );
+    }
+}
+
 /// Samples in order along a chart row: `uv.x`, `world.x` and `surface.x` rise with the index.
 fn ordered(count: usize) -> Vec<Sample> {
     (0..count)
