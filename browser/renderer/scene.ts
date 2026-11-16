@@ -15,6 +15,7 @@ import type { Lighting } from "./lighting.ts";
 import { SceneLighting, studioEnvironment } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
+import { ItemOverlays, type HandleChange, type OverlayItem } from "./item-overlays.ts";
 
 /** Builds a translucent inspection surface from Rust-owned navigation polygons. */
 function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
@@ -134,6 +135,8 @@ export class RustScene {
   private readonly programTextures = new Set<THREE.Texture>();
   private navigation?: THREE.Group;
   private itemGuides?: THREE.Group;
+  /** Features, anchors, decal outlines and drag handles of the scene's items (item-overlays.ts). */
+  private readonly itemOverlays: ItemOverlays;
   private collisionIds = new Set<string>();
   private selected?: string;
   private sceneId?: string;
@@ -182,7 +185,7 @@ export class RustScene {
    */
   setLighting(record: Lighting, stated?: unknown): void {
     this.lights.set(record, stated);
-    for (const mesh of this.models.children) mesh.castShadow = mesh.receiveShadow = this.shadows;
+    for (const mesh of this.models.children) { mesh.receiveShadow = this.shadows; mesh.castShadow = this.shadows && !mesh.userData.decal; }
     this.fitShadows();
     this.stateLighting();
     this.invalidate();
@@ -222,10 +225,13 @@ export class RustScene {
     // The lights, shadows and ambient occlusion of the shipped look, until a scene brings its own record (`setLighting`).
     // Inspection overlays are drawn in the image but cast and receive no occlusion.
     this.lights = new SceneLighting(this.renderer, this.scene, this.camera, this.environment.texture, new URLSearchParams(location.search),
-      () => [this.navigation, this.itemGuides].filter((group): group is THREE.Group => group !== undefined));
+      () => [this.navigation, this.itemGuides, this.itemOverlays.group].filter((group): group is THREE.Group => group !== undefined));
     this.scene.add(this.models);
     this.stateLighting();
     host.append(this.renderer.domElement);
+    this.itemOverlays = new ItemOverlays(this.renderer.domElement, this.camera, this.controls, this.invalidate,
+      summary => { if (summary) host.dataset.itemOverlays = summary; else delete host.dataset.itemOverlays; });
+    this.scene.add(this.itemOverlays.group);
     this.renderer.domElement.addEventListener("click", this.pick);
     this.renderer.domElement.addEventListener("webglcontextrestored", this.contextRestored);
     this.resize = new ResizeObserver(() => {
@@ -260,6 +266,7 @@ export class RustScene {
     let committed = false;
     const assets = new Map(packet.manifest.assets.map(asset => [asset.id, asset]));
     const materials = new Map(packet.manifest.materials.map(material => [material.id, material]));
+    const decals = new Set(packet.manifest.decals ?? []);
     const checkCurrent = (): void => {
       if (!current() || this.closed) throw new Error("Scene replacement cancelled.");
     };
@@ -343,7 +350,10 @@ export class RustScene {
           if (!definition && !stress && own.named?.some(attribute => attribute.name === SHADE_NORMAL && attribute.components === 3)) lightByShadeNormal(material);
         } else mesh = new THREE.Mesh(geometry, material);
         // Every displayed mesh casts and receives; textures, GPU previews and live operations only change its material.
-        mesh.castShadow = mesh.receiveShadow = this.shadows;
+        // A decal is a sheet a few millimeters off its surface: it receives that surface's shadows and casts none.
+        const decal = decals.has(descriptor.id);
+        mesh.receiveShadow = this.shadows;
+        mesh.castShadow = this.shadows && !decal;
         ordered.push(mesh);
         next.add(mesh);
         if (!batch) {
@@ -391,6 +401,15 @@ export class RustScene {
           mesh.userData.liveOperations = applyLiveOperations(material, definition.live ?? [], lookup);
           // What a GPU preview needs to put these operations back.
           mesh.userData.liveSource = { operations: definition.live ?? [], lookup };
+        }
+        if (decal) {
+          // Drawn over its surface: the sheet wins the depth test against it and writes no depth of its own.
+          mesh.userData.decal = true;
+          mesh.renderOrder = 1;
+          material.depthWrite = false;
+          material.polygonOffset = true;
+          material.polygonOffsetFactor = -2;
+          material.polygonOffsetUnits = -4;
         }
         mesh.name = descriptor.id;
         mesh.visible = descriptor.visible;
@@ -488,6 +507,9 @@ export class RustScene {
         attributes: Object.keys(sourceGeometry(mesh).attributes).filter(name => /^ms(Instance|Vertex)_/.test(name)).sort() })));
       else delete this.host.dataset.batches;
       this.host.dataset.revision = String(packet.manifest.revision);
+      // The decals drawn, for inspection and tests.
+      if (decals.size) this.host.dataset.decals = JSON.stringify([...decals]);
+      else delete this.host.dataset.decals;
       this.collisionIds = new Set(packet.manifest.colliders);
       this.clearItemGuides();
       this.walk.setPacket(packet);
@@ -1154,6 +1176,15 @@ export class RustScene {
     this.invalidate();
   }
 
+  /**
+   * Shows what the scene's items report about themselves (`metadata.items`): features, pattern anchors and decal
+   * outlines when `features`, and the declared drag handles when `handles`. `change` hears the value a dragged handle
+   * asks its control for. The overlays stay until they are replaced; `data-item-overlays` states what is drawn.
+   */
+  showItemOverlays(items: OverlayItem[], options: { features: boolean; handles: boolean }, change?: HandleChange): void {
+    this.itemOverlays.show(items, options, change);
+  }
+
   /** Releases only resources created for item inspection, never the accepted scene geometry. */
   private clearItemGuides(): void {
     if (!this.itemGuides) return;
@@ -1209,6 +1240,8 @@ export class RustScene {
 
   /** Resolves a screen pick to the stable source identity supplied by Rust. */
   private readonly pick = (event: MouseEvent): void => {
+    // The click that ends a handle drag selects nothing.
+    if (this.itemOverlays.consumedClick()) return;
     const bounds = this.renderer.domElement.getBoundingClientRect();
     const pointer = new THREE.Vector2((event.clientX - bounds.left) / bounds.width * 2 - 1, 1 - (event.clientY - bounds.top) / bounds.height * 2);
     const ray = new THREE.Raycaster();
@@ -1365,6 +1398,7 @@ export class RustScene {
     this.closed = true;
     this.clearNavigation();
     this.clearItemGuides();
+    this.itemOverlays.dispose();
     cancelAnimationFrame(this.frame);
     document.removeEventListener("visibilitychange", this.visibilityChanged);
     this.budgetReadout?.remove();

@@ -97,6 +97,11 @@ pub struct Manifest {
     pub mesh_tangents: std::collections::BTreeMap<String, Vec<[f32; 4]>>,
     /// Collision is explicitly selected; invisible meshes may still be physical.
     pub colliders: Vec<String>,
+    /// Meshes that are decals: render-only sheets that stand a few millimeters off the
+    /// surface they belong to. They never collide, receive no material assignment and cast
+    /// no shadow; a renderer draws them over their surface.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decals: Vec<String>,
     pub openings: Vec<Node>,
     pub vertex_count: usize,
     pub index_count: usize,
@@ -188,6 +193,7 @@ impl Scene {
                 batch_counts: None,
                 mesh_tangents: Default::default(),
                 colliders: vec![],
+                decals: vec![],
                 openings: vec![],
                 vertex_count: 0,
                 index_count: 0,

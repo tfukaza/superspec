@@ -4,10 +4,12 @@ pub const HELP: &str = "SuperSpec native authoring
 Usage:
   superspec-studio <scene|glb|check> <project.json|source.ms|source.material.ts|source.item.json> [--profile preview|production] [--textures ktx2|png] [--resolution 16-512|2048] [--seed 0-4294967295] [--parameters values.json] [--types] [--sdk <dir>]
   superspec-studio inspect <source.material.ts>
+  superspec-studio inspect <source.item.json> [--parameters values.json]
   superspec-studio edit <source.material.ts> --op <json|@file> [--write]
   superspec-studio sdk --out <directory>
   superspec-studio catalog
 Scene and GLB commands publish binary stdout; check, inspect, edit and catalog publish a JSON report.
+inspect of an item definition reports its part keys, derived values, attachments, features, anchors, decals and handles.
 check --types also runs strict TypeScript (tsc) against the generated SDK in --sdk <dir> (default generated/material-sdk).
 edit prints the patches and the edited source; --write saves the edited module only after the recipe still compiles.
 --profile production admits resolutions up to 2048 and bakes rows on native threads; output bytes match preview.

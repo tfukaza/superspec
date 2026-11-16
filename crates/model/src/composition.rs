@@ -270,6 +270,7 @@ pub fn prefixed(mut scene: Scene, prefix: &str) -> Scene {
         rename(&mut batch.object_id);
     }
     scene.manifest.colliders.iter_mut().for_each(rename);
+    scene.manifest.decals.iter_mut().for_each(rename);
     scene.manifest.mesh_tangents = std::mem::take(&mut scene.manifest.mesh_tangents)
         .into_iter()
         .map(|(id, tangents)| (format!("{prefix}{id}"), tangents))
@@ -373,6 +374,7 @@ pub fn append(mut base: Scene, addition: Scene) -> Result<Scene, String> {
         base.manifest.meshes.push(mesh);
     }
     base.manifest.colliders.extend(addition.manifest.colliders);
+    base.manifest.decals.extend(addition.manifest.decals);
     base.manifest
         .mesh_tangents
         .extend(addition.manifest.mesh_tangents);

@@ -116,6 +116,11 @@ fn write_records(atlas: &Atlas, records: &mut Vec<f32>) {
         if let Some(second) = chart.second {
             owner[second] = (index, 2.);
         }
+        // A whole flat face on a pattern anchor's lattice: each triangle draws in the chart
+        // where its atlas UVs put it.
+        for other in &chart.others {
+            owner[*other] = (index, 0.);
+        }
     }
     records.reserve(triangles * LAYOUT_RECORD);
     for triangle in 0..triangles {
@@ -166,6 +171,9 @@ impl Session {
             ));
         }
         self.begin_authoring(revision, &project.entry)?;
+        // Item models bind their slots' meshes to materials (`Session::resolve_items`).
+        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let project = resolved.as_ref().map_or(project, |items| &items.project);
         let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
@@ -226,6 +234,9 @@ impl Session {
             ));
         }
         self.begin_authoring(revision, &project.entry)?;
+        // Item models bind their slots' meshes to materials (`Session::resolve_items`).
+        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let project = resolved.as_ref().map_or(project, |items| &items.project);
         let assignment = project
             .materials
             .iter()

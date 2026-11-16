@@ -41,7 +41,7 @@ impl Section {
         }
     }
     /// Distance from the centre to the surface along a unit direction in the section plane.
-    fn support(&self, direction: P2) -> f64 {
+    pub(super) fn support(&self, direction: P2) -> f64 {
         match self {
             Self::Round { radius, .. } => *radius,
             Self::Rect { width, height } => {
@@ -205,7 +205,7 @@ impl Path {
         element.at((s - element.start.s).clamp(0., element.length))
     }
     /// Whether the span lies on the route and touches no bend.
-    fn straight(&self, from: f64, to: f64) -> bool {
+    pub(super) fn straight(&self, from: f64, to: f64) -> bool {
         from >= -1e-9
             && to <= self.length + 1e-9
             && !self.elements.iter().any(|element| {
@@ -562,7 +562,7 @@ pub(super) fn resolve(
 }
 
 /// Stations a placement rule selects on a route.
-fn stations(
+pub(super) fn stations(
     context: &Context<'_>,
     rule: &Rule,
     path: &Path,
@@ -753,6 +753,26 @@ fn fitting_shape(
 }
 
 impl Route {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(super) fn section(&self) -> &Section {
+        &self.section
+    }
+    /// The span each fitting occupies along the route, as (id, from, to).
+    pub(super) fn fitting_spans(&self) -> Vec<(&str, f64, f64)> {
+        self.fittings
+            .iter()
+            .map(|fitting| {
+                let half = fitting.half(&self.section);
+                (
+                    fitting.id.as_str(),
+                    fitting.station - half,
+                    fitting.station + half,
+                )
+            })
+            .collect()
+    }
     /// Stations of the cross-sections the body is swept through.
     fn rings(&self) -> Vec<Station> {
         let mut rings = vec![self.path.at(0.)];

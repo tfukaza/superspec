@@ -250,11 +250,39 @@ impl Session {
         let transforms = generated.geometry.world_transforms().map_err(&fail)?;
         let mut receiver_transforms = BTreeMap::new();
         let mut mesh_slots = BTreeMap::new();
-        for (node, transform) in generated.geometry.nodes.iter().zip(&transforms) {
+        // Each receiver's pattern anchor: its part's, under the placement, in world meters.
+        let mut anchors = request.anchors.clone();
+        for (index, (node, transform)) in generated
+            .geometry
+            .nodes
+            .iter()
+            .zip(&transforms)
+            .enumerate()
+        {
+            let anchor = generated
+                .geometry
+                .parts
+                .iter()
+                .find(|part| part.node == index)
+                .and_then(|part| {
+                    generated
+                        .geometry
+                        .anchors
+                        .iter()
+                        .find(|anchor| anchor.part == part.id)
+                })
+                .map(|anchor| super::Anchor {
+                    origin: placement.point(anchor.origin),
+                    u: placement.direction(anchor.u),
+                    v: placement.direction(anchor.v),
+                });
             for &index in &node.meshes {
                 let mesh = &generated.geometry.meshes[index];
                 let id = format!("{}/{}", node.id, mesh.id);
                 let transform = matrix(placement.then(*transform));
+                if let Some(anchor) = anchor {
+                    anchors.entry(id.clone()).or_insert(anchor);
+                }
                 receiver_transforms.insert(id.clone(), transform);
                 mesh_slots.insert(id.clone(), mesh.material_slot.clone());
                 model.instances.push(Instance {
@@ -319,7 +347,13 @@ impl Session {
                     parameters: material.parameters.clone(),
                     seed: material.seed,
                     receivers,
-                    mapping: Mapping::Object,
+                    // Object space unless the host asks for the parts' pattern anchors.
+                    mapping: if request.mapping == Mapping::Anchored {
+                        Mapping::Anchored
+                    } else {
+                        Mapping::Object
+                    },
+                    anchors: anchors.clone(),
                     ..request.clone()
                 };
                 let baked = self.material(&material_request, revision, assets, cancelled)?;
@@ -372,6 +406,362 @@ impl Session {
             model,
             metadata: json!({"parameters":parameters,"attachments":attachments,"collision":collision_name,"materials":generated.materials,"meshSlots":mesh_slots,"receiverTransforms":receiver_transforms,"geometryKey":generated.geometry_key,"provenance":generated.provenance,"dependencies":generated.provenance.assets.keys().collect::<Vec<_>>()}),
         })
+    }
+}
+
+/// What a session keeps of an item a scene project placed, by model identity.
+pub(crate) struct PlacedItemState {
+    item: Arc<definition::GeneratedItem>,
+    /// Counts the times any part was generated.
+    generation: u64,
+    /// The parts generated the last time the geometry changed.
+    rebuilt: Vec<String>,
+}
+
+/// One item of a scene project, ready to compose: its meshes as placements of local
+/// resources, and what its owner knows about each of them.
+pub(super) struct PlacedItem {
+    /// Placements under the item's own identities; the composer prefixes them.
+    pub model: Model,
+    /// The item slot of each visible mesh, by placement identity.
+    pub slots: BTreeMap<String, String>,
+    /// Object-to-world transform of each mesh.
+    pub transforms: BTreeMap<String, [f64; 16]>,
+    /// The named features of each mesh's part, in world meters.
+    pub features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
+    /// The pattern anchor of each mesh's part, in world meters.
+    pub anchors: BTreeMap<String, definition::PatternAnchor>,
+    /// For inspection and overlays: controls, derived values, parts with their keys,
+    /// features, anchors, attachments, decals and handles, in world meters.
+    pub metadata: serde_json::Value,
+}
+
+impl Session {
+    /// Generates an item model of a scene project (`kind: "item"`) under its placement.
+    /// Parts whose geometry key is unchanged since the session last placed this model keep
+    /// their meshes. `prefix` is put before the mesh identities the metadata names.
+    pub(super) fn place_item(
+        &mut self,
+        project: &super::Project,
+        model: &super::ModelSource,
+        prefix: &str,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<PlacedItem, Vec<Diagnostic>> {
+        let entry = model
+            .entry
+            .clone()
+            .unwrap_or_else(|| format!("{}.item.json", model.id));
+        let fail = |message: String| vec![Diagnostic::message(&entry, message)];
+        let source = match (&model.source, project.modules.get(&entry)) {
+            (Some(source), _) => source,
+            (None, Some(source)) => source,
+            (None, None) => {
+                return Err(fail(format!(
+                    "Model {} names no item definition among the project's modules.",
+                    model.id
+                )));
+            }
+        };
+        let item_failure = |mut error: ItemDiagnostic| {
+            if error.source == entry {
+                definition::locate_diagnostic(source, &mut error);
+            }
+            vec![Diagnostic::from(error)]
+        };
+        let parsed = definition::parse(&entry, source).map_err(&item_failure)?;
+        if matches!(parsed.generator, definition::Generator::Glb { .. }) {
+            return Err(fail(
+                "A scene places imported models with kind glb, not through an item.".into(),
+            ));
+        }
+        let prepared = definition::prepare(&parsed, &model.parameters, assets, cancelled)
+            .map_err(&item_failure)?;
+        let previous = self
+            .placed_items
+            .borrow()
+            .get(&model.id)
+            .map(|state| (state.item.clone(), state.generation, state.rebuilt.clone()));
+        let (generated, generation, rebuilt) = match previous {
+            Some((item, generation, rebuilt)) if item.geometry_key == prepared.geometry_key => (
+                prepared.reuse(&item).map_err(&item_failure)?,
+                generation,
+                rebuilt,
+            ),
+            Some((item, generation, _)) => {
+                let (item, built) = prepared
+                    .rebuild(&item, cancelled)
+                    .map_err(&item_failure)?;
+                (item, generation + 1, built)
+            }
+            None => {
+                let item = prepared.build(cancelled).map_err(&item_failure)?;
+                let built = if prepared.part_keys.is_empty() {
+                    vec!["item".to_owned()]
+                } else {
+                    prepared.part_keys.iter().map(|(id, _)| id.clone()).collect()
+                };
+                (item, 1, built)
+            }
+        };
+        {
+            let mut kept = self.placed_items.borrow_mut();
+            if kept.len() >= 64 && !kept.contains_key(&model.id) {
+                kept.clear();
+            }
+            kept.insert(
+                model.id.clone(),
+                PlacedItemState {
+                    item: Arc::new(generated.clone()),
+                    generation,
+                    rebuilt: rebuilt.clone(),
+                },
+            );
+        }
+        let placement = Matrix(model.transform.unwrap_or_else(definition::identity))
+            .checked()
+            .and_then(|matrix| matrix.inverse().map(|_| matrix))
+            .map_err(&fail)?;
+        let world = matrix(placement);
+        let geometry = &generated.geometry;
+        let mut placed = PlacedItem {
+            model: Model {
+                id: format!("studio/item/{}", generated.id),
+                name: generated.id.clone(),
+                ..Default::default()
+            },
+            slots: BTreeMap::new(),
+            transforms: BTreeMap::new(),
+            features: BTreeMap::new(),
+            anchors: BTreeMap::new(),
+            metadata: serde_json::Value::Null,
+        };
+        let anchor = |anchor: &definition::PatternAnchor| -> Result<_, String> {
+            let inverse = placement.inverse()?;
+            Ok(definition::PatternAnchor {
+                part: anchor.part.clone(),
+                origin: placement.point(anchor.origin),
+                u: placement.direction(anchor.u),
+                v: placement.direction(anchor.v),
+                normal: unit([
+                    superspec_geometry::math::dot(inverse.0[0], anchor.normal),
+                    superspec_geometry::math::dot(inverse.0[1], anchor.normal),
+                    superspec_geometry::math::dot(inverse.0[2], anchor.normal),
+                ])?,
+            })
+        };
+        // The part each node belongs to; a version 1 item is one part named after its only node.
+        let part_of = |node: usize| {
+            geometry
+                .parts
+                .iter()
+                .find(|part| part.node == node)
+                .map(|part| (part.id.as_str(), part.geometry_key.as_str()))
+                .unwrap_or(("item", generated.geometry_key.as_str()))
+        };
+        let transforms = geometry.world_transforms().map_err(&fail)?;
+        let mut parts = Vec::new();
+        for (index, (node, transform)) in geometry.nodes.iter().zip(&transforms).enumerate() {
+            let (part, key) = part_of(index);
+            let features = super::item_features(
+                &geometry
+                    .features
+                    .iter()
+                    .filter(|feature| feature.part == part)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                &world,
+            );
+            let part_anchor = geometry
+                .anchors
+                .iter()
+                .find(|anchor| anchor.part == part)
+                .map(&anchor)
+                .transpose()
+                .map_err(&fail)?;
+            let mut meshes = Vec::new();
+            for &mesh_index in &node.meshes {
+                let mesh = &geometry.meshes[mesh_index];
+                if !mesh.colors.is_empty() || !mesh.tangents.is_empty() {
+                    return Err(fail(
+                        "A placed item has plain generated meshes.".into(),
+                    ));
+                }
+                let count = mesh.positions.len();
+                // The resource is named by its part's key, so an unchanged part shares its
+                // meshes with every later build and placement.
+                let resource = format!("{key}/{}", mesh.id);
+                placed.model.mesh_artifacts.insert(
+                    resource.clone(),
+                    format!("itemspec-part-v1/{key}/{}", mesh.id),
+                );
+                placed.model.meshes.insert(
+                    resource.clone(),
+                    Arc::new(LocalMesh {
+                        positions: mesh.positions.clone(),
+                        normals: mesh.normals.clone(),
+                        uvs: if mesh.uvs.is_empty() {
+                            vec![[0., 0.]; count]
+                        } else {
+                            mesh.uvs.clone()
+                        },
+                        colors: vec![[1.; 3]; count],
+                        indices: mesh.indices.clone(),
+                        tangents: vec![],
+                    }),
+                );
+                let material = format!("studio/item/slot/{}", mesh.material_slot);
+                placed
+                    .model
+                    .materials
+                    .entry(material.clone())
+                    .or_insert_with(|| {
+                        let mut value = geometry
+                            .imported_materials
+                            .get(&mesh.material_slot)
+                            .map(|imported| imported.material())
+                            .unwrap_or_default();
+                        value.id = material.clone();
+                        value
+                    });
+                let id = format!("{}/{}", node.id, mesh.id);
+                let transform = matrix(placement.then(*transform));
+                placed.model.instances.push(Instance {
+                    id: id.clone(),
+                    object_id: generated.id.clone(),
+                    mesh: resource,
+                    material: Some(material),
+                    transform,
+                    source: location(),
+                    visible: true,
+                    collidable: matches!(
+                        generated.collision,
+                        Collision::Intent(CollisionIntent::Mesh)
+                    ),
+                });
+                placed.transforms.insert(id.clone(), transform);
+                placed.slots.insert(id.clone(), mesh.material_slot.clone());
+                if !features.is_empty() {
+                    placed.features.insert(id.clone(), features.clone());
+                }
+                if let Some(anchor) = &part_anchor {
+                    placed.anchors.insert(id.clone(), anchor.clone());
+                }
+                meshes.push(format!("{prefix}{id}"));
+            }
+            parts.push(json!({
+                "id": part, "key": key, "meshes": meshes,
+                "rebuilt": rebuilt.iter().any(|built| built == part),
+                "anchor": part_anchor,
+            }));
+        }
+        collision(&mut placed.model, &generated, placement).map_err(&fail)?;
+        // Decals: one image resource per image, however many placements show it; each
+        // placement is a render-only mesh of its own.
+        let mut decals = Vec::new();
+        for decal in &generated.decals {
+            let bytes = assets(&decal.image).map_err(|error| {
+                fail(format!("Decal {} image {}: {error}", decal.id, decal.image))
+            })?;
+            let decoded = image::decode(&bytes).map_err(&fail)?;
+            let image_id = format!("studio/decal/image/{:x}", Sha256::digest(&bytes));
+            let material_id = format!("studio/decal/material/{:x}", Sha256::digest(&bytes));
+            placed.model.images.entry(image_id.clone()).or_insert(ImageResource {
+                mime: decoded.mime,
+                bytes: bytes.clone(),
+                pixels: decoded.width * decoded.height,
+            });
+            placed
+                .model
+                .materials
+                .entry(material_id.clone())
+                .or_insert_with(|| Material {
+                    id: material_id.clone(),
+                    color: "#ffffff".into(),
+                    roughness: 0.9,
+                    texture: Some(image_id),
+                    opacity: Some(1.),
+                    alpha_mode: Some(superspec_types::material::AlphaMode::Blend),
+                    double_sided: Some(false),
+                    ..Default::default()
+                });
+            let id = format!("decal/{}", decal.id);
+            placed.model.meshes.insert(
+                id.clone(),
+                Arc::new(LocalMesh {
+                    positions: decal.positions.clone(),
+                    normals: decal.normals.clone(),
+                    uvs: decal.uvs.clone(),
+                    colors: vec![[1.; 3]; decal.positions.len()],
+                    indices: decal.indices.clone(),
+                    tangents: vec![],
+                }),
+            );
+            placed.model.instances.push(Instance {
+                id: id.clone(),
+                object_id: generated.id.clone(),
+                mesh: id.clone(),
+                material: Some(material_id),
+                transform: world,
+                source: location(),
+                visible: true,
+                collidable: false,
+            });
+            placed.model.decals.insert(id.clone());
+            decals.push(json!({
+                "id": decal.id, "part": decal.part, "face": decal.face, "image": decal.image,
+                "layer": decal.layer, "size": decal.size, "offset": decal.offset,
+                "mesh": format!("{prefix}{id}"),
+                "corners": decal.corners.map(|corner| placement.point(corner)),
+            }));
+        }
+        let parameters: Vec<_> = parsed
+            .parameters
+            .iter()
+            .map(|(name, parameter)| {
+                let mut value = serde_json::to_value(parameter).unwrap();
+                value["name"] = json!(name);
+                value["value"] = prepared.parameters[name].clone();
+                value
+            })
+            .collect();
+        let mut features = Vec::new();
+        for feature in &geometry.features {
+            let mut feature = feature.clone();
+            for point in &mut feature.points {
+                *point = placement.point(*point);
+            }
+            feature.normal = unit(placement.direction(feature.normal)).map_err(&fail)?;
+            features.push(feature);
+        }
+        let mut attachments = Vec::new();
+        for attachment in &generated.attachments {
+            attachments.push(definition::Attachment {
+                name: attachment.name.clone(),
+                position: placement.point(attachment.position),
+                direction: unit(placement.direction(attachment.direction)).map_err(&fail)?,
+            });
+        }
+        let mut handles = Vec::new();
+        for handle in &generated.handles {
+            let mut handle = handle.clone();
+            // A handle's axis keeps its length under the placement: a scaled item moves a
+            // dimension further for the same change of its control.
+            let axis = placement.direction(handle.axis);
+            handle.scale /= superspec_geometry::math::length(axis).max(1e-12);
+            handle.axis = unit(axis).map_err(&fail)?;
+            handle.position = placement.point(handle.position);
+            handles.push(handle);
+        }
+        placed.metadata = json!({
+            "entry": entry, "definition": generated.id, "geometryKey": generated.geometry_key,
+            "generation": generation, "rebuilt": rebuilt,
+            "parameters": parameters, "derived": prepared.derived,
+            "parts": parts, "features": features, "attachments": attachments,
+            "decals": decals, "handles": handles,
+            "meshSlots": placed.slots.iter().map(|(id, slot)| (format!("{prefix}{id}"), slot.clone())).collect::<BTreeMap<_, _>>(),
+        });
+        Ok(placed)
     }
 }
 

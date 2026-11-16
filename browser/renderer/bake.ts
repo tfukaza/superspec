@@ -972,7 +972,10 @@ export class GpuBaker {
       try { this.renderer.autoClear = false; draws(); }
       finally { this.batching = false; this.renderer.setRenderTarget(before); this.renderer.autoClear = clear; }
     },
-  });
+    // A scene of items has a receiver per part and face group (the item washroom: 115 receivers, 736 nodes, most of
+    // them small). While an item control is dragged the scene is shown per pixel and every node is idle; they must
+    // all still be there on release, so the count is generous and the memory is what bounds them.
+  }, { idleNodes: 4096, idleBytes: 256 * 1024 * 1024 });
   /** Whether `renderInto` is called from the graph's batch, which saves and restores the renderer's state around it. */
   private batching = false;
 

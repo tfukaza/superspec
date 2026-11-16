@@ -38,6 +38,10 @@ pub struct Session {
     pub(crate) distribution: crate::authoring::material::Distribution,
     /// Mip levels of decoded material images, shared by every material that samples them.
     pub(crate) mips: crate::materialspec::program::MipCache,
+    /// The items a scene project placed last, by model identity, so that an edit regenerates
+    /// only the parts whose geometry key changed.
+    pub(crate) placed_items:
+        RefCell<std::collections::BTreeMap<String, crate::authoring::PlacedItemState>>,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -58,6 +62,7 @@ impl Session {
             producer_states: ProducerStates::default(),
             distribution: Default::default(),
             mips: Default::default(),
+            placed_items: RefCell::new(Default::default()),
             runtime,
             images: RefCell::new(images),
         })
@@ -79,6 +84,7 @@ impl Session {
         self.producer_states.clear();
         self.images.borrow_mut().clear();
         self.programs.borrow_mut().clear();
+        self.placed_items.borrow_mut().clear();
         self.program_bytes.set(0);
         self.authoring_revision.set(None);
     }

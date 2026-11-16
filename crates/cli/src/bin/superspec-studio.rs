@@ -7,6 +7,8 @@ mod arguments;
 mod assets;
 #[path = "studio/input.rs"]
 mod input;
+#[path = "studio/item.rs"]
+mod item;
 #[path = "../material_library.rs"]
 mod material_library;
 #[path = "studio/recipe.rs"]
@@ -41,6 +43,11 @@ fn main() -> ExitCode {
         }
         Err(message) => return failure(vec![Diagnostic::message("", message)], 2),
     };
+    // An item definition is inspected by what it generates; a recipe by what it declares.
+    if arguments.command == "inspect" && arguments.source.to_string_lossy().ends_with(".item.json")
+    {
+        return item::inspect(&arguments);
+    }
     if arguments::RECIPE_COMMANDS.contains(&arguments.command.as_str()) {
         return recipe::run(&arguments);
     }

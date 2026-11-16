@@ -8,7 +8,8 @@ import type { MaterialShading, SceneShading } from "../../browser/renderer/shade
 import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
 import { decodePacket, type SceneMesh, type ScenePacket } from "../../browser/model/packet.ts";
-import { AuthoringCompiler, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type StudioMaterial } from "../../browser/runtime/authoring.ts";
+import { AuthoringCompiler, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type ItemReport, type ParameterValue, type StudioMaterial } from "../../browser/runtime/authoring.ts";
+import { ItemPanel } from "./items.ts";
 import { readAmlSelection } from "../open-aml.ts";
 import { AmlLoader } from "./aml.ts";
 import { Channels } from "./channels.ts";
@@ -101,6 +102,18 @@ class Studio {
   private readonly sceneBake = this.live && new URLSearchParams(location.search).get("preview") !== "shader";
   /** The project the scene's GPU bake asks CPU fields for: the one last previewed, parameters included. */
   private bakeProject?: StudioProject;
+  /** The scene's items as the engine last reported them (`metadata.items`), by model identity. */
+  private items: Record<string, ItemReport> = {};
+  private itemPanel?: ItemPanel;
+  /** The material each mesh shows, by mesh identity: the assignments' own meshes and the ones item slots bind. */
+  private meshBindings: Record<string, string> = {};
+  /**
+   * An item control is being dragged (a slider or a handle in the viewport): the scene is shown per pixel alone, with
+   * no bake, until the value is let go; the settled value is then baked (the roadmap's three evaluation paths).
+   */
+  private dragging = false;
+  /** When the item edit being built began, and what it changed, for `data-item-edit`. */
+  private itemEditStarted?: { at: number; model: string; parameter: string; value: ParameterValue; dragging: boolean };
   /** The project the viewport's shaders were last built for, with what the engine returned. */
   private shaded?: { key: string; metadata: AuthoringMetadata; packet: ScenePacket };
   /** The swatch shader the GPU preview last asked the engine for, by source, entry, seed and domain (not parameters). */
@@ -127,6 +140,7 @@ class Studio {
     });
     this.channels = new Channels(element("channels"));
     this.lightingPanel = new LightingPanel(element("lighting-controls"), (lighting, statesOcclusion) => this.relight(lighting, statesOcclusion));
+    if (kind === "material") this.itemPanel = new ItemPanel(element("item-list"), (item, parameter, value, dragging) => this.itemEdit(item, parameter, value, dragging));
     if (kind === "material") this.recipe = new RecipePanel(element("recipe-body"), this.recipeTools, {
       revision: () => this.documentRevision,
       entry: () => this.project.entry, module: () => this.module, modules: () => this.project.modules,
@@ -301,7 +315,9 @@ class Studio {
       const row = document.createElement("li"); row.dataset.material = material.id;
       const choose = document.createElement("button"); choose.className = "quiet compact scene-choose";
       choose.setAttribute("aria-pressed", String(material === active));
-      choose.textContent = `${material.id} · ${material.entry} · ${material.meshes.length} mesh${material.meshes.length === 1 ? "" : "es"}`;
+      // The meshes the material lists itself, and those the scene's items bind to it through their slots.
+      const count = new Set([...material.meshes, ...Object.keys(this.meshBindings).filter(mesh => this.meshBindings[mesh] === material.id)]).size;
+      choose.textContent = `${material.id} · ${material.entry} · ${count} mesh${count === 1 ? "" : "es"}`;
       choose.addEventListener("click", () => this.activate(material.id));
       const remove = document.createElement("button"); remove.className = "quiet compact"; remove.textContent = "Remove";
       remove.setAttribute("aria-label", `Remove material ${material.id}`);
@@ -330,8 +346,51 @@ class Studio {
     this.showScene(); this.edit(true);
   }
 
+  /**
+   * Sets one control of an item model and previews it. While the control is dragged the preview is the per-pixel look
+   * alone; the value it is let go on is previewed again with baked maps, of which only the changed parts' are drawn.
+   */
+  private itemEdit(id: string, parameter: string, value: ParameterValue, dragging: boolean): void {
+    const model = this.project.models?.find(candidate => candidate.id === id && candidate.kind === "item");
+    if (!model) return;
+    model.parameters = { ...model.parameters, [parameter]: value };
+    this.itemEditStarted = { at: performance.now(), model: id, parameter, value, dragging };
+    this.edit(true, dragging);
+  }
+
+  /** Draws what the scene's items report: their drag handles and, when asked, features, anchors and decal outlines. */
+  private overlays(): void {
+    if (this.kind !== "material") return;
+    this.scene.showItemOverlays(Object.entries(this.items).map(([id, item]) => ({ id, features: item.features,
+      anchors: item.parts.flatMap(part => part.anchor ? [part.anchor] : []), decals: item.decals, handles: item.handles })),
+      { features: element<HTMLInputElement>("item-overlays").checked, handles: element<HTMLInputElement>("item-handles").checked },
+      (item, handle, value, done) => this.itemEdit(item, handle.parameter, value, !done));
+  }
+
+  /** Takes what a build reports about the scene's items and bindings, and shows it. */
+  private showItems(metadata: AuthoringMetadata | undefined, candidate: StudioProject): void {
+    this.items = (metadata?.items ?? {}) as Record<string, ItemReport>;
+    const bindings: Record<string, string> = {};
+    for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
+    // With items, the engine says which meshes their slots bind.
+    this.meshBindings = { ...bindings, ...(metadata?.bindings as Record<string, string> | undefined) };
+    this.itemPanel?.show(this.items);
+    this.overlays();
+    const viewport = element("viewport");
+    viewport.dataset.bindings = JSON.stringify(this.meshBindings);
+    if (Object.keys(this.items).length) viewport.dataset.items = JSON.stringify(Object.fromEntries(Object.entries(this.items).map(([id, item]) => [id,
+      { generation: item.generation, rebuilt: item.rebuilt, parts: Object.fromEntries(item.parts.map(part => [part.id, part.key])),
+        parameters: Object.fromEntries(item.parameters.map(parameter => [parameter.name, parameter.value])), derived: item.derived,
+        features: item.features.length, decals: item.decals.map(decal => decal.mesh), handles: item.handles.map(handle => handle.id) }])));
+    else delete viewport.dataset.items;
+    const edit = this.itemEditStarted;
+    if (edit) viewport.dataset.itemEdit = JSON.stringify({ model: edit.model, parameter: edit.parameter, value: edit.value, dragging: edit.dragging, ms: Math.round(performance.now() - edit.at) });
+    this.itemEditStarted = undefined;
+  }
+
   /** A material override is scoped to explicit selected receiver identities and can be restored atomically. */
   private bindMaterialControls(): void {
+    for (const id of ["item-handles", "item-overlays"]) element(id).addEventListener("change", () => this.overlays());
     this.files("add-models", files => this.addModels(files));
     element("new-material").addEventListener("click", () => {
       this.syncActive();
@@ -432,7 +491,9 @@ class Studio {
   }
 
   /** Debounces typing without allowing an older worker or texture load to replace the newest draft. */
-  private edit(immediate = false): void {
+  private edit(immediate = false, dragging = false): void {
+    // Only an item control that is still moving previews without a bake; every other edit is a settled one.
+    this.dragging = dragging;
     const revision = this.begin();
     void this.recipe?.refresh();
     if (!this.environmentValid) {
@@ -649,6 +710,8 @@ class Studio {
     if (this.kind === "material" && base && candidate.target.enabled) request.receivers = receivers(base, ids, baseMetadata?.receiverTransforms);
     const result = scene ? await this.authoring.previewProject(candidate, revision) : await this.authoring.compile(request);
     if (revision !== this.revision) return false;
+    // What a scene build says about its items and their bindings, before the metadata is narrowed to the active material.
+    const itemMetadata = result.metadata;
     if (scene && result.metadata) {
       // The editor's controls describe the active material; the scene carries every material.
       const materials = (result.metadata.materials ?? {}) as Record<string, AuthoringMetadata>;
@@ -696,15 +759,12 @@ class Studio {
       if (active) { this.project.entry = active.entry; this.project.parameters = active.parameters; this.module = active.entry; }
       this.showProject();
     }
-    if (scene) {
-      // Which material each mesh shows, by material identity, for inspection and tests.
-      const bindings: Record<string, string> = {};
-      for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
-      element("viewport").dataset.bindings = JSON.stringify(bindings);
-    } else delete element("viewport").dataset.bindings;
     this.accepted = copyProject(candidate);
     this.draftVisible = false;
     this.visible = packet; this.metadata = result.metadata;
+    // Which material each mesh shows, by material identity, for inspection and tests; and the scene's items.
+    if (scene) this.showItems(itemMetadata, candidate);
+    else { this.items = {}; this.meshBindings = {}; this.itemPanel?.show({}); this.overlays(); delete element("viewport").dataset.bindings; delete element("viewport").dataset.items; }
     this.diagnostics([]); this.parameters.show(result.metadata?.parameters ?? [], candidate.parameters);
     this.showInspection(result.metadata); this.channels.show(artifact); this.showMeshes(packet); void this.recipe?.refresh();
     element("scene-title").textContent = packet.manifest.name || candidate.entry;
@@ -759,11 +819,13 @@ class Studio {
    */
   private async compileLive(candidate: StudioProject, revision: number, opened: boolean, fit: boolean): Promise<boolean> {
     const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
+    // While an item control is dragged the scene is shown per pixel alone; its settled value is baked.
+    const baking = this.sceneBake && !this.dragging;
     const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.gravity, candidate.domain,
       (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
       Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
       // Baked maps follow the receivers' atlases, which these size.
-      this.sceneBake ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
+      baking ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
     let packet: ScenePacket, metadata: AuthoringMetadata;
     // Before the uniforms change: a bake they start asks for CPU fields of this project.
     const previous = this.bakeProject;
@@ -772,7 +834,7 @@ class Studio {
       ({ packet, metadata } = this.shaded);
     } else {
       this.bakeProject = previous;
-      const result = await this.authoring.shadeProject(candidate, revision, this.sceneBake);
+      const result = await this.authoring.shadeProject(candidate, revision, baking);
       if (revision !== this.revision) return false;
       if (result.error || !result.packet || !result.metadata || result.diagnostics?.length) {
         this.diagnostics(result.diagnostics ?? [], candidate); void this.recipe?.refresh();
@@ -781,8 +843,8 @@ class Studio {
       packet = decodePacket(result.packet); metadata = result.metadata;
       const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity, domain: metadata.domain } as unknown as SceneShading;
       // With the receivers' atlas layouts, GPU-baked maps follow the first look; without them the scene stays per pixel.
-      const bake = this.sceneBake && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[] }[]) => this.sceneFields(requests) } : undefined;
-      if (this.sceneBake && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
+      const bake = baking && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[] }[]) => this.sceneFields(requests) } : undefined;
+      if (baking && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
       else delete element("viewport").dataset.sceneBakeFallback;
       const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake);
       if (revision !== this.revision) return false;
@@ -803,13 +865,11 @@ class Studio {
     }
     const activeId = candidate.materials?.find(material => material.id === this.activeMaterial)?.id ?? candidate.materials?.[0]?.id;
     const shown: AuthoringMetadata = { ...(activeId ? materials[activeId] : {}), materials, meshes: metadata.meshes };
-    const bindings: Record<string, string> = {};
-    for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
-    element("viewport").dataset.bindings = JSON.stringify(bindings);
-    element("viewport").dataset.preview = this.sceneBake && !element("viewport").dataset.sceneBakeFallback ? "gpu-bake" : "shader";
+    element("viewport").dataset.preview = baking && !element("viewport").dataset.sceneBakeFallback ? "gpu-bake" : "shader";
     this.accepted = copyProject(candidate);
     this.draftVisible = false;
     this.visible = packet; this.metadata = shown;
+    this.showItems(metadata, candidate);
     this.diagnostics([]); this.parameters.show(shown.parameters ?? [], candidate.parameters);
     this.showInspection(shown); this.channels.show(packet); this.showMeshes(packet); void this.recipe?.refresh();
     element("scene-title").textContent = packet.manifest.name || candidate.entry;
@@ -831,7 +891,8 @@ class Studio {
     const scene = JSON.stringify([project.modules, project.models, project.mapping, project.domain, project.gravity, project.edges,
       project.resolution, project.texelDensity, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
     const key = (request: { mesh: string; names: string[] }): string => {
-      const material = project.materials?.find(candidate => candidate.meshes.includes(request.mesh));
+      const bound = this.meshBindings[request.mesh];
+      const material = project.materials?.find(candidate => candidate.id === bound || candidate.meshes.includes(request.mesh));
       return JSON.stringify([scene, request.mesh, request.names, material?.entry, material?.seed, material?.parameters]);
     };
     const found = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
@@ -1060,8 +1121,10 @@ class Studio {
   /** Shows authored binding/slot names while leaving content identities available for detailed inspection. */
   private bindingLabel(mesh: SceneMesh): string {
     if (this.sceneMode()) {
-      const assigned = this.project.materials?.find(material => material.meshes.includes(mesh.id));
-      return assigned ? `material ${assigned.id}` : "Original material";
+      const assigned = this.meshBindings[mesh.id] ?? this.project.materials?.find(material => material.meshes.includes(mesh.id))?.id;
+      // A mesh of an item also says which of the item's slots it is.
+      const slot = Object.values(this.items).map(item => item.meshSlots[mesh.id]).find(Boolean);
+      return `${assigned ? `material ${assigned}` : "Original material"}${slot ? ` · slot ${slot}` : ""}`;
     }
     const originalMesh = this.base?.manifest.meshes.find(original => original.id === mesh.id);
     const material = originalMesh ? originalMesh.material : mesh.material;

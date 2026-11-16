@@ -1,8 +1,9 @@
 //! Version 2 items: several generators ("parts"), each with its own meshes per face
 //! group, features, pattern anchor, attachments and geometry key.
 use super::{
-    Attachment, Derived, Feature, ImportedMaterial, ItemDefinition, ItemDiagnostic, ItemGeometry,
-    ItemMesh, ItemNode, ItemPart, PatternAnchor, Values, fail, panel, procedural, route,
+    Attachment, Derived, Feature, ImportedMaterial, ItemDecal, ItemDefinition, ItemDiagnostic,
+    ItemGeometry, ItemMesh, ItemNode, ItemPart, PatternAnchor, Values, decal, fail, panel,
+    procedural, route,
     schema::{Generator, Scalar, Switch, bounded_name},
     surfaces::{Frame, Outline, Surfaces, prism},
 };
@@ -329,6 +330,66 @@ pub(super) fn prepare(
         });
     }
     Ok(parts)
+}
+
+/// Places every decal of the definition on its part, in the item's coordinates (`item` is
+/// the definition transform). A decal that does not fit fails with `ITEM_DECAL_FIT` at its
+/// own pointer.
+pub(super) fn decals(
+    context: &Context<'_>,
+    parts: &[PreparedPart],
+    item: Matrix,
+) -> Result<Vec<ItemDecal>, ItemDiagnostic> {
+    let definitions = &context.definition.decals;
+    if definitions.len() > decal::MAXIMUM {
+        return Err(context.fail(
+            "/decals",
+            "ITEM_LIMIT",
+            "An item has at most 64 decals.",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut placed = Vec::with_capacity(definitions.len());
+    for (index, definition) in definitions.iter().enumerate() {
+        let pointer = format!("/decals/{index}");
+        if !bounded_name(&definition.id)
+            || definition.id.contains('/')
+            || !ids.insert(definition.id.as_str())
+        {
+            return Err(context.fail(
+                &format!("{pointer}/id"),
+                "ITEM_DECAL",
+                "Decal IDs are unique bounded identifiers without a slash.",
+            ));
+        }
+        let Some(part) = parts.iter().find(|part| part.id == definition.on.part) else {
+            return Err(context.fail(
+                &format!("{pointer}/on/part"),
+                "ITEM_DECAL",
+                format!("{} is not a part of this item.", definition.on.part),
+            ));
+        };
+        let surface = match &part.shape {
+            PartShape::Panel(panel) => decal::Surface::Panel(panel),
+            PartShape::Box { size } => decal::Surface::Box(*size),
+            PartShape::Route(route) => decal::Surface::Route(route),
+            PartShape::Pipe { .. } | PartShape::Duct { .. } => {
+                return Err(context.fail(
+                    &format!("{pointer}/on/part"),
+                    "ITEM_DECAL",
+                    "A decal sits on a panel, box or route part.",
+                ));
+            }
+        };
+        placed.push(decal::resolve(
+            context,
+            definition,
+            &surface,
+            item.then(part.placement),
+            &pointer,
+        )?);
+    }
+    Ok(placed)
 }
 
 impl PreparedPart {

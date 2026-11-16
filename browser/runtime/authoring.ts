@@ -3,8 +3,43 @@ import type { LightingInput } from "../renderer/lighting.ts";
 
 export type ParameterValue = number | boolean | string | number[];
 export interface SourceEdge { start: number[]; end: number[] }
-/** One imported model of a scene project; its meshes are named `<id>/<mesh>` after composition. */
-export interface StudioModel { id: string; kind: "glb" | "aml"; name?: string; source?: string }
+/**
+ * One model of a scene project; its meshes are named `<id>/<mesh>` after composition. An `item` is an ItemSpec
+ * definition (the project module `entry`) with values for its controls, a placement (four affine columns: three basis
+ * vectors and the translation, meters, Z up) and, per slot of the item, the project material its meshes show.
+ */
+export interface StudioModel {
+  id: string; kind: "glb" | "aml" | "item"; name?: string; source?: string;
+  entry?: string; parameters?: Record<string, ParameterValue>; transform?: number[][]; slots?: Record<string, string>;
+}
+/** A placed item as the engine reports it (`metadata.items[model id]`), in world meters. */
+export interface ItemReport {
+  entry: string; definition: string; geometryKey: string;
+  /** Counts the times any part was generated; `rebuilt` names the parts generated the last time. */
+  generation: number; rebuilt: string[];
+  parameters: (Parameter & { value: ParameterValue })[];
+  derived: Record<string, number>;
+  parts: { id: string; key: string; meshes: string[]; rebuilt: boolean; anchor?: { origin: number[]; u: number[]; v: number[]; normal: number[] } }[];
+  features: { name: string; part: string; source?: string; face: string; points: number[][]; closed: boolean; normal: number[]; width: number }[];
+  attachments: Attachment[];
+  decals: { id: string; part: string; face: string; image: string; mesh: string; size: number[]; offset: number; corners: number[][] }[];
+  handles: ItemHandle[];
+  meshSlots: Record<string, string>;
+}
+/** A declared link from a dimension to a control: moving `position` by d meters along `axis` changes `parameter` by d * scale. */
+export interface ItemHandle { id: string; parameter: string; position: number[]; axis: number[]; scale: number; value: number; min?: number; max?: number }
+/** The images the decals of a project's item models name, read from their definitions; unreadable definitions name none. */
+export function decalImages(project: Pick<AuthoringProject, "modules" | "models">): Set<string> {
+  const names = new Set<string>();
+  for (const model of project.models ?? []) {
+    if (model.kind !== "item") continue;
+    try {
+      const definition = JSON.parse(model.source ?? project.modules[model.entry ?? ""] ?? "{}") as { decals?: { image?: unknown }[] };
+      for (const decal of Array.isArray(definition.decals) ? definition.decals : []) if (typeof decal?.image === "string") names.add(decal.image);
+    } catch { /* the engine reports the definition's own error */ }
+  }
+  return names;
+}
 /** One material applied to a set of composed meshes; entries share the project's modules. */
 export interface StudioMaterial { id: string; entry: string; parameters: Record<string, ParameterValue>; seed: number; meshes: string[] }
 /** Portable studio inputs; original scene assets remain separate from compiled render output. */
@@ -229,9 +264,10 @@ export class AuthoringCompiler {
   /** Composes a project's models and compiles its materials to preview shaders; nothing is baked. */
   shadeProject(project: AuthoringProject, requestId: number, layouts = false): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
-    // Shaders read images on the page; the engine only needs the models.
+    // Shaders read images on the page; the engine only needs the models and the images their decals show.
+    const decals = decalImages(inputs);
     const models = Object.fromEntries(Object.entries(assets).filter(([name]) => /\.(glb|ktx2)$/i.test(name)
-      || inputs.models?.some(model => model.name === name)));
+      || inputs.models?.some(model => model.name === name) || decals.has(name)));
     return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models, layouts });
   }
 

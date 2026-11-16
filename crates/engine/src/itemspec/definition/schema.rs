@@ -41,8 +41,60 @@ pub struct ItemDefinition {
     pub attachments: Vec<AttachmentDefinition>,
     #[serde(default)]
     pub collision: Collision,
+    /// Version 2: images placed on a part's face. See `decal.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decals: Vec<DecalDefinition>,
+    /// Version 2: dimensions an editor may drag, each linked to one numeric geometry control.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handles: Vec<HandleDefinition>,
     #[serde(skip)]
     pub source: String,
+}
+
+/// The part and face a decal sits on. `face` is `front` (default) or `back` on a panel,
+/// `front` on a box (its y = 0 side) and unused on a route.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecalTarget {
+    pub part: String,
+    pub face: Option<String>,
+}
+
+/// An image placed on a part. On a panel or box face `u` and `v` place its near edges by the
+/// shared rule; on a route `along` places its centre by arc length and `around` turns it
+/// about the route, in degrees from the section's first axis. `size` is width by height in
+/// meters: across and up a face; around and along a route.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecalDefinition {
+    pub id: String,
+    pub image: String,
+    pub size: [Scalar; 2],
+    pub on: DecalTarget,
+    pub u: Option<Rule>,
+    pub v: Option<Rule>,
+    pub along: Option<Rule>,
+    pub around: Option<Scalar>,
+    /// Stacking order: each layer stands 0.6 mm further from the surface.
+    #[serde(default)]
+    pub layer: u32,
+}
+
+fn unit_scale() -> f64 {
+    1.
+}
+/// The link from a dimension to a control: dragging the handle `d` meters along `axis`
+/// changes `parameter` by `d * scale`. `at` and `axis` are in item definition coordinates;
+/// `at` may read controls and derived values, so the handle follows the dimension.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandleDefinition {
+    pub id: String,
+    pub parameter: String,
+    pub at: [Scalar; 3],
+    pub axis: [f64; 3],
+    #[serde(default = "unit_scale")]
+    pub scale: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

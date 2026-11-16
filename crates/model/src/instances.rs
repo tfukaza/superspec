@@ -55,6 +55,8 @@ pub struct Model {
     pub batches: Vec<crate::batches::InstanceBatch>,
     pub materials: BTreeMap<String, Material>,
     pub images: BTreeMap<String, ImageResource>,
+    /// Placements that are decals (`Manifest::decals`): visible, never collidable.
+    pub decals: BTreeSet<String>,
 }
 
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
@@ -329,6 +331,15 @@ impl Model {
                     .manifest
                     .mesh_tangents
                     .insert(instance.id.clone(), tangents);
+            }
+            if self.decals.contains(&instance.id) {
+                if instance.collidable || !instance.visible {
+                    return Err(format!(
+                        "Decal {} must be visible and not collidable.",
+                        instance.id
+                    ));
+                }
+                scene.manifest.decals.push(instance.id.clone());
             }
             if instance.collidable {
                 scene.manifest.colliders.push(instance.id.clone());

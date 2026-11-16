@@ -362,6 +362,47 @@ pub struct PatternAnchor {
     pub normal: [f64; 3],
 }
 
+/// A placed decal: a render-only sheet standing off its surface, in the space of `bounds`.
+/// The image is named, never embedded: one image serves every placement, and a placement
+/// is no part of an image or geometry identity.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemDecal {
+    pub id: String,
+    pub part: String,
+    pub face: String,
+    pub image: String,
+    pub layer: u32,
+    /// Width by height in meters.
+    pub size: [f64; 2],
+    /// Distance from the surface in meters: 2 mm plus 0.6 mm per layer.
+    pub offset: f64,
+    pub positions: Vec<[f64; 3]>,
+    pub normals: Vec<[f64; 3]>,
+    /// The image's lower-left corner is (0, 0).
+    pub uvs: Vec<[f64; 2]>,
+    pub indices: Vec<u32>,
+    /// The sheet's four corners (lower left, lower right, upper right, upper left), for overlays.
+    pub corners: [[f64; 3]; 4],
+}
+
+/// A declared link from a dimension to a control, resolved for the current values:
+/// moving `position` by `d` meters along `axis` changes `parameter` by `d * scale`.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemHandle {
+    pub id: String,
+    pub parameter: String,
+    pub position: [f64; 3],
+    pub axis: [f64; 3],
+    pub scale: f64,
+    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Attachment {
     pub name: String,
@@ -391,6 +432,12 @@ pub struct GeneratedItem {
     pub collision: Collision,
     pub transform: Transform,
     pub provenance: Provenance,
+    /// Version 2: placed decals. They are renewed with the bindings, never part of `geometry`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decals: Vec<ItemDecal>,
+    /// Version 2: drag handles for the current control values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub handles: Vec<ItemHandle>,
 }
 impl GeneratedItem {
     pub fn with_material_overrides(

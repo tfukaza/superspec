@@ -28,6 +28,7 @@ fn models() -> Vec<ModelSource> {
             r##"<architecture version="1" id="{id}"><material id="plain" color="#888888"/>{boxes}</architecture>"##
         )),
         name: None,
+        ..ModelSource::default()
     };
     vec![
         scene(
@@ -224,6 +225,7 @@ fn pile(gap: f64) -> Project {
                 r##"<architecture version="1" id="pile"><material id="plain" color="#808080"/><box id="slab" width="1" depth="1" height="0.2" material="plain"/><box id="block" position="0 0 {z}" width="0.4" depth="0.4" height="0.3" material="plain"/></architecture>"##
             )),
             name: None,
+            ..ModelSource::default()
         }],
         ..project(vec![])
     };

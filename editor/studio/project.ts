@@ -141,8 +141,16 @@ function parseScene(value: SerializedProject, assets: Record<string, Uint8Array>
   if ((models.length || materials.length) && value.schemaVersion !== 2) throw new Error("Models and materials need a version 2 project.");
   const ids = new Set<string>();
   for (const model of models) {
-    if (!model || !identity(model.id) || ids.has(model.id) || !["glb", "aml"].includes(model.kind)) throw new Error(`Invalid project model ${String(model?.id)}.`);
+    if (!model || !identity(model.id) || ids.has(model.id) || !["glb", "aml", "item"].includes(model.kind)) throw new Error(`Invalid project model ${String(model?.id)}.`);
     ids.add(model.id);
+    if (model.kind === "item") {
+      // The engine checks the definition, its controls and its slots; this admits the document's shape.
+      if (typeof model.source !== "string" && !(typeof model.entry === "string" && Object.hasOwn(value.modules, model.entry))) throw new Error(`Model ${model.id} is missing its item definition.`);
+      if ((model.parameters !== undefined && (typeof model.parameters !== "object" || Array.isArray(model.parameters)))
+        || (model.slots !== undefined && (typeof model.slots !== "object" || !Object.values(model.slots).every(material => typeof material === "string")))
+        || (model.transform !== undefined && !(Array.isArray(model.transform) && model.transform.length === 4
+          && model.transform.every(column => Array.isArray(column) && column.length === 3 && column.every(Number.isFinite))))) throw new Error(`Invalid item model ${model.id}.`);
+    }
     if (model.kind === "aml" && typeof model.source !== "string") throw new Error(`Model ${model.id} is missing its AML scene.`);
     if (model.kind === "glb" && (!model.name || !assets[model.name])) throw new Error(`Model ${model.id} is missing its GLB.`);
   }
@@ -182,7 +190,7 @@ export function copyProject(project: StudioProject): StudioProject {
   return { ...project, modules: { ...project.modules }, parameters: structuredClone(project.parameters),
     assets: { ...project.assets }, base: { ...project.base }, target: { ...project.target }, domain: [...project.domain],
     edges: structuredClone(project.edges), gravity: [...project.gravity],
-    ...(project.models ? { models: project.models.map(model => ({ ...model })) } : {}),
+    ...(project.models ? { models: structuredClone(project.models) } : {}),
     ...(project.materials ? { materials: structuredClone(project.materials) } : {}),
     ...(project.batches ? { batches: structuredClone(project.batches) } : {}) };
 }

@@ -1,4 +1,5 @@
 //! Persistent ItemSpec definitions, local generation and bounded scene-preserving GLB ingestion.
+mod decal;
 pub mod expression;
 mod glb;
 mod location;
@@ -136,10 +137,77 @@ pub struct PreparedItem {
     /// Evaluated derived values.
     pub derived: Derived,
     pub materials: BTreeMap<String, MaterialRequest>,
+    /// Version 2: decals placed for these control values, in the item's coordinates.
+    pub decals: Vec<ItemDecal>,
+    /// Version 2: drag handles for these control values.
+    pub handles: Vec<ItemHandle>,
     definition: ItemDefinition,
     shape: Shape,
     attachments: Vec<Attachment>,
     assets: BTreeMap<String, String>,
+}
+
+/// Resolves the declared drag handles for the current control values.
+fn handles(
+    definition: &ItemDefinition,
+    parameters: &Values,
+    derived: &Derived,
+) -> Result<Vec<ItemHandle>, ItemDiagnostic> {
+    if definition.handles.len() > 32 {
+        return Err(fail(
+            &definition.source,
+            "/handles",
+            "ITEM_LIMIT",
+            "An item has at most 32 handles.",
+        ));
+    }
+    let mut ids = BTreeSet::new();
+    let mut resolved = Vec::new();
+    for (index, handle) in definition.handles.iter().enumerate() {
+        let pointer = format!("/handles/{index}");
+        let failure = |message: &str| fail(&definition.source, &pointer, "ITEM_HANDLE", message);
+        if !schema::bounded_name(&handle.id) || !ids.insert(handle.id.as_str()) {
+            return Err(failure("Handle IDs are unique bounded identifiers."));
+        }
+        let declaration = definition
+            .parameters
+            .get(&handle.parameter)
+            .filter(|parameter| {
+                parameter.role == Role::Geometry
+                    && matches!(
+                        parameter.kind,
+                        ParameterType::Number | ParameterType::Integer
+                    )
+            })
+            .ok_or_else(|| failure("A handle drags a numeric geometry control."))?;
+        if !handle.scale.is_finite() || handle.scale == 0. {
+            return Err(failure("A handle scale is finite and not zero."));
+        }
+        let mut position = [0.; 3];
+        for (axis, value) in position.iter_mut().enumerate() {
+            *value = definition.scalar(
+                &handle.at[axis],
+                parameters,
+                derived,
+                &format!("{pointer}/at/{axis}"),
+            )?;
+        }
+        let matrix = Matrix(definition.transform);
+        let axis = unit(handle.axis)
+            .and_then(|axis| unit(matrix.direction(axis)))
+            .map_err(|error| fail(&definition.source, &pointer, "ITEM_HANDLE", error))?;
+        resolved.push(ItemHandle {
+            id: handle.id.clone(),
+            parameter: handle.parameter.clone(),
+            position: matrix.point(position),
+            axis,
+            scale: handle.scale,
+            value: parameters[&handle.parameter].as_f64().unwrap_or(0.),
+            min: declaration.min,
+            max: declaration.max,
+        });
+    }
+    Ok(resolved)
 }
 
 pub fn prepare(
@@ -160,6 +228,22 @@ pub fn prepare(
     let mut dependencies = BTreeMap::new();
     let mut attachments = Vec::new();
     let mut part_keys = Vec::new();
+    let mut decals = Vec::new();
+    if !definition.generator.is_parts()
+        && (!definition.decals.is_empty() || !definition.handles.is_empty())
+    {
+        return Err(fail(
+            &definition.source,
+            if definition.decals.is_empty() {
+                "/handles"
+            } else {
+                "/decals"
+            },
+            "ITEM_VERSION",
+            "Decals and handles need itemspec version 2.",
+        ));
+    }
+    let handles = handles(definition, &parameters, &derived)?;
     let (shape, identity) = match &definition.generator {
         Generator::Pipe {
             length,
@@ -238,6 +322,7 @@ pub fn prepare(
                 .map(|(part, source)| (source.id.clone(), part.key().to_owned()))
                 .collect();
             let identity = json!(["parts", part_keys]);
+            decals = parts::decals(&context, &prepared, Matrix(definition.transform))?;
             (Shape::Parts(prepared), identity)
         }
         Generator::Box { .. } | Generator::Panel(_) | Generator::Route(_) => {
@@ -320,6 +405,8 @@ pub fn prepare(
         parameters,
         derived,
         materials,
+        decals,
+        handles,
         definition: definition.clone(),
         shape,
         attachments,
@@ -442,6 +529,8 @@ impl PreparedItem {
                 parameters: self.parameters.clone(),
                 assets: self.assets.clone(),
             },
+            decals: self.decals.clone(),
+            handles: self.handles.clone(),
         })
     }
 }

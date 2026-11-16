@@ -59,7 +59,7 @@ pub(super) struct Panel {
 }
 
 /// Start of a span of `size` inside `available`, by the shared placement rule.
-fn place(
+pub(super) fn place(
     context: &Context<'_>,
     rule: &Rule,
     available: f64,
@@ -343,6 +343,24 @@ impl Opening {
 }
 
 impl Panel {
+    /// Width, height and thickness.
+    pub(super) fn size(&self) -> [f64; 3] {
+        [self.width, self.height, self.thickness]
+    }
+    /// What the openings take from a face, as (id, [x, z, width, height]) in front-face
+    /// coordinates: every opening on the front, the through ones on the back.
+    pub(super) fn cuts(&self, back: bool) -> Vec<(&str, [f64; 4])> {
+        self.openings
+            .iter()
+            .filter(|opening| !back || opening.recess.is_none())
+            .map(|opening| {
+                (
+                    opening.id.as_str(),
+                    [opening.x, opening.z, opening.width, opening.height],
+                )
+            })
+            .collect()
+    }
     pub(super) fn build(&self, surfaces: &mut Surfaces<'_>) -> Result<(), String> {
         let (w, h, t) = (self.width, self.height, self.thickness);
         // Front and back: the panel rectangle with the openings as holes.

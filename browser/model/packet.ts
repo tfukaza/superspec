@@ -78,6 +78,8 @@ export interface Manifest {
   assets: { id: string; mime: "image/png" | "image/jpeg" | "image/ktx2"; byteStart: number; byteLength: number }[];
   assetByteCount: number;
   meshes: SceneMesh[]; colliders: string[];
+  /** Meshes that are decals: render-only sheets a few millimeters off their surface, drawn over it; absent without any. */
+  decals?: string[];
   /** Instanced batches, ascending by identity, with the lengths of their buffers; both absent without batches. */
   batches?: SceneBatch[]; batchCounts?: BatchCounts;
   meshTangents?: Record<string, number[][]>;

@@ -151,6 +151,24 @@ impl GeneratedItem {
                 .attachments
                 .iter()
                 .map(|attachment| text(&attachment.name))),
+            vector(&self.decals),
+            sum(self.decals.iter().map(|decal| {
+                sum([
+                    text(&decal.id),
+                    text(&decal.part),
+                    text(&decal.face),
+                    text(&decal.image),
+                    vector(&decal.positions),
+                    vector(&decal.normals),
+                    vector(&decal.uvs),
+                    vector(&decal.indices),
+                ])
+            })),
+            vector(&self.handles),
+            sum(self
+                .handles
+                .iter()
+                .map(|handle| sum([text(&handle.id), text(&handle.parameter)]))),
             text(&provenance.definition_id),
             text(&provenance.source),
             values(&provenance.parameters),
