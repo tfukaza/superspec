@@ -233,6 +233,157 @@ pub(super) struct Compiled {
     pub outputs: Vec<(String, Node)>,
     /// Conservative retained allocation charge of these nodes.
     pub retained: usize,
+    /// What evaluating one sample of every output and field can cost at most.
+    pub cost: Cost,
+}
+
+/// Upper bounds on what one sample's evaluation can consume, counted like the evaluator counts:
+/// one step per node visited, extra steps for noise octaves and the like. Both branches of every
+/// `select` count, every helper call counts its whole body, and a field's body counts once however
+/// often it is read, because a sample computes each field once. Queries of receiver features and
+/// edges are counted apart because their cost depends on how many are supplied.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Cost {
+    pub steps: usize,
+    /// Deepest nesting of node evaluations.
+    pub depth: usize,
+    /// Feature queries (`crease_*`).
+    pub queries: usize,
+    /// `runoff` nodes.
+    pub runoffs: usize,
+}
+
+struct Costing<'a> {
+    fields: &'a [Node],
+    functions: &'a [Function],
+    field_depth: Vec<Option<usize>>,
+    function_cost: Vec<Option<Cost>>,
+}
+
+impl Costing<'_> {
+    fn add(into: &mut Cost, other: Cost) {
+        into.steps = into.steps.saturating_add(other.steps);
+        into.queries = into.queries.saturating_add(other.queries);
+        into.runoffs = into.runoffs.saturating_add(other.runoffs);
+    }
+
+    fn field_depth(&mut self, index: usize) -> usize {
+        if index >= self.fields.len() {
+            return 0;
+        }
+        if let Some(depth) = self.field_depth[index] {
+            return depth;
+        }
+        // Fields are acyclic, but a bound must not recurse without end if that ever failed.
+        self.field_depth[index] = Some(usize::MAX / 4);
+        let fields = self.fields;
+        let depth = self.node(&fields[index]).depth;
+        self.field_depth[index] = Some(depth);
+        depth
+    }
+
+    fn function(&mut self, index: usize) -> Cost {
+        if index >= self.functions.len() {
+            return Cost::default();
+        }
+        if let Some(cost) = self.function_cost[index] {
+            return cost;
+        }
+        self.function_cost[index] = Some(Cost {
+            steps: usize::MAX / 4,
+            depth: usize::MAX / 4,
+            ..Cost::default()
+        });
+        let functions = self.functions;
+        let cost = self.node(&functions[index].body);
+        self.function_cost[index] = Some(cost);
+        cost
+    }
+
+    fn node(&mut self, node: &Node) -> Cost {
+        let mut cost = Cost {
+            steps: 1,
+            depth: 1,
+            ..Cost::default()
+        };
+        let mut deepest = 0;
+        match &node.kind {
+            Kind::Number(_)
+            | Kind::Bool(_)
+            | Kind::Text(_)
+            | Kind::Local(_)
+            | Kind::Parameter(_)
+            | Kind::Input(_) => {}
+            Kind::Field(index) => deepest = self.field_depth(*index),
+            Kind::Unary(_, a) | Kind::Member(a, _) => {
+                let a = self.node(a);
+                Self::add(&mut cost, a);
+                deepest = a.depth;
+            }
+            Kind::Binary(_, a, b) => {
+                for child in [a, b] {
+                    let child = self.node(child);
+                    Self::add(&mut cost, child);
+                    deepest = deepest.max(child.depth);
+                }
+            }
+            Kind::Select(a, b, c) => {
+                for child in [a, b, c] {
+                    let child = self.node(child);
+                    Self::add(&mut cost, child);
+                    deepest = deepest.max(child.depth);
+                }
+            }
+            Kind::Function(index, args) => {
+                for arg in args {
+                    let arg = self.node(arg);
+                    Self::add(&mut cost, arg);
+                    deepest = deepest.max(arg.depth);
+                }
+                let body = self.function(*index);
+                Self::add(&mut cost, body);
+                deepest = deepest.max(body.depth);
+            }
+            Kind::Builtin(builtin, args) => {
+                for arg in args {
+                    let arg = self.node(arg);
+                    Self::add(&mut cost, arg);
+                    deepest = deepest.max(arg.depth);
+                }
+                match builtin {
+                    Builtin::Noise => cost.steps = cost.steps.saturating_add(8),
+                    // Up to twelve octaves of eight.
+                    Builtin::Fbm => cost.steps = cost.steps.saturating_add(96),
+                    Builtin::Cellular => cost.steps = cost.steps.saturating_add(27),
+                    Builtin::VariedColor => cost.steps = cost.steps.saturating_add(48),
+                    Builtin::Runoff => cost.runoffs += 1,
+                    Builtin::CreaseDistance
+                    | Builtin::CreaseNormal
+                    | Builtin::CreaseTangent
+                    | Builtin::CreaseAdjacentNormal => cost.queries += 1,
+                    _ => {}
+                }
+            }
+        }
+        cost.depth = cost.depth.saturating_add(deepest);
+        cost
+    }
+}
+
+fn cost(fields: &[Node], functions: &[Function], outputs: &[(String, Node)]) -> Cost {
+    let mut costing = Costing {
+        fields,
+        functions,
+        field_depth: vec![None; fields.len()],
+        function_cost: vec![None; functions.len()],
+    };
+    let mut total = Cost::default();
+    for node in fields.iter().chain(outputs.iter().map(|(_, node)| node)) {
+        let found = costing.node(node);
+        Costing::add(&mut total, found);
+        total.depth = total.depth.max(found.depth);
+    }
+    total
 }
 
 struct Resolver<'a> {
@@ -370,11 +521,13 @@ pub(super) fn resolve(
                 .map(|(name, _)| name.capacity() + size_of::<(String, Node)>())
                 .sum::<usize>(),
     );
+    let cost = cost(&fields, &functions, &outputs);
     Compiled {
         fields,
         functions,
         outputs,
         retained,
+        cost,
     }
 }
 

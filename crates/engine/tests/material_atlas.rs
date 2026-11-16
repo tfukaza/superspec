@@ -285,3 +285,130 @@ fn every_chart_orientation_decodes_to_the_world_relief_normal() {
         );
     }
 }
+
+/// Flat quads in the XY plane facing +Z, each given by its low corner and size in meters.
+fn quads(list: &[([f64; 2], [f64; 2])]) -> Receiver {
+    let (mut positions, mut normals, mut uvs, mut indices) = (vec![], vec![], vec![], vec![]);
+    for ([x, y], [w, h]) in list {
+        let base = (positions.len() / 3) as u32;
+        for [dx, dy] in [[0., 0.], [1., 0.], [1., 1.], [0., 1.]] {
+            positions.extend([x + dx * w, y + dy * h, 0.]);
+            normals.extend([0., 0., 1.]);
+            uvs.extend([dx, dy]);
+        }
+        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    Receiver {
+        id: "quads".into(),
+        object_id: "quads".into(),
+        positions,
+        normals,
+        uvs,
+        indices,
+        object_to_world: None,
+        contacts: Vec::new(),
+    }
+}
+
+fn bake_at(receiver: Receiver, source: &str, density: Option<f64>) -> Result<Output, String> {
+    let request = Request {
+        entry: "main.ms".into(),
+        source: source.into(),
+        resolution: 512,
+        receivers: vec![receiver],
+        mapping: superspec_engine::authoring::Mapping::World,
+        texel_density: density,
+        ..Request::default()
+    };
+    Session::default()
+        .build(
+            &request,
+            1,
+            &|name| Err(format!("no asset {name}")),
+            &|| false,
+        )
+        .map_err(|errors| format!("{errors:?}"))
+}
+
+#[test]
+fn a_texel_density_gives_small_receivers_small_textures() {
+    let plain = "material 1; output base_color = vec3(0.5);";
+    let atlas = |output: &Output| {
+        let atlas = &output.metadata["atlases"][0];
+        (
+            atlas["width"].as_f64().unwrap(),
+            atlas["height"].as_f64().unwrap(),
+            atlas["texelsPerMeter"].as_f64().unwrap(),
+        )
+    };
+    // A 20 x 10 x 10 cm block at 100 texels per meter: four 24 x 14 charts and two 14 x 14
+    // charts (2-texel gutters included) first fit a 64-texel square, in three shelves.
+    let block = || cuboid([0., 0., 0.], [0.2, 0.1, 0.1]);
+    let sized = bake_at(block(), plain, Some(100.)).unwrap();
+    assert_eq!(atlas(&sized), (64., 42., 100.));
+    assert_eq!(image(&sized, false).0, 64);
+    // Without a density the same block fills the requested resolution.
+    let filled = bake_at(block(), plain, None).unwrap();
+    assert_eq!(atlas(&filled).0, 512.);
+    assert!(atlas(&filled).2 > 1000., "{:?}", atlas(&filled));
+    // A wall that cannot reach the density keeps the resolution, exactly as without one.
+    let wall = || cuboid([0., 0., 0.], [8., 0.22, 3.2]);
+    let capped = bake_at(wall(), plain, Some(1000.)).unwrap();
+    assert_eq!(
+        atlas(&capped),
+        atlas(&bake_at(wall(), plain, None).unwrap())
+    );
+    assert_eq!(
+        image(&capped, false),
+        image(&bake_at(wall(), plain, None).unwrap(), false)
+    );
+    assert!(atlas(&capped).2 < 100.);
+    assert!(
+        bake_at(block(), plain, Some(0.5))
+            .err()
+            .expect("the density is rejected")
+            .contains("Texel density")
+    );
+}
+
+#[test]
+fn charts_below_the_density_repeat_their_samples() {
+    // A 1 m quad sets the receiver's density near 500 texels per meter; the 1 mm quads beside
+    // it are far smaller than a texel, so each is padded to the minimum chart and sampled once.
+    let mut list = vec![([0., 0.], [1., 1.])];
+    list.extend((0..6).map(|i| ([1.2 + f64::from(i) * 0.0137, 0.], [0.001, 0.001])));
+    // Color changes several times across each small quad, so finer sampling would show.
+    let output = bake_at(
+        quads(&list),
+        "material 1; output base_color = vec3(fract(world.x * 3100.0), fract(world.y * 2900.0), 0.5);",
+        None,
+    )
+    .unwrap();
+    let mesh = mesh(&output);
+    let (width, texels) = image(&output, false);
+    let height = texels.len() / width;
+    let mut colors = std::collections::BTreeSet::new();
+    for quad in 1..list.len() {
+        let [x0, y0, x1, y1] = uv_box(mesh, quad * 2, width as f64, height as f64);
+        // The whole padded chart, gutters included, holds one color.
+        let (x0, y0, x1, y1) = (
+            x0 as usize - 2,
+            y0 as usize - 2,
+            x1 as usize + 2,
+            y1 as usize + 2,
+        );
+        assert_eq!((x1 - x0, y1 - y0), (8, 8));
+        let first = texels[y0 * width + x0];
+        for y in y0..y1 {
+            for x in x0..x1 {
+                assert_eq!(texels[y * width + x], first, "quad {quad} at {x},{y}");
+            }
+        }
+        colors.insert(first);
+    }
+    assert!(colors.len() > 1, "each small quad has its own sample");
+    // The large quad still varies texel by texel.
+    let [x0, y0, ..] = uv_box(mesh, 0, width as f64, height as f64);
+    let at = |dx: usize| texels[(y0 as usize + 3) * width + x0 as usize + dx];
+    assert_ne!(at(3), at(4));
+}

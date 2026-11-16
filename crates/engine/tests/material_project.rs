@@ -332,3 +332,102 @@ fn single_material_projects_see_contacts_too() {
     let (darkest, _) = color_range(&build(&single_material_pile(0.1)).unwrap(), "block");
     assert_eq!(darkest, 255, "no contact without touching");
 }
+
+/// One build of a distributing session reports every large bake of the project, and the build
+/// repeated with those rows equals an undistributed one.
+#[test]
+fn one_build_reports_every_bake_other_sessions_can_share() {
+    let project = Project {
+        resolution: 128,
+        ..project(vec![
+            assign("concrete", "kowloon-concrete.material.ts", &["yard/wall"]),
+            assign("rust", "kowloon-rusted-steel.material.ts", &["steel/wall"]),
+        ])
+    };
+    let whole = build(&project).unwrap().scene(1).unwrap();
+    let mut session = Session::default();
+    session.distribute_bakes(true);
+    let stopped = session
+        .build_project(&project, 1, &asset, &|| false)
+        .err()
+        .expect("the bakes are handed out");
+    assert!(
+        stopped.iter().all(|d| d.code == "BAKE_PENDING"),
+        "{stopped:?}"
+    );
+    let mut entries = Vec::new();
+    while let Some(pending) = session.take_pending_bake() {
+        entries.push(pending.request.entry.clone());
+        for index in 0..2 {
+            let share = Session::default()
+                .bake_share(&pending, index, 2, &asset, &|| false)
+                .unwrap_or_else(|e| panic!("{e:?}"));
+            session.provide_bake_share(&share).unwrap();
+        }
+    }
+    assert_eq!(
+        entries,
+        [
+            "kowloon-concrete.material.ts",
+            "kowloon-rusted-steel.material.ts"
+        ]
+    );
+    let distributed = session
+        .build_project(&project, 2, &asset, &|| false)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(session.take_pending_bake().is_none());
+    let distributed = distributed.scene(1).unwrap();
+    assert_eq!(distributed.asset_bytes, whole.asset_bytes);
+    assert_eq!(distributed.positions, whole.positions);
+    assert_eq!(distributed.uvs, whole.uvs);
+}
+
+/// Variants of one recipe keep one decoded copy of the images they sample: a scene of many
+/// parameter sets stays inside the session's cache instead of evicting its own bakes.
+#[test]
+fn material_variants_fit_the_session_cache_together() {
+    let variant = |index: usize| MaterialAssignment {
+        parameters: [(
+            "chipAmount".to_owned(),
+            serde_json::json!(0.1 + index as f64 * 0.05),
+        )]
+        .into_iter()
+        .collect(),
+        ..assign(
+            &format!("concrete-{index}"),
+            "kowloon-concrete.material.ts",
+            &[],
+        )
+    };
+    let mut materials: Vec<MaterialAssignment> = (0..8).map(variant).collect();
+    materials[0].meshes = vec!["yard/wall".into()];
+    materials[7].meshes = vec!["yard/slab".into()];
+    let project = Project {
+        resolution: 128,
+        ..project(materials)
+    };
+    let mut session = Session::default();
+    session.distribute_bakes(true);
+    session
+        .build_project(&project, 1, &asset, &|| false)
+        .err()
+        .expect("the bakes are handed out");
+    let mut handed = 0;
+    while let Some(pending) = session.take_pending_bake() {
+        handed += 1;
+        let share = Session::default()
+            .bake_share(&pending, 0, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        session.provide_bake_share(&share).unwrap();
+    }
+    assert_eq!(handed, 2);
+    // Both bakes are still held after the second build, so nothing is handed out again.
+    session
+        .build_project(&project, 2, &asset, &|| false)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(session.take_pending_bake().is_none());
+    session
+        .build_project(&project, 3, &asset, &|| false)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    assert!(session.take_pending_bake().is_none());
+}

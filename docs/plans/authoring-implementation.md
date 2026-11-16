@@ -64,9 +64,14 @@ saved projects, native commands and WorldSpec placement. `levelspec-studio` acce
 raw material/item entries and relocatable project bundles. Material and item
 editors share one worker, renderer, project format and native generation engine.
 
-The material backend evaluates portable fields into textures. Texture mipmaps
-respond to the view; arbitrary GPU material programs and scene-buffer effects are
-not implemented. Unsupported operations fail explicitly. Planar finite-edge runoff
+The material backend evaluates portable fields into textures on the CPU, which stays
+the authority for export. Texture mipmaps respond to the view. Studio additionally
+previews programs on the GPU, as an approximation only: `program/glsl.rs` emits GLSL
+for per-pixel shading of scene projects, and `browser/renderer/bake.ts` bakes a swatch
+to preview textures ahead of the CPU draft (see the [authoring guide](../AUTHORING.md)
+and [gpu-bake-and-cpu-build-performance.md](gpu-bake-and-cpu-build-performance.md)).
+Programs that use `runoff`, receiver features or the receiver-normal outputs, and
+scene-buffer effects, stay on the CPU path. Unsupported operations fail explicitly. Planar finite-edge runoff
 is supported; curved flow and pooling remain the later extensions identified by
 the product plan. Static GLB import preserves its source data and checks the
 narrower renderer/export capability boundary instead of silently losing features.

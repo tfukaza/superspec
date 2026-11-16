@@ -5,6 +5,8 @@ import type { SceneMesh, ScenePacket } from "../model/packet.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
+import { programMaterial, programTexture, setParameters, setSeeds, type MaterialShading, type SceneShading } from "./shade.ts";
+import { GpuBaker, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 
@@ -73,6 +75,11 @@ export class RustScene {
   private models = new THREE.Group();
   private readonly texturePool = new TexturePool(this.renderer);
   private textureLeases = new Set<string>();
+  /** Shaded materials by identity: the uniforms every mesh of the material shares. */
+  private shading = new Map<string, { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }>();
+  /** Program images by their bytes, per color role; kept while the viewer lives. */
+  private readonly programImages = new WeakMap<Uint8Array, Map<boolean, Promise<THREE.Texture>>>();
+  private readonly programTextures = new Set<THREE.Texture>();
   private navigation?: THREE.Group;
   private itemGuides?: THREE.Group;
   private collisionIds = new Set<string>();
@@ -125,7 +132,7 @@ export class RustScene {
   }
 
   /** Atomically replaces a scene and preserves selection; explicit new-file opens may request camera framing. */
-  async apply(packet: ScenePacket, current: () => boolean = () => true, fit = false): Promise<boolean> {
+  async apply(packet: ScenePacket, current: () => boolean = () => true, fit = false, decorate?: (meshes: THREE.Mesh[]) => void): Promise<boolean> {
     const next = new THREE.Group();
     const textures = new Map<string, THREE.Texture>();
     const leases = new Set<string>();
@@ -250,7 +257,11 @@ export class RustScene {
       if (!current() || this.closed) { this.release(next); this.texturePool.release(leases); return false; }
       for (const item of reused) {
         item.mesh.userData.source = item.source;
+        // A reused mesh may still show a GPU preview; the build's own maps replace it.
+        this.restoreBaked(item.mesh);
       }
+      delete this.host.dataset.gpuPreviewKey;
+      decorate?.(ordered);
       for (const mesh of ordered) next.add(mesh);
       this.scene.add(next);
       const previous = this.models;
@@ -314,6 +325,178 @@ export class RustScene {
       if (!current() || this.closed) return false;
       throw error;
     }
+  }
+
+  /**
+   * Prepares materials that evaluate their MaterialSpec program per pixel (see shade.ts) and
+   * returns the step that puts them on a scene's meshes, for `apply`. `values` are parameter
+   * overrides by material; `image` supplies the bytes of each image a program samples.
+   */
+  async prepareShading(shading: SceneShading, values: Record<string, Record<string, unknown>>,
+    image: (name: string) => Promise<Uint8Array>): Promise<(meshes: THREE.Mesh[]) => void> {
+    const prepared = new Map<string, { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }>();
+    for (const [id, material] of Object.entries(shading.materials)) {
+      prepared.set(id, { uniforms: await this.programUniforms(material, values[id] ?? {}, image), material });
+    }
+    return meshes => {
+      this.shading = prepared;
+      for (const mesh of meshes) {
+        const spec = shading.meshes[mesh.name];
+        const entry = spec && prepared.get(spec.material);
+        if (!spec || !entry) continue;
+        (mesh.material as THREE.Material).dispose();
+        const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms);
+        material.wireframe = this.view.wireframe;
+        material.side = THREE.DoubleSide;
+        mesh.material = material;
+        mesh.userData.liveOperations = material.userData.liveOperations;
+        mesh.userData.shaded = spec.material;
+      }
+    };
+  }
+
+  /** A program's parameter, seed and image uniforms; images decode once per bytes and color role. */
+  private async programUniforms(material: MaterialShading, values: Record<string, unknown>,
+    image: (name: string) => Promise<Uint8Array>): Promise<Record<string, THREE.IUniform>> {
+    const uniforms: Record<string, THREE.IUniform> = {};
+    setParameters(uniforms, material, values);
+    setSeeds(uniforms, material);
+    for (const entry of material.shader.images) {
+      const bytes = await image(entry.name);
+      let roles = this.programImages.get(bytes);
+      if (!roles) this.programImages.set(bytes, roles = new Map());
+      let texture = roles.get(entry.linear);
+      if (!texture) {
+        texture = programTexture(bytes, entry.linear).then(loaded => { this.programTextures.add(loaded); return loaded; });
+        roles.set(entry.linear, texture);
+      }
+      uniforms[entry.uniform] = { value: await texture };
+    }
+    return uniforms;
+  }
+
+  private bakerInstance?: GpuBaker;
+  private gpuUniforms?: { material: MaterialShading; uniforms: Record<string, THREE.IUniform> };
+
+  /** Why GPU preview baking is not available in this viewer, or null. */
+  gpuPreviewUnavailable(): string | null {
+    return (this.bakerInstance ??= this.newBaker()).unavailable();
+  }
+
+  private newBaker(): GpuBaker {
+    const baker = new GpuBaker(this.renderer);
+    baker.onLost = () => { this.gpuUniforms = undefined; this.clearBakedPreview(); };
+    return baker;
+  }
+
+  /** Whether `shading`'s shader is compiled for baking and its uniforms are bound, so only parameters need updating. */
+  gpuPreviewReady(shading: MaterialShading): boolean {
+    return this.bakerInstance?.compiledFor(shading) === true && this.gpuUniforms?.material.shader.source === shading.shader.source
+      && this.gpuUniforms.material.seedValues.join() === shading.seedValues.join();
+  }
+
+  /**
+   * Bakes a material over `domain` on the GPU and shows it on `meshId` as a PREVIEW: the textures
+   * replace the mesh's baked maps until the next `apply` or `clearBakedPreview`, which restore them.
+   * `shading` may be omitted to rebake the last program with new `values` (uniform updates only).
+   * Never produces anything that can be saved or exported. Throws when the GPU cannot bake; the
+   * caller then keeps the CPU path.
+   */
+  async bakePreview(meshId: string, domain: BakeDomain, values: Record<string, unknown>, shading?: MaterialShading,
+    image?: (name: string) => Promise<Uint8Array>, measure = false, current: () => boolean = () => true,
+    onShown?: (bake: GpuBake, stage: "low" | "full", imagesMs: number) => void, fields?: Record<string, FieldTexels>): Promise<GpuBake | null> {
+    const baker = this.bakerInstance ??= this.newBaker();
+    if (!current()) return null;
+    const mesh = this.models.children.find(object => object.name === meshId) as THREE.Mesh | undefined;
+    if (!mesh) throw new Error("GPU preview target mesh is not displayed.");
+    let imagesMs = 0;
+    if (shading) {
+      if (!image) throw new Error("GPU preview needs image bytes.");
+      const started = performance.now();
+      this.gpuUniforms = { material: shading, uniforms: await this.programUniforms(shading, values, image) };
+      imagesMs = performance.now() - started;
+    }
+    const bound = this.gpuUniforms;
+    if (!bound) throw new Error("GPU preview has no program to bake.");
+    setParameters(bound.uniforms, bound.material, values);
+    if (!matchesMesh(domain, mesh.geometry.getAttribute("position").array, mesh.geometry.getAttribute("uv").array)) {
+      throw new Error("GPU preview layout does not match the displayed mesh.");
+    }
+    // The caller may have moved on (a newer edit, or the CPU result for this one) while shaders compile or bands draw.
+    const alive = () => current() && this.models.children.includes(mesh);
+    let shown: GpuBake | null = null;
+    // Large targets show a quarter-size bake first, then refine to the requested size; a newer edit cancels the refinement.
+    if (domain.width >= 256) {
+      const low = await baker.bake(bound.material, bound.uniforms, scaledDomain(domain, 4), { measure, current: alive, fields });
+      if (!low || !alive()) return null;
+      this.showBaked(mesh, low); onShown?.(low, "low", imagesMs); shown = low;
+      await new Promise(done => setTimeout(done, 0));
+      if (!alive()) return shown;
+    }
+    const bake = await baker.bake(bound.material, bound.uniforms, domain, { measure, current: alive, fields });
+    if (!bake || !alive()) return shown;
+    this.showBaked(mesh, bake); onShown?.(bake, "full", imagesMs);
+    return bake;
+  }
+
+  /** Reads the last GPU preview's texels (tests and diagnostics only). */
+  readBakedPreview(bake: GpuBake): ReturnType<GpuBaker["readBack"]> {
+    return this.bakerInstance!.readBack(bake);
+  }
+
+  private showBaked(mesh: THREE.Mesh, bake: GpuBake): void {
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    if (!mesh.userData.bakedOriginal) {
+      mesh.userData.bakedOriginal = {
+        map: material.map, normalMap: material.normalMap, roughnessMap: material.roughnessMap, metalnessMap: material.metalnessMap,
+        emissiveMap: material.emissiveMap, emissive: material.emissive.clone(), emissiveIntensity: material.emissiveIntensity,
+        roughness: material.roughness, metalness: material.metalness, normalScale: material.normalScale.clone(),
+      };
+    }
+    const shown = mesh.userData.bakedOriginal;
+    const changed = material.map !== bake.baseColor;
+    material.map = bake.baseColor;
+    material.normalMap = bake.normal;
+    material.roughnessMap = material.metalnessMap = bake.properties;
+    material.emissiveMap = bake.emissive;
+    material.emissive.set(0xffffff);
+    material.emissiveIntensity = 1;
+    material.roughness = 1; material.metalness = 1;
+    material.normalScale.setScalar(1);
+    if (changed) material.needsUpdate = true;
+    mesh.userData.bakedPreview = { key: bake.key, profile: bake.profile, original: shown };
+    this.host.dataset.gpuPreviewKey = bake.key;
+    // Draw now, as `apply` does, without the frame loop's control update (which can nudge the camera by a rounding step).
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  /** Puts a mesh's CPU-baked maps back after a GPU preview. */
+  private restoreBaked(mesh: THREE.Mesh): void {
+    const original = mesh.userData.bakedOriginal;
+    if (!original) return;
+    const material = mesh.material as THREE.MeshStandardMaterial;
+    material.map = original.map; material.normalMap = original.normalMap;
+    material.roughnessMap = original.roughnessMap; material.metalnessMap = original.metalnessMap;
+    material.emissiveMap = original.emissiveMap; material.emissive.copy(original.emissive); material.emissiveIntensity = original.emissiveIntensity;
+    material.roughness = original.roughness; material.metalness = original.metalness; material.normalScale.copy(original.normalScale);
+    material.needsUpdate = true;
+    delete mesh.userData.bakedOriginal; delete mesh.userData.bakedPreview;
+  }
+
+  /** Removes any GPU preview from the displayed meshes, restoring their CPU-baked maps. */
+  clearBakedPreview(): void {
+    for (const object of this.models.children) this.restoreBaked(object as THREE.Mesh);
+    delete this.host.dataset.gpuPreviewKey;
+    this.invalidate();
+  }
+
+  /** Updates a shaded material's parameters in place: no build and no new shader. */
+  setShadingParameters(material: string, values: Record<string, unknown>): boolean {
+    const entry = this.shading.get(material);
+    if (!entry) return false;
+    setParameters(entry.uniforms, entry.material, values);
+    this.invalidate();
+    return true;
   }
 
   /** Selects the same stable mesh identity used by pointer picking, without moving the camera. */
@@ -461,6 +644,8 @@ export class RustScene {
     this.renderer.domElement.removeEventListener("webglcontextrestored", this.invalidate);
     this.release(this.models);
     this.texturePool.dispose();
+    this.bakerInstance?.dispose();
+    for (const texture of this.programTextures) texture.dispose();
     this.scene.environment = null;
     this.environment.dispose();
     this.renderer.dispose(); this.renderer.domElement.remove();

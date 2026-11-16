@@ -92,6 +92,10 @@ pub struct Project {
     pub materials: Vec<MaterialAssignment>,
     /// Bake scheduling; "production" admits larger textures and bakes rows on native threads.
     pub profile: super::Profile,
+    /// Texels per meter for every receiver that can reach it within `resolution`; smaller
+    /// receivers then get smaller textures. Unset, every receiver fills `resolution`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub texel_density: Option<f64>,
 }
 impl Default for Project {
     fn default() -> Self {
@@ -114,6 +118,7 @@ impl Default for Project {
             models: vec![],
             materials: vec![],
             profile: super::Profile::Preview,
+            texel_density: None,
         }
     }
 }
@@ -192,6 +197,7 @@ impl Session {
             edges: project.edges.clone(),
             gravity: project.gravity,
             profile: project.profile,
+            texel_density: project.texel_density,
             ..Default::default()
         };
         let mut transforms = BTreeMap::<String, [f64; 16]>::new();
@@ -438,6 +444,7 @@ impl Session {
         let mut identities = BTreeSet::new();
         let mut claimed = BTreeSet::new();
         let mut materials = serde_json::Map::new();
+        let mut distributed = None;
         for assignment in &project.materials {
             if !valid_identity(&assignment.id) || !identities.insert(assignment.id.as_str()) {
                 return Err(fail(format!(
@@ -482,6 +489,7 @@ impl Session {
                 edges: project.edges.clone(),
                 gravity: project.gravity,
                 profile: project.profile,
+                texel_density: project.texel_density,
                 // Contacts with the rest of the composed scene become `contact` features.
                 receivers: receivers(&scene, &ids, &transforms)
                     .into_iter()
@@ -499,9 +507,21 @@ impl Session {
                 materials.insert(assignment.id.clone(), metadata);
                 continue;
             }
-            let output = self.build(&request, revision, assets, cancelled)?;
+            let output = match self.build(&request, revision, assets, cancelled) {
+                Ok(output) => output,
+                // A bake handed to other sessions: go on, so one build reports every such bake
+                // of the project and the host can have them all evaluated before it builds again.
+                Err(stopped) if stopped.iter().all(|d| d.code == "BAKE_PENDING") => {
+                    distributed = Some(stopped);
+                    continue;
+                }
+                Err(failed) => return Err(failed),
+            };
             model.replace_receivers(output.model, ids).map_err(&fail)?;
             materials.insert(assignment.id.clone(), output.metadata);
+        }
+        if let Some(stopped) = distributed {
+            return Err(stopped);
         }
         if cancelled() {
             return Err(fail("Project authoring cancelled.".into()));
@@ -513,6 +533,175 @@ impl Session {
                 "materials": materials,
                 "meshes": meshes,
                 "receiverTransforms": transforms,
+            }),
+        })
+    }
+}
+
+/// At most this many features of a receiver reach a preview shader, which visits every one of
+/// them per pixel; the sharpest creases and the open edges are kept.
+pub const PREVIEW_FEATURES: usize = 1024;
+
+impl Session {
+    /// Describes a multi-model, multi-material project for a renderer that evaluates materials
+    /// itself: the composed models without any bake, and for each material its program as a
+    /// preview shader (see `materialspec::program::Shader`) with the values of its named seeds.
+    /// Each assigned mesh lists its material, world bounds and, when the program queries them,
+    /// its receiver features as twelve numbers each: start and kind (0 convex, 1 concave,
+    /// 2 boundary, 3 seam, 4 contact), end and angle in degrees, middle normal and whether it has
+    /// one. Nothing is baked, so this answers in the time it takes to compile the recipes.
+    pub fn shade_project(
+        &mut self,
+        project: &Project,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectOutput, Vec<Diagnostic>> {
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
+        if project.schema_version != 2 || project.kind != "material" {
+            return Err(fail(
+                "Only version 2 material projects have a shader preview.".into(),
+            ));
+        }
+        self.begin_authoring(revision, &project.entry)?;
+        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
+        let scene = model
+            .scene_cancellable(revision as u32, cancelled)
+            .map_err(&fail)?;
+        let visible: BTreeSet<&str> = scene
+            .manifest
+            .meshes
+            .iter()
+            .filter(|mesh| mesh.visible)
+            .map(|mesh| mesh.id.as_str())
+            .collect();
+        let mut materials = serde_json::Map::new();
+        let mut meshes = serde_json::Map::new();
+        for assignment in &project.materials {
+            let source = project.modules.get(&assignment.entry).ok_or_else(|| {
+                fail(format!(
+                    "Material {} uses missing module {}.",
+                    assignment.id, assignment.entry
+                ))
+            })?;
+            let program = self.program(&Request {
+                kind: "material".into(),
+                entry: assignment.entry.clone(),
+                source: source.clone(),
+                modules: project.modules.clone(),
+                ..Default::default()
+            })?;
+            let shader = program.shader().map_err(&fail)?;
+            let mut metadata = serde_json::to_value(program.metadata()).unwrap();
+            metadata["mapping"] = serde_json::to_value(project.mapping).unwrap();
+            metadata["seedValues"] = shader
+                .seeds
+                .iter()
+                .map(|seed| crate::materialspec::program::seed_value(assignment.seed, &seed.name))
+                .collect();
+            let wants_features = shader.features;
+            // A program with CPU-only operations (runoff) also gets a plan: a shader that reads the
+            // CPU-baked fields as textures, with its own seeds (it holds less of the program).
+            if program
+                .metadata()
+                .required_inputs
+                .iter()
+                .any(|input| input == "edges")
+            {
+                match program.shader_plan() {
+                    Ok(plan) if !plan.cpu_fields.is_empty() => {
+                        let seeds: Vec<_> = plan
+                            .seeds
+                            .iter()
+                            .map(|seed| {
+                                crate::materialspec::program::seed_value(
+                                    assignment.seed,
+                                    &seed.name,
+                                )
+                            })
+                            .collect();
+                        metadata["plan"] =
+                            serde_json::json!({ "shader": plan, "seedValues": seeds });
+                    }
+                    Ok(_) => {}
+                    Err(reason) => metadata["planError"] = serde_json::json!(reason),
+                }
+            }
+            metadata["shader"] = serde_json::to_value(shader).unwrap();
+            materials.insert(assignment.id.clone(), metadata);
+            let ids: BTreeSet<String> = assignment.meshes.iter().cloned().collect();
+            if let Some(missing) = ids.iter().find(|id| !visible.contains(id.as_str())) {
+                return Err(fail(format!(
+                    "Material {} names mesh {missing}, which is not a visible mesh of the project's models.",
+                    assignment.id
+                )));
+            }
+            for mut receiver in receivers(&scene, &ids, &transforms) {
+                if cancelled() {
+                    return Err(fail("Project authoring cancelled.".into()));
+                }
+                let mut low = [f64::INFINITY; 3];
+                let mut high = [f64::NEG_INFINITY; 3];
+                for point in receiver.positions.chunks_exact(3) {
+                    for axis in 0..3 {
+                        low[axis] = low[axis].min(point[axis]);
+                        high[axis] = high[axis].max(point[axis]);
+                    }
+                }
+                let mut features = Vec::new();
+                if wants_features {
+                    receiver.contacts = contacts(&scene, &receiver);
+                    let mut found = crate::materialspec::program::receiver_features(
+                        &receiver.positions,
+                        &receiver.indices,
+                    );
+                    // Sharpest first, so a receiver with more edges than a shader visits loses
+                    // only its shallowest creases.
+                    found.sort_by(|a, b| b.angle.total_cmp(&a.angle));
+                    found.truncate(
+                        PREVIEW_FEATURES - receiver.contacts.len().min(PREVIEW_FEATURES / 2),
+                    );
+                    use crate::materialspec::program::FeatureKind as Kind;
+                    for feature in &found {
+                        let kind = match feature.kind {
+                            Kind::Convex => 0.,
+                            Kind::Concave => 1.,
+                            Kind::Boundary => 2.,
+                            Kind::Seam => 3.,
+                            Kind::Contact => 4.,
+                        };
+                        let normal = feature.normal.unwrap_or([0.; 3]);
+                        features.extend(feature.start);
+                        features.push(kind);
+                        features.extend(feature.end);
+                        features.push(feature.angle);
+                        features.extend(normal);
+                        features.push(f64::from(u8::from(feature.normal.is_some())));
+                    }
+                    for contact in receiver.contacts.iter().take(PREVIEW_FEATURES / 2) {
+                        features.extend(contact.start);
+                        features.push(4.);
+                        features.extend(contact.end);
+                        features.extend([0., 0., 0., 0., 0.]);
+                    }
+                }
+                meshes.insert(
+                    receiver.id.clone(),
+                    serde_json::json!({
+                        "material": assignment.id, "boundsMin": low, "boundsMax": high, "features": features,
+                        "objectToWorld": receiver.object_to_world,
+                    }),
+                );
+            }
+        }
+        let ids: Vec<&str> = visible.into_iter().collect();
+        Ok(ProjectOutput {
+            model,
+            metadata: serde_json::json!({
+                "materials": materials,
+                "meshes": ids,
+                "shading": meshes,
+                "gravity": project.gravity,
             }),
         })
     }

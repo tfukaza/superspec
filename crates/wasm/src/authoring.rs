@@ -10,6 +10,7 @@ pub struct Authoring {
     assets: BTreeMap<String, Arc<[u8]>>,
     accepted: Option<Output>,
     packet: Vec<u8>,
+    field_texels: Vec<f32>,
     staged: crate::staged::StagedExport,
 }
 
@@ -95,6 +96,52 @@ impl Authoring {
 
     pub fn packet(&self) -> Vec<u8> {
         self.packet.clone()
+    }
+
+    /// Evaluates fields of a material request's program over its receiver atlas, for a GPU preview
+    /// that binds them as textures. The reply lists each field's size; the texels (four `f32` per
+    /// texel per field, in order) are then taken with [`Self::field_texels`]. Builds nothing and
+    /// never replaces the accepted model.
+    pub fn bake_fields(&mut self, source: &str, revision: u32, names: &str) -> String {
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(vec![Diagnostic::message(
+                    "request",
+                    "Authoring request allowance exceeded.",
+                )]);
+            }
+            let request: Request = serde_json::from_str(source)
+                .map_err(|e| vec![Diagnostic::message("request", e.to_string())])?;
+            let names: Vec<String> = serde_json::from_str(names)
+                .map_err(|e| vec![Diagnostic::message("request", e.to_string())])?;
+            self.session.bake_fields(
+                &request,
+                revision as u64,
+                &names,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| false,
+            )
+        })();
+        match result {
+            Ok(baked) => {
+                self.field_texels = baked.fields.into_iter().flatten().collect();
+                serde_json::json!({"success":true,"width":baked.width,"height":baked.height})
+                    .to_string()
+            }
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// The texels of the last [`Self::bake_fields`], all fields end to end.
+    pub fn field_texels(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.field_texels)
     }
 
     pub fn export_glb(&self) -> Result<Vec<u8>, JsValue> {
@@ -201,6 +248,45 @@ impl Authoring {
             let project: Project = serde_json::from_str(source)
                 .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
             let output = self.session.build_project(
+                &project,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| false,
+            )?;
+            let scene = output
+                .scene(revision)
+                .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
+            Ok((output.metadata, scene.packet()))
+        })();
+        match result {
+            Ok((metadata, packet)) => {
+                self.packet = packet;
+                serde_json::json!({"success":true,"metadata":metadata}).to_string()
+            }
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// Describes a project for a renderer that evaluates its materials in a shader: the composed
+    /// models as the staged packet, and each material's preview shader in the metadata. No bake.
+    pub fn shade_project(&mut self, source: &str, revision: u32) -> String {
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(vec![Diagnostic::message(
+                    "project",
+                    "Authoring project allowance exceeded.",
+                )]);
+            }
+            let project: Project = serde_json::from_str(source)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            let output = self.session.shade_project(
                 &project,
                 revision as u64,
                 &|name| {

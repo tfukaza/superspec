@@ -151,7 +151,8 @@ fn bench_decode_and_evaluation() {
                 width: decoded.width,
                 height: decoded.height,
                 rgba: decoded.rgba,
-            },
+            }
+            .into(),
         );
     }
     eprintln!(

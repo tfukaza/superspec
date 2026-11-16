@@ -7,7 +7,7 @@ use super::Image;
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 
 /// Decoded mip levels in linear RGB, plus the image's mean.
@@ -25,9 +25,11 @@ struct Level {
     rgb: Vec<[f32; 3]>,
 }
 
-/// Lazily built pyramids keyed by image identity, shared by clones of the same inputs.
+/// Lazily built pyramids, one per shared image, kept while that image is alive. Clones share the
+/// cache. Entries are keyed by the image's allocation, which cannot be reused while the entry's
+/// weak reference to it exists.
 #[derive(Clone, Default)]
-pub struct MipCache(Arc<Mutex<BTreeMap<String, Arc<Pyramid>>>>);
+pub struct MipCache(Arc<Mutex<BTreeMap<usize, (Weak<Image>, Arc<Pyramid>)>>>);
 
 impl fmt::Debug for MipCache {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -36,18 +38,24 @@ impl fmt::Debug for MipCache {
 }
 
 impl MipCache {
-    pub(super) fn pyramid(&self, id: &str, image: &Image) -> Arc<Pyramid> {
+    pub(super) fn pyramid(&self, image: &Arc<Image>) -> Arc<Pyramid> {
         let mut cache = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(pyramid) = cache.get(id) {
-            if pyramid.width == image.width && pyramid.height == image.height {
+        let address = Arc::as_ptr(image) as usize;
+        if let Some((owner, pyramid)) = cache.get(&address) {
+            if owner
+                .upgrade()
+                .is_some_and(|owner| Arc::ptr_eq(&owner, image))
+            {
                 return pyramid.clone();
             }
         }
+        // Images that are gone take their pyramids with them.
+        cache.retain(|_, (owner, _)| owner.strong_count() > 0);
         let pyramid = Arc::new(Pyramid::build(image));
-        cache.insert(id.to_owned(), pyramid.clone());
+        cache.insert(address, (Arc::downgrade(image), pyramid.clone()));
         pyramid
     }
 }

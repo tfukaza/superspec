@@ -37,7 +37,10 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
       const symbol = `msLive${index}_${name}`;
       named[name] = symbol;
       declarations.push(`float ${symbol};`);
-      if ("value" in argument) {
+      if ("glsl" in argument) {
+        // A shaded material computes the argument itself (see shade.ts).
+        reads.push(`${symbol} = ${(argument as { glsl: string }).glsl};`);
+      } else if ("value" in argument) {
         uniforms[`${symbol}Value`] = { value: argument.value };
         declarations.push(`uniform float ${symbol}Value;`);
         reads.push(`${symbol} = ${symbol}Value;`);

@@ -25,6 +25,11 @@ pub struct Chart {
     pub first: usize,
     pub second: Option<usize>,
     pub rotated: bool,
+    /// Distinct samples along the chart's width and height. A chart at least the minimum size
+    /// has one per inner texel. A smaller one is padded to the minimum size but sampled at the
+    /// atlas's density, so its texels repeat those samples instead of evaluating finer detail
+    /// than the rest of the receiver has.
+    pub samples: [usize; 2],
 }
 
 pub struct Atlas {
@@ -32,6 +37,8 @@ pub struct Atlas {
     pub receiver: Receiver,
     pub width: usize,
     pub height: usize,
+    /// Texels per meter along every chart.
+    pub density: f64,
     pub charts: Vec<Chart>,
     /// Receiver vertex indices of each triangle, starting at its chart corner (winding kept).
     corners: Vec<[u32; 3]>,
@@ -116,7 +123,11 @@ impl Atlas {
         domain: [f64; 2],
         gravity: [f64; 3],
         max_resolution: usize,
+        texel_density: Option<f64>,
     ) -> Result<Self, String> {
+        if texel_density.is_some_and(|density| !(1. ..=100_000.).contains(&density)) {
+            return Err("Texel density must be 1 to 100000 texels per meter.".into());
+        }
         if !(16..=max_resolution).contains(&resolution)
             || domain
                 .iter()
@@ -246,11 +257,11 @@ impl Atlas {
                 first: triangle,
                 second: partner[triangle],
                 rotated,
+                samples: [1, 1],
             });
         }
         // One texel density for the whole receiver, the largest whose shelf packing fits the
         // requested square; tiny charts keep a minimum size, so a dense mesh may exceed it.
-        let width = resolution;
         let order = {
             let mut order: Vec<usize> = (0..charts.len()).collect();
             order.sort_by(|a, b| {
@@ -261,14 +272,14 @@ impl Atlas {
             });
             order
         };
-        let extent = |density: f64, length: f64| {
-            ((length * density).ceil() as usize + 2 * GUTTER).clamp(MIN_CHART, width)
-        };
-        let pack = |density: f64, charts: &mut [Chart]| -> usize {
+        let pack = |width: usize, density: f64, charts: &mut [Chart]| -> usize {
+            let extent = |length: f64| {
+                ((length * density).ceil() as usize + 2 * GUTTER).clamp(MIN_CHART, width)
+            };
             let (mut x, mut y, mut row) = (0, 0, 0);
             for &index in &order {
-                let w = extent(density, sizes[index][0]);
-                let h = extent(density, sizes[index][1]);
+                let w = extent(sizes[index][0]);
+                let h = extent(sizes[index][1]);
                 if x + w > width {
                     x = 0;
                     y += row;
@@ -282,23 +293,48 @@ impl Atlas {
             y + row
         };
         let longest = sizes.iter().flatten().copied().fold(0f64, f64::max);
-        let (mut low, mut high) = (0f64, width as f64 / longest.max(1e-9));
-        for _ in 0..48 {
-            let middle = (low + high) * 0.5;
-            if pack(middle, &mut charts) <= resolution {
-                low = middle;
-            } else {
-                high = middle;
+        // With a texel density, a receiver that reaches it in a smaller square takes the smallest
+        // such square (the resolution halved some number of times) at exactly that density, so
+        // small parts get small textures and every part of a scene has the same detail. A
+        // receiver too large for it keeps the requested resolution at the density that fits.
+        let sized = texel_density.and_then(|density| {
+            let mut candidates: Vec<usize> = std::iter::successors(Some(resolution), |width| {
+                Some(width / 2).filter(|half| *half >= 16)
+            })
+            .collect();
+            candidates.reverse();
+            candidates
+                .into_iter()
+                .find(|&width| {
+                    longest * density + (2 * GUTTER) as f64 <= width as f64
+                        && pack(width, density, &mut charts) <= width
+                })
+                .map(|width| (width, density))
+        });
+        let (width, density) = sized.unwrap_or_else(|| {
+            let (mut low, mut high) = (0f64, resolution as f64 / longest.max(1e-9));
+            for _ in 0..48 {
+                let middle = (low + high) * 0.5;
+                if pack(resolution, middle, &mut charts) <= resolution {
+                    low = middle;
+                } else {
+                    high = middle;
+                }
             }
+            (resolution, low)
+        });
+        let height = pack(width, density, &mut charts);
+        for (chart, size) in charts.iter_mut().zip(&sizes) {
+            let inner = [chart.width - 2 * GUTTER, chart.height - 2 * GUTTER];
+            chart.samples = std::array::from_fn(|axis| {
+                ((size[axis] * density).ceil() as usize).clamp(1, inner[axis])
+            });
         }
-        let height = pack(low, &mut charts);
         let mut spans = vec![[1., 1.]; triangles];
         let mut turns = vec![0u8; triangles];
         for chart in &charts {
-            let mut inner = [
-                (chart.width - 2 * GUTTER) as f64,
-                (chart.height - 2 * GUTTER) as f64,
-            ];
+            // Samples per leg: footprints and height steps follow the samples, not the padding.
+            let mut inner = chart.samples.map(|count| count as f64);
             if chart.rotated {
                 inner.swap(0, 1);
             }
@@ -363,6 +399,7 @@ impl Atlas {
             receiver,
             width,
             height,
+            density,
             charts,
             corners,
             spans,
@@ -382,8 +419,18 @@ impl Atlas {
             (chart.width - 2 * GUTTER) as f64,
             (chart.height - 2 * GUTTER) as f64,
         ];
-        let s = ((x as f64 + 0.5 - GUTTER as f64) / inner[0]).clamp(0., 1.);
-        let t = ((y as f64 + 0.5 - GUTTER as f64) / inner[1]).clamp(0., 1.);
+        // A padded chart's texels snap to the centers of its samples.
+        let place = |texel: usize, inner: f64, samples: usize| {
+            let position = ((texel as f64 + 0.5 - GUTTER as f64) / inner).clamp(0., 1.);
+            let count = samples as f64;
+            if count >= inner {
+                position
+            } else {
+                ((position * count).floor().min(count - 1.) + 0.5) / count
+            }
+        };
+        let s = place(x, inner[0], chart.samples[0]);
+        let t = place(y, inner[1], chart.samples[1]);
         // The first triangle's leg parameters; its second lies past the hypotenuse, half turned.
         let (u, v) = if chart.rotated { (t, 1. - s) } else { (s, t) };
         match chart.second {

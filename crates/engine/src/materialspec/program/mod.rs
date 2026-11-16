@@ -2,14 +2,21 @@
 mod bake;
 mod check;
 mod compiled;
+mod deps;
 mod eval;
 mod features;
+mod glsl;
 mod images;
+mod lanes;
+pub use eval::seed_value;
+pub use glsl::{CpuField, Shader};
+pub use images::MipCache;
 mod memory;
 mod numeric;
 mod syntax;
 mod ts;
-pub use eval::FieldSelection;
+pub use deps::{Dependencies, DependencyTable};
+pub use eval::{FieldSelection, OutputSet};
 pub use features::{
     COPLANAR_DEGREES, MAX_FEATURES, bend_shaded, orient_relief, receiver_features, receiver_seams,
 };
@@ -151,15 +158,18 @@ pub struct Inputs {
     pub parameters: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub seed: u32,
+    /// Decoded images by name. They are shared, so inputs that differ only in parameters or seed
+    /// hold one copy of the pixels.
     #[serde(default)]
-    pub images: BTreeMap<String, Image>,
+    pub images: BTreeMap<String, std::sync::Arc<Image>>,
     #[serde(default)]
     pub edges: Vec<Edge>,
     /// Receiver creases and open edges in world meters. Hosts that bake receivers derive these
     /// per receiver with [`receiver_features`]; direct callers may supply them here.
     #[serde(default)]
     pub features: Vec<Feature>,
-    /// Mip levels of `images`, built on first use by filtered sampling and shared by clones.
+    /// Mip levels of `images`, built on first use by filtered sampling. Clones share the cache,
+    /// and a host may give several inputs one cache so equal images are filtered once.
     #[serde(skip)]
     pub mips: images::MipCache,
 }
@@ -320,6 +330,8 @@ pub struct Evaluator<'a> {
     program: &'a Program,
     inputs: &'a Inputs,
     features: &'a [Feature],
+    /// A grid over `features`, so feature queries visit only the features near a sample.
+    index: features::Index,
     parameters: Vec<eval::Value<'static>>,
     remaining: usize,
     scratch: eval::Scratch<'a>,
@@ -359,6 +371,73 @@ impl<'a> Evaluator<'a> {
     ) -> Result<Outputs, ProgramDiagnostic> {
         self.wanted(sample, eval::Want::Selected(selection, values))
     }
+    /// Only `outputs`, plus fields chosen once with [Program::select_fields] written to `values`.
+    /// Outputs outside the set keep their defaults in the result; the others are identical to
+    /// [`Self::evaluate_selected`]'s, so a bake of one map evaluates just what that map reads.
+    pub fn evaluate_outputs(
+        &mut self,
+        sample: &Sample,
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut [FieldValue],
+    ) -> Result<Outputs, ProgramDiagnostic> {
+        self.wanted_outputs(sample, eval::Want::Selected(selection, values), outputs)
+    }
+    /// Like [`Self::evaluate_outputs`] for every sample of a row: the result of each sample is
+    /// exactly what evaluating it alone returns, and `values` receives the selected fields
+    /// sample by sample (`selection.len()` each). Programs whose cost bounds allow it evaluate
+    /// the samples together, which amortizes the walk over the program; any sample that would
+    /// fail, or a program or allowance that cannot be bounded, evaluates one sample at a time, so
+    /// the first failing sample reports the error it always reported.
+    pub fn evaluate_row(
+        &mut self,
+        samples: &[Sample],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut Vec<FieldValue>,
+    ) -> Result<Vec<Outputs>, ProgramDiagnostic> {
+        let slots = selection.len();
+        if let Some(done) = self.evaluate_row_together(samples, outputs, selection, values) {
+            return Ok(done);
+        }
+        let mut results = Vec::with_capacity(samples.len());
+        for (i, sample) in samples.iter().enumerate() {
+            results.push(self.evaluate_outputs(
+                sample,
+                outputs,
+                selection,
+                &mut values[i * slots..(i + 1) * slots],
+            )?);
+        }
+        Ok(results)
+    }
+    /// The part of [`Self::evaluate_row`] that evaluates the samples together: `None` where it
+    /// declines (see there), with `values` sized for the samples either way.
+    #[doc(hidden)]
+    pub fn evaluate_row_together(
+        &mut self,
+        samples: &[Sample],
+        outputs: OutputSet,
+        selection: &FieldSelection,
+        values: &mut Vec<FieldValue>,
+    ) -> Option<Vec<Outputs>> {
+        values.clear();
+        values.resize(samples.len() * selection.len(), FieldValue::Scalar(0.));
+        lanes::evaluate(
+            self.program,
+            &self.program.compiled,
+            self.inputs,
+            self.features,
+            &self.index,
+            samples,
+            &self.parameters,
+            self.remaining,
+            &mut self.scratch,
+            outputs,
+            &selection.0,
+            values,
+        )
+    }
     /// Only the height output, for derivative samples; identical to [`Self::evaluate`]'s height.
     pub fn evaluate_height(&mut self, sample: &Sample) -> Result<f64, ProgramDiagnostic> {
         Ok(self.wanted(sample, eval::Want::Height)?.height)
@@ -373,16 +452,26 @@ impl<'a> Evaluator<'a> {
         sample: &Sample,
         want: eval::Want<'_>,
     ) -> Result<Outputs, ProgramDiagnostic> {
+        self.wanted_outputs(sample, want, OutputSet::ALL)
+    }
+    fn wanted_outputs(
+        &mut self,
+        sample: &Sample,
+        want: eval::Want<'_>,
+        outputs: OutputSet,
+    ) -> Result<Outputs, ProgramDiagnostic> {
         eval::evaluate_wanted(
             self.program,
             &self.program.compiled,
             self.inputs,
             self.features,
+            &self.index,
             sample,
             &self.parameters,
             &mut self.remaining,
             &mut self.scratch,
             want,
+            outputs,
         )
     }
 }
@@ -400,6 +489,15 @@ impl Program {
     }
     pub fn evaluate(&self, inputs: &Inputs, sample: &Sample) -> Result<Outputs, ProgramDiagnostic> {
         eval::evaluate(self, inputs, sample)
+    }
+    /// The program as a GLSL preview: see [`Shader`].
+    pub fn shader(&self) -> Result<Shader, String> {
+        glsl::shader(self)
+    }
+    /// The program split between GPU and CPU: see [`glsl::plan`]. Programs with no CPU-only
+    /// operation return the same shader as [`Self::shader`], with no CPU fields.
+    pub fn shader_plan(&self) -> Result<Shader, String> {
+        glsl::plan(self)
     }
     /// Resolves field names once for [Evaluator::evaluate_selected].
     pub fn select_fields(&self, names: &[&str]) -> Result<FieldSelection, String> {
@@ -425,6 +523,7 @@ impl Program {
             program: self,
             inputs,
             features: &inputs.features,
+            index: features::Index::new(&inputs.features),
             parameters,
             remaining: operations,
             scratch: eval::Scratch::default(),
@@ -440,6 +539,7 @@ impl Program {
         let mut evaluator = self.evaluator(inputs)?;
         eval::validate_features(self, features)?;
         evaluator.features = features;
+        evaluator.index = features::Index::new(features);
         Ok(evaluator)
     }
     pub fn bake(&self, request: &BakeRequest, inputs: &Inputs) -> Result<Baked, ProgramDiagnostic> {

@@ -156,7 +156,7 @@ fn inputs(images: &[(&str, Image)]) -> Inputs {
     Inputs {
         images: images
             .iter()
-            .map(|(id, image)| ((*id).to_owned(), image.clone()))
+            .map(|(id, image)| ((*id).to_owned(), image.clone().into()))
             .collect(),
         ..Inputs::default()
     }
@@ -319,14 +319,14 @@ pub fn kowloon_program_result() -> Vec<u8> {
     .into_iter()
     .map(|(name, text)| (name.to_owned(), text.to_owned()))
     .collect();
-    let images: BTreeMap<String, Image> = [
+    let images: BTreeMap<String, std::sync::Arc<Image>> = [
         ("textures/concrete-plain.png", 24, 1),
         ("textures/concrete-fine-sand.png", 20, 2),
         ("superspec-material:building-plaster-plain.png", 16, 3),
         ("superspec-material:rust.png", 18, 4),
     ]
     .into_iter()
-    .map(|(name, size, salt)| (name.to_owned(), fixture_image(size, salt)))
+    .map(|(name, size, salt)| (name.to_owned(), fixture_image(size, salt).into()))
     .collect();
     // A 0.4 m crate: its creases drive edge wear, rims and the round-over.
     let (positions, indices) = {

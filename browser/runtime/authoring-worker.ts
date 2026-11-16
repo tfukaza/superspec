@@ -10,31 +10,34 @@ let session: Authoring | undefined;
 
 /**
  * Runs one engine call, sharing large material bakes with helper workers. The engine stops a
- * build at an uncached large bake and describes it; the helpers' rows are handed back and the
- * same call runs again, once per material that needs baking. If helpers fail, the bake runs here,
- * which also reports any error in the material itself.
+ * build at its uncached large bakes and describes them; the helpers' rows are handed back and the
+ * same call runs again, normally once. If helpers fail, the bakes run here, which also reports
+ * any error in a material itself.
  */
 async function distributed<T>(active: Authoring, assets: Record<string, Uint8Array>, run: () => T): Promise<T> {
   active.distribute_bakes(bakeHelpers() > 1);
-  let previous = "";
+  const reported = new Set<string>();
   try {
     for (;;) {
       let result: T | undefined;
       let failure: { error: unknown } | undefined;
       try { result = run(); } catch (error) { failure = { error }; }
-      const pending = active.take_pending_bake();
-      if (!pending) {
+      // A project reports every large bake of one build; take them all before building again.
+      const pending: string[] = [];
+      for (let next = active.take_pending_bake(); next; next = active.take_pending_bake()) pending.push(next);
+      if (!pending.length) {
         if (failure) throw failure.error;
         return result as T;
       }
-      // The same bake reported twice means its rows were not accepted: bake it here instead.
-      if (pending === previous) {
+      // A bake reported twice means its result was not kept (its rows were refused, or the
+      // session's cache is too small to hold the scene between runs): bake the rest here.
+      if (pending.some(bake => reported.has(bake))) {
         active.distribute_bakes(false);
         continue;
       }
-      previous = pending;
+      for (const bake of pending) reported.add(bake);
       try {
-        for (const rows of await bakeShares(pending, assets)) active.provide_bake_share(rows);
+        for (const bake of pending) for (const rows of await bakeShares(bake, assets)) active.provide_bake_share(rows);
       } catch {
         active.distribute_bakes(false);
       }
@@ -57,10 +60,25 @@ self.onmessage = async (event: MessageEvent<AuthoringMessage>) => {
     const images: Record<string, Uint8Array> = { ...assets };
     for (const [name, bytes] of Object.entries(assets)) active.set_asset(name, bytes);
     const action = "action" in request ? request.action : undefined;
+    if (action === "bake-fields" && "request" in request) {
+      // A field bake of the CPU-only parts of a program, for a GPU preview: no build, nothing accepted.
+      const encodedRequest = JSON.stringify(request.request);
+      for (const name of JSON.parse(active.library_assets(encodedRequest)) as string[]) {
+        images[name] = await libraryAsset(name);
+        active.set_asset(name, images[name]);
+      }
+      const reply = JSON.parse(active.bake_fields(encodedRequest, requestId, JSON.stringify(request.names)));
+      if (!reply.success) { self.postMessage({ requestId, diagnostics: reply.diagnostics }); return; }
+      const texels = active.field_texels();
+      self.postMessage({ requestId, fields: { width: reply.width, height: reply.height, texels } }, { transfer: [texels.buffer] });
+      return;
+    }
     const exporting = action === "export-project";
-    const whole = exporting || action === "preview-project";
+    const shading = action === "shade-project";
+    const whole = exporting || shading || action === "preview-project";
     const encoded = whole && "project" in request ? JSON.stringify(request.project) : JSON.stringify(request);
-    const catalog = JSON.parse(whole ? active.project_library_assets(encoded) : active.library_assets(encoded)) as string[];
+    // A shader preview compiles recipes but reads no image.
+    const catalog = shading ? [] : JSON.parse(whole ? active.project_library_assets(encoded) : active.library_assets(encoded)) as string[];
     for (const name of catalog) {
       images[name] = await libraryAsset(name);
       active.set_asset(name, images[name]);
@@ -80,7 +98,8 @@ self.onmessage = async (event: MessageEvent<AuthoringMessage>) => {
       self.postMessage({ requestId, download: bytes.buffer }, { transfer: [bytes.buffer] });
       return;
     }
-    const result = JSON.parse(await distributed(active, images, () => whole ? active.preview_project(encoded, requestId) : active.build(encoded, requestId)));
+    const result = JSON.parse(shading ? active.shade_project(encoded, requestId)
+      : await distributed(active, images, () => whole ? active.preview_project(encoded, requestId) : active.build(encoded, requestId)));
     if (!result.success) {
       self.postMessage({ requestId, diagnostics: result.diagnostics });
       return;

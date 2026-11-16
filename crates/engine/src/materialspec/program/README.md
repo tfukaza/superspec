@@ -77,16 +77,48 @@ optimization must leave unchanged.
 - An `Evaluator` reuses its field table and resolved images (with their mip pyramids) across
   samples, and `evaluate_selected` returns chosen fields by index, so a sample allocates nothing.
 - The noise lattice hash avoids the floating-point remainder, which is a software routine in Wasm.
+- Receiver feature queries search a uniform grid over the evaluator's features (`features.rs`),
+  visiting only the cells within the query's distance. Results equal a scan of every feature in
+  order, including which of two equally near features wins, and a query is charged for the
+  features it visited.
+- Decoded images are shared (`Inputs.images` holds `Arc<Image>`), and a host may give several
+  inputs one `MipCache`: the authoring session does, so every parameter set of a material
+  samples one copy of the pixels and one set of mip levels.
 
-Receiver bakes (`authoring/material.rs`) add two things on top:
+- `Evaluator::evaluate_row` evaluates the samples of a row together (`lanes.rs`): each node of the
+  tree computes its value for up to 64 samples before its parent runs, with the same scalar kernels,
+  so the dispatch, step accounting and value copying of the per-sample walk are paid once per row.
+  `select`, `&&`, `||` and fields stay lazy per sample, and nodes that read no sample input
+  (literals, parameters, seeds and arithmetic on them) are computed once per row. It never reports
+  an error: a sample that would fail, an invalid input, or a program whose compile-time cost bound
+  (`compiled::Cost`: nodes, extra steps, nesting, with both `select` branches counted) could reach a
+  limit makes the call decline, and the samples are evaluated one at a time, which fails with the one
+  error that order always produced. `tests/material_lanes.rs` compares both paths bit for bit,
+  including on generated programs, and `tests/material_bake_profile.rs` prints the material
+  identities a bake of the example programs must keep.
+- `Program::dependency_table` lists the parameters, seeds, images and edges each output and field
+  reads (`deps.rs`), and `Evaluator::evaluate_outputs` evaluates only some outputs.
+
+Receiver bakes (`authoring/material.rs`) add these on top:
+
+- A receiver's maps are baked, keyed and retained per group (base color and opacity, relief normal,
+  roughness and metalness, emission, live arguments). A group's key holds the layout, the program,
+  the decoded images and the effective values of only the parameters, seed and edges its outputs
+  read, so an edit that cannot change an output keeps the map baked from it, and a build evaluates
+  in one pass just the outputs of the maps it has to bake (the relief is derived only for the normal
+  map). A distributed bake (`PendingBake.groups`) asks other sessions for the rows of those maps only.
+- The maps of a production bake are encoded at once, on native threads.
 
 - A normal needs the height one texel along each chart leg. Where that point is an adjacent
   texel's center, the bake reuses that texel's height instead of evaluating the height graph
   again; rows are evaluated in blocks, and a block evaluates the heights of the rows just
   outside it at the same centers, so output never depends on how rows are grouped.
+- Texels that sample the same point as a neighbor copy its result, and a face smaller than the
+  minimum chart is sampled at the receiver's density rather than once per padded texel.
 - Hosts without threads share large bakes between sessions: `Session::distribute_bakes` makes a
-  build stop at an uncached large bake, other sessions evaluate `bake_share`s (runs of
-  consecutive rows), and the build is repeated with those rows. The browser does this with helper
+  build stop at its uncached large bakes (a project reports all of them in one build), other
+  sessions evaluate `bake_share`s (runs of consecutive rows), and the build is repeated once
+  with those rows. The browser does this with helper
   workers (`browser/runtime/bake-pool.ts`); the result is byte-identical to a local bake.
 
 The examples exercise common helpers with concrete and painted metal. Tests must

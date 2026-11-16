@@ -79,12 +79,62 @@ an emissive-strength factor. `sample_color` decodes sRGB; `sample_data` and
 procedural fields during baking. The preview's texture mipmaps respond to camera
 distance without regenerating source programs or maps.
 
-The version 1 backend produces portable textures for preview and export. It does
-not compile arbitrary MaterialSpec expressions to GPU shaders or expose scene
-depth/color buffers. View-dependent shader operations are therefore outside this
-backend's capability; unknown operations are compilation errors, not silent
-approximations. See the [language and helper reference](../crates/engine/src/materialspec/program/README.md)
+The version 1 backend produces portable textures for preview and export; the CPU
+baker is the authority for both. It does not expose scene depth/color buffers, so
+view-dependent shader operations are outside its capability; unknown operations are
+compilation errors, not silent approximations. See the
+[language and helper reference](../crates/engine/src/materialspec/program/README.md)
 for units, ranges, input contracts and limits.
+
+Studio also has two GPU previews, which are approximations and never authoritative:
+
+- **Per-pixel shading.** `Program::shader` (`program/glsl.rs`) compiles a checked
+  program to GLSL ES 3.00 and `browser/renderer/shade.ts` evaluates it per fragment
+  for scene projects, with no bake. Values are 32-bit floats, filtering follows
+  screen derivatives, both branches of a `select` are evaluated, `runoff` reads no
+  edges, and receiver features are supplied only for scene meshes.
+- **GPU preview bake.** `browser/renderer/bake.ts` draws the same shader into render
+  targets over a swatch's texel grid (base color, packed properties, emissive,
+  height, then a normal pass), so an edit to a swatch shows a texture a few tens of
+  milliseconds after it is made, before the CPU draft. Its output is labeled
+  `gpu-preview`: it is never a ready revision, is never saved or exported, and is
+  replaced by the CPU draft and then the full CPU bake. It is skipped, and the CPU
+  path runs alone, when WebGL2 or float render targets are missing, after a lost
+  context or a shader compile failure, and for programs the plan cannot place (below)
+  and receivers other than the swatch. A swatch supplies
+  its four rim edges as receiver features, so the crease queries work on it. The
+  normal pass applies the `receiver_normal` and `normal_offset` outputs with the
+  CPU's `orient_relief` and `bend_shaded` rules; a `receiver_normal` that faces away
+  from the receiver is a bake error on the CPU, so the preview gives way to it.
+  Live renderer operations are not baked on the GPU: the viewer keeps running them
+  with the arguments of the last CPU build, which the label says ("lighting effects
+  from the last build"), so edits to the fields that feed them show only after the
+  CPU build. This makes the Kowloon concrete and rusted steel studies preview.
+  Targets of 256 px or more show a
+  quarter-size bake first and are drawn in bands (131072 texels each) so no draw
+  approaches a driver watchdog; a newer edit cancels the refinement. The viewport
+  shows "GPU preview" next to the title while these textures are displayed. GPU and
+  CPU pixels are not compared or expected to match.
+- **Hybrid lane (CPU fields on the GPU).** Program::shader_plan places a program's
+  CPU-only operations (unoff, which reads the supplied source edges) on the CPU and
+  the rest on the GPU, as a compile-time decision rather than a failure. Data flows
+  from the CPU to the GPU only: a field that uses unoff is evaluated by the CPU with
+  everything upstream of it (so that math is absent from the shader unless something
+  else needs it), and the shader reads its value from a float texture, one texel per
+  bake texel, fetched with exact nearest alignment. Everything downstream stays in
+  the shader. The plan lists each CPU field with the parameters, seed, images and
+  edges it reads, so the host knows when to bake it again: Session::bake_fields`n  (Wasm ake_fields) evaluates it over the same atlas a full bake uses. A GPU-side
+  edit reuses the cached field; an edit to what the field reads (the source edges,
+  gravity, a parameter it reads) keeps showing the previous field until the new one
+  arrives, and the new field is baked before the CPU build of that edit starts, which
+  cancels it if it is still running. The caption and data-gpu-preview name the
+  channels that rest on CPU data (cpuChannels) and those that are GPU only. A CPU-only
+  operation inside a helper function the shader needs, or written directly in an
+  output rather than in a named field, is not supported in this prototype: the preview
+  falls back to the CPU build with that reason. Likewise a CPU field consumed at coordinates
+  other than the plain bake texel (for example through a warped coordinate) is not
+  supported and is refused, not approximated; unoff only reads the sample's world
+  position, so today's CPU fields are always at the plain domain coordinates.
 
 ## TypeScript recipes
 
@@ -140,7 +190,9 @@ and bakes rows on native threads; its maps decode to the same pixels as a previe
 resolution, compressed harder. `glb` stores textures as KTX2 by default (see
 [Native exports](EXPORTS.md#texture-formats)); `--textures png` writes PNG.
 
-Version 2 scene bundles with several models and materials build the same way. Scene and GLB
+Version 2 scene bundles with several models and materials build the same way. A bundle's
+`texelDensity` (texels per meter) sizes each receiver's texture by its surface instead of giving
+every receiver the full resolution; `tests/studio/washroom` is a scene that uses it. Scene and GLB
 commands write binary stdout; use a shell or process API that preserves bytes. Check results and diagnostics are JSON. Raw-source mode admits
 bounded sibling modules and relative companions inside the source folder. Bundles
 use their embedded companions and the explicit shipped catalog, so moving a bundle

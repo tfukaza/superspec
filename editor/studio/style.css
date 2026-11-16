@@ -17,3 +17,5 @@
 .type-status { display: block; font-size: 0.85rem; margin-top: 0.25rem; }
 .type-status[data-state="error"] { color: var(--danger, #e07a5f); }
 .type-status:empty { display: none; }
+
+.preview-label { color: #e2a65f; font-weight: 600; }

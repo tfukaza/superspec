@@ -1,6 +1,9 @@
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_BYTES, megabytes } from "../../browser/model/limits.ts";
 import "./style.css";
 import { RustScene } from "../../browser/renderer/scene.ts";
+import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
+import { gpuBakeUnsupported, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
+import { libraryAsset } from "../../browser/runtime/library.ts";
 import { decodePacket, type SceneMesh, type ScenePacket } from "../../browser/model/packet.ts";
 import { AuthoringCompiler, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type StudioMaterial } from "../../browser/runtime/authoring.ts";
 import { readAmlSelection } from "../open-aml.ts";
@@ -22,6 +25,27 @@ function identity(name: string, taken: Iterable<string>): string {
   let candidate = base;
   for (let n = 2; used.has(candidate); n++) candidate = `${base}-${n}`;
   return candidate;
+}
+
+/** A one-box model whose only job is to give the engine a mesh to attach a swatch material to when it compiles a shader. */
+/** Pause after a source or seed edit before its GPU preview asks the engine for a shader (the CPU build waits 180 ms). */
+const GPU_SOURCE_DEBOUNCE_MS = 40;
+const gpuSwatchModel = `<architecture version="1" id="s" name="s"><material id="m" color="#888888"/><box id="b" width="1" depth="1" height="1" material="m"/></architecture>`;
+
+/** Mean, spread and distinct values of a GPU preview's texels: evidence for tests that a bake is non-empty and varies. */
+function gpuStats(texels: { baseColor: Uint8Array; normal: Uint8Array; height: Float32Array }): Record<string, number> {
+  const channel = (data: Uint8Array | Float32Array, offset: number, step: number) => {
+    let sum = 0, low = Infinity, high = -Infinity;
+    const distinct = new Set<number>();
+    for (let index = offset; index < data.length; index += step) {
+      const value = data[index]; sum += value; low = Math.min(low, value); high = Math.max(high, value); distinct.add(value);
+    }
+    return { mean: sum / (data.length / step), low, high, distinct: distinct.size };
+  };
+  const color = channel(texels.baseColor, 0, 4), normal = channel(texels.normal, 0, 4), height = channel(texels.height, 0, 1);
+  return { colorMean: color.mean, colorLow: color.low, colorHigh: color.high, colorDistinct: color.distinct,
+    normalXLow: normal.low, normalXHigh: normal.high, normalXDistinct: normal.distinct,
+    heightLow: height.low, heightHigh: height.high, heightDistinct: height.distinct };
 }
 
 /** Resolves a required static studio control with its intended DOM type. */
@@ -55,12 +79,32 @@ class Studio {
   private documentRevision = 0;
   /** The scene material whose entry, parameters and source the editor shows. */
   private activeMaterial?: string;
+  /**
+   * Scene projects preview by evaluating their materials in the viewport's shaders, so an edit
+   * shows at once; textures are baked when a GLB is exported. `?preview=bake` previews bakes.
+   */
+  private readonly live = new URLSearchParams(location.search).get("preview") !== "bake";
+  /** The project the viewport's shaders were last built for, with what the engine returned. */
+  private shaded?: { key: string; metadata: AuthoringMetadata; packet: ScenePacket };
+  /** The swatch shader the GPU preview last asked the engine for, by source, entry, seed and domain (not parameters). */
+  private readonly gpuShadings = new Map<string, { shading: MaterialShading; unsupported: string | null; hybrid?: MaterialShading }>();
+  /** The CPU-baked fields of the hybrid preview: what they were baked for (key) and which shader and size they fit (layout). */
+  private gpuFields?: { key: string; layout: string; fields: Record<string, FieldTexels> };
+  private editStarted = 0;
+  private gpuTimer?: ReturnType<typeof setTimeout>;
+  private gpuFrame = 0;
+  /** Texture size of the CPU build the viewport shows (64 for a draft), which fixes the atlas layout a GPU preview must match. */
+  private shownResolution?: number;
+  /** The newest revision a GPU preview was tried for, and the newest whose CPU build reached the viewport. */
+  private gpuAttempted = 0;
+  private cpuRevision = 0;
 
   constructor(private readonly kind: StudioProject["kind"]) {
     this.project = initialProject(kind); this.module = this.project.entry;
     this.scene = new RustScene(element("viewport"), mesh => this.selection(mesh));
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
-      this.project.parameters[name] = value; this.edit();
+      // A shaded scene takes a parameter as a uniform: nothing to wait for.
+      this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
     });
     this.channels = new Channels(element("channels"));
     if (kind === "material") this.recipe = new RecipePanel(element("recipe-body"), this.recipeTools, {
@@ -361,7 +405,8 @@ class Studio {
 
   /** Starts a new input revision before asynchronous reads or Wasm work can publish. */
   private begin(message = "Compiling… Last valid preview remains visible."): number {
-    clearTimeout(this.timer); this.authoring.cancelPending(); this.aml.cancel();
+    clearTimeout(this.timer); clearTimeout(this.gpuTimer); cancelAnimationFrame(this.gpuFrame);
+    this.authoring.cancelPending(); this.aml.cancel();
     this.status.dataset.state = "compiling"; this.status.textContent = message;
     element<HTMLButtonElement>("export-glb").disabled = true;
     return ++this.revision;
@@ -377,6 +422,14 @@ class Studio {
     }
     this.syncActive();
     const candidate = copyProject(this.project);
+    this.editStarted = performance.now();
+    if (!immediate && this.kind === "material" && candidate.resolution >= 128 && !this.liveScene(candidate)) {
+      // A parameter edit (shader already known) needs no engine call or recompile: bake on the next frame, so a burst of
+      // input events costs one bake. A source or seed edit asks the engine for a shader (milliseconds) after a short pause,
+      // well before the CPU debounce.
+      if (this.cachedShader(candidate)) this.gpuFrame = requestAnimationFrame(() => void this.gpuPreview(candidate, revision));
+      else this.gpuTimer = setTimeout(() => void this.gpuPreview(candidate, revision), GPU_SOURCE_DEBOUNCE_MS);
+    }
     this.timer = setTimeout(() => void this.compileProgressive(candidate, revision, this.base, this.baseMetadata).catch(error => {
       if (revision === this.revision) this.failure(error);
     }), immediate ? 0 : 180);
@@ -387,19 +440,169 @@ class Studio {
    * resolution and scheduling: same source, seed and parameters, never accepted for save or export. A newer edit cancels
    * the refinement, so dragging a control stays cheap and refines once the input settles.
    */
-  private async compileProgressive(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false): Promise<void> {
-    if (this.kind === "material" && candidate.resolution >= 128) {
+  private async compileProgressive(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false, fit = opened): Promise<void> {
+    if (this.kind === "material" && candidate.resolution >= 128 && !this.liveScene(candidate)) {
+      // A GPU preview of a swatch comes first when the browser can bake it; any failure leaves the CPU draft to run alone.
+      await this.gpuPreview(candidate, revision);
+      if (revision !== this.revision) return;
       const draft = { ...candidate, resolution: 64 };
-      if (!await this.compile(draft, revision, base, baseMetadata, false, opened, true)) return;
+      if (!await this.compile(draft, revision, base, baseMetadata, false, fit, true)) return;
     }
-    await this.compile(candidate, revision, base, baseMetadata, opened, opened);
+    await this.compile(candidate, revision, base, baseMetadata, opened, fit);
   }
 
+  /** What the engine's swatch shader depends on: source, entry, seed (a named seed's value) and domain, but never parameters. */
+  private shaderKey(candidate: StudioProject): string {
+    return JSON.stringify([candidate.entry, candidate.modules, candidate.seed, candidate.mapping, candidate.domain, candidate.gravity,
+      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length])]);
+  }
+
+  /** Whether the last shader (or the reason it cannot preview) still describes `candidate`, so only uniforms change. */
+  private cachedShader(candidate: StudioProject): boolean { return this.gpuShadings.has(this.shaderKey(candidate)); }
+
+  /** Labels (or clears the label of) textures that are a GPU preview, so they are never taken for a build. */
+  private previewLabel(shown: boolean, stage?: string, live = false, hybrid?: { fields: string[]; channels: string[]; fresh: boolean }): void {
+    const label = document.getElementById("preview-label");
+    if (!label) return;
+    label.hidden = !shown;
+    // Hybrid previews say which channels rest on fields the CPU baked; the others are computed on the GPU alone.
+    const lane = hybrid ? ` · hybrid: ${hybrid.channels.join(", ").replace(/_/g, " ")} use CPU-baked ${hybrid.fields.join(", ")}${hybrid.fresh ? "" : " (refreshing)"}; other channels GPU only` : "";
+    // Live renderer operations are not baked on the GPU: they keep the arguments of the last CPU build.
+    label.textContent = shown ? `GPU preview${stage === "low" ? " · quick" : ""} · approximate, not the saved bake${lane}${live ? " · lighting effects from the last build" : ""}` : "";
+  }
+  /**
+   * Shows a swatch edit as GPU-baked textures on the mesh already displayed, ahead of the CPU draft. It follows the
+   * draft rules and is weaker: never ready, saved or exportable; the CPU draft and full build replace it; its output
+   * is labeled `gpu-preview` and is an approximation of the bake, never a comparison target. Parameter edits only
+   * update uniforms and rebake; a new source, entry or seed asks the engine for a new shader. Programs the shader
+   * cannot express, or a browser that cannot bake, leave the CPU path alone, with the reason in
+   * `data-gpu-preview-fallback`.
+   */
+  private async gpuPreview(candidate: StudioProject, revision: number, cachedOnly = false): Promise<void> {
+    const viewport = element("viewport");
+    // `?gpupreview=off` keeps the CPU path alone (for comparisons and debugging).
+    if (new URLSearchParams(location.search).get("gpupreview") === "off") return;
+    const fallback = (reason: string): void => { viewport.dataset.gpuPreviewFallback = reason; };
+    // One attempt per revision: an edit that can skip the debounce tries first, the build flow only if it did not.
+    if (this.gpuAttempted === revision) return;
+    if (cachedOnly && !this.cachedShader(candidate)) return;
+    this.gpuAttempted = revision;
+    delete viewport.dataset.gpuPreviewFallback;
+    const meshes = this.visible?.manifest.meshes.filter(mesh => mesh.visible) ?? [];
+    if (this.sceneMode(candidate) || candidate.inspection !== "final" || candidate.base.kind !== "swatch" || candidate.target.enabled
+      || candidate.texelDensity !== undefined || meshes.length !== 1 || !this.shownResolution) return fallback("not a swatch preview");
+    const unavailable = this.scene.gpuPreviewUnavailable();
+    if (unavailable) return fallback(unavailable);
+    const resolution = this.shownResolution;
+    const domain = swatchDomain(candidate.domain, resolution, candidate.mapping, candidate.gravity);
+    if (!domain) return fallback("swatch layout is not modeled");
+    const started = performance.now();
+    try {
+      const key = this.shaderKey(candidate);
+      const image = async (name: string) => candidate.assets[name] ?? libraryAsset(name);
+      let shadeMs = 0;
+      let known = this.gpuShadings.get(key);
+      if (known) { this.gpuShadings.delete(key); this.gpuShadings.set(key, known); }
+      else {
+        const shadeStarted = performance.now();
+        const project = { ...copyProject(candidate), schemaVersion: 2 as const, models: [{ id: "s", kind: "aml" as const, source: gpuSwatchModel }],
+          materials: [{ id: "gpu", entry: candidate.entry, parameters: candidate.parameters, seed: candidate.seed, meshes: ["s/b"] }] };
+        const result = await this.authoring.shadeProject(project, revision);
+        if (revision !== this.revision) return;
+        type Planned = MaterialShading & { requiredInputs?: string[]; plan?: { shader: MaterialShading["shader"]; seedValues: number[] }; planError?: string };
+        const material = (result.metadata?.materials as Record<string, Planned> | undefined)?.gpu;
+        if (result.error || result.diagnostics?.length || !material) return fallback("no shader for this program");
+        // The swatch domain supplies its rim edges as receiver features, so programs that query them can preview.
+        let unsupported = gpuBakeUnsupported(material, true);
+        let hybrid: MaterialShading | undefined;
+        if (unsupported && material.plan) {
+          // The CPU-only parts (runoff) become fields the CPU bakes; the rest stays in the shader (lane H).
+          const planned: MaterialShading = { ...material, shader: material.plan.shader, seedValues: material.plan.seedValues };
+          const reason = gpuBakeUnsupported(planned, true);
+          if (reason) unsupported = reason; else { hybrid = planned; unsupported = null; }
+        } else if (unsupported && material.planError) unsupported = `${unsupported}; not partitionable: ${material.planError}`;
+        known = { shading: material, unsupported, hybrid };
+        this.gpuShadings.set(key, known);
+        while (this.gpuShadings.size > 8) this.gpuShadings.delete(this.gpuShadings.keys().next().value!);
+        shadeMs = performance.now() - shadeStarted;
+      }
+      if (known.unsupported) return fallback(known.unsupported);
+      const use = known.hybrid ?? known.shading;
+      const shading = this.scene.gpuPreviewReady(use) ? undefined : use;
+      const probe = new URLSearchParams(location.search).has("gpuprobe");
+      // Hybrid: the CPU bakes the fields only it can evaluate, once per layout; a change to what they read bakes them again
+      // while the previous ones keep showing (stale while revalidating). The CPU build of this edit waits for this, so the
+      // field bake (a subset of that build) never competes with it; a newer edit cancels it.
+      const cpuFields = use.shader.cpuFields ?? [];
+      const hybrid = cpuFields.length > 0;
+      let fields: Record<string, FieldTexels> | undefined;
+      let fieldsFresh = true, fieldMs = 0;
+      const fieldKey = hybrid ? JSON.stringify([key, resolution, candidate.edges, candidate.gravity, cpuFields.map(field => [field.name,
+        field.parameters.map(name => candidate.parameters[name] ?? use.parameters.find(p => p.name === name)?.default)])]) : "";
+      if (hybrid) {
+        const cached = this.gpuFields;
+        if (cached?.key === fieldKey) fields = cached.fields;
+        else {
+          fieldsFresh = false;
+          // The previous fields, if they describe the same layout, keep the preview going at once.
+          if (cached?.layout === `${key}:${resolution}`) fields = cached.fields;
+        }
+      }
+      const show = (shown: GpuBake, stage: "low" | "full", imagesMs: number, fresh: boolean): void => {
+        // Like a draft: the viewport changes, readiness, saving and export wait for the CPU build.
+        this.draftVisible = true;
+        viewport.dataset.gpuPreviewRevision = String(revision);
+        const cpuOutputs = use.shader.cpuOutputs ?? [];
+        viewport.dataset.gpuPreview = JSON.stringify({ profile: shown.profile, key: shown.key, width: shown.width, height: shown.height, stage,
+          shader: shading ? "bound" : "reused",
+          // Which channels rest on CPU-supplied fields; the rest are GPU only.
+          lane: hybrid ? "hybrid" : "gpu",
+          ...(hybrid ? { cpuFields: cpuFields.map(field => field.name), cpuChannels: cpuOutputs,
+            gpuChannels: use.shader.outputs.filter(name => !cpuOutputs.includes(name)), fieldsFresh: fresh, fieldMs } : {}),
+          timings: { ...shown.timings, images: imagesMs, shade: shadeMs, sinceStart: performance.now() - started, sinceEdit: performance.now() - this.editStarted } });
+        if (probe) viewport.dataset.gpuPreviewStats = JSON.stringify(gpuStats(this.scene.readBakedPreview(shown)));
+        this.previewLabel(true, stage, use.shader.live.length > 0, hybrid ? { fields: cpuFields.map(f => f.name), channels: cpuOutputs, fresh } : undefined);
+        this.status.textContent = `Refining texture… GPU preview shown (${stage === "low" ? "quick, " : ""}approximate).`;
+      };
+      const current = () => revision === this.revision && this.cpuRevision !== revision;
+      // Without fields yet (nothing to show), a hybrid preview waits for them.
+      if (!hybrid || fields) {
+        await this.scene.bakePreview(meshes[0].id, domain, candidate.parameters, shading, image, probe, current,
+          (shown, stage, imagesMs) => show(shown, stage, imagesMs, fieldsFresh), fields);
+      }
+      if (hybrid && !fieldsFresh) {
+        const request: Omit<AuthoringRequest, "requestId"> = { kind: this.kind, entry: candidate.entry, source: candidate.modules[candidate.entry],
+          modules: candidate.modules, parameters: candidate.parameters, seed: candidate.seed, resolution, assets: candidate.assets,
+          mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
+        const fieldStarted = performance.now();
+        const result = await this.authoring.bakeFields(request, cpuFields.map(field => field.name), revision);
+        if (!current()) return;
+        if (result.error || result.diagnostics?.length || !result.fields) return fallback(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
+        const { width, height, texels } = result.fields;
+        if (width !== domain.width || height !== domain.height) return fallback("the CPU field grid does not match the preview's");
+        const size = width * height * 4;
+        const baked: Record<string, FieldTexels> = {};
+        cpuFields.forEach((field, index) => {
+          baked[field.uniform] = { id: `${fieldKey}#${field.name}`, width, height, rgba: texels.subarray(index * size, (index + 1) * size) };
+        });
+        this.gpuFields = { key: fieldKey, layout: `${key}:${resolution}`, fields: baked };
+        fieldMs = performance.now() - fieldStarted;
+        await this.scene.bakePreview(meshes[0].id, domain, candidate.parameters, shading && !fields ? shading : undefined, image, probe, current,
+          (shown, stage, imagesMs) => show(shown, stage, imagesMs, true), baked);
+      }
+    } catch (error) {
+      if (revision !== this.revision) return;
+      // The CPU build of this edit took the worker: the field bake gives way to it, and the preview stays as it was.
+      if (error instanceof DOMException && error.name === "AbortError") return fallback("the CPU build took priority over the field bake");
+      fallback(String(error instanceof Error ? error.message : error));
+    }
+  }
   /** Executes the shared authoring bridge and commits a complete scene only after renderer acceptance. */
   private async compile(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false, fit = false, draft = false): Promise<boolean> {
     if (revision !== this.revision) return false;
     // Scene projects build whole through build_project: every model and every material at once.
     const scene = this.sceneMode(candidate);
+    if (scene && this.liveScene(candidate)) return this.compileLive(candidate, revision, opened, fit);
     if (scene) base = undefined;
     const ids = scene ? new Set<string>() : this.targets(candidate, base);
     const request: AuthoringRequest = { requestId: revision, kind: this.kind, entry: candidate.entry,
@@ -436,6 +639,9 @@ class Studio {
     let packet = artifact;
     if (this.kind === "material" && base) packet = candidate.target.enabled ? mergeReceivers(base, artifact, ids) : base;
     if (!await this.scene.apply(packet, () => revision === this.revision, fit)) return false;
+    this.shownResolution = candidate.resolution;
+    this.cpuRevision = revision;
+    delete element("viewport").dataset.gpuPreview; this.previewLabel(false);
     if (draft) {
       this.draftVisible = true;
       // A draft only updates the viewport; readiness, saving, export and inspection wait for the full-size build.
@@ -467,6 +673,66 @@ class Studio {
     element("model-details").textContent = `${packet.manifest.meshes.filter(mesh => mesh.visible).length} meshes · ${packet.manifest.vertexCount.toLocaleString()} vertices · meters, Z up`;
     element("viewport").dataset.inputRevision = String(revision);
     this.guides(); this.ready(`Revision ${revision} ready${base && !candidate.target.enabled ? " · Original bindings; select a surface and apply." : ""}`);
+    return true;
+  }
+
+  /** Whether a project previews through shaders: a scene project showing its final channels. */
+  private liveScene(candidate: StudioProject): boolean {
+    return this.live && this.kind === "material" && this.sceneMode(candidate) && candidate.inspection === "final";
+  }
+
+  /**
+   * Previews a scene project without baking: the engine composes the models and compiles each
+   * material to a shader, and the viewport evaluates them per pixel. When only parameters
+   * changed since the last preview, their uniforms are updated and nothing is rebuilt.
+   */
+  private async compileLive(candidate: StudioProject, revision: number, opened: boolean, fit: boolean): Promise<boolean> {
+    const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
+    const key = JSON.stringify([candidate.modules, candidate.models, candidate.mapping, candidate.gravity, candidate.domain,
+      (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
+      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length])]);
+    let packet: ScenePacket, metadata: AuthoringMetadata;
+    if (this.shaded?.key === key && Object.entries(values).every(([id, parameters]) => this.scene.setShadingParameters(id, parameters))) {
+      ({ packet, metadata } = this.shaded);
+    } else {
+      const result = await this.authoring.shadeProject(candidate, revision);
+      if (revision !== this.revision) return false;
+      if (result.error || !result.packet || !result.metadata || result.diagnostics?.length) {
+        this.diagnostics(result.diagnostics ?? [], candidate); void this.recipe?.refresh();
+        throw new Error(result.error || "Source could not be compiled.");
+      }
+      packet = decodePacket(result.packet); metadata = result.metadata;
+      const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity } as unknown as SceneShading;
+      const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name));
+      if (revision !== this.revision) return false;
+      if (!await this.scene.apply(packet, () => revision === this.revision, fit, decorate)) return false;
+      this.shownResolution = undefined;
+      this.shaded = { key, metadata, packet };
+    }
+    const materials = (metadata.materials ?? {}) as Record<string, AuthoringMetadata>;
+    if (opened) {
+      this.project = candidate; this.base = undefined; this.baseMetadata = undefined;
+      this.module = candidate.entry;
+      if (!candidate.materials?.some(material => material.id === this.activeMaterial)) this.activeMaterial = candidate.materials?.[0]?.id;
+      const active = this.active();
+      if (active) { this.project.entry = active.entry; this.project.parameters = active.parameters; this.module = active.entry; }
+      this.showProject();
+    }
+    const activeId = candidate.materials?.find(material => material.id === this.activeMaterial)?.id ?? candidate.materials?.[0]?.id;
+    const shown: AuthoringMetadata = { ...(activeId ? materials[activeId] : {}), materials, meshes: metadata.meshes };
+    const bindings: Record<string, string> = {};
+    for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
+    element("viewport").dataset.bindings = JSON.stringify(bindings);
+    element("viewport").dataset.preview = "shader";
+    this.accepted = copyProject(candidate);
+    this.draftVisible = false;
+    this.visible = packet; this.metadata = shown;
+    this.diagnostics([]); this.parameters.show(shown.parameters ?? [], candidate.parameters);
+    this.showInspection(shown); this.channels.show(packet); this.showMeshes(packet); void this.recipe?.refresh();
+    element("scene-title").textContent = packet.manifest.name || candidate.entry;
+    element("model-details").textContent = `${packet.manifest.meshes.filter(mesh => mesh.visible).length} meshes · ${packet.manifest.vertexCount.toLocaleString()} vertices · meters, Z up`;
+    element("viewport").dataset.inputRevision = String(revision);
+    this.guides(); this.ready(`Revision ${revision} ready · shader preview`);
     return true;
   }
 
@@ -560,7 +826,8 @@ class Studio {
     let base: ScenePacket | undefined, metadata: AuthoringMetadata | undefined;
     if (this.kind === "material" && candidate.base.kind === "aml") base = await this.aml.load(candidate.base.source!, candidate.assets, revision);
     if (this.kind === "material" && candidate.base.kind === "glb") ({ packet: base, metadata } = await this.importGlb(candidate, revision));
-    if (revision === this.revision) await this.compile(candidate, revision, base, metadata, true, fit);
+    // An opened project shows its quick draft first, like an edit does.
+    if (revision === this.revision) await this.compileProgressive(candidate, revision, base, metadata, true, fit);
   }
 
   /** Stages source modules and texture companions; failed compilation leaves the accepted project untouched. */
@@ -764,6 +1031,8 @@ class Studio {
     void this.scene.apply(this.visible, () => revision === this.revision).then(applied => {
       if (!applied) return;
       this.draftVisible = false;
+      this.shownResolution = this.accepted?.resolution;
+      delete element("viewport").dataset.gpuPreview; this.previewLabel(false);
       this.guides(); report();
     }).catch(report);
   }

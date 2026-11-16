@@ -805,9 +805,13 @@ fn normal_offsets_bend_the_shaded_normal_after_relief() {
         sum.map(|v| v / length),
         1e-12
     ));
-    assert!(
-        bend_shaded(shaded, x, y, up, [0., 0., -2.]).is_err(),
-        "turning inside out is rejected"
+    // (0, 0.6, -1.2) would face into the surface: it stops just above the horizon instead.
+    let held = bend_shaded(shaded, x, y, up, [0., 0., -2.]).unwrap();
+    assert!(held[2] > 0. && held[2] < 0.03 && held[1] > 0.99 && held[0] == 0.);
+    assert_eq!(
+        bend_shaded(shaded, x, y, up, [0., -0.6, -0.8]).unwrap(),
+        shaded,
+        "an offset that cancels the normal changes nothing"
     );
     let plain = bake(
         "material 1; output base_color = vec3(0.5); output height = 0.01 * sin(surface.x * 40.0);",
@@ -866,7 +870,8 @@ fn the_concrete_round_over_bends_crease_texels_after_relief() {
                         width: 2,
                         height: 2,
                         rgba: vec![128; 16],
-                    },
+                    }
+                    .into(),
                 )
             })
             .collect(),

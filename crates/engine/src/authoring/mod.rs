@@ -4,7 +4,7 @@ pub(crate) mod material;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
-pub use material::PendingBake;
+pub use material::{FieldBake, PendingBake};
 pub use project::{
     Base, MAX_ASSIGNMENTS, MAX_MODELS, MaterialAssignment, ModelSource, Project, ProjectOutput,
     Target,
@@ -98,6 +98,10 @@ pub struct Request {
     pub placement_transform: Option<crate::itemspec::definition::Transform>,
     pub slot_overrides: BTreeMap<String, program::MaterialRequest>,
     pub profile: Profile,
+    /// Texels per meter every receiver is baked at when its atlas can reach it within
+    /// `resolution`; receivers that reach it in a smaller texture get the smaller texture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub texel_density: Option<f64>,
 }
 impl Default for Request {
     fn default() -> Self {
@@ -118,6 +122,7 @@ impl Default for Request {
             placement_transform: None,
             slot_overrides: BTreeMap::new(),
             profile: Profile::Preview,
+            texel_density: None,
         }
     }
 }

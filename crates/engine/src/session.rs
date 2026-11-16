@@ -36,6 +36,8 @@ pub struct Session {
     pub(crate) producer_states: ProducerStates,
     /// Rows of material bakes evaluated by other sessions, when a host distributes them.
     pub(crate) distribution: crate::authoring::material::Distribution,
+    /// Mip levels of decoded material images, shared by every material that samples them.
+    pub(crate) mips: crate::materialspec::program::MipCache,
 }
 impl Default for Session {
     fn default() -> Self {
@@ -55,6 +57,7 @@ impl Session {
             epoch: AtomicU64::new(0),
             producer_states: ProducerStates::default(),
             distribution: Default::default(),
+            mips: Default::default(),
             runtime,
             images: RefCell::new(images),
         })

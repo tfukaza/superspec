@@ -83,7 +83,10 @@ export function parseProject(text: string, kind: StudioProject["kind"]): StudioP
     if (typeof encoded !== "string") throw new Error(`Invalid companion ${name}.`);
     const binary = atob(encoded);
     if (binary.length > MAX_FILE_BYTES) throw new Error(`Project companion ${name} exceeds the ${megabytes(MAX_FILE_BYTES)} file limit.`);
-    assets[name] = Uint8Array.from(binary, character => character.charCodeAt(0));
+    // A plain loop: megabytes of companions decode several times faster than through a mapping callback.
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    assets[name] = bytes;
   }
   return admit(value, assets);
 }
@@ -97,6 +100,7 @@ function checkDocument(value: SerializedProject, kind: StudioProject["kind"]): v
     || !Number.isInteger(value.seed) || !Number.isInteger(value.resolution) || value.resolution < 16
     || value.resolution > (value.profile === "production" ? 2048 : 512)
     || (value.profile !== undefined && !["preview", "production"].includes(value.profile))
+    || (value.texelDensity !== undefined && !(Number.isFinite(value.texelDensity) && value.texelDensity >= 1 && value.texelDensity <= 100000))
     || !["uv", "object", "world"].includes(value.mapping) || typeof value.inspection !== "string"
     || !Array.isArray(value.domain) || value.domain.length !== 2 || !value.domain.every(n => Number.isFinite(n) && n > 0)
     || !value.base || !["swatch", "aml", "glb"].includes(value.base.kind)

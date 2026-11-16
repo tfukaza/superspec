@@ -141,7 +141,8 @@ receiver without features is an empty result rather than an error. Selectors:
 | `"contact"` | Crease and rim edges lying within 1 mm of another visible mesh, such as a wall's base on a slab. Project builds supply these from the composed scene: version 2 scene projects and version 1 projects with a target mesh in an AML or GLB base, in Studio, export and `superspec-studio` alike. A bake with no surrounding scene (a swatch) has none. |
 
 When Studio or the CLI bakes a receiver, it derives that receiver's features from its own
-world-space triangles. Vertices within a micrometer are welded, so meshes with split per-face
+world-space triangles. Queries search a grid over those features, so a receiver with thousands
+of edges costs a query about as much as one with a dozen. Vertices within a micrometer are welded, so meshes with split per-face
 vertices still share edges. Edges whose faces bend by less than 1 degree are triangulation
 seams and never features, and non-manifold edges are ignored. At most 4,096 features are kept
 per receiver. Direct API callers pass features in `Inputs.features` or per receiver with
@@ -164,7 +165,9 @@ sign follows the stored edge order: stable, but not oriented, so use it for alig
 for a side.
 
 The `normalOffset` channel (`normal_offset` in `.ms`) is a world-space vector added to the shaded
-normal after the height relief, then renormalized. A crease's adjacent face normal is
+normal after the height relief, then renormalized. A sum that would point into the surface, as
+interpolated normals near a crease can produce, stops just above the surface's horizon, and an
+offset that exactly cancels the normal changes nothing. A crease's adjacent face normal is
 `sub(mul(m, mul(2, dot(m, normal))), normal)` for its middle normal `m`, so a round-over is
 `normalOffset: mul(adjacent, weight)`. Leaving the channel out, or zero, changes nothing.
 
@@ -293,6 +296,19 @@ packed with rectangular charts at one texel density:
 - Charts are sized by their sides in meters and rotated a quarter turn to lie wider than tall;
   the largest density whose shelf packing fits the square is used. Every chart keeps a 2-texel
   gutter of clamped samples, and texels outside every chart are transparent (normals flat).
+- A chart is at least 8 texels on a side. A face smaller than that at the receiver's density is
+  padded to 8 texels but sampled at the density, so its texels repeat those few samples: a mesh
+  of thousands of tiny faces (gravel, a tessellated pipe) costs one evaluation per face instead
+  of 64, and shows no finer detail than its larger faces do.
+- Texels that sample the same point as their left or upper neighbor, such as the doubled gutter
+  texels, copy that neighbor's result instead of evaluating it again. This never changes a map.
+
+**Texel density.** By default every receiver fills the requested `resolution`, so a hand wheel
+gets as many texels as a wall. A project or request may set `texelDensity` (texels per meter,
+1 to 100000). A receiver that reaches that density in a smaller square then takes the smallest
+such square, the resolution halved some number of times down to 16, at exactly that density. A
+receiver too large for it keeps the resolution at the density that fits, as before. Each
+material's metadata lists its receivers' `atlases` (`width`, `height`, `texelsPerMeter`).
 
 An 8 m x 3.2 m x 22 cm wall gets about 61 texels per meter at 512 px and about 250 (4 mm
 texels) at 2048. Normals are quantized to 8 bits with a half-step, per-texel white-noise offset:
@@ -323,7 +339,9 @@ material. Rust builds it through the same `build_project` for Studio preview (Wa
 }
 ```
 
-The rest of the project (modules, assets, resolution, mapping and so on) is unchanged.
+The rest of the project (modules, assets, resolution, mapping and so on) is unchanged. Scenes
+with parts of very different sizes should set `texelDensity` (see
+[texel density](#kowloon-ports)), so small parts get small textures.
 
 - **Models** are GLB companions or AML scene text. Each model's mesh and owner identities are
   placed under `<id>/`, so two models, or two copies of one model, never collide. Model ids
@@ -337,7 +355,8 @@ The rest of the project (modules, assets, resolution, mapping and so on) is unch
   mesh that doesn't exist, is an error.
 - **Reuse.** The scene is rebuilt whole on every edit. Unchanged materials, models and decoded
   images come from the session's content-keyed caches, so editing one material re-bakes only
-  that material.
+  that material. Materials that sample the same image share one decoded copy and one set of mip
+  levels, however many parameter sets use it.
 
 In Material Studio:
 - **Add models** accepts several GLB and AML files, plus image companions, at once.
@@ -430,8 +449,22 @@ scene during rapid edits. Measured in headless Chromium with software rendering 
 development machine (256 px texture, tiled courtyard, including the 180 ms debounce): the
 draft appears after about 0.45-0.55 s and the full-size build after about 3-4 s; a bake
 alone takes roughly 0.28 s at 32 px, 0.47 s at 64 px and 2.9 s at 256 px. Treat these as
-orders of magnitude, not benchmarks. Not done: GPU evaluation and skipping maps a parameter
-does not affect.
+orders of magnitude, not benchmarks. A build rebakes only the maps an edit can reach: the color, normal,
+properties, emissive and live maps are each keyed by the parameters, seed and source edges of the outputs
+they are baked from (program/deps.rs), so changing a roughness parameter keeps the color and normal maps.
+Samples are also evaluated 64 at a time (program/lanes.rs) with bit-identical results. Not done: reusing
+unchanged fields inside a map.
+
+For a swatch, Studio shows a **GPU preview** (`browser/renderer/bake.ts`) before the draft
+when the browser supports float render targets: the program's GLSL
+([`Program::shader`](../crates/engine/src/materialspec/program/glsl.rs)) is drawn over the
+swatch's texel grid. It is approximate and labeled `gpu-preview` (`data-gpu-preview`): never a
+ready revision, saved or exportable, and replaced by the CPU draft and then the full build. A
+parameter edit only updates uniforms and rebakes. Programs that use `runoff` preview as a hybrid:
+the CPU bakes the runoff field once per layout and the shader reads it as a texture (see the
+[authoring guide](AUTHORING.md)), and the caption says which channels rest on CPU data. Programs the
+plan cannot place, and every non-swatch receiver, skip it and show
+the CPU draft alone (`data-gpu-preview-fallback` names the reason); `?gpupreview=off` disables it.
 
 **Bake profiles.** Requests and projects carry `profile`: `"preview"` (the default) or
 `"production"`. Both evaluate the same program with the same seeds and write the same pixels
@@ -441,7 +474,10 @@ calling thread. Production admits up to 2048 px, the 4 MiB-texel atlas allowance
 receiver's texel rows across up to eight native threads, each with its own evaluator. Rows are
 written back in their original order and the earliest failing row is the one reported, so
 threaded output and errors match a serial bake. Wasm always bakes on one thread; in the browser
-the profile only raises the size limit. Cancellation is checked between batches of rows. The
+the profile only raises the size limit. Cancellation is checked between batches of rows. In the browser, large bakes are evaluated by
+helper workers: one build reports every such bake of the project, the helpers evaluate them, and
+the build runs once more with their rows. Opening a project shows the 64 px draft first, like an
+edit. The
 CLI takes `--profile preview|production`; a bundle may set `"profile"` itself.
 `material_kowloon` checks that threaded production maps decode to the preview's pixels, and its ignored
 `bench_profiles` measured a 384 px concrete wall at 9.0 s serial and 1.8 s on 8 threads
@@ -461,5 +497,7 @@ CLI takes `--profile preview|production`; a bundle may set `"profile"` itself.
 - `npm run test:recipe:browser` drives the built studio through the Wasm workers.
 - `npm run test:scene:browser` drives scene projects: the Kowloon yard, material switching and
   edits, mesh assignment, adding models, save, reopen and export.
+- `npm run test:washroom:browser` opens the [washroom benchmark scene](../tests/studio/washroom/README.md)
+  (15 meshes, 12 materials, all but one from the shipped recipes) in the built Studio and reports its load time.
 - `npm run test:material:browser` compares native and Chromium/Wasm bytes for the `.ms`,
   TypeScript and Kowloon fixtures.

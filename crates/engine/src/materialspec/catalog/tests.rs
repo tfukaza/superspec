@@ -455,7 +455,8 @@ fn every_catalog_overload_compiles_and_evaluates() {
             width: 1,
             height: 1,
             rgba: vec![128, 64, 32, 255],
-        },
+        }
+        .into(),
     );
     for (label, expression) in probes {
         let text = format!("material 1; output base_color = vec3(clamp({expression}, 0.0, 1.0));");

@@ -25,7 +25,7 @@ license = "MIT"
 
 [workspace.dependencies]
 roxmltree = "0.21.2"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 [workspace.lints.rust]

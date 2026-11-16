@@ -28,13 +28,13 @@ enum Shape<'a> {
 #[allow(non_snake_case)]
 impl<'a> Value<'a> {
     /// The initial content of a result slot before a node writes it.
-    const EMPTY: Self = Self {
+    pub(super) const EMPTY: Self = Self {
         data: [0.; 3],
         width: 0.,
         shape: Shape::Bool(false),
     };
     #[inline(always)]
-    fn Number(data: [f64; 3], components: usize, width: f64) -> Self {
+    pub(super) fn Number(data: [f64; 3], components: usize, width: f64) -> Self {
         Self {
             data,
             width,
@@ -42,14 +42,14 @@ impl<'a> Value<'a> {
         }
     }
     #[inline(always)]
-    fn Bool(value: bool) -> Self {
+    pub(super) fn Bool(value: bool) -> Self {
         Self {
             data: [0.; 3],
             width: 0.,
             shape: Shape::Bool(value),
         }
     }
-    fn Text(value: &'a std::sync::Arc<str>) -> Self {
+    pub(super) fn Text(value: &'a std::sync::Arc<str>) -> Self {
         Self {
             data: [0.; 3],
             width: 0.,
@@ -57,27 +57,27 @@ impl<'a> Value<'a> {
         }
     }
     #[inline(always)]
-    fn scalar(v: f64) -> Self {
+    pub(super) fn scalar(v: f64) -> Self {
         Self::Number([v, 0., 0.], 1, 0.)
     }
-    fn vector(v: &[f64], width: f64) -> Self {
+    pub(super) fn vector(v: &[f64], width: f64) -> Self {
         let mut data = [0.; 3];
         data[..v.len()].copy_from_slice(v);
         Self::Number(data, v.len(), width)
     }
     #[inline(always)]
-    fn data(&self) -> ([f64; 3], usize, f64) {
+    pub(super) fn data(&self) -> ([f64; 3], usize, f64) {
         match self.shape {
             Shape::Number(n) => (self.data, n, self.width),
             _ => unreachable!("checked numeric type"),
         }
     }
     #[inline(always)]
-    fn first(&self) -> f64 {
+    pub(super) fn first(&self) -> f64 {
         self.data().0[0]
     }
     #[inline(always)]
-    fn boolean(&self) -> bool {
+    pub(super) fn boolean(&self) -> bool {
         match self.shape {
             Shape::Bool(v) => v,
             _ => unreachable!("checked bool type"),
@@ -89,7 +89,7 @@ impl<'a> Value<'a> {
             _ => unreachable!("checked string type"),
         }
     }
-    fn field(&self) -> FieldValue {
+    pub(super) fn field(&self) -> FieldValue {
         let v = self.data;
         match self.shape {
             Shape::Number(1) => FieldValue::Scalar(v[0]),
@@ -110,7 +110,7 @@ impl<'a> Value<'a> {
     }
     /// Whether this is a number with a non-finite or over-large component or footprint estimate.
     #[inline(always)]
-    fn unsound(&self) -> bool {
+    pub(super) fn unsound(&self) -> bool {
         // A biased exponent below 1355 means a magnitude below 2^332, which is finite and under
         // the 1e100 bound; only larger values need the exact comparison. Testing the bits keeps
         // each component a separate eight-byte load.
@@ -158,7 +158,7 @@ pub(super) struct Scratch<'a> {
 }
 struct ResolvedImage<'a> {
     id: &'a str,
-    image: &'a Image,
+    image: &'a std::sync::Arc<Image>,
     pyramid: Option<std::sync::Arc<images::Pyramid>>,
 }
 
@@ -288,6 +288,7 @@ pub(super) fn constant(
         compiled: &compiled,
         inputs: &inputs,
         features: &[],
+        index: &features::Index::default(),
         sample: &sample,
         parameters: &[],
         scratch: &mut scratch,
@@ -310,17 +311,93 @@ pub(super) fn evaluate(
         &program.compiled,
         inputs,
         &inputs.features,
+        &features::Index::new(&inputs.features),
         sample,
         &parameters,
         &mut 16_384,
         &mut Scratch::default(),
         Want::All,
+        OutputSet::ALL,
     )
+}
+/// Which outputs one evaluation computes. A bake of one map evaluates only the outputs that map
+/// reads; the others keep their defaults in the returned [`Outputs`]. Every output computed has the
+/// value it has when all are computed, and is checked identically.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutputSet(u16);
+impl OutputSet {
+    pub const NONE: Self = Self(0);
+    pub const ALL: Self = Self(0xff);
+    pub const BASE_COLOR: Self = Self(1);
+    pub const ROUGHNESS: Self = Self(2);
+    pub const METALNESS: Self = Self(4);
+    pub const HEIGHT: Self = Self(8);
+    pub const EMISSIVE: Self = Self(16);
+    pub const OPACITY: Self = Self(32);
+    pub const RECEIVER_NORMAL: Self = Self(64);
+    pub const NORMAL_OFFSET: Self = Self(128);
+    /// The set of one output by its declared name; unknown names are in no set.
+    pub fn named(name: &str) -> Self {
+        match name {
+            "base_color" => Self::BASE_COLOR,
+            "roughness" => Self::ROUGHNESS,
+            "metalness" => Self::METALNESS,
+            "height" => Self::HEIGHT,
+            "emissive" => Self::EMISSIVE,
+            "opacity" => Self::OPACITY,
+            "receiver_normal" => Self::RECEIVER_NORMAL,
+            "normal_offset" => Self::NORMAL_OFFSET,
+            _ => Self::NONE,
+        }
+    }
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+/// Canonical bytes of the inputs a set of dependencies reads; see [`Program::input_fingerprint`].
+pub(super) fn fingerprint(
+    program: &Program,
+    inputs: &Inputs,
+    dependencies: &super::deps::Dependencies,
+) -> Result<Vec<u8>, ProgramDiagnostic> {
+    let values = validate_inputs(program, inputs)?;
+    let mut bytes = Vec::new();
+    for &index in &dependencies.parameters {
+        bytes.extend((index as u32).to_le_bytes());
+        match &values[index].shape {
+            Shape::Number(n) => {
+                bytes.push(*n as u8);
+                for component in &values[index].data[..*n] {
+                    bytes.extend(component.to_bits().to_le_bytes());
+                }
+            }
+            Shape::Bool(value) => bytes.extend([4, u8::from(*value)]),
+            Shape::Text(_) => unreachable!("parameters are numbers or booleans"),
+        }
+    }
+    if dependencies.seed {
+        bytes.extend(inputs.seed.to_le_bytes());
+    }
+    if dependencies.edges {
+        bytes.extend((inputs.edges.len() as u64).to_le_bytes());
+        for edge in &inputs.edges {
+            for component in edge.start.iter().chain(&edge.end) {
+                bytes.extend(component.to_bits().to_le_bytes());
+            }
+        }
+    }
+    Ok(bytes)
 }
 /// Fields chosen once by name for many samples: `(field index, caller slot)` in field order,
 /// which is the order the evaluator has always computed wanted fields in.
 #[derive(Clone, Debug, Default)]
-pub struct FieldSelection(Vec<(usize, usize)>);
+pub struct FieldSelection(pub(super) Vec<(usize, usize)>);
 impl FieldSelection {
     /// Unknown names are an error, like indexing the named results would be.
     pub(super) fn new(program: &Program, names: &[&str]) -> Result<Self, String> {
@@ -357,17 +434,8 @@ pub(super) enum Want<'w> {
     /// Only the height output; other channels keep their defaults.
     Height,
 }
-pub(super) fn evaluate_wanted<'a>(
-    program: &'a Program,
-    compiled: &'a super::compiled::Compiled,
-    inputs: &'a Inputs,
-    features: &'a [Feature],
-    sample: &Sample,
-    parameters: &[Value<'a>],
-    remaining: &mut usize,
-    scratch: &mut Scratch<'a>,
-    mut want: Want<'_>,
-) -> Result<Outputs, ProgramDiagnostic> {
+/// The checks every sample passes before it is evaluated.
+pub(super) fn validate_sample(program: &Program, sample: &Sample) -> Result<(), ProgramDiagnostic> {
     let root = Mark::root(&program.sources.entry);
     if sample
         .uv
@@ -395,6 +463,92 @@ pub(super) fn evaluate_wanted<'a>(
             &root,
         ));
     }
+    Ok(())
+}
+/// Checks an evaluated output and stores it in `result`.
+pub(super) fn store_output(
+    program: &Program,
+    name: &str,
+    mark: &Mark,
+    value: &Value<'_>,
+    result: &mut Outputs,
+) -> Result<(), ProgramDiagnostic> {
+    if name == "receiver_normal" {
+        let v = value.data().0;
+        let length = v.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if !(length.is_finite() && length > 1e-12) {
+            return Err(program.diagnostic(
+                "MS_OUTPUT",
+                "Output receiver_normal must be a finite nonzero direction.",
+                mark,
+            ));
+        }
+        result.receiver_normal = Some(v.map(|v| v / length));
+        return Ok(());
+    }
+    if name == "normal_offset" {
+        let v = value.data().0;
+        if v.iter().any(|v| !v.is_finite() || v.abs() > 1e3) {
+            return Err(program.diagnostic(
+                "MS_OUTPUT",
+                "Output normal_offset must be a finite vector of moderate length.",
+                mark,
+            ));
+        }
+        result.normal_offset = Some(v);
+        return Ok(());
+    }
+    match name {
+        "base_color" => result.base_color = value.data().0,
+        "emissive" => result.emissive = value.data().0,
+        "roughness" => result.roughness = value.first(),
+        "metalness" => result.metalness = value.first(),
+        "height" => result.height = value.first(),
+        "opacity" => result.opacity = value.first(),
+        _ => unreachable!(),
+    }
+    let valid = if name == "height" {
+        value.first().abs() <= 1e6
+    } else if name == "emissive" {
+        value.data().0.iter().all(|v| *v >= 0. && *v <= 1e6)
+    } else {
+        let (v, n, _) = value.data();
+        v[..n].iter().all(|v| (0.0..=1.0).contains(v))
+    };
+    if !valid {
+        return Err(program.diagnostic(
+            "MS_OUTPUT",
+            format!("Output {name} is outside its supported channel range."),
+            mark,
+        ));
+    }
+    Ok(())
+}
+/// Whether two evaluated values are equal: booleans by value, numbers by size and components.
+pub(super) fn equal(a: &Value<'_>, b: &Value<'_>) -> bool {
+    match (a.shape, b.shape) {
+        (Shape::Bool(a), Shape::Bool(b)) => a == b,
+        _ => {
+            let (a, an, _) = a.data();
+            let (b, bn, _) = b.data();
+            an == bn && a[..an] == b[..bn]
+        }
+    }
+}
+pub(super) fn evaluate_wanted<'a>(
+    program: &'a Program,
+    compiled: &'a super::compiled::Compiled,
+    inputs: &'a Inputs,
+    features: &'a [Feature],
+    index: &features::Index,
+    sample: &Sample,
+    parameters: &[Value<'a>],
+    remaining: &mut usize,
+    scratch: &mut Scratch<'a>,
+    mut want: Want<'_>,
+    outputs: OutputSet,
+) -> Result<Outputs, ProgramDiagnostic> {
+    validate_sample(program, sample)?;
     scratch.fields.clear();
     scratch.fields.resize(compiled.fields.len(), None);
     let mut context = Context {
@@ -402,6 +556,7 @@ pub(super) fn evaluate_wanted<'a>(
         compiled,
         inputs,
         features,
+        index,
         sample,
         parameters,
         scratch,
@@ -421,60 +576,13 @@ pub(super) fn evaluate_wanted<'a>(
         fields: BTreeMap::new(),
     };
     for (name, node) in &compiled.outputs {
-        if matches!(want, Want::Height) && name != "height" {
+        if (matches!(want, Want::Height) && name != "height")
+            || !outputs.contains(OutputSet::named(name))
+        {
             continue;
         }
         let value = context.value(node).map_err(|error| *error)?;
-        let expr = node;
-        if name == "receiver_normal" {
-            let v = value.data().0;
-            let length = v.iter().map(|v| v * v).sum::<f64>().sqrt();
-            if !(length.is_finite() && length > 1e-12) {
-                return Err(program.diagnostic(
-                    "MS_OUTPUT",
-                    "Output receiver_normal must be a finite nonzero direction.",
-                    &expr.mark,
-                ));
-            }
-            result.receiver_normal = Some(v.map(|v| v / length));
-            continue;
-        }
-        if name == "normal_offset" {
-            let v = value.data().0;
-            if v.iter().any(|v| !v.is_finite() || v.abs() > 1e3) {
-                return Err(program.diagnostic(
-                    "MS_OUTPUT",
-                    "Output normal_offset must be a finite vector of moderate length.",
-                    &expr.mark,
-                ));
-            }
-            result.normal_offset = Some(v);
-            continue;
-        }
-        match name.as_str() {
-            "base_color" => result.base_color = value.data().0,
-            "emissive" => result.emissive = value.data().0,
-            "roughness" => result.roughness = value.first(),
-            "metalness" => result.metalness = value.first(),
-            "height" => result.height = value.first(),
-            "opacity" => result.opacity = value.first(),
-            _ => unreachable!(),
-        }
-        let valid = if name == "height" {
-            value.first().abs() <= 1e6
-        } else if name == "emissive" {
-            value.data().0.iter().all(|v| *v >= 0. && *v <= 1e6)
-        } else {
-            let (v, n, _) = value.data();
-            v[..n].iter().all(|v| (0.0..=1.0).contains(v))
-        };
-        if !valid {
-            return Err(program.diagnostic(
-                "MS_OUTPUT",
-                format!("Output {name} is outside its supported channel range."),
-                &expr.mark,
-            ));
-        }
+        store_output(program, name, &node.mark, &value, &mut result)?;
     }
     match &mut want {
         Want::All => {
@@ -506,11 +614,12 @@ pub(super) fn evaluate_wanted<'a>(
     }
     Ok(result)
 }
-struct Context<'a, 'b> {
+pub(super) struct Context<'a, 'b> {
     program: &'a Program,
     compiled: &'a super::compiled::Compiled,
     inputs: &'a Inputs,
     features: &'b [Feature],
+    index: &'b features::Index,
     sample: &'b Sample,
     /// Validated public parameters in metadata order, shared by every sample of a batch.
     parameters: &'b [Value<'a>],
@@ -523,7 +632,55 @@ struct Context<'a, 'b> {
 /// boxed error. Returning the 48-byte value instead made every node build it in a temporary and
 /// copy it out, and reading that copy back right after the narrower writes stalled the processor.
 type Done = Result<(), Box<ProgramDiagnostic>>;
+impl<'a, 'b> Context<'a, 'b> {
+    /// A context for evaluating builtins of one sample at a time without step accounting, for the
+    /// lane evaluator, which bounds steps before it runs.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn lane(
+        program: &'a Program,
+        compiled: &'a super::compiled::Compiled,
+        inputs: &'a Inputs,
+        features: &'b [Feature],
+        index: &'b features::Index,
+        sample: &'b Sample,
+        parameters: &'b [Value<'a>],
+        scratch: &'b mut Scratch<'a>,
+        remaining: &'b mut usize,
+    ) -> Self {
+        Self {
+            program,
+            compiled,
+            inputs,
+            features,
+            index,
+            sample,
+            parameters,
+            scratch,
+            steps: 0,
+            depth: 0,
+            remaining,
+        }
+    }
+    pub(super) fn set_sample(&mut self, sample: &'b Sample) {
+        self.sample = sample;
+    }
+}
 impl<'a> Context<'a, '_> {
+    /// Charges a feature query for the features it visited: one operation per query plus one per
+    /// 16 features toward the sample's step budget, and eight per feature toward the batch's.
+    fn charge_features(&mut self, visited: usize, mark: &Mark) -> Done {
+        let work = visited * 8;
+        self.steps += 1 + visited / 16;
+        if *self.remaining < work {
+            Err(self.program.diagnostic(
+                "MS_LIMIT",
+                "Material sample batch exceeds its operation allowance.",
+                mark,
+            ))?;
+        }
+        *self.remaining -= work;
+        Ok(())
+    }
     /// Evaluates call arguments in order without a heap allocation for the common small arity.
     fn with_arguments(
         &mut self,
@@ -614,9 +771,9 @@ impl<'a> Context<'a, '_> {
         };
         let entry = &mut self.scratch.images[index];
         if filtered && entry.pyramid.is_none() {
-            entry.pyramid = Some(self.inputs.mips.pyramid(id, entry.image));
+            entry.pyramid = Some(self.inputs.mips.pyramid(entry.image));
         }
-        Some((entry.image, entry.pyramid.as_deref()))
+        Some((entry.image.as_ref(), entry.pyramid.as_deref()))
     }
     /// Evaluates one node. Literals, helper arguments and fields already computed for this sample
     /// are most of all nodes and need only the step accounting, so they return here without
@@ -727,14 +884,7 @@ impl<'a> Context<'a, '_> {
                             Op::And => *out = Value::Bool(a.boolean() && b.boolean()),
                             Op::Or => *out = Value::Bool(a.boolean() || b.boolean()),
                             Op::Equal | Op::NotEqual => {
-                                let equal = match (a.shape, b.shape) {
-                                    (Shape::Bool(a), Shape::Bool(b)) => a == b,
-                                    _ => {
-                                        let (a, an, _) = a.data();
-                                        let (b, bn, _) = b.data();
-                                        an == bn && a[..an] == b[..bn]
-                                    }
-                                };
+                                let equal = equal(&a, &b);
                                 *out = Value::Bool(if *op == Op::Equal { equal } else { !equal });
                             }
                             Op::Less => *out = Value::Bool(a.first() < b.first()),
@@ -797,7 +947,7 @@ impl<'a> Context<'a, '_> {
     /// Kept out of line: inlined into the recursive evaluator, its many locals would make every
     /// node pay for one large stack frame.
     #[inline(never)]
-    fn builtin(
+    pub(super) fn builtin(
         &mut self,
         name: Builtin,
         a: &[Value<'a>],
@@ -980,11 +1130,7 @@ impl<'a> Context<'a, '_> {
                 *out = Value::Number(v.map(super::numeric::exp), n, (w * largest).min(1e9));
             }
             B::Seed => {
-                let mut hash = 2_166_136_261u32 ^ self.inputs.seed;
-                for byte in a[0].text().bytes() {
-                    hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619);
-                }
-                *out = Value::scalar(f64::from(hash));
+                *out = Value::scalar(f64::from(seed_value(self.inputs.seed, a[0].text())));
             }
             B::Noise | B::Fbm | B::Cellular => {
                 let (v, n, w) = a[0].data();
@@ -1092,16 +1238,6 @@ impl<'a> Context<'a, '_> {
                 *out = Value::scalar(runoff(self.sample, &self.inputs.edges, width, extent));
             }
             B::CreaseDistance => {
-                let work = self.features.len() * 8;
-                self.steps += work;
-                if *self.remaining < work {
-                    Err(self.program.diagnostic(
-                        "MS_LIMIT",
-                        "Material sample batch exceeds its operation allowance.",
-                        mark,
-                    ))?;
-                }
-                *self.remaining -= work;
                 let selector = features::Selector::named(a[0].text());
                 let min_angle = a[1].first();
                 let limit = a[2].first();
@@ -1110,28 +1246,19 @@ impl<'a> Context<'a, '_> {
                         "Crease queries need a finite minimum angle in degrees and a positive maximum distance in meters.",
                     ))?;
                 }
-                let distance = self
-                    .features
-                    .iter()
-                    .filter(|feature| features::selected(feature, selector, min_angle))
-                    .map(|feature| {
-                        features::segment_distance(self.sample.world, feature.start, feature.end)
-                    })
-                    .fold(limit, f64::min);
+                let (distance, visited) = features::crease_distance(
+                    self.index,
+                    self.features,
+                    self.sample.world,
+                    selector,
+                    min_angle,
+                    limit,
+                );
+                self.charge_features(visited, mark)?;
                 // Distance changes one meter per meter, so it carries the sample's footprint.
                 *out = Value::Number([distance, 0., 0.], 1, self.sample.footprint);
             }
             B::CreaseNormal => {
-                let work = self.features.len() * 8;
-                self.steps += work;
-                if *self.remaining < work {
-                    Err(self.program.diagnostic(
-                        "MS_LIMIT",
-                        "Material sample batch exceeds its operation allowance.",
-                        mark,
-                    ))?;
-                }
-                *self.remaining -= work;
                 let min_angle = a[1].first();
                 let limit = a[2].first();
                 if !(limit > 0.) || !min_angle.is_finite() {
@@ -1139,7 +1266,8 @@ impl<'a> Context<'a, '_> {
                         "Crease queries need a finite minimum angle in degrees and a positive maximum distance in meters.",
                     ))?;
                 }
-                let normal = features::crease_normal(
+                let (normal, visited) = features::crease_normal(
+                    self.index,
                     self.features,
                     self.sample.world,
                     self.sample.normal,
@@ -1147,19 +1275,10 @@ impl<'a> Context<'a, '_> {
                     min_angle,
                     limit,
                 );
+                self.charge_features(visited, mark)?;
                 *out = Value::vector(&normal, 0.);
             }
             B::CreaseTangent | B::CreaseAdjacentNormal => {
-                let work = self.features.len() * 8;
-                self.steps += work;
-                if *self.remaining < work {
-                    Err(self.program.diagnostic(
-                        "MS_LIMIT",
-                        "Material sample batch exceeds its operation allowance.",
-                        mark,
-                    ))?;
-                }
-                *self.remaining -= work;
                 let min_angle = a[1].first();
                 let limit = a[2].first();
                 if !(limit > 0.) || !min_angle.is_finite() {
@@ -1168,8 +1287,9 @@ impl<'a> Context<'a, '_> {
                     ))?;
                 }
                 let selector = features::Selector::named(a[0].text());
-                let direction = if name == B::CreaseTangent {
+                let (direction, visited) = if name == B::CreaseTangent {
                     features::crease_tangent(
+                        self.index,
                         self.features,
                         self.sample.world,
                         selector,
@@ -1178,6 +1298,7 @@ impl<'a> Context<'a, '_> {
                     )
                 } else {
                     features::crease_adjacent_normal(
+                        self.index,
                         self.features,
                         self.sample.world,
                         self.sample.normal,
@@ -1186,6 +1307,7 @@ impl<'a> Context<'a, '_> {
                         limit,
                     )
                 };
+                self.charge_features(visited, mark)?;
                 *out = Value::vector(&direction, 0.);
             }
             B::AdjustNormal => {
@@ -1334,7 +1456,15 @@ impl<'a> Context<'a, '_> {
         Ok(())
     }
 }
-fn numeric_binary<'a>(op: Op, a: &Value<'a>, b: &Value<'a>, out: &mut Value<'a>) {
+/// The value of `seed(name)` under a request seed: a stable 32-bit hash of both.
+pub fn seed_value(seed: u32, name: &str) -> u32 {
+    let mut hash = 2_166_136_261u32 ^ seed;
+    for byte in name.bytes() {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619);
+    }
+    hash
+}
+pub(super) fn numeric_binary<'a>(op: Op, a: &Value<'a>, b: &Value<'a>, out: &mut Value<'a>) {
     let (a, an, aw) = a.data();
     let (b, bn, bw) = b.data();
     // Scalar arithmetic is most of a program; this is the general case below for one component.

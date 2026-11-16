@@ -17,6 +17,8 @@ export interface AuthoringProject {
   resolution: number;
   /** Bake scheduling. Output bytes are the same; production only admits larger textures. */
   profile?: "preview" | "production";
+  /** Texels per meter; receivers that reach it in a smaller texture than `resolution` get that texture. */
+  texelDensity?: number;
   inspection: string;
   mapping: "uv" | "object" | "world";
   domain: [number, number];
@@ -82,7 +84,27 @@ export interface AuthoringPreviewRequest {
   project: Omit<AuthoringProject, "assets">;
   assets: Record<string, Uint8Array>;
 }
-export type AuthoringMessage = AuthoringRequest | AuthoringExportRequest | AuthoringPreviewRequest;
+/** Describes a project for per-pixel shading: composed models and each material's shader, no bake. */
+export interface AuthoringShadeRequest {
+  action: "shade-project";
+  requestId: number;
+  project: Omit<AuthoringProject, "assets">;
+  assets: Record<string, Uint8Array>;
+}
+/**
+ * Evaluates fields of a material request's program over its receiver atlas on the CPU, for a GPU preview that binds
+ * them as textures. Nothing is built, and the accepted model is untouched.
+ */
+export interface AuthoringFieldsRequest {
+  action: "bake-fields";
+  requestId: number;
+  request: Omit<AuthoringRequest, "requestId">;
+  names: string[];
+  assets: Record<string, Uint8Array>;
+}
+/** Texels of baked fields: four floats per texel per field, fields end to end, rows from the atlas's upper edge. */
+export interface BakedFields { width: number; height: number; texels: Float32Array }
+export type AuthoringMessage = AuthoringRequest | AuthoringExportRequest | AuthoringPreviewRequest | AuthoringShadeRequest | AuthoringFieldsRequest;
 /** KTX2 is several times smaller on disk and in GPU memory; PNG suits tools without KTX2 support (Blender). */
 export type ExportTextures = "ktx2" | "png";
 export interface AuthoringDiagnostic {
@@ -113,6 +135,7 @@ export interface AuthoringMetadata {
 export interface AuthoringResult {
   requestId: number;
   packet?: ArrayBuffer;
+  fields?: BakedFields;
   download?: ArrayBuffer;
   metadata?: AuthoringMetadata;
   diagnostics?: AuthoringDiagnostic[];
@@ -145,6 +168,21 @@ export class AuthoringCompiler {
   previewProject(project: AuthoringProject, requestId: number): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
     return this.dispatch({ action: "preview-project", requestId, project: inputs, assets });
+  }
+
+  /** Composes a project's models and compiles its materials to preview shaders; nothing is baked. */
+  shadeProject(project: AuthoringProject, requestId: number): Promise<AuthoringResult> {
+    const { assets, ...inputs } = project;
+    // Shaders read images on the page; the engine only needs the models.
+    const models = Object.fromEntries(Object.entries(assets).filter(([name]) => /\.(glb|ktx2)$/i.test(name)
+      || inputs.models?.some(model => model.name === name)));
+    return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models });
+  }
+
+  /** Bakes fields of `request`'s program on the CPU (see `AuthoringFieldsRequest`). */
+  bakeFields(request: Omit<AuthoringRequest, "requestId">, names: string[], requestId: number): Promise<AuthoringResult> {
+    const { assets, ...inputs } = request;
+    return this.dispatch({ action: "bake-fields", requestId, request: { ...inputs, assets: {} }, names, assets });
   }
 
   /** Only the active worker and matching consumer revision can complete a request. */

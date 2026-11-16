@@ -255,7 +255,8 @@ fn image_inputs_decode_linear_color_and_runoff_respects_finite_edges() {
                 width: 1,
                 height: 1,
                 rgba: vec![128, 128, 128, 255],
-            },
+            }
+            .into(),
         )]),
         edges: vec![Edge {
             start: [-0.5, 0., 1.],
@@ -281,9 +282,13 @@ fn image_inputs_decode_linear_color_and_runoff_respects_finite_edges() {
         )
         .unwrap();
     assert_eq!(outside.roughness, 0.0);
-    inputs.images.get_mut("grime").unwrap().rgba.pop();
+    std::sync::Arc::make_mut(inputs.images.get_mut("grime").unwrap())
+        .rgba
+        .pop();
     assert_eq!(p.evaluate(&inputs, &sample).unwrap_err().code, "MS_INPUT");
-    inputs.images.get_mut("grime").unwrap().rgba.push(255);
+    std::sync::Arc::make_mut(inputs.images.get_mut("grime").unwrap())
+        .rgba
+        .push(255);
     assert_eq!(
         p.evaluate(&inputs, &sample).unwrap().base_color,
         under.base_color
@@ -504,7 +509,8 @@ pub fn reference_program_result() -> Vec<u8> {
                 width: 2,
                 height: 1,
                 rgba: vec![0, 80, 200, 255, 240, 160, 20, 255],
-            },
+            }
+            .into(),
         )]),
         ..Inputs::default()
     };
