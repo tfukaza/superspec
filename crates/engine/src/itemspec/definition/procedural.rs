@@ -37,6 +37,9 @@ fn output(mesh: Mesh<'_>) -> ItemGeometry {
         bounds: [[0.; 3]; 2],
         imported_materials: BTreeMap::from([("surface".into(), fallback)]),
         images: vec![],
+        parts: vec![],
+        features: vec![],
+        anchors: vec![],
     }
 }
 fn emit(

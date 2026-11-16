@@ -1,4 +1,7 @@
-# ItemSpec version 1
+# ItemSpec versions 1 and 2
+
+Version 1 definitions load unchanged and keep their geometry keys and meshes.
+Version 2 is described [below](#version-2-parts-derived-values-routes-and-panels).
 
 This module owns persistent `.item.json` definitions, procedural local geometry,
 and static GLB scene ingestion. It uses caller-supplied bytes and never reads files
@@ -70,6 +73,71 @@ and resolver failures return errors; callers publish completed artifacts only.
 `retained_bytes` charges all retained attribute capacities, hierarchy and raw PBR
 metadata, images, bindings and provenance. Shared allocations are charged fully
 per owner so cache admission remains conservative on native and Wasm targets.
+
+## Version 2: parts, derived values, routes and panels
+
+A version 2 definition has no root `generator`. It lists `parts`, each with an `id`,
+a `generator`, an optional `placement` (`position`, and `rotation` as extrinsic XYZ
+degrees) and an optional `slots` map from face group to item slot. Without a `slots`
+map every face group gets a slot of its own name; with one, unmapped face groups are
+not emitted. Each part outputs one mesh per emitted face group (`<part>/<group>`)
+under a node `part/<id>` that carries its placement. Fixtures for the washroom's
+wall, low wall, pipe and duct are in `fixtures/`.
+
+`derived` maps a name to an expression string: numbers, parameter and derived names,
+`+ - * /`, parentheses and `min`, `max`, `floor`, `ceil`, `round`, `abs`. Names in
+expressions use letters, digits and underscores. A scalar field accepts a number,
+`{"parameter": name}` or `{"derived": name}`. Derived values read numeric geometry
+controls only. Cycles, unknown names, division by zero and non-finite results are
+`ITEM_EXPRESSION` errors at `/derived/<name>`, with the character position in the
+message.
+
+| Generator | Fields | Face groups |
+| --- | --- | --- |
+| `box` | `size` (spans from the part origin) | `side`, `top`, `bottom` |
+| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
+| `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
+| `pipe`, `duct` | as version 1 | `surface` |
+
+Placement rules position openings and fittings: `{"from": "start"|"end"|"center",
+"offset"}`, `{"fraction"}`, and for fittings `{"every", "inset"}` (even spacing no
+larger than `every`; copies are named `<id>-1`, `<id>-2`, ...) and `{"point": i}`.
+For an opening the rule places its near edge inside the length left over after its
+own size; for a fitting it places the fitting's centre by arc length.
+
+**Panel.** Width is local X, height Z, thickness Y; the front face is y = 0 and
+faces -Y, and the origin is its bottom-left corner. Openings are `rectangle` or
+`arch` (a half-round top of 16 chords), `through` or `recess` with a `depth`. They
+stay 0.02 m inside the panel and apart from each other, or fail with `ITEM_OPENING`.
+A through opening may have a `frame` (`border`, `depth`) and `glazing`
+(`thickness`), both centred in the thickness; any opening may have a `sill`
+(`depth`, `overhang`, optional `thickness`). The slab is built as a polygon with
+holes swept through the thickness, which is the same solid as the panel minus its
+extruded openings but keeps exact face groups and f64 positions.
+
+**Route.** `section` is `{"kind":"round","radius"}` or
+`{"kind":"rect","width","height"}`. Corners are filleted with `bendRadius`, which
+must exceed the section's half extent and fit between neighbouring points
+(`ITEM_ROUTE`). Texture coordinates are perimeter by arc length, in meters. A
+route with `"from": {"attachment": "<part>/<fitting>/branch"}` takes its points
+relative to that attachment of an earlier part. Fittings are `coupling` (`length`,
+`clearance`), `flange` (`radius` or `overhang`, `thickness`, `bolts`), `valve`
+(`length`, `handle`), `bracket` (`reach`, `direction`, optional `width`,
+`thickness`) and `tee` (`direction`, `length`). A fitting must lie on one straight
+run (`ITEM_FITTING`). Fittings are closed solids that overlap the body; nothing is
+subtracted. Attachments are `<part>/start`, `<part>/end`, `<part>/<fitting>` and
+`<part>/<tee>/branch`.
+
+`ItemGeometry` also carries `parts` (ID, geometry key, node and meshes), `features`
+and `anchors`, in the same space as `bounds`. Features are named polylines: panels
+report `base`, `top`, `opening-edge` and `sill`; routes report `joint` (a ring at
+every fitting, with the fitting's length as `width`), `end` and `bracket-contact`.
+Materials cannot read them yet. Each part's geometry key hashes the values it
+resolved, its placement and its slot map; the item key hashes the part keys and the
+transform. `PreparedItem::rebuild` regenerates only parts whose key changed.
+
+Limits: 64 parts, 64 derived values, 128 route points, 256 fittings per route, 32
+openings per panel, 250000 triangles per item.
 
 Diagnostics carry source identity and JSON pointers. `parse` locates its errors;
 call `locate_diagnostic` on later definition errors with the matching source text

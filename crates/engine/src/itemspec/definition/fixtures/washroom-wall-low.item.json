@@ -1,0 +1,27 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "washroom-wall-low",
+  "parameters": {
+    "width": {"type": "number", "default": 2.7, "min": 1.2, "max": 8, "unit": "m"}
+  },
+  "parts": [{
+    "id": "wall",
+    "generator": {
+      "kind": "panel",
+      "width": {"parameter": "width"},
+      "height": 1.2,
+      "thickness": 0.25,
+      "openings": [{
+        "id": "niche",
+        "shape": "arch",
+        "mode": "recess",
+        "depth": 0.12,
+        "width": 0.5,
+        "height": 0.6,
+        "u": {"from": "center", "offset": 0},
+        "v": {"from": "start", "offset": 0.35}
+      }]
+    }
+  }]
+}

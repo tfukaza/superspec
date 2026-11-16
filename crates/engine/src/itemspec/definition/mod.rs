@@ -1,10 +1,15 @@
 //! Persistent ItemSpec definitions, local generation and bounded scene-preserving GLB ingestion.
+pub mod expression;
 mod glb;
 mod location;
 mod memory;
 mod output;
+mod panel;
+mod parts;
 mod procedural;
+mod route;
 mod schema;
+mod surfaces;
 use crate::materialspec::program::MaterialRequest;
 pub use location::locate_diagnostic;
 pub use output::*;
@@ -95,6 +100,7 @@ pub fn parse(source: &str, text: &str) -> Result<ItemDefinition, ItemDiagnostic>
     definition.source = source.into();
     definition
         .resolve_parameters(&Values::new())
+        .and_then(|values| definition.resolve_derived(&values))
         .map_err(|mut error| {
             locate_diagnostic(text, &mut error);
             error
@@ -118,12 +124,17 @@ enum Shape {
         capped: bool,
     },
     Glb(glb::Package),
+    Parts(Vec<parts::PreparedPart>),
 }
 
 /// Parameter/material resolution is separate from mesh construction so hosts can reuse local geometry.
 pub struct PreparedItem {
     pub geometry_key: String,
+    /// Version 2: each part's ID and geometry key, in definition order.
+    pub part_keys: Vec<(String, String)>,
     pub parameters: Values,
+    /// Evaluated derived values.
+    pub derived: Derived,
     pub materials: BTreeMap<String, MaterialRequest>,
     definition: ItemDefinition,
     shape: Shape,
@@ -140,23 +151,15 @@ pub fn prepare(
     check_cancelled(&definition.source, cancelled)?;
     let parameters = definition.resolve_parameters(overrides)?;
     let materials = definition.materials(&parameters)?;
-    let scalar = |value: &Scalar, name: &str| {
-        definition.scalar(value, &parameters, &format!("/generator/{name}"))
-    };
-    let dimension = |value: &Scalar, name: &str| {
-        let value = scalar(value, name)?;
-        if value <= 0. || value > 10_000. {
-            return Err(fail(
-                &definition.source,
-                &format!("/generator/{name}"),
-                "ITEM_GEOMETRY",
-                "Dimensions must be positive and at most 10000 meters.",
-            ));
-        }
-        Ok(value)
+    let derived = definition.resolve_derived(&parameters)?;
+    let context = parts::Context {
+        definition,
+        parameters: &parameters,
+        derived: &derived,
     };
     let mut dependencies = BTreeMap::new();
     let mut attachments = Vec::new();
+    let mut part_keys = Vec::new();
     let (shape, identity) = match &definition.generator {
         Generator::Pipe {
             length,
@@ -165,37 +168,21 @@ pub fn prepare(
             segments,
             capped,
         } => {
-            let length = dimension(length, "length")?;
-            let radius = dimension(radius, "radius")?;
-            let thickness = scalar(wall_thickness, "wallThickness")?;
-            let segments = scalar(segments, "segments")?;
-            if thickness < 0. || thickness >= radius {
-                return Err(fail(
-                    &definition.source,
-                    "/generator/wallThickness",
-                    "ITEM_GEOMETRY",
-                    "Pipe wall thickness must be nonnegative and smaller than its radius.",
-                ));
-            }
-            if segments.fract() != 0. || !(3. ..=256.).contains(&segments) {
-                return Err(fail(
-                    &definition.source,
-                    "/generator/segments",
-                    "ITEM_GEOMETRY",
-                    "Pipe segments must be an integer from 3 to 256.",
-                ));
-            }
-            let capped = definition.switch(capped, &parameters, "/generator/capped")?;
-            attachments.extend(endpoints(length));
+            let (length, radius, thickness, segments, capped) = context.pipe(
+                "/generator",
+                [length, radius, wall_thickness, segments],
+                capped,
+            )?;
+            attachments.extend(parts::endpoints("", length));
             (
                 Shape::Pipe {
                     length,
                     radius,
                     thickness,
-                    segments: segments as usize,
+                    segments,
                     capped,
                 },
-                json!(["pipe", length, radius, thickness, segments, capped]),
+                json!(["pipe", length, radius, thickness, segments as f64, capped]),
             )
         }
         Generator::Duct {
@@ -205,20 +192,12 @@ pub fn prepare(
             wall_thickness,
             capped,
         } => {
-            let length = dimension(length, "length")?;
-            let width = dimension(width, "width")?;
-            let height = dimension(height, "height")?;
-            let thickness = scalar(wall_thickness, "wallThickness")?;
-            if thickness < 0. || thickness * 2. >= width.min(height) {
-                return Err(fail(
-                    &definition.source,
-                    "/generator/wallThickness",
-                    "ITEM_GEOMETRY",
-                    "Duct wall thickness must leave a positive inner section.",
-                ));
-            }
-            let capped = definition.switch(capped, &parameters, "/generator/capped")?;
-            attachments.extend(endpoints(length));
+            let (length, width, height, thickness, capped) = context.duct(
+                "/generator",
+                [length, width, height, wall_thickness],
+                capped,
+            )?;
+            attachments.extend(parts::endpoints("", length));
             (
                 Shape::Duct {
                     length,
@@ -251,6 +230,24 @@ pub fn prepare(
             dependencies = package.hashes.clone();
             (Shape::Glb(package), json!(["glb", scene, dependencies]))
         }
+        Generator::Parts => {
+            let prepared = parts::prepare(&context, &mut attachments)?;
+            part_keys = prepared
+                .iter()
+                .zip(&definition.parts)
+                .map(|(part, source)| (source.id.clone(), part.key().to_owned()))
+                .collect();
+            let identity = json!(["parts", part_keys]);
+            (Shape::Parts(prepared), identity)
+        }
+        Generator::Box { .. } | Generator::Panel(_) | Generator::Route(_) => {
+            return Err(fail(
+                &definition.source,
+                "/generator",
+                "ITEM_PART",
+                "Box, panel and route generators belong to the parts of a version 2 item.",
+            ));
+        }
     };
     let mut names = attachments
         .iter()
@@ -271,6 +268,7 @@ pub fn prepare(
             *value = definition.scalar(
                 &attachment.position[axis],
                 &parameters,
+                &derived,
                 &format!("{pointer}/position/{axis}"),
             )?;
             if value.abs() > 1e7 {
@@ -318,7 +316,9 @@ pub fn prepare(
     check_cancelled(&definition.source, cancelled)?;
     Ok(PreparedItem {
         geometry_key: format!("{:x}", hash.finalize()),
+        part_keys,
         parameters,
+        derived,
         materials,
         definition: definition.clone(),
         shape,
@@ -326,25 +326,50 @@ pub fn prepare(
         assets: dependencies,
     })
 }
-fn endpoints(length: f64) -> [Attachment; 2] {
-    [
-        Attachment {
-            name: "start".into(),
-            position: [0.; 3],
-            direction: [0., 0., -1.],
-        },
-        Attachment {
-            name: "end".into(),
-            position: [0., 0., length],
-            direction: [0., 0., 1.],
-        },
-    ]
-}
 
 impl PreparedItem {
     pub fn build(&self, cancelled: &dyn Fn() -> bool) -> Result<GeneratedItem, ItemDiagnostic> {
+        Ok(self.construct(None, cancelled)?.0)
+    }
+    /// Builds against an earlier result of the same definition. Parts whose geometry key
+    /// is unchanged keep their meshes; the second result names the parts that were built.
+    /// An unchanged item shares the earlier geometry outright, as `reuse` does.
+    pub fn rebuild(
+        &self,
+        previous: &GeneratedItem,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(GeneratedItem, Vec<String>), ItemDiagnostic> {
+        if self.geometry_key == previous.geometry_key {
+            return Ok((self.reuse(previous)?, vec![]));
+        }
+        self.construct(Some(&previous.geometry), cancelled)
+    }
+    fn construct(
+        &self,
+        previous: Option<&ItemGeometry>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<(GeneratedItem, Vec<String>), ItemDiagnostic> {
         check_cancelled(&self.definition.source, cancelled)?;
+        let mut built = vec!["item".to_owned()];
         let mut geometry = match &self.shape {
+            Shape::Parts(parts) => {
+                let (geometry, parts) = parts::build(
+                    parts,
+                    Matrix(self.definition.transform),
+                    previous,
+                    cancelled,
+                )
+                .map_err(|(pointer, message)| {
+                    let code = if cancelled() {
+                        "ITEM_CANCELLED"
+                    } else {
+                        "ITEM_GEOMETRY"
+                    };
+                    fail(&self.definition.source, &pointer, code, message)
+                })?;
+                built = parts;
+                geometry
+            }
             Shape::Pipe {
                 length,
                 radius,
@@ -374,7 +399,7 @@ impl PreparedItem {
             .measure()
             .map_err(|e| fail(&self.definition.source, "/generator", "ITEM_GEOMETRY", e))?;
         check_cancelled(&self.definition.source, cancelled)?;
-        self.finish(Arc::new(geometry))
+        Ok((self.finish(Arc::new(geometry))?, built))
     }
     /// Reuses only a matching immutable geometry artifact; all current bindings and provenance are renewed.
     pub fn reuse(&self, existing: &GeneratedItem) -> Result<GeneratedItem, ItemDiagnostic> {

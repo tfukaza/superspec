@@ -105,6 +105,26 @@ impl ItemGeometry {
                 .images
                 .iter()
                 .map(|image| sum([text(&image.id), text(&image.mime), image.bytes.len(), 32]))),
+            vector(&self.parts),
+            sum(self.parts.iter().map(|part| {
+                sum([
+                    text(&part.id),
+                    text(&part.geometry_key),
+                    vector(&part.meshes),
+                ])
+            })),
+            vector(&self.features),
+            sum(self.features.iter().map(|feature| {
+                sum([
+                    text(&feature.name),
+                    text(&feature.part),
+                    feature.source.as_ref().map_or(0, text),
+                    text(&feature.face),
+                    vector(&feature.points),
+                ])
+            })),
+            vector(&self.anchors),
+            sum(self.anchors.iter().map(|anchor| text(&anchor.part))),
         ])
     }
 }

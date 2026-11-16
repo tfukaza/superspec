@@ -307,6 +307,59 @@ pub struct ItemGeometry {
     pub bounds: Bounds,
     pub imported_materials: BTreeMap<String, ImportedMaterial>,
     pub images: Vec<ItemImage>,
+    /// Version 2: one record per part, in definition order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<ItemPart>,
+    /// Version 2: named features in the same space as `bounds` and attachments.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<Feature>,
+    /// Version 2: one pattern anchor frame per part that has one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<PatternAnchor>,
+}
+
+/// A part's share of an item's geometry. Its meshes are in part coordinates; the node
+/// carries the part placement and the item transform.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemPart {
+    pub id: String,
+    /// Hash of every resolved value this part reads, including its placement and slots.
+    pub geometry_key: String,
+    pub node: usize,
+    pub meshes: Vec<usize>,
+}
+
+/// Where an effect may go, supplied by the geometry's owner. `name` is one of `joint`,
+/// `end`, `bracket-contact`, `opening-edge`, `sill`, `base` and `top`. The feature is a
+/// polyline (closed when `closed`); a later stage maps it to MaterialSpec receiver features.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Feature {
+    pub name: String,
+    pub part: String,
+    /// The opening or fitting that produced it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The face group the feature lies on.
+    pub face: String,
+    pub points: Vec<[f64; 3]>,
+    pub closed: bool,
+    /// The surface normal for panel features; the route direction for route features.
+    pub normal: [f64; 3],
+    /// Extent across the polyline: a fitting's length along its route, otherwise zero.
+    pub width: f64,
+}
+
+/// The frame a part's surface pattern is fixed to, so a resize does not shift it.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PatternAnchor {
+    pub part: String,
+    pub origin: [f64; 3],
+    pub u: [f64; 3],
+    pub v: [f64; 3],
+    pub normal: [f64; 3],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]

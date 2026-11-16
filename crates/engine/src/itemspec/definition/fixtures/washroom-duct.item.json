@@ -1,0 +1,76 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "washroom-duct",
+  "parameters": {
+    "run": {"type": "number", "default": 1.67, "min": 1.5, "max": 6, "unit": "m"}
+  },
+  "derived": {
+    "ventY": "run - 0.17",
+    "louverY": "ventY + 0.04",
+    "louverFarY": "ventY + 0.38",
+    "slatY": "ventY + 0.07"
+  },
+  "parts": [
+    {
+      "id": "duct",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": 0.34, "height": 0.3},
+        "wallThickness": 0.004,
+        "up": [0, 0, 1],
+        "points": [
+          [0.21, {"derived": "ventY"}, 2.12],
+          [0.21, -0.17, 2.12],
+          [0.21, -0.17, 1.2]
+        ],
+        "bendRadius": 0.3,
+        "bendSegments": 8,
+        "fittings": [
+          {"kind": "flange", "id": "seam-1", "at": {"from": "start", "offset": 0.012}, "overhang": 0.012, "thickness": 0.024},
+          {"kind": "flange", "id": "seam-2", "at": {"from": "start", "offset": 0.65}, "overhang": 0.012, "thickness": 0.024},
+          {"kind": "flange", "id": "seam-3", "at": {"from": "end", "offset": 1.1112}, "overhang": 0.012, "thickness": 0.024},
+          {"kind": "flange", "id": "seam-4", "at": {"from": "end", "offset": 0.6}, "overhang": 0.012, "thickness": 0.024},
+          {"kind": "flange", "id": "seam-5", "at": {"from": "end", "offset": 0.012}, "overhang": 0.012, "thickness": 0.024},
+          {"kind": "bracket", "id": "bracket-1", "at": {"from": "start", "offset": 0.35}, "reach": 0.21, "direction": [-1, 0, 0]},
+          {"kind": "bracket", "id": "bracket-2", "at": {"from": "start", "offset": 1.0}, "reach": 0.21, "direction": [-1, 0, 0]}
+        ]
+      },
+      "slots": {"body": "galvanized", "fitting": "galvanized", "end": "galvanized", "bracket": "steel"}
+    },
+    {"id": "vent", "generator": {"kind": "box", "size": [0.4, 0.45, 0.4]},
+     "placement": {"position": [0.02, {"derived": "ventY"}, 1.92]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "louver-bottom", "generator": {"kind": "box", "size": [0.016, 0.37, 0.03]},
+     "placement": {"position": [0.42, {"derived": "louverY"}, 1.96]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "louver-top", "generator": {"kind": "box", "size": [0.016, 0.37, 0.03]},
+     "placement": {"position": [0.42, {"derived": "louverY"}, 2.25]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "louver-near", "generator": {"kind": "box", "size": [0.016, 0.03, 0.26]},
+     "placement": {"position": [0.42, {"derived": "louverY"}, 1.99]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "louver-far", "generator": {"kind": "box", "size": [0.016, 0.03, 0.26]},
+     "placement": {"position": [0.42, {"derived": "louverFarY"}, 1.99]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "slat-1", "generator": {"kind": "box", "size": [0.004, 0.31, 0.062]},
+     "placement": {"position": [0.414, {"derived": "slatY"}, 2.003], "rotation": [0, 53.13010235, 0]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "slat-2", "generator": {"kind": "box", "size": [0.004, 0.31, 0.062]},
+     "placement": {"position": [0.414, {"derived": "slatY"}, 2.055], "rotation": [0, 53.13010235, 0]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "slat-3", "generator": {"kind": "box", "size": [0.004, 0.31, 0.062]},
+     "placement": {"position": [0.414, {"derived": "slatY"}, 2.107], "rotation": [0, 53.13010235, 0]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "slat-4", "generator": {"kind": "box", "size": [0.004, 0.31, 0.062]},
+     "placement": {"position": [0.414, {"derived": "slatY"}, 2.159], "rotation": [0, 53.13010235, 0]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}},
+    {"id": "slat-5", "generator": {"kind": "box", "size": [0.004, 0.31, 0.062]},
+     "placement": {"position": [0.414, {"derived": "slatY"}, 2.211], "rotation": [0, 53.13010235, 0]},
+     "slots": {"side": "galvanized", "top": "galvanized", "bottom": "galvanized"}}
+  ],
+  "slots": {
+    "galvanized": {"entry": "materials/kowloon-galvanized.material.ts", "seed": 4},
+    "steel": {"entry": "materials/painted-steel.material.ts", "seed": 5}
+  }
+}

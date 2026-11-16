@@ -1,0 +1,40 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "washroom-pipe",
+  "parameters": {
+    "height": {"type": "number", "default": 2.3, "min": 1.0, "max": 6, "unit": "m"},
+    "standoff": {"type": "number", "default": 0.14, "min": 0.14, "max": 1, "unit": "m"}
+  },
+  "derived": {
+    "spacing": "(height - 0.1) / 4",
+    "second": "2 * spacing",
+    "third": "3 * spacing"
+  },
+  "parts": [{
+    "id": "riser",
+    "generator": {
+      "kind": "route",
+      "section": {"kind": "round", "radius": 0.09},
+      "points": [
+        [{"parameter": "standoff"}, 2.12, 0],
+        [{"parameter": "standoff"}, 2.12, {"parameter": "height"}],
+        [0, 2.12, {"parameter": "height"}]
+      ],
+      "bendRadius": 0.1,
+      "segments": 24,
+      "bendSegments": 8,
+      "fittings": [
+        {"kind": "flange", "id": "floor", "at": {"from": "start", "offset": 0.015}, "radius": 0.13, "thickness": 0.03, "bolts": 6},
+        {"kind": "coupling", "id": "coupling-1", "at": {"from": "start", "offset": {"derived": "spacing"}}, "length": 0.07, "clearance": 0.018},
+        {"kind": "coupling", "id": "coupling-2", "at": {"from": "start", "offset": {"derived": "second"}}, "length": 0.07, "clearance": 0.018},
+        {"kind": "coupling", "id": "coupling-3", "at": {"from": "start", "offset": {"derived": "third"}}, "length": 0.07, "clearance": 0.018},
+        {"kind": "flange", "id": "wall", "at": {"from": "end", "offset": 0.015}, "radius": 0.13, "thickness": 0.03, "bolts": 6}
+      ]
+    },
+    "slots": {"body": "steel", "fitting": "steel", "bolt": "steel", "end": "steel"}
+  }],
+  "slots": {
+    "steel": {"entry": "materials/kowloon-rusted-steel.material.ts", "seed": 3}
+  }
+}

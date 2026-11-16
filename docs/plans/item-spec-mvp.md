@@ -1,5 +1,32 @@
 # ItemSpec MVP
 
+> **Assumed pending review (2026-11-16).** Steps 1 to 3 are prototyped in
+> `crates/engine/src/itemspec/definition` (tests: `crates/engine/tests/item_parts.rs`;
+> reference: `definition/README.md`). Choices made where this plan was open or silent:
+>
+> - Expressions are strings (open decision 1). Names in them use letters, digits and
+>   underscores.
+> - The panel is built as a polygon with holes swept through the thickness, not with
+>   `Solid::boolean` and `Solid::owned`. It is the same solid, with exact face groups,
+>   f64 positions and metric UVs; the boolean kernel is used only as a test oracle.
+> - A part has an optional `placement` (position, rotation in degrees), and an
+>   omitted part `slots` map gives every face group a slot of its own name.
+> - Opening rules place the opening's near edge in the length left after its size;
+>   fitting rules place the fitting's centre by arc length. Openings keep a 0.02 m
+>   margin. An arch top is 16 chords.
+> - A fitting must lie on one straight run, so `{"point": i}` is usable only at a
+>   point without a bend. `every` copies are named `<id>-1`, `<id>-2`, ...
+> - A flange takes `radius` (round) or `overhang` (any section). Brackets take
+>   optional `width` and `thickness`; sills an optional `thickness`. Routes take
+>   `bendSegments`, `up` and `capped`.
+> - Fittings and tees overlap the body as closed solids; nothing is cut.
+> - Features (`joint`, `end`, `bracket-contact`, `opening-edge`, `sill`, `base`,
+>   `top`) and one pattern anchor per part are emitted on `ItemGeometry` as polylines
+>   and frames. They are not wired into MaterialSpec.
+> - `glb` is not accepted as a part, `lathe` and `decals` are not implemented, and
+>   glazing is an opaque slab with its own slot (open decision 2 stays open).
+> - Per-part reuse is `PreparedItem::rebuild`; `reuse` is unchanged.
+
 **Ordering and reconciliation: see [roadmap.md](roadmap.md).** Steps 1 to 3 run in
 roadmap stage 1, steps 4 to 7 in stage 3. Changes the roadmap makes here:
 

@@ -398,6 +398,9 @@ impl Package {
             bounds: [[0.; 3]; 2],
             imported_materials: materials,
             images: self.images.clone(),
+            parts: vec![],
+            features: vec![],
+            anchors: vec![],
         })
     }
     fn children(&self, node: &Value, pointer: &str) -> Result<Vec<usize>, ItemDiagnostic> {

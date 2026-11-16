@@ -1,0 +1,39 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "washroom-wall",
+  "parameters": {
+    "width": {"type": "number", "default": 2.7, "min": 1.7, "max": 8, "unit": "m"},
+    "height": {"type": "number", "default": 2.6, "min": 2.0, "max": 5, "unit": "m"}
+  },
+  "derived": {"sillHeight": "min(1.1, height - 1.0)"},
+  "parts": [{
+    "id": "wall",
+    "generator": {
+      "kind": "panel",
+      "width": {"parameter": "width"},
+      "height": {"parameter": "height"},
+      "thickness": 0.25,
+      "openings": [{
+        "id": "window",
+        "shape": "rectangle",
+        "width": 0.9,
+        "height": 0.7,
+        "u": {"from": "end", "offset": 0.6},
+        "v": {"from": "start", "offset": {"derived": "sillHeight"}},
+        "frame": {"border": 0.05, "depth": 0.08},
+        "glazing": {"thickness": 0.006},
+        "sill": {"depth": 0.06, "overhang": 0.03}
+      }]
+    },
+    "slots": {
+      "front": "concrete", "back": "concrete", "edge": "concrete", "reveal": "concrete",
+      "frame": "frame", "glazing": "glass", "sill": "concrete"
+    }
+  }],
+  "slots": {
+    "concrete": {"entry": "materials/kowloon-concrete.material.ts", "seed": 0},
+    "frame": {"entry": "materials/painted-steel.material.ts", "seed": 1},
+    "glass": {"entry": "materials/glass.material.ts", "seed": 2}
+  }
+}

@@ -1,4 +1,8 @@
-use super::{ItemDiagnostic, fail};
+use super::{
+    ItemDiagnostic,
+    expression::{Expression, ExpressionError},
+    fail,
+};
 use crate::materialspec::program::MaterialRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,6 +10,8 @@ use std::collections::BTreeMap;
 use superspec_geometry::Matrix;
 
 pub type Values = BTreeMap<String, Value>;
+/// Evaluated derived values by name.
+pub type Derived = BTreeMap<String, f64>;
 pub type Transform = [[f64; 3]; 4];
 pub fn identity() -> Transform {
     Matrix::default().0
@@ -19,7 +25,14 @@ pub struct ItemDefinition {
     pub id: String,
     #[serde(default)]
     pub parameters: BTreeMap<String, Parameter>,
+    /// Version 2: name to expression text. See `expression.rs` for the grammar.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub derived: BTreeMap<String, String>,
+    /// Version 1: the item's single generator. Version 2 leaves it absent and lists `parts`.
+    #[serde(default, skip_serializing_if = "Generator::is_parts")]
     pub generator: Generator,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartDefinition>,
     #[serde(default)]
     pub slots: BTreeMap<String, MaterialRequest>,
     #[serde(default = "identity")]
@@ -72,10 +85,17 @@ pub struct ParameterReference {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedReference {
+    pub derived: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Scalar {
     Number(f64),
     Parameter(ParameterReference),
+    Derived(DerivedReference),
 }
 impl Default for Scalar {
     fn default() -> Self {
@@ -98,7 +118,8 @@ impl Default for Switch {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Generator {
     #[serde(rename_all = "camelCase")]
@@ -126,6 +147,256 @@ pub enum Generator {
         asset: String,
         scene: Option<usize>,
     },
+    /// Version 2 part generator. The box spans from the part origin to `size`.
+    Box {
+        size: [Scalar; 3],
+    },
+    /// Version 2 part generator.
+    Panel(PanelDefinition),
+    /// Version 2 part generator.
+    Route(RouteDefinition),
+    /// The value of an absent root `generator`: the item is defined by `parts`.
+    #[default]
+    Parts,
+}
+impl Generator {
+    pub fn is_parts(&self) -> bool {
+        matches!(self, Self::Parts)
+    }
+}
+
+/// One generator of a version 2 item, with its own meshes, features and geometry key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PartDefinition {
+    pub id: String,
+    pub generator: Generator,
+    /// Face group to item slot. Empty means every face group uses a slot of its own name.
+    #[serde(default)]
+    pub slots: BTreeMap<String, String>,
+    pub placement: Option<PlacementDefinition>,
+}
+
+/// Where a part sits inside its item: a position and extrinsic XYZ rotations in degrees.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementDefinition {
+    #[serde(default)]
+    pub position: [Scalar; 3],
+    #[serde(default)]
+    pub rotation: [Scalar; 3],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Edge {
+    #[default]
+    Start,
+    End,
+    Center,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OffsetRule {
+    pub from: Edge,
+    #[serde(default)]
+    pub offset: Scalar,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FractionRule {
+    pub fraction: Scalar,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EveryRule {
+    pub every: Scalar,
+    #[serde(default)]
+    pub inset: Scalar,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PointRule {
+    pub point: usize,
+}
+/// The one placement rule shared by openings and fittings (and, later, decals).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Rule {
+    Offset(OffsetRule),
+    Fraction(FractionRule),
+    Every(EveryRule),
+    Point(PointRule),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PanelDefinition {
+    pub width: Scalar,
+    pub height: Scalar,
+    pub thickness: Scalar,
+    #[serde(default)]
+    pub openings: Vec<OpeningDefinition>,
+    /// `[u, v]` of the pattern anchor on the front face; the bottom-left corner when absent.
+    pub pattern_anchor: Option<[Scalar; 2]>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpeningShape {
+    #[default]
+    Rectangle,
+    Arch,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OpeningMode {
+    #[default]
+    Through,
+    Recess,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpeningDefinition {
+    pub id: String,
+    #[serde(default)]
+    pub shape: OpeningShape,
+    #[serde(default)]
+    pub mode: OpeningMode,
+    pub depth: Option<Scalar>,
+    pub width: Scalar,
+    pub height: Scalar,
+    pub u: Rule,
+    pub v: Rule,
+    pub frame: Option<FrameDefinition>,
+    pub glazing: Option<GlazingDefinition>,
+    pub sill: Option<SillDefinition>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrameDefinition {
+    pub border: Scalar,
+    pub depth: Scalar,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GlazingDefinition {
+    pub thickness: Scalar,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SillDefinition {
+    pub depth: Scalar,
+    #[serde(default)]
+    pub overhang: Scalar,
+    pub thickness: Option<Scalar>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SectionDefinition {
+    Round { radius: Scalar },
+    Rect { width: Scalar, height: Scalar },
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentReference {
+    pub attachment: String,
+}
+fn bend_segments() -> Scalar {
+    Scalar::Number(8.)
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouteDefinition {
+    pub section: SectionDefinition,
+    #[serde(default)]
+    pub wall_thickness: Scalar,
+    pub points: Vec<[Scalar; 3]>,
+    #[serde(default)]
+    pub bend_radius: Scalar,
+    /// Sides around a round section.
+    #[serde(default = "segments")]
+    pub segments: Scalar,
+    /// Steps along each bend.
+    #[serde(default = "bend_segments")]
+    pub bend_segments: Scalar,
+    /// Direction of a rectangular section's height; projected perpendicular to the first run.
+    pub up: Option<[f64; 3]>,
+    #[serde(default)]
+    pub capped: Switch,
+    #[serde(default)]
+    pub fittings: Vec<FittingDefinition>,
+    /// Starts the route at another part's attachment; `points` are then relative to it.
+    pub from: Option<AttachmentReference>,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Handle {
+    #[default]
+    Wheel,
+    Lever,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FittingDefinition {
+    Coupling {
+        id: String,
+        at: Rule,
+        length: Scalar,
+        clearance: Scalar,
+    },
+    /// `radius` is the outer radius on a round section; `overhang` (how far the flange
+    /// stands proud of the section) works on both. Give exactly one.
+    Flange {
+        id: String,
+        at: Rule,
+        radius: Option<Scalar>,
+        overhang: Option<Scalar>,
+        thickness: Scalar,
+        #[serde(default)]
+        bolts: Scalar,
+    },
+    Valve {
+        id: String,
+        at: Rule,
+        length: Scalar,
+        #[serde(default)]
+        handle: Handle,
+    },
+    Bracket {
+        id: String,
+        at: Rule,
+        reach: Scalar,
+        direction: [f64; 3],
+        width: Option<Scalar>,
+        thickness: Option<Scalar>,
+    },
+    Tee {
+        id: String,
+        at: Rule,
+        direction: [f64; 3],
+        length: Scalar,
+    },
+}
+impl FittingDefinition {
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Coupling { id, .. }
+            | Self::Flange { id, .. }
+            | Self::Valve { id, .. }
+            | Self::Bracket { id, .. }
+            | Self::Tee { id, .. } => id,
+        }
+    }
+    pub fn at(&self) -> &Rule {
+        match self {
+            Self::Coupling { at, .. }
+            | Self::Flange { at, .. }
+            | Self::Valve { at, .. }
+            | Self::Bracket { at, .. }
+            | Self::Tee { at, .. } => at,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -206,13 +477,63 @@ impl Parameter {
 
 impl ItemDefinition {
     pub fn resolve_parameters(&self, overrides: &Values) -> Result<Values, ItemDiagnostic> {
-        if self.format != "itemspec" || self.version != 1 {
+        if self.format != "itemspec" || !(1..=2).contains(&self.version) {
             return Err(fail(
                 &self.source,
                 "/version",
                 "ITEM_VERSION",
-                "Expected itemspec version 1.",
+                "Expected itemspec version 1 or 2.",
             ));
+        }
+        if self.version == 1 {
+            if !matches!(
+                self.generator,
+                Generator::Pipe { .. } | Generator::Duct { .. } | Generator::Glb { .. }
+            ) {
+                return Err(fail(
+                    &self.source,
+                    "/generator",
+                    "ITEM_PART",
+                    "A version 1 item has one pipe, duct or glb generator.",
+                ));
+            }
+            if !self.parts.is_empty() || !self.derived.is_empty() {
+                return Err(fail(
+                    &self.source,
+                    if self.parts.is_empty() {
+                        "/derived"
+                    } else {
+                        "/parts"
+                    },
+                    "ITEM_VERSION",
+                    "Parts and derived values need itemspec version 2.",
+                ));
+            }
+        } else {
+            if !self.generator.is_parts() {
+                return Err(fail(
+                    &self.source,
+                    "/generator",
+                    "ITEM_PART",
+                    "A version 2 item lists its generators under parts.",
+                ));
+            }
+            if self.parts.is_empty() || self.parts.len() > 64 {
+                return Err(fail(
+                    &self.source,
+                    "/parts",
+                    "ITEM_LIMIT",
+                    "A version 2 item has from 1 to 64 parts.",
+                ));
+            }
+            if self.derived.len() > 64 {
+                return Err(fail(
+                    &self.source,
+                    "/derived",
+                    "ITEM_LIMIT",
+                    "An item has at most 64 derived values.",
+                ));
+            }
         }
         if !bounded_name(&self.id) {
             return Err(fail(
@@ -347,14 +668,142 @@ impl ItemDefinition {
             )
         })
     }
+    /// Evaluates every derived value. They follow the geometry rule: an expression reads
+    /// numeric geometry controls and other derived values, never finish controls.
+    pub fn resolve_derived(&self, values: &Values) -> Result<Derived, ItemDiagnostic> {
+        let pointer = |name: &str| format!("/derived/{}", super::pointer_key(name));
+        let failure = |name: &str, error: ExpressionError| {
+            fail(
+                &self.source,
+                &pointer(name),
+                "ITEM_EXPRESSION",
+                format!("{} (character {})", error.message, error.offset + 1),
+            )
+        };
+        let mut parsed = BTreeMap::new();
+        for (name, text) in &self.derived {
+            let identifier = !name.is_empty()
+                && name.len() <= 128
+                && name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                && !name.as_bytes()[0].is_ascii_digit();
+            if !identifier || self.parameters.contains_key(name) {
+                return Err(fail(
+                    &self.source,
+                    &pointer(name),
+                    "ITEM_EXPRESSION",
+                    "A derived name uses letters, digits and underscores and differs from every parameter.",
+                ));
+            }
+            parsed.insert(
+                name.as_str(),
+                Expression::parse(text).map_err(|error| failure(name, error))?,
+            );
+        }
+        struct Evaluation<'a> {
+            definition: &'a ItemDefinition,
+            values: &'a Values,
+            parsed: BTreeMap<&'a str, Expression>,
+            // `None` marks a value whose evaluation is in progress.
+            done: BTreeMap<&'a str, Option<f64>>,
+        }
+        impl<'a> Evaluation<'a> {
+            fn value(&mut self, name: &'a str) -> Result<f64, (String, ExpressionError)> {
+                let expression = self.parsed[name].clone();
+                self.done.insert(name, None);
+                let names: Vec<(String, usize)> = expression
+                    .names()
+                    .into_iter()
+                    .map(|(n, at)| (n.to_owned(), at))
+                    .collect();
+                let mut resolved = BTreeMap::new();
+                for (used, at) in names {
+                    let error = |message: String| {
+                        (
+                            name.to_owned(),
+                            ExpressionError {
+                                offset: at,
+                                message,
+                            },
+                        )
+                    };
+                    let number = if let Some((&key, _)) = self.parsed.get_key_value(used.as_str()) {
+                        match self.done.get(key) {
+                            Some(Some(value)) => *value,
+                            Some(None) => {
+                                return Err(error(format!(
+                                    "Derived value {used} depends on itself."
+                                )));
+                            }
+                            None => self.value(key)?,
+                        }
+                    } else if let Some(parameter) = self.definition.parameters.get(&used) {
+                        if parameter.role != Role::Geometry {
+                            return Err(error(format!(
+                                "Derived values cannot read the finish control {used}."
+                            )));
+                        }
+                        self.values
+                            .get(&used)
+                            .and_then(Value::as_f64)
+                            .ok_or_else(|| error(format!("Parameter {used} is not numeric.")))?
+                    } else {
+                        return Err(error(format!("Unknown name {used}.")));
+                    };
+                    resolved.insert(used, number);
+                }
+                let result = expression.evaluate(&mut |used, at| {
+                    resolved.get(used).copied().ok_or_else(|| ExpressionError {
+                        offset: at,
+                        message: format!("Unknown name {used}."),
+                    })
+                });
+                match result {
+                    Ok(value) => {
+                        self.done.insert(name, Some(value));
+                        Ok(value)
+                    }
+                    Err(error) => Err((name.to_owned(), error)),
+                }
+            }
+        }
+        let mut evaluation = Evaluation {
+            definition: self,
+            values,
+            parsed,
+            done: BTreeMap::new(),
+        };
+        let names: Vec<&str> = evaluation.parsed.keys().copied().collect();
+        for name in names {
+            if !evaluation.done.contains_key(name) {
+                evaluation
+                    .value(name)
+                    .map_err(|(owner, error)| failure(&owner, error))?;
+            }
+        }
+        Ok(evaluation
+            .done
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.unwrap_or(0.)))
+            .collect())
+    }
+
     pub(super) fn scalar(
         &self,
         expression: &Scalar,
         values: &Values,
+        derived: &Derived,
         pointer: &str,
     ) -> Result<f64, ItemDiagnostic> {
         let number = match expression {
             Scalar::Number(number) => *number,
+            Scalar::Derived(reference) => *derived.get(&reference.derived).ok_or_else(|| {
+                fail(
+                    &self.source,
+                    pointer,
+                    "ITEM_EXPRESSION",
+                    format!("Unknown derived value {}.", reference.derived),
+                )
+            })?,
             Scalar::Parameter(reference) => self
                 .parameter(&reference.parameter, values, pointer, true)?
                 .as_f64()
