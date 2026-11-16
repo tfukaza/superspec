@@ -70,8 +70,8 @@ fn input_space(ts_name: &str) -> &'static str {
         "uv" => "uv",
         "surface" => "surface",
         "object" => "object",
-        "normal" | "gravity" => "direction",
-        "instance" => "none",
+        "normal" | "gravity" | "sunDirection" => "direction",
+        "instance" | "instanceTint" => "none",
         _ => "world",
     }
 }
@@ -401,6 +401,10 @@ pub fn declarations() -> String {
          \x20 readonly live?: readonly LiveEffect[];\n\
          \x20 /** Draw the surface from both sides. */\n\
          \x20 readonly doubleSided?: boolean;\n\
+         \x20 /** lit (the default) is shaded by the scene's lights; painted shows `paint` without the light loop, and the program is delivered with the material (its baked maps are the fallback). */\n\
+         \x20 readonly shading?: \"lit\" | \"painted\";\n\
+         \x20 /** The linear color a painted material shows, which may read the sun, instance and scene-field inputs; the base color without it. */\n\
+         \x20 readonly paint?: Vec3;\n\
          }\n\
          export interface MaterialDefinition {\n\
          \x20 readonly [kind]: \"material\";\n\

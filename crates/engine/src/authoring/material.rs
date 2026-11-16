@@ -1502,6 +1502,7 @@ fn bake_source_planes(
         edges: source.request.edges.clone(),
         features: Vec::new(),
         mips: decoded.mips.clone(),
+        render: None,
     };
     // Planes of fields are filled by the evaluator; planes of outputs from each sample's result.
     let window = rows_window(atlas, only);
@@ -1891,6 +1892,7 @@ impl StackContext<'_> {
                 edges: source.request.edges.clone(),
                 features: Vec::new(),
                 mips: decoded.mips.clone(),
+                render: None,
             };
             let renamed;
             let named = if source.follow.is_empty() {
@@ -2207,12 +2209,125 @@ impl BakedReceiver {
     }
 }
 
+/// The per-pixel program a material that declares live inputs (`shading: painted`) is
+/// delivered with, its uniforms set from the request's parameters and seed. `None` for a lit
+/// material, and for a painted one whose program reads what a delivered program cannot carry
+/// (supplied images, receiver features, source edges or planes): it is delivered with its baked
+/// maps alone. Render-only values never enter a bake key: this payload is beside the maps.
+pub(crate) fn live_program(
+    compiled: &program::Program,
+    request: &Request,
+) -> Result<Option<superspec_types::material::LiveProgram>, String> {
+    use superspec_types::material::{LiveProgram, ProgramInput, ProgramUniform};
+    if compiled.metadata().shading != program::Shading::Painted {
+        return Ok(None);
+    }
+    let shader = compiled.shader()?;
+    let Some(painted) = shader.painted.clone() else {
+        return Ok(None);
+    };
+    let reads = shader
+        .reads
+        .outputs
+        .values()
+        .chain(&shader.reads.painted)
+        .collect::<Vec<_>>();
+    if !shader.images.is_empty()
+        || shader.features
+        || reads
+            .iter()
+            .any(|read| read.edges || !read.planes.is_empty() || !read.cpu_fields.is_empty())
+    {
+        return Ok(None);
+    }
+    let mut uniforms = Vec::new();
+    for parameter in &shader.parameters {
+        let declared = compiled
+            .metadata()
+            .parameters
+            .iter()
+            .find(|known| known.name == parameter.name)
+            .ok_or("A shader parameter is not a parameter of the program.")?;
+        let value = request
+            .parameters
+            .get(&parameter.name)
+            .unwrap_or(&declared.default);
+        let (kind, value) = match value {
+            serde_json::Value::Bool(flag) => ("bool", vec![f64::from(u8::from(*flag))]),
+            serde_json::Value::Number(number) => ("float", vec![number.as_f64().unwrap_or(0.)]),
+            serde_json::Value::Array(items) => (
+                if items.len() == 2 { "vec2" } else { "vec3" },
+                items
+                    .iter()
+                    .map(|item| item.as_f64().unwrap_or(0.))
+                    .collect(),
+            ),
+            _ => {
+                return Err(format!(
+                    "Parameter {} has no numeric value.",
+                    parameter.name
+                ));
+            }
+        };
+        uniforms.push(ProgramUniform {
+            uniform: parameter.uniform.clone(),
+            kind: kind.into(),
+            value,
+        });
+    }
+    for seed in &shader.seeds {
+        uniforms.push(ProgramUniform {
+            uniform: seed.uniform.clone(),
+            kind: "uint".into(),
+            value: vec![f64::from(program::seed_value(request.seed, &seed.name))],
+        });
+    }
+    let mut requires: std::collections::BTreeSet<String> = reads
+        .iter()
+        .flat_map(|read| read.sample.iter().map(|name| (*name).to_owned()))
+        .collect();
+    let inputs: Vec<ProgramInput> = shader
+        .render_inputs
+        .iter()
+        .map(|input| {
+            if let Some(name) = &input.name {
+                requires.insert(format!("field:{name}"));
+            }
+            ProgramInput {
+                symbol: input.symbol.clone(),
+                kind: input.kind.into(),
+                glsl: input.glsl.into(),
+                name: input.name.clone(),
+                fallback: input.fallback.clone(),
+            }
+        })
+        .collect();
+    if shader.source.contains("ms_cast_shadow") {
+        requires.insert("shadow".into());
+    }
+    let mapping = serde_json::to_value(request.mapping)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "object".into());
+    Ok(Some(LiveProgram {
+        version: LiveProgram::VERSION,
+        source: shader.source,
+        painted,
+        mapping,
+        domain: request.domain,
+        uniforms,
+        requires: requires.into_iter().collect(),
+        inputs,
+    }))
+}
+
 /// The material of a receiver, assembled from its groups' maps exactly as a bake of the whole
-/// receiver builds it.
+/// receiver builds it. A painted material keeps its program beside the maps (`live`).
 fn assemble(
     groups: &BTreeMap<Group, Arc<BakedReceiver>>,
     inspecting: bool,
     declared: &program::Metadata,
+    live: Option<&superspec_types::material::LiveProgram>,
 ) -> Result<(Material, BTreeMap<String, ImageResource>), String> {
     let missing = || "A baked map is missing.".to_owned();
     let mut images = BTreeMap::new();
@@ -2249,6 +2364,10 @@ fn assemble(
     }
     if declared.double_sided {
         material.double_sided = Some(true);
+    }
+    if declared.shading == program::Shading::Painted && !inspecting {
+        material.shading = Some(superspec_types::material::Shading::Painted);
+        material.program = live.cloned();
     }
     if inspecting {
         material.color = "#000000".into();
@@ -2696,6 +2815,12 @@ impl Session {
         let original = request;
         let layered = self.layered(request)?;
         let declared = compiled.metadata().clone();
+        // A painted material's program travels beside its maps; it is never baked.
+        let live_payload = match (layered.is_some(), request.inspection.is_some()) {
+            (false, false) => live_program(&compiled, request)
+                .map_err(|message| vec![Diagnostic::message(&request.entry, message)])?,
+            _ => None,
+        };
         let (request, chain, compiled) = match &layered {
             Some((composite, chain, _)) => {
                 let program = self.composite(composite, chain, &original.entry)?;
@@ -3298,6 +3423,7 @@ impl Session {
                                 // One cache for the session: variants of a material filter
                                 // their shared images once.
                                 mips: mips.clone(),
+                                render: None,
                             })),
                             // The images are shared artifacts, counted where they are decoded.
                             json(&request.parameters).len() + 1024,
@@ -3371,6 +3497,7 @@ impl Session {
                                 edges: source.request.edges.clone(),
                                 features: Vec::new(),
                                 mips: decoded.mips.clone(),
+                                render: None,
                             };
                             bake_output_planes(
                                 &source.program,
@@ -3518,6 +3645,7 @@ impl Session {
                                 edges: request.edges.clone(),
                                 features: Vec::new(),
                                 mips: assets.mips.clone(),
+                                render: None,
                             })
                         };
                         match bake_groups(
@@ -3727,7 +3855,8 @@ impl Session {
                 };
                 maps.insert(group, baked.clone());
             }
-            let (material, images) = assemble(&maps, inspecting, &declared).map_err(&fail)?;
+            let (material, images) =
+                assemble(&maps, inspecting, &declared, live_payload.as_ref()).map_err(&fail)?;
             layouts.push([atlas.width as f64, atlas.height as f64, atlas.density]);
             if compiled.metadata().kind == program::RecipeKind::Decal {
                 let bound = |pick: fn(f64, f64) -> f64, start: f64| {
@@ -5472,6 +5601,7 @@ impl Session {
             edges: request.edges.clone(),
             features: Vec::new(),
             mips: decoded.mips.clone(),
+            render: None,
         };
         let wanted: Vec<&str> = names.iter().map(String::as_str).collect();
         program.select_fields(&wanted).map_err(&fail)?;

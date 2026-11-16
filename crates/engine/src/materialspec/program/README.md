@@ -92,6 +92,54 @@ enter no bake key: a bake (or `evaluate`) of a value that reads one fails with `
 read, and values that read none bake as before. Live operations whose arguments read them are not
 yet routed to the renderer: they fail like any baked value.
 
+Stage 5 adds (all render-only; `Shader::render_inputs` lists each with its `kind`):
+
+- `sun_direction` (`sunDirection`): the unit vector toward the sun of the scene's lighting record
+  (uniform `msSunDirection`). A bake that needs it is the source-linked `MS_INPUT` above.
+- `instance_root`, `instance_tint`, `instance_random` (`instanceRoot`, ...): where the drawn
+  instance's origin stands, its tint (white without one) and a number in [0, 1) per instance (its
+  `random` attribute, else a hash of its index; 0 outside a batch). `placed_world` is the drawn point
+  through the instance's placement; `world` stays the batch's own space, where its one bake is made.
+  The host derives these varyings (`kind: "derived"`).
+- `sample_field(name, xy)` (`sampleField`): a top-down scene field at a world XY position, `ground.color`
+  (linear RGB) or `ground.normal` (world unit normal); any other name is refused where it is written.
+  The shader reads `msField<k>` and `msFieldRect<k>` (`kind: "field"`, `name`), bilinear between texel
+  centers with the edge texels continuing (`SceneField::sample` on the CPU). A renderer without the
+  field, or a bake, fails where it is read, naming the field.
+- A named attribute's `RenderInput::fallback` is the GLSL of the value its call is typed by, which a
+  host reads where the drawn mesh has no such attribute.
+
+`Inputs::render` (`RenderBindings`) binds all of them for a CPU evaluation that stands for a drawn
+pixel: a reference for the shader, never a bake of the authoring session, which binds nothing.
+`RenderBindings::default()` is the default binding: clock 0, the record's default sun, no instance
+(origin, white, random 0, value zero), no cast shadow, each named attribute at its typed value and no
+field. With it a program whose instance terms vanish at those values bakes the bytes it baked without
+them (`with_default_bindings_a_program_that_reads_instance_inputs_bakes_as_before`). The row
+evaluator declines programs that read render-only inputs, `shade_band` or `sample_field`; their
+samples are evaluated one at a time.
+
+## Painted shading, shade bands and delivered programs
+
+- `defineMaterial({ shading: "painted", paint })` (`Metadata::shading`, `Metadata::paint`, the field
+  `painted.color`) declares live inputs: the material is drawn by its program, and `paint` (linear
+  RGB; the base color without it) reaches the screen without the light loop (`Shader::painted`). The
+  bake still bakes its PBR channels, which must not read render-only inputs: they are the fallback.
+- `shade_band(normal, sun, threshold, softness, range)` (`shadeBand`) is
+  `smoothstep(-w, w, dot(normal, sun) - threshold)` with `w = max(range, 1e-6, softness * fwidth)`:
+  `softness` is screen pixels of antialiasing, which a sample (and so the CPU) does not have. Where the
+  material is drawn the sun's cast shadow, in the scene's shadow style, is folded in by the minimum
+  (`ms_cast_shadow`, which the host sets from `shadow-style.ts`'s `msCastShadow`); a bake has none. The
+  `edgeBreak` group gives a world-anchored offset (fractal noise over the position's XY) to add to the
+  threshold.
+- A painted material's delivered `Material::program` (`authoring::material::live_program`) carries the
+  GLSL, the painted expression, the mapping, uniform values from the request's parameters and seed,
+  `requires` (sample and render inputs, `shadow`, `field:<name>`) and the render inputs to bind. It sits
+  beside the baked maps, enters no map's key, and is exported in `extras.materialSpec.program` with
+  `shading`. A program that reads supplied images, receiver features, edges or planes is not delivered
+  (its maps are). `superspec_export::live_report` names what an importer without the payload skips.
+- `tests/material_live.rs` covers these; `tests/live-program-browser.mjs` evaluates the generated GLSL
+  on the CPU's sample grid and checks that the viewer binds each input.
+
 ## Recipe kinds: decals and weathering layers
 
 A TypeScript recipe's default export says what it is (`Metadata::kind`).
@@ -157,6 +205,22 @@ chain of planes, not one linked program:
 - For a GPU host, `shade_project` adds `metadata.layers` to a layered assignment: each layer's
   shader plan, in which `below.<channel>` is a CPU field whose texture is that channel beneath,
   with the layer's seeds, `follow` and which material each input reads, and `metadata.channels`.
+  Each mesh of the slot also gets `layerFeatures`: per layer, its receiver features as that layer's
+  plan queries them (derived features if it reads any, and the named features it reads, renamed by
+  its `follow`, with kind 5 plus the name's place in the plan's `namedFeatures`).
+  `Session::bake_project_fields` bakes a layer's own CPU fields (not its `below.*` ones) for a name
+  `stack.<k>/<field>`, with the layer's module, parameters, seed and followed features.
+- The Studio's scene view composes a layered slot on the GPU (`GpuBaker.bakeStack`, browser
+  `renderer/bake.ts`): a pass-graph node per plane (each material's channels, unencoded, read by
+  texel), each layer's plan reading the plane nodes beneath it in place of its `below.*` fields,
+  the maps composed from the planes of the materials that last changed each channel, and the
+  relief from the height and offset planes. Nodes are keyed as the CPU's planes are, so an edit to a
+  layer draws only it and the planes above that read what it changed. The base's intrinsic outputs
+  are drawn into shared lattice tiles (512 cells square, keyed by the lattice step and the values
+  they read, no receiver) when every chart of a receiver lies on its anchor's lattice, and a
+  per-receiver mapping copies each texel's cell, so a resized receiver and another receiver over
+  the same stretch of the pattern draw no base. It is a preview: planes are half floats (heights
+  single), have no leg points, and the per-pixel look of a layered slot shows its base alone.
 
 The Kowloon concrete is split this way beside the shipped recipe: `kowloon-concrete-anchored`
 (intrinsic, on the pattern anchor), `kowloon-top-grime` (follows `top`), `kowloon-ground-stain` and

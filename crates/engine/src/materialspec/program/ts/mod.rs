@@ -16,6 +16,8 @@ mod edit;
 mod scope;
 pub use edit::{EditFailure, EditOp, Edited, Inspection, Patch, Span, apply, inspect};
 
+/// The field a painted material's `paint` becomes (see `Metadata::paint`).
+const PAINT_FIELD: &str = "painted.color";
 const TOKEN_LIMIT: usize = 65_536;
 const DEPTH_LIMIT: usize = 96;
 
@@ -1406,6 +1408,7 @@ impl Lower<'_> {
                     )
                 })
                 .collect(),
+            ..Traits::default()
         };
     }
 
@@ -1572,12 +1575,51 @@ impl Lower<'_> {
         let Some(properties) = self.properties(
             options,
             "defineMaterial",
-            &["name", "base", "layers", "channels", "live", "doubleSided"],
+            &[
+                "name",
+                "base",
+                "layers",
+                "channels",
+                "live",
+                "doubleSided",
+                "shading",
+                "paint",
+            ],
         ) else {
             return;
         };
         let find = |key: &str| properties.iter().find(|p| p.key == key);
         self.out.traits.double_sided = self.flag(find("doubleSided"));
+        match find("shading").map(|property| (&property.value.kind, &property.value.mark)) {
+            None => {}
+            Some((NodeKind::Text(word), _)) if word == "lit" => {}
+            Some((NodeKind::Text(word), _)) if word == "painted" => {
+                self.out.traits.shading = super::Shading::Painted;
+            }
+            Some((_, at)) => {
+                let at = at.clone();
+                self.error("MT_PROPERTY", "shading is \"lit\" or \"painted\".", &at);
+            }
+        }
+        if let Some(paint) = find("paint") {
+            if self.out.traits.shading != super::Shading::Painted {
+                self.error(
+                    "MT_PROPERTY",
+                    "paint is the color a painted material shows: it needs shading: \"painted\".",
+                    &paint.mark,
+                );
+            } else if let Some(value) = self.expr(&paint.value, &BTreeSet::new()) {
+                self.out.declarations.push((
+                    PAINT_FIELD.into(),
+                    Definition::Field {
+                        value,
+                        kind: Some(Type::Vec3),
+                        mark: paint.mark.clone(),
+                    },
+                ));
+                self.out.traits.paint = Some(PAINT_FIELD.into());
+            }
+        }
         let channel_keys: Vec<&str> = CHANNELS.iter().map(|c| c.0).collect();
         let mut current: BTreeMap<&'static str, String> = BTreeMap::new();
 

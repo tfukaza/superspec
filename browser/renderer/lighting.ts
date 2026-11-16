@@ -81,6 +81,27 @@ export interface Lighting {
   ambientOcclusion: AmbientOcclusionSettings;
   /** An empty list means no direct light. */
   lights: Light[];
+  /**
+   * What the image's finishing steps do to materials with `shading: painted`, for the whole scene (never per material).
+   * Absent is the default (`DEFAULT_PAINTED`); a record holds it only when it differs, as the Rust record writes it.
+   */
+  painted?: PaintedFinishing;
+}
+
+/** See `Lighting.painted`. */
+export interface PaintedFinishing {
+  /** Whether exposure and the tone curve apply to painted materials. */
+  toneMapping: boolean;
+  /** Whether ambient occlusion darkens painted materials. */
+  ambientOcclusion: boolean;
+}
+
+/** By default painted colors reach the screen without exposure or tone curve, and ambient occlusion (a pass over the finished image) applies. */
+export const DEFAULT_PAINTED: PaintedFinishing = { toneMapping: false, ambientOcclusion: true };
+
+/** A record's painted finishing, its default where the record holds none. */
+export function paintedOf(lighting: Lighting): PaintedFinishing {
+  return lighting.painted ?? DEFAULT_PAINTED;
 }
 
 /**
@@ -301,7 +322,8 @@ export function parseLighting(value: unknown): Lighting {
 
   const base = DEFAULT_LIGHTING, baseSun = base.lights[0];
   if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) throw new LightingError([{ field: "", message: "must be an object" }]);
-  const root = fields(value, "", ["version", "exposure", "toneMapping", "environment", "ambient", "ambientOcclusion", "lights"]);
+  const root = fields(value, "", ["version", "exposure", "toneMapping", "environment", "ambient", "ambientOcclusion", "lights", "painted"]);
+  const paintedFields = fields(root.painted, "painted", ["toneMapping", "ambientOcclusion"]);
   if (root.version === undefined) fail("version", "is required");
   else if (root.version !== 1) fail("version", "must be 1");
   const environment = fields(root.environment, "environment", ["source", "intensity", "rotation"]);
@@ -377,6 +399,11 @@ export function parseLighting(value: unknown): Lighting {
       },
     });
   });
+  const painted: PaintedFinishing = {
+    toneMapping: boolean(paintedFields.toneMapping, "painted.toneMapping", DEFAULT_PAINTED.toneMapping),
+    ambientOcclusion: boolean(paintedFields.ambientOcclusion, "painted.ambientOcclusion", DEFAULT_PAINTED.ambientOcclusion),
+  };
+  if (painted.toneMapping !== DEFAULT_PAINTED.toneMapping || painted.ambientOcclusion !== DEFAULT_PAINTED.ambientOcclusion) lighting.painted = painted;
   if (findings.length) throw new LightingError(findings);
   return lighting;
 }

@@ -889,7 +889,24 @@ impl<'a> Context<'a, '_> {
                 Kind::Local(index) => *out = locals[*index],
                 Kind::Input(input) => {
                     if input.render_only() {
-                        Err(render_only(self.program, &node.mark))?;
+                        let Some(bound) = &self.inputs.render else {
+                            Err(render_only(self.program, &node.mark))?
+                        };
+                        *out = match input {
+                            Input::Time => Value::scalar(bound.time),
+                            Input::Instance => Value::vector(&bound.instance[..3], 0.),
+                            Input::InstanceW => Value::scalar(bound.instance[3]),
+                            Input::SunDirection => Value::vector(&bound.sun_direction, 0.),
+                            Input::InstanceRoot => Value::vector(&bound.instance_root, 0.),
+                            Input::InstanceTint => Value::vector(&bound.instance_tint, 0.),
+                            Input::InstanceRandom => Value::scalar(bound.instance_random),
+                            Input::PlacedWorld => Value::vector(
+                                &bound.placed_world.unwrap_or(self.sample.world),
+                                self.sample.footprint,
+                            ),
+                            _ => unreachable!("sample inputs are not render-only"),
+                        };
+                        break 'written;
                     }
                     let sample = self.sample;
                     *out = match input {
@@ -903,9 +920,7 @@ impl<'a> Context<'a, '_> {
                         Input::BoundsMax => Value::vector(&sample.bounds_max, 0.),
                         Input::Footprint => Value::scalar(sample.footprint),
                         Input::UvFootprint => Value::scalar(sample.uv_footprint.unwrap_or(0.)),
-                        Input::Time | Input::Instance | Input::InstanceW => {
-                            unreachable!("refused above")
-                        }
+                        _ => unreachable!("render-only inputs are read above"),
                     }
                 }
                 Kind::Parameter(index) => *out = self.parameters[*index],
@@ -1657,7 +1672,75 @@ impl<'a> Context<'a, '_> {
             }
             B::Ramp => return self.ramp(a, mark, out),
             B::InstanceAttribute | B::VertexAttribute => {
-                return Err(Box::new(render_only(self.program, mark)));
+                let Some(bound) = &self.inputs.render else {
+                    return Err(Box::new(render_only(self.program, mark)));
+                };
+                let attributes = if name == B::InstanceAttribute {
+                    &bound.instance_attributes
+                } else {
+                    &bound.vertex_attributes
+                };
+                let (_, n, _) = a[1].data();
+                *out = match attributes.get(a[0].text()) {
+                    // An attribute the drawn mesh does not have reads the value its call is
+                    // typed by, as a renderer's unbound attribute reads its default.
+                    None => Value::Number(a[1].data().0, n, 0.),
+                    Some(values) if values.len() == n && values.iter().all(|v| v.is_finite()) => {
+                        Value::vector(values, 0.)
+                    }
+                    Some(_) => Err(error(
+                        "A bound attribute has another number of components than its call reads, or a non-finite value.",
+                    ))?,
+                };
+            }
+            B::ShadeBand => {
+                let normal = a[0].data().0;
+                let sun = a[1].data().0;
+                let threshold = a[2].first();
+                let softness = a[3].first();
+                let range = a[4].first();
+                if !(range >= 0. && range.is_finite() && softness >= 0. && softness.is_finite()) {
+                    Err(error(
+                        "A shade band needs a finite range and softness of at least zero.",
+                    ))?;
+                }
+                // A sample has no screen, so the softness in pixels adds nothing here; the shader
+                // widens the band by it where the difference changes fast across pixels.
+                let width = range.max(SHADE_BAND_FLOOR);
+                let signed =
+                    normal[0] * sun[0] + normal[1] * sun[1] + normal[2] * sun[2] - threshold;
+                let t = ((signed + width) / (2. * width)).clamp(0., 1.);
+                let mut band = t * t * (3. - 2. * t);
+                if let Some(bound) = &self.inputs.render {
+                    band = band.min(bound.cast_shadow.clamp(0., 1.));
+                }
+                *out = Value::scalar(band);
+            }
+            B::SampleField => {
+                let field = a[0].text();
+                let Some(bound) = &self.inputs.render else {
+                    return Err(Box::new(self.program.diagnostic(
+                        "MS_INPUT",
+                        format!(
+                            "This reads the scene field '{field}', a render-only input the renderer makes from the scene: a baked channel cannot read it. Read it in values only the shader evaluates."
+                        ),
+                        mark,
+                    )));
+                };
+                let Some(supplied) = bound.fields.get(field) else {
+                    return Err(Box::new(self.program.diagnostic(
+                        "MS_INPUT",
+                        format!("The scene supplies no field '{field}'."),
+                        mark,
+                    )));
+                };
+                if !supplied.valid() {
+                    Err(error(
+                        "A scene field needs matching sizes, a nonempty rectangle and finite values.",
+                    ))?;
+                }
+                let at = a[1].data().0;
+                *out = Value::vector(&supplied.sample([at[0], at[1]]), 0.);
             }
             B::Unknown => unreachable!("typechecked builtin"),
         };
@@ -1841,10 +1924,13 @@ fn image_sample(image: &Image, uv: [f64; 2], color: bool) -> [f64; 4] {
 fn render_only(program: &Program, mark: &Mark) -> ProgramDiagnostic {
     program.diagnostic(
         "MS_INPUT",
-        "This reads a render-only input (time, instance or an instance or vertex attribute), which exists only where the material is drawn: a baked channel cannot read it. Read it in values only the shader evaluates.",
+        "This reads a render-only input (time, the sun, the drawn instance or an instance or vertex attribute), which exists only where the material is drawn: a baked channel cannot read it. Read it in values only the shader evaluates, such as a painted material's paint.",
         mark,
     )
 }
+
+/// The narrowest half-width of a shade band, so a band of range zero is still a function.
+pub(super) const SHADE_BAND_FLOOR: f64 = 1e-6;
 
 /// The red channel of a mask image at a coordinate of its unit square (V up): bilinear between
 /// texel centers, the edge texels continuing to the square's edge, and zero outside the square.

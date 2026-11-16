@@ -847,7 +847,7 @@ fn generated_sdk_declares_every_operation_and_stays_in_sync_with_the_catalog() {
     assert!(!declarations.contains(": any"));
     let ports: serde_json::Value = serde_json::from_str(&files[1].contents).unwrap();
     assert_eq!(ports["catalogVersion"], 1);
-    assert_eq!(ports["operations"].as_array().unwrap().len(), 57);
+    assert_eq!(ports["operations"].as_array().unwrap().len(), 59);
     // An external input's name is a literal, and its type follows the fallback.
     assert!(declarations.contains("export declare function external("));
     assert!(declarations.contains(

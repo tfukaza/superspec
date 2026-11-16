@@ -1,12 +1,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import type { SceneBatch, SceneMesh, ScenePacket } from "../model/packet.ts";
+import type { LiveProgram, SceneBatch, SceneMesh, ScenePacket } from "../model/packet.ts";
+import { GroundFields, findGround, missingSceneFields, reportMissingField } from "./scene-fields.ts";
 import { SHADE_NORMAL, batchGeometry, batchInstances, compileTwin, instancedBatch, lightByShadeNormal, stressInstances } from "./batch.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
-import { hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
-import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
+import { deliveredProgram, hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
+import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake, type StackInput } from "./bake.ts";
 import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
 import type { ShadowStyle } from "./shadow-style.ts";
@@ -65,9 +66,23 @@ interface ShadedMaterial {
   /** The parameter values last applied, to tell a change from a repeat. */
   values: string;
   plan?: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading };
+  /** A layered slot's weathering layers, lowest first, as its GPU bake composes them (`SceneBakeTarget.stack`). */
+  layers?: { id: string; material: MaterialShading; uniforms: Record<string, THREE.IUniform>; reads: Record<string, string>; values: string }[];
+  /** The stack material each channel of a layered slot's result comes from. */
+  channels?: Record<string, string>;
+  /** Why a layered slot's layers cannot be composed on the GPU. */
+  stackError?: string;
 }
 /** A material's shading with the hybrid plan the engine adds for programs with CPU-only parts (`shade_project`). */
 type PlannedShading = MaterialShading & { plan?: { shader: MaterialShading["shader"]; seedValues: number[] } };
+/** A layer of a layered slot as `shade_project` describes it (`metadata.layers`). */
+interface LayerShading {
+  id: string; entry: string; parameters?: Record<string, unknown>; reads?: Record<string, string>;
+  metadata?: { parameters?: { name: string; default: unknown }[] };
+  plan?: { shader: MaterialShading["shader"]; seedValues: number[] }; planError?: string;
+}
+/** A layered slot's shading: its base program with its layers and where each channel of the result comes from. */
+type LayeredShading = MaterialShading & { layers?: LayerShading[]; channels?: Record<string, string> };
 /**
  * Asks `prepareShading` for GPU-baked maps once the first look is shown: the receivers' atlas layouts from the engine
  * (`layout_project`) and, for programs with CPU-only parts, a source of their CPU-baked fields.
@@ -411,6 +426,9 @@ export class RustScene {
           material.polygonOffsetFactor = -2;
           material.polygonOffsetUnits = -4;
         }
+        // A delivered painted material is drawn by its program wherever this view has no shading of its own for it;
+        // its baked maps are the fallback a renderer without the program shows.
+        if (definition?.program && descriptor.visible && !decorate) mesh.material = this.deliveredLook(material, definition.program, descriptor, batch !== undefined, geometry);
         mesh.name = descriptor.id;
         mesh.visible = descriptor.visible;
         mesh.userData.source = descriptor;
@@ -452,6 +470,7 @@ export class RustScene {
       this.models = next;
       committed = true;
       this.fitShadows();
+      this.refreshSceneFields();
       this.texturePool.release(this.textureLeases);
       this.textureLeases = leases;
       this.host.dataset.reusedMeshes = String(reused.length);
@@ -528,9 +547,10 @@ export class RustScene {
    * overrides by material; `image` supplies the bytes of each image a program samples.
    */
   async prepareShading(shading: SceneShading, values: Record<string, Record<string, unknown>>,
-    image: (name: string) => Promise<Uint8Array>, bake?: SceneBakeRequest): Promise<(meshes: THREE.Mesh[]) => Promise<SceneLook>> {
+    image: (name: string) => Promise<Uint8Array>, bake?: SceneBakeRequest, layerValues: Record<string, Record<string, unknown>[]> = {}): Promise<(meshes: THREE.Mesh[]) => Promise<SceneLook>> {
     const prepared = new Map<string, ShadedMaterial>();
     const layouts = bake ? atlasLayouts(bake.layouts) : undefined;
+    const layered: string[] = [];
     for (const [id, material] of Object.entries(shading.materials)) {
       const entry: ShadedMaterial = { uniforms: await this.programUniforms(material, values[id] ?? {}, image), material, values: JSON.stringify(values[id] ?? {}) };
       // A program with CPU-only parts is baked from its plan: a shader that reads those parts as CPU-baked fields.
@@ -540,10 +560,27 @@ export class RustScene {
         const planned: MaterialShading = { ...material, shader: plan.shader, seedValues: plan.seedValues };
         entry.plan = { material: planned, uniforms: await this.programUniforms(planned, values[id] ?? {}, image) };
       }
+      // A layered slot: its per-pixel look is its base alone; its bake composes the layers' plans over the base's planes.
+      const layers = (material as LayeredShading).layers;
+      if (layers?.length) {
+        layered.push(id);
+        if (bake) {
+          entry.layers = []; entry.channels = (material as LayeredShading).channels ?? {};
+          for (const [index, layer] of layers.entries()) {
+            if (!layer.plan) { entry.stackError = `weathering layer ${layer.entry} has no GPU plan${layer.planError ? `: ${layer.planError}` : ""}`; break; }
+            const own: MaterialShading = { shader: layer.plan.shader, seedValues: layer.plan.seedValues, parameters: layer.metadata?.parameters ?? [], mapping: material.mapping };
+            const given = layerValues[id]?.[index] ?? layer.parameters ?? {};
+            entry.layers.push({ id: layer.id, material: own, uniforms: await this.programUniforms(own, given, image), reads: layer.reads ?? {}, values: JSON.stringify(given) });
+          }
+        }
+      }
       prepared.set(id, entry);
     }
-    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline", instanced: boolean) => {
-      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise, instanced);
+    // The per-pixel look of a layered slot shows its base alone (first look, edits and drags); the bake shows its layers.
+    if (layered.length) this.host.dataset.layers = JSON.stringify({ materials: layered, perPixel: "base only", baked: bake ? "gpu-composed" : "none" });
+    else delete this.host.dataset.layers;
+    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline", instanced: boolean, attributes: readonly string[] = []) => {
+      const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise, instanced, attributes);
       this.shadowStyle?.apply(material);
       material.wireframe = this.view.wireframe;
       material.side = THREE.DoubleSide;
@@ -561,7 +598,11 @@ export class RustScene {
       // The programs the bakes will draw with start compiling at once (the driver compiles them off the page's thread).
       if (bake) {
         const baker = this.bakerInstance ??= this.newBaker();
-        for (const entry of prepared.values()) baker.precompileAtlas((entry.plan ?? entry).material);
+        for (const entry of prepared.values()) {
+          if (entry.layers && !entry.stackError) baker.precompileStack((entry.plan ?? entry).material, { channels: entry.channels ?? {},
+            layers: entry.layers.map(layer => ({ id: layer.id, shading: layer.material, uniforms: {}, reads: layer.reads, receiver: "" })) });
+          else baker.precompileAtlas((entry.plan ?? entry).material);
+        }
       }
       for (const mesh of meshes) {
         // An instanced batch is shaded and baked as its template: the mesh it was made from, where that mesh stood.
@@ -579,25 +620,31 @@ export class RustScene {
         const kept = layout !== undefined && this.noise === "settle" && this.inlineLooks.has(identity);
         if (kept) keptInline.add(identity);
         const first = this.noise === "inline" || kept ? "inline" : "looped";
-        const material = make(entry, spec, "quad", first, instanced);
+        // The geometry's attributes: render inputs a program reads that the mesh lacks take their fallbacks.
+        const attributes = Object.keys(sourceGeometry(mesh).attributes);
+        const material = make(entry, spec, "quad", first, instanced, attributes);
         if (kept) keptLooks.push({ mesh, geometry: sourceGeometry(mesh), material });
         made.push({ mesh, material, shaded: spec.material });
         const pixel = this.pixelRelief && hasPixelRelief(entry.material);
         if (pixel || this.noise === "settle") {
           refine.push({ mesh, first: material, source: shaderIdentity(entry.material.shader),
-            pixel: pixel ? () => make(entry, spec, "pixel", first, instanced) : undefined,
-            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline", instanced) : undefined });
+            pixel: pixel ? () => make(entry, spec, "pixel", first, instanced, attributes) : undefined,
+            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline", instanced, attributes) : undefined });
         }
-        if (layout) {
+        // A painted material is always drawn by its program: the sun and its shade band are live. Its baked maps are
+        // the fallback delivered for renderers without the program, never this view's look.
+        if (layout && !entry.material.shader.painted) {
           const use = entry.plan ?? entry;
           const own = material.userData.programUniforms as Record<string, THREE.IUniform>;
           // The program's shared uniforms (the plan's, when it bakes from one) with this receiver's own.
           const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
+          const stack = entry.layers ? this.stackOf(entry, receiver, spec) : undefined;
           targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
             receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1],
-            ...(receiverId === mesh.name ? {} : { fieldsId: receiverId }) });
+            ...(receiverId === mesh.name ? {} : { fieldsId: receiverId }),
+            ...(typeof stack === "string" ? { unsupported: stack } : stack ? { stack } : {}) });
           // What the mesh shows while a value changes keeps the relief that compiles fast and settles on the noise form that draws fast.
-          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline", instanced) });
+          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline", instanced, attributes) });
         }
       }
       // The per-pixel looks, compiled as the meshes that will show them and without blocking the page: drawn
@@ -643,6 +690,35 @@ export class RustScene {
         },
       };
     };
+  }
+
+  /** The look of a delivered painted material (`SceneMaterial.program`): its program, drawn in place of `fallback`. */
+  private deliveredLook(fallback: THREE.MeshStandardMaterial, program: LiveProgram, descriptor: SceneMesh, instanced: boolean, geometry: THREE.BufferGeometry): THREE.Material {
+    const { shading, uniforms } = deliveredProgram(program);
+    const material = programMaterial(shading, { material: descriptor.material ?? "", boundsMin: descriptor.bounds[0], boundsMax: descriptor.bounds[1], features: [] },
+      [0, 0, -1], uniforms, "quad", "looped", instanced, Object.keys(geometry.attributes));
+    this.shadowStyle?.apply(material);
+    material.side = fallback.side;
+    material.wireframe = fallback.wireframe;
+    fallback.dispose();
+    return material;
+  }
+
+  private groundFields?: GroundFields;
+  /**
+   * Draws the scene fields programs on screen sample (`sampleField`) from the scene's ground: the mesh `?ground=` names,
+   * or the widest flat mesh (`findGround`). A field no ground supplies is said once on the console and read as zero.
+   * States what was drawn on the host (`data-scene-fields`).
+   */
+  refreshSceneFields(): void {
+    const meshes = this.models.children as THREE.Mesh[];
+    const read = new Set(meshes.flatMap(mesh => ((mesh.material as THREE.Material).userData?.sceneFields as string[] | undefined) ?? []));
+    if (!read.size) { delete this.host.dataset.sceneFields; return; }
+    const named = new URLSearchParams(location.search).get("ground");
+    const ground = named ? meshes.find(mesh => mesh.name === named) : findGround(meshes);
+    const made = ground ? (this.groundFields ??= new GroundFields(this.renderer)).make(this.scene, [ground]) : null;
+    for (const name of read) if (!made || !name.startsWith("ground.")) reportMissingField(name, "on screen");
+    this.host.dataset.sceneFields = JSON.stringify({ ground: ground?.name ?? null, fields: [...read], missing: missingSceneFields(), ...(made ?? {}) });
   }
 
   /** The per-pixel look first, whatever is ready first (`?firstlook=shader`). */
@@ -877,6 +953,46 @@ export class RustScene {
     });
   }
 
+  /**
+   * A layered slot's stack over one mesh, for its GPU bake: each layer's plan with the layer's own uniforms and the
+   * mesh's receiver uniforms, its features as the layer queries them (`layerFeatures`, which `shade_project` gives each
+   * mesh of a layered slot). A string says why the stack cannot be composed on the GPU.
+   */
+  private stackOf(entry: ShadedMaterial, receiver: Record<string, THREE.IUniform>, spec: MeshShading): StackInput | string {
+    if (entry.stackError) return entry.stackError;
+    const features = (spec as MeshShading & { layerFeatures?: number[][] }).layerFeatures;
+    const layers = entry.layers!.map((layer, index) => {
+      const own = features?.[index] ?? [];
+      if (layer.material.shader.features && !features) return undefined;
+      return { id: layer.id, shading: layer.material, reads: layer.reads, receiver: `${own.length}:${hashNumbers(own)}`,
+        uniforms: { ...layer.uniforms, ...receiver, ms_features: { value: this.layerFeatureTexture(own) }, ms_feature_count: { value: own.length / 12 } } };
+    });
+    if (layers.some(layer => !layer)) return "the engine gives no features for the slot's layers";
+    return { channels: entry.channels ?? {}, layers: layers as StackInput["layers"] };
+  }
+
+  /** Feature textures of layers (three texels per feature, one feature per row), by content; the oldest are dropped. */
+  private readonly layerFeatures = new Map<string, THREE.DataTexture>();
+  private layerFeatureTexture(features: number[]): THREE.DataTexture {
+    const key = `${features.length}:${hashNumbers(features)}`;
+    let texture = this.layerFeatures.get(key);
+    if (texture) { this.layerFeatures.delete(key); this.layerFeatures.set(key, texture); return texture; }
+    const rows = Math.max(1, features.length / 12);
+    const data = new Float32Array(rows * 12);
+    data.set(features);
+    texture = new THREE.DataTexture(data, 3, rows, THREE.RGBAFormat, THREE.FloatType);
+    texture.minFilter = texture.magFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    texture.needsUpdate = true;
+    this.layerFeatures.set(key, texture);
+    // Kept for a few scenes' worth of meshes; a texture dropped while still bound is uploaded again where it is drawn.
+    while (this.layerFeatures.size > 2048) {
+      const [oldest, dropped] = this.layerFeatures.entries().next().value!;
+      dropped.dispose(); this.layerFeatures.delete(oldest);
+    }
+    return texture;
+  }
+
   /** A program's parameter, seed and image uniforms; images decode once per bytes and color role. */
   private async programUniforms(material: MaterialShading, values: Record<string, unknown>,
     image: (name: string) => Promise<Uint8Array>): Promise<Record<string, THREE.IUniform>> {
@@ -916,6 +1032,8 @@ export class RustScene {
     const baker = new GpuBaker(this.renderer);
     // `?bakekeys=whole`: every texture of a bake is keyed by every value, as before textures were keyed by what they read.
     baker.nodeKeys = new URLSearchParams(location.search).get("bakekeys") !== "whole";
+    // `?intrinsic=off`: a layered slot's base is evaluated per receiver, not read from shared lattice tiles.
+    baker.intrinsicTiles = new URLSearchParams(location.search).get("intrinsic") !== "off";
     baker.onLost = () => { this.gpuUniforms = undefined; this.inlineLooks.clear(); this.sceneBaker?.lost(); this.clearBakedPreview(); };
     return baker;
   }
@@ -1127,11 +1245,19 @@ export class RustScene {
   }
 
   /** Updates a shaded material's parameters in place: no build and no new shader. */
-  setShadingParameters(material: string, values: Record<string, unknown>): boolean {
+  setShadingParameters(material: string, values: Record<string, unknown>, layers?: Record<string, unknown>[]): boolean {
     const entry = this.shading.get(material);
     if (!entry) return false;
+    // A layered slot's layers' values (each layer's own parameters), when the bake composes them.
+    const changedLayers = entry.layers && layers ? entry.layers.filter((layer, index) => JSON.stringify(layers[index] ?? {}) !== layer.values) : [];
+    if (entry.layers && layers && layers.length !== entry.layers.length) return false;
     const next = JSON.stringify(values);
-    if (next === entry.values) return true;
+    if (next === entry.values && !changedLayers.length) return true;
+    for (const layer of changedLayers) {
+      const given = layers![entry.layers!.indexOf(layer)] ?? {};
+      layer.values = JSON.stringify(given);
+      setParameters(layer.uniforms, layer.material, given);
+    }
     entry.values = next;
     setParameters(entry.uniforms, entry.material, values);
     if (entry.plan) setParameters(entry.plan.uniforms, entry.plan.material, values);

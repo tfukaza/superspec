@@ -2,6 +2,10 @@ import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import { INSTANCE_ATTRIBUTE } from "./batch.ts";
 import { MAPPINGS, SURFACE_OF, anchorFromWorld, type PatternAnchor } from "./atlas.ts";
+import { DEFAULT_LIGHTING, DEFAULT_PAINTED, type PaintedFinishing } from "./lighting.ts";
+import { CAST_SHADOW } from "./shadow-style.ts";
+import { programFieldPass, sceneFieldUniforms } from "./scene-fields.ts";
+import type { LiveProgram } from "../model/packet.ts";
 
 /**
  * Seconds of the viewer's time-driven render mode (`RustScene.setContinuous`), shared by every program material as
@@ -9,6 +13,33 @@ import { MAPPINGS, SURFACE_OF, anchorFromWorld, type PatternAnchor } from "./atl
  * shader has no `time` input, and when it declares `ms_time` the material assigns it from this uniform.
  */
 export const programTime: THREE.IUniform<number> = { value: 0 };
+
+/**
+ * The sun of the scene's lighting record, as every program material reads it (`sunDirection`, uniform
+ * `msSunDirection`): the unit vector from the scene toward the sun, zero without a sun. `SceneLighting.set` keeps it,
+ * so moving the sun redraws painted materials with no rebuild and no bake.
+ */
+export const programSun: THREE.IUniform<THREE.Vector3> = { value: new THREE.Vector3(...DEFAULT_LIGHTING.lights[0].direction) };
+
+/** Painted materials made so far, to follow the scene's painted finishing (`setPaintedFinishing`). */
+const paintedMaterials = new Set<WeakRef<THREE.Material>>();
+let paintedFinishing: PaintedFinishing = DEFAULT_PAINTED;
+
+/**
+ * Applies the lighting record's `painted` setting to every painted material: whether exposure and the tone curve apply
+ * to them (a global rendering setting, never one of a material). Ambient occlusion is a pass over the finished image;
+ * it covers painted pixels whatever the setting (see `SceneLighting`, which reports the setting it cannot honor).
+ */
+export function setPaintedFinishing(finishing: PaintedFinishing): void {
+  if (finishing.toneMapping === paintedFinishing.toneMapping && finishing.ambientOcclusion === paintedFinishing.ambientOcclusion) return;
+  paintedFinishing = { ...finishing };
+  for (const reference of paintedMaterials) {
+    const material = reference.deref();
+    if (!material) { paintedMaterials.delete(reference); continue; }
+    material.toneMapped = finishing.toneMapping;
+    material.needsUpdate = true;
+  }
+}
 
 /** A MaterialSpec program as GLSL (`Program::shader` in the engine), with what it needs bound. */
 export interface ProgramShader {
@@ -44,7 +75,18 @@ export interface ProgramShader {
   cpuFields?: CpuField[];
   /** Outputs that read a CPU field. */
   cpuOutputs?: string[];
+  /**
+   * Render-only inputs the source reads (`Shader::render_inputs`): uniforms (`msTime`, `msSunDirection`), per-instance
+   * and per-vertex attributes (`msInstanceValue`, `msInstance_<name>`, `msVertex_<name>`), varyings derived from what is
+   * drawn (`msInstanceRoot`, `msInstanceTint`, `msInstanceRandom`, `msPlacedWorld`) and scene fields (`msField<k>` and
+   * `msFieldRect<k>`, named by `name`). `fallback` is what a named attribute reads where the mesh has none.
+   */
+  renderInputs?: RenderInput[];
+  /** For a painted material, the expression holding the color that reaches the screen after `ms_evaluate()`. */
+  painted?: string;
 }
+/** See `ProgramShader.renderInputs`. */
+export interface RenderInput { symbol: string; kind: "uniform" | "instance" | "vertex" | "derived" | "field"; glsl: string; name?: string; fallback?: string }
 /** Everything one value of a program reads (`Reads` in the engine's `program/glsl.rs`). */
 export interface Reads {
   /** Parameter uniforms (`ProgramShader.parameters[].uniform`). */
@@ -167,6 +209,85 @@ function sourceId(shader: ProgramShader): string {
   return String(id);
 }
 
+/**
+ * What a program material binds for the render-only inputs its shader reads (`ProgramShader.renderInputs`), given the
+ * names of the attributes its geometry has:
+ * - `msSunDirection` is the shared `programSun`, `msTime` the shared `programTime` (bound by `programMaterial`);
+ * - named attributes (`msInstance_<name>`, `msVertex_<name>`) pass from the geometry to the fragment shader through a
+ *   varying of their own; a geometry without one reads the value its call is typed by (`fallback`), as the CPU's
+ *   default bindings do;
+ * - derived values: `msInstanceRoot` is where the drawn instance's origin stands, through `instanceMatrix` (the mesh's
+ *   origin outside a batch); `msInstanceTint` the instance's color (white without one); `msInstanceRandom` the
+ *   instance's `random` attribute, or a hash of its index (0 outside a batch); `msPlacedWorld` the drawn point through
+ *   the instance's placement, where `ms_world` stays in the batch's own space, the space its one bake is made in;
+ * - scene fields are the shared uniforms of `sceneFieldUniforms`.
+ */
+export function renderInputs(shader: Pick<ProgramShader, "renderInputs">, attributes: readonly string[]): {
+  uniforms: Uniforms; vertexDeclarations: string; vertexAssignments: string; fragmentDeclarations: string;
+} {
+  const uniforms: Uniforms = {};
+  const vertexDeclarations: string[] = [], vertexAssignments: string[] = [], fragmentDeclarations: string[] = [];
+  const has = new Set(attributes);
+  for (const input of shader.renderInputs ?? []) {
+    const { symbol, glsl } = input;
+    if ((input.kind === "instance" || input.kind === "vertex") && symbol !== "msInstanceValue") {
+      if (has.has(symbol)) {
+        vertexDeclarations.push(`attribute ${glsl} ${symbol};`, `varying ${glsl} v${symbol};`);
+        vertexAssignments.push(`  v${symbol} = ${symbol};`);
+        fragmentDeclarations.push(`varying ${glsl} v${symbol};`, `#define ${symbol} v${symbol}`);
+      } else fragmentDeclarations.push(`#define ${symbol} (${input.fallback ?? `${glsl}(0.0)`})`);
+    } else if (input.kind === "derived") {
+      vertexDeclarations.push(`varying ${glsl} ${symbol};`);
+      fragmentDeclarations.push(`varying ${glsl} ${symbol};`);
+      if (symbol === "msInstanceRoot") vertexAssignments.push(`#ifdef USE_INSTANCING
+  msInstanceRoot = (modelMatrix * instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+#else
+  msInstanceRoot = (modelMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+#endif`);
+      else if (symbol === "msInstanceTint") vertexAssignments.push(`#ifdef USE_INSTANCING_COLOR
+  msInstanceTint = instanceColor;
+#else
+  msInstanceTint = vec3(1.0);
+#endif`);
+      else if (symbol === "msInstanceRandom") {
+        if (has.has("msInstance_random")) {
+          vertexDeclarations.push("attribute float msInstance_random;");
+          vertexAssignments.push("  msInstanceRandom = msInstance_random;");
+        } else vertexAssignments.push(`#ifdef USE_INSTANCING
+  msInstanceRandom = float((uint(gl_InstanceID) * 2654435761u) >> 8u) * (1.0 / 16777216.0);
+#else
+  msInstanceRandom = 0.0;
+#endif`);
+      } else if (symbol === "msPlacedWorld") vertexAssignments.push(`#ifdef USE_INSTANCING
+  msPlacedWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+#else
+  msPlacedWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+#endif`);
+    } else if (input.kind === "field" && input.name) {
+      const field = sceneFieldUniforms(input.name);
+      uniforms[symbol] = glsl === "sampler2D" ? field.texture : field.rect;
+    }
+  }
+  // An attribute both named and derived (`random`) is declared once.
+  const once = (lines: string[]) => [...new Set(lines)].join("\n");
+  return { uniforms, vertexDeclarations: once(vertexDeclarations), vertexAssignments: vertexAssignments.join("\n"), fragmentDeclarations: once(fragmentDeclarations) };
+}
+
+/**
+ * A delivered program (a painted material's `program` in a packet or GLB, `LiveProgram` in the engine) as the shading
+ * `programMaterial` draws: its source, its uniforms with their values, the render inputs it reads and its painted color.
+ */
+export function deliveredProgram(program: LiveProgram): { shading: MaterialShading; uniforms: Uniforms } {
+  const shader: ProgramShader = { source: program.source, parameters: [], seeds: [], images: [], outputs: [], live: [], features: false,
+    renderInputs: program.inputs, painted: program.painted };
+  const uniforms: Uniforms = {};
+  for (const { uniform, type, value } of program.uniforms) {
+    uniforms[uniform] = { value: type === "bool" ? value[0] !== 0 : type === "vec2" ? new THREE.Vector2(value[0], value[1])
+      : type === "vec3" ? new THREE.Vector3(value[0], value[1], value[2]) : value[0] };
+  }
+  return { shading: { shader, seedValues: [], parameters: [], mapping: program.mapping }, uniforms };
+}
+
 /** Whether a program's relief can be evaluated per pixel: the engine emits a height-only entry point when it has a height output. */
 export function hasPixelRelief(shading: MaterialShading): boolean {
   return shading.shader.source.includes("void ms_evaluate_height()");
@@ -193,11 +314,19 @@ export function hasPixelRelief(shading: MaterialShading): boolean {
  * program that declares `ms_instance` gets it assigned.
  */
 export function programMaterial(shading: MaterialShading, mesh: MeshShading, gravity: number[], shared: Uniforms,
-  mode: "pixel" | "quad" = "pixel", noise: "looped" | "inline" = "looped", instanced = false): THREE.MeshStandardMaterial {
+  mode: "pixel" | "quad" = "pixel", noise: "looped" | "inline" = "looped", instanced = false, attributes: readonly string[] = []): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color: 0xffffff });
   // Both shaders read the define; three.js names instancing to the vertex shader alone.
   if (instanced) material.defines = { ...material.defines, MS_INSTANCED: "" };
   const shader = shading.shader;
+  const inputs = renderInputs(shader, attributes);
+  // A painted material shows its program's color without the light loop; the scene's painted finishing decides
+  // whether exposure and the tone curve still apply.
+  if (shader.painted) {
+    material.defines = { ...material.defines, MS_PAINTED: "" };
+    material.toneMapped = paintedFinishing.toneMapping;
+    paintedMaterials.add(new WeakRef(material));
+  }
   const features = featureTexture(mesh.features);
   const relief = mode === "pixel" && hasPixelRelief(shading);
   const objectFromWorld = new THREE.Matrix4();
@@ -215,6 +344,9 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     msMapping: { value: MAPPINGS.indexOf(shading.mapping) },
     msReliefSamples: { value: 2 },
     msTime: programTime,
+    msSunDirection: programSun,
+    msFieldPass: programFieldPass,
+    ...inputs.uniforms,
   };
   material.addEventListener("dispose", () => features.dispose());
   // Live operations read the program's fields directly; they are installed first so the program
@@ -236,11 +368,13 @@ varying vec2 msUv;
 attribute vec4 ${INSTANCE_ATTRIBUTE};
 varying vec4 msInstanceValue;
 varying mat3 msInstanceTurn;
-#endif`)
+#endif
+${inputs.vertexDeclarations}`)
       .replace("#include <project_vertex>", `#include <project_vertex>
   msWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
   msNormal = mat3(modelMatrix) * objectNormal;
   msUv = uv;
+${inputs.vertexAssignments}
 #ifdef MS_INSTANCED
   {
     // What takes a normal of the batch's mesh to the instance: the placement's rotation over its scale (its columns
@@ -260,10 +394,12 @@ uniform mat4 msAnchorFromWorld;
 uniform int msMapping;
 uniform int msReliefSamples;
 uniform float msTime;
+uniform int msFieldPass;
 #ifdef MS_INSTANCED
 varying vec4 msInstanceValue;
 varying mat3 msInstanceTurn;
 #endif
+${inputs.fragmentDeclarations}
 ${noise === "inline" ? "#define MS_INLINE_NOISE\n" : ""}${shader.source}
 // The height one pixel across and one pixel down on the surface, minus the height here.
 float msHeightAcross = 0.0, msHeightDown = 0.0;
@@ -292,7 +428,7 @@ ${relief ? `  // Screen derivatives of a computed value are shared by a 2x2 pixe
     }
   }
 ` : ""}  msPlace(msWorld, msUv);
-${/\bms_time\b/.test(shader.source) ? "  ms_time = msTime;\n" : ""}${/\bms_instance\b/.test(shader.source) ? "#ifdef MS_INSTANCED\n  ms_instance = msInstanceValue;\n#endif\n" : ""}  ms_evaluate();
+${/\bms_time\b/.test(shader.source) ? "  ms_time = msTime;\n" : ""}${/\bms_instance\b/.test(shader.source) ? "#ifdef MS_INSTANCED\n  ms_instance = msInstanceValue;\n#endif\n" : ""}${/\bms_cast_shadow\b/.test(shader.source) ? "  ms_cast_shadow = msCastShadow();\n" : ""}  ms_evaluate();
 ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHeightAcross = dFdx(ms_height); msHeightDown = dFdy(ms_height);"}
   diffuseColor = vec4(clamp(ms_base_color, 0.0, 1.0), clamp(ms_opacity, 0.0, 1.0));`)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(ms_roughness, 0.0, 1.0);")
@@ -332,14 +468,25 @@ ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHe
     shaded = normalize(msInstanceTurn * shaded);
 #endif
     normal = normalize((viewMatrix * vec4(shaded, 0.0)).xyz) * faceDirection;
-  }`);
+  }`)
+      // The cast shadow a painted shade band folds in, in the scene's shadow style (shadow-style.ts).
+      .replace("#include <shadowmap_pars_fragment>", `#include <shadowmap_pars_fragment>\n${/\bms_cast_shadow\b/.test(shader.source) ? CAST_SHADOW : ""}`)
+      // A painted material's color reaches the screen as authored: the light loop's result is replaced. A field pass
+      // draws the color a scene field is made of, unlit (scene-fields.ts).
+      .replace("#include <opaque_fragment>", `${shader.painted ? `  outgoingLight = ${shader.painted};\n` : ""}#include <opaque_fragment>`)
+      .replace("#include <tonemapping_fragment>", `  if (msFieldPass == 1) gl_FragColor = vec4(ms_base_color, 1.0);
+#include <tonemapping_fragment>`);
   };
   const id = sourceId(shader);
   const liveKey = material.customProgramCacheKey();
-  material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${noise}:${liveKey}`;
+  // Which render inputs a mesh supplies changes the program (an attribute is a varying or its fallback).
+  const bound = inputs.vertexDeclarations + inputs.fragmentDeclarations;
+  material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${noise}:${liveKey}${bound ? `:${bound}` : ""}`;
   material.userData.liveOperations = live;
   // The program's inputs for this mesh (the shared ones and the receiver's own), for a bake of the same program.
   material.userData.programUniforms = uniforms;
+  // The scene fields it samples, which the viewer then draws from the scene's ground (scene-fields.ts).
+  material.userData.sceneFields = (shader.renderInputs ?? []).filter(input => input.kind === "field" && input.glsl === "sampler2D").map(input => input.name);
   material.needsUpdate = true;
   return material;
 }

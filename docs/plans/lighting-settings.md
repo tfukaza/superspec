@@ -79,6 +79,10 @@ records); Rust types in `superspec-types`, carried by the scene in `superspec-mo
                                       // image; above 1 (to 4): creases deepen further
     "thickness": 0.5                  // meters: how thick surfaces are taken to be
   },
+  "painted": {                        // optional; how the image's finishing treats shading: painted
+    "toneMapping": false,             // exposure and tone curve skip painted materials
+    "ambientOcclusion": true          // the AO pass covers them (false is reported as not honored)
+  },
   "lights": [{                        // version 1: at most one light, the sun
     "id": "sun",
     "role": "sun",
@@ -319,10 +323,21 @@ one later is a version bump only where noted.
 - **Theme locks: none.** A theme cannot forbid overrides in version 1. Viewer
   overrides are never saved or exported, so they cannot alter a shipped look; whether
   a project may override a theme is decided with theme selection (step 4).
-- **AO and tone mapping on painted materials: both apply.** They act on the finished
-  image, after shading, so they cover every pixel whatever its shading model; exempting
-  painted surfaces would need a per-material mask, which the scoping rule forbids.
-  `shading: painted` does not exist yet, so this is recorded, not exercised.
+- **AO and tone mapping on painted materials: a scene setting, `painted`** (revised in
+  stage 5, 2026-11-16, unreviewed). The record has an optional
+  `painted: { toneMapping, ambientOcclusion }`, global to the scene and never per material.
+  Defaults: `toneMapping: false` (exposure and the tone curve skip painted materials, so the
+  paint reaches the screen as authored, as plan step 1C.1 asks) and `ambientOcclusion: true`
+  (the GTAO pass acts on the finished image; leaving painted pixels out would need a mask, so
+  the viewer reports `ambientOcclusion: false` as not honored). It is written only when it
+  differs from the default, so records and exports that never set it keep their bytes; the
+  viewer applies it to every painted material (`setPaintedFinishing` in `shade.ts`). This
+  replaces the earlier assumption that both apply.
+- **Programs read the sun from this record** (stage 5): `SceneLighting.set` keeps the shared
+  uniform `msSunDirection` (`programSun` in `shade.ts`) at the sun's direction, zero without a
+  sun, so a sun edit redraws painted materials without a rebuild. The cast shadow a painted
+  material folds into its shade band is the sun's shadow in this record's style
+  (`CAST_SHADOW` in `shadow-style.ts`).
 - **Limits.** The validation limits above replace the draft's proposals (for example
   AO radius up to 10 m, not 5; spread up to 2, not 1): they are the union of the
   draft's ranges and what the viewer's query parameters already accepted.

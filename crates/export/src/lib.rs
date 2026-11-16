@@ -52,6 +52,37 @@ fn lit(scene: &mut superspec_model::Scene, options: &Options<'_>) -> Result<(), 
     superspec_model::batches::add_project_batches(scene, options.batches)
 }
 
+/// The export report of what a glTF importer without SuperSpec support skips: for each material
+/// with a shading model, a delivered per-pixel program or live operations, one line naming them.
+/// Such an importer shows the baked PBR maps, which every visual export carries.
+pub fn live_report(materials: &[superspec_types::material::Material]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for material in materials {
+        let mut effects = Vec::new();
+        if let Some(superspec_types::material::Shading::Painted) = material.shading {
+            effects.push("painted shading".to_owned());
+        }
+        if let Some(program) = &material.program {
+            effects.push(format!(
+                "its per-pixel program (reads {})",
+                program.requires.join(", ")
+            ));
+        }
+        if !material.live.is_empty() {
+            let ids: Vec<&str> = material.live.iter().map(|op| op.id.as_str()).collect();
+            effects.push(format!("live operations {}", ids.join(", ")));
+        }
+        if !effects.is_empty() {
+            lines.push(format!(
+                "material {}: {} travel in extras.materialSpec; an importer without them shows the baked maps.",
+                material.id,
+                effects.join(", ")
+            ));
+        }
+    }
+    lines
+}
+
 /// Splits the portable GLB into a JSON document and its referenced binary buffer.
 pub fn gltf_files(glb: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     if glb.len() < 28 || &glb[..4] != b"glTF" {

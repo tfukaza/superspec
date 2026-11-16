@@ -24,6 +24,14 @@ standing water are left to the materials rather than modeled:
   drain, and the dark openings: four parameter sets of one recipe.
 - `tiled-courtyard` for the wall and floor tile.
 
+## Painted slab
+
+`buildProject(resolution, density, { painted: true })`, `PAINTED=1` for `build.mjs` or for the browser
+benchmark, gives the slab `materials/painted-ground.material.ts` instead of concrete: a painted ground
+(roadmap stage 5) whose shade boundary follows the sun of the lighting record, with the room's cast
+shadows folded in. The browser benchmark then moves the sun and checks that the boundary moves with no
+rebuild and no bake (it adds `gpuprobe` and `ao=off` to the page's query).
+
 ## Instanced batch
 
 Every bolt of the scene (the pipe's two flanges, the bracket anchors, the vent's screws: 32) is an instance of one

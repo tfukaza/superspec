@@ -37,6 +37,39 @@ pub struct Lighting {
     /// Absent means the default sun; an empty list means no direct light.
     #[serde(default = "default_lights")]
     pub lights: Vec<Light>,
+    /// How the image's finishing steps treat materials with `shading: painted`, for the whole
+    /// scene (never per material). Written only when it differs from the default, so records and
+    /// exports that never set it keep their bytes.
+    #[serde(default, skip_serializing_if = "Painted::is_default")]
+    pub painted: Painted,
+}
+
+/// What the finishing steps of the image do to painted materials. Default: tone mapping and
+/// exposure are skipped, so authored colors reach the screen unchanged, and ambient occlusion
+/// applies, because it acts on the finished image (a renderer that cannot exempt painted pixels
+/// from it says so when asked to).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct Painted {
+    /// Whether exposure and the tone curve apply to painted materials.
+    pub tone_mapping: bool,
+    /// Whether ambient occlusion darkens painted materials.
+    pub ambient_occlusion: bool,
+}
+
+impl Default for Painted {
+    fn default() -> Self {
+        Self {
+            tone_mapping: false,
+            ambient_occlusion: true,
+        }
+    }
+}
+
+impl Painted {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +206,7 @@ impl Default for Lighting {
             ambient: Ambient::default(),
             ambient_occlusion: AmbientOcclusion::default(),
             lights: default_lights(),
+            painted: Painted::default(),
         }
     }
 }
@@ -494,6 +528,13 @@ mod tests {
                 "lights[0].shadow.noise.amount"
             ]
         );
+    }
+
+    #[test]
+    fn painted_materials_skip_tone_mapping_and_keep_occlusion_by_default() {
+        let lighting = Lighting::default();
+        assert!(!lighting.painted.tone_mapping && lighting.painted.ambient_occlusion);
+        assert!(lighting.painted.is_default());
     }
 
     #[test]

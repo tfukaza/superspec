@@ -22,6 +22,9 @@ const fixtures = [
   { name: 'kowloon ports', test: 'material_primitives', exact: 'portable_kowloon_fixture_covers_the_same_native_and_wasm_ports',
     variable: 'MATERIAL_KOWLOON_PARITY_OUTPUT', native: 'material-kowloon-native.json', wasm: 'material-kowloon-wasm.json',
     export: 'material_kowloon_result', covers: ['Kowloon concrete wall, slab and plaster', 'Kowloon rusted steel on crate creases', 'varied sampling, value noise and receiver queries'] },
+  { name: 'live programs', test: 'material_live', exact: 'portable_live_fixture_covers_the_same_native_and_wasm_evaluator',
+    variable: 'MATERIAL_LIVE_PARITY_OUTPUT', native: 'material-live-native.json', wasm: 'material-live-wasm.json',
+    export: 'material_live_result', covers: ['painted shade band with cast shadows and edge break', 'instance, vertex, placed and scene-field inputs', 'a painted material\'s delivered program and baked fallback', 'a bake with default bindings'] },
 ];
 // Set REUSE_NATIVE_FIXTURES=1 to compare against native outputs already written by the same tests elsewhere.
 const reuse = process.env.REUSE_NATIVE_FIXTURES === '1';

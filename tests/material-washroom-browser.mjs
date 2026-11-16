@@ -31,7 +31,9 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 let browser;
 try {
   const withBatches = process.env.BATCHES !== "0";
-  const { project } = buildProject(resolution, undefined, { batches: withBatches });
+  // PAINTED=1 gives the slab the painted ground (roadmap stage 5) and checks that its shade boundary follows the sun.
+  const painted = process.env.PAINTED === "1";
+  const { project } = buildProject(resolution, undefined, { batches: withBatches, painted });
   // ONLY=id,id keeps just those materials, to see what each costs.
   const only = process.env.ONLY?.split(",");
   if (only) project.materials = project.materials.filter(material => only.includes(material.id));
@@ -64,7 +66,10 @@ try {
     const findings = await state() === "ready" ? "" : (await page.locator("#diagnostics button").allTextContents()).join("\n");
     assert.equal(await state(), "ready", `${await page.locator("#status").textContent()}\n${findings}`);
   };
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html${process.env.QUERY ? `?${process.env.QUERY}` : ""}`);
+  // The painted check reads the viewer's scene (`gpuprobe`) and counts exact paint colors, so ambient occlusion is off.
+  const query = [process.env.QUERY, ...(painted ? ["gpuprobe", "ao=off"] : [])].filter(Boolean).join("&");
+  if (painted) process.env.QUERY = query;
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html${query ? `?${query}` : ""}`);
   await ready();
 
   const before = Number(await page.locator("#viewport").getAttribute("data-input-revision") ?? 0);
@@ -133,7 +138,8 @@ try {
     assert.equal(drawnBatches[0].instances, stress || project.batches[0].instances.length);
     assert.ok(drawnBatches[0].tints && drawnBatches[0].values, "per-instance tints and values are bound");
     if (firstBake && !/preview=/.test(process.env.QUERY ?? "")) {
-      assert.equal(firstBake.meshes, project.materials.reduce((sum, material) => sum + material.meshes.length, 0), "the batch is one mesh of the scene bake, as its template");
+      // A painted mesh is drawn by its program and gets no baked maps.
+      assert.equal(firstBake.meshes, project.materials.reduce((sum, material) => sum + material.meshes.length, 0) - (painted ? 1 : 0), "the batch is one mesh of the scene bake, as its template");
       assert.ok(firstBake.atlases.bolts, "the batch shows maps baked over its template's atlas");
     }
     console.log(`Instanced batches: ${JSON.stringify(drawnBatches)}`);
@@ -155,6 +161,60 @@ try {
     assert.equal(lighting.environment.rotation, record.environment?.rotation ?? 0);
     if (query.get("ao") === "off") assert.equal(lighting.ambientOcclusion.enabled, false);
     if (query.get("shadowstyle") === "plain") assert.equal(lighting.lights[0].shadow.style, "plain");
+  }
+  // The painted slab (PAINTED=1): its program draws the authored paints untouched by the light loop and the tone curve,
+  // and moving the sun of the lighting record moves its shade boundary with no rebuild and no bake.
+  if (painted) {
+    const srgb = linear => linear.map(value => Math.round(255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055)));
+    const paints = { lit: srgb([0.62, 0.55, 0.4]), shade: srgb([0.18, 0.2, 0.32]) };
+    const result = await page.evaluate(async paints => {
+      const scene = window.__scene, host = document.querySelector("#viewport");
+      const slab = scene.models.children.find(mesh => mesh.userData.shaded === "painted-ground");
+      if (!slab) return { error: "no painted slab" };
+      const material = slab.material;
+      const state = () => ({ input: host.dataset.inputRevision, draft: host.dataset.draftRevision, bake: JSON.parse(host.dataset.sceneBake ?? "null")?.drawn ?? null, status: document.querySelector("#status").dataset.state });
+      const before = state();
+      const gl = scene.renderer.getContext();
+      const width = gl.drawingBufferWidth, height = gl.drawingBufferHeight, pixels = new Uint8Array(width * height * 4);
+      const count = () => {
+        scene.draw();
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        const near = (at, color) => Math.abs(pixels[at] - color[0]) <= 2 && Math.abs(pixels[at + 1] - color[1]) <= 2 && Math.abs(pixels[at + 2] - color[2]) <= 2;
+        let lit = 0, shade = 0, between = 0;
+        for (let at = 0; at < pixels.length; at += 4) {
+          if (near(at, paints.lit)) lit++;
+          else if (near(at, paints.shade)) shade++;
+          // Between the paints: the band's gradient, on the line from one to the other.
+          else if ([0, 1, 2].every(c => pixels[at + c] >= Math.min(paints.lit[c], paints.shade[c]) - 2 && pixels[at + c] <= Math.max(paints.lit[c], paints.shade[c]) + 2)) between++;
+        }
+        return { lit, shade, between };
+      };
+      const record = JSON.parse(host.dataset.lighting);
+      const [x, y] = record.lights[0].direction, azimuth = Math.atan2(y, x);
+      const sun = elevation => {
+        const lift = elevation * Math.PI / 180;
+        const lighting = structuredClone(record);
+        lighting.lights[0].direction = [Math.cos(lift) * Math.cos(azimuth), Math.cos(lift) * Math.sin(azimuth), Math.sin(lift)];
+        scene.setLighting(lighting);
+        return count();
+      };
+      const started = performance.now();
+      const counts = { 70: sun(70), 33: sun(33), 15: sun(15) };
+      const moveMs = performance.now() - started;
+      scene.setLighting(record);
+      await new Promise(done => setTimeout(done, 500));
+      return { painted: material.defines?.MS_PAINTED !== undefined, toneMapped: material.toneMapped, counts, moveMs, before, after: state() };
+    }, paints);
+    assert.ok(!result.error, result.error);
+    console.log(`Painted slab: ${JSON.stringify(result)}`);
+    assert.ok(result.painted && result.toneMapped === false, "the slab is drawn by its painted program without the tone curve");
+    const { 70: high, 33: mid, 15: low } = result.counts;
+    // High sun: the slab is lit but where the room casts its shadow; low sun: the whole slab is in shade; between, the
+    // boundary crosses the floor. The paint is exact (no light loop, no tone curve), so the pixels are counted by color.
+    assert.ok(high.lit > 10000 && high.lit > mid.lit && mid.lit > low.lit, JSON.stringify(result.counts));
+    assert.ok(low.shade > high.shade && low.shade > 10000, JSON.stringify(result.counts));
+    assert.ok(mid.lit > 1000 && mid.shade > 1000, `a boundary crosses the slab at a middle sun: ${JSON.stringify(mid)}`);
+    assert.deepEqual(result.after, result.before, "moving the sun rebuilt or baked nothing");
   }
   // Edit latency: one parameter of a light material (tile) and of the heaviest (concrete walls),
   // from the keystroke to the draft in the viewport and to the full-size result.

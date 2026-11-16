@@ -147,6 +147,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
             "ramp",
             "instance_attribute",
             "vertex_attribute",
+            "shade_band",
+            "sample_field",
         ])
     );
     for name in ORIGINAL_BUILTINS {
@@ -168,8 +170,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
 #[test]
 fn catalog_lists_the_documented_builtins_once() {
     let names: Vec<_> = operations().iter().map(|operation| operation.id).collect();
-    assert_eq!(names.len(), 57);
-    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 57);
+    assert_eq!(names.len(), 59);
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 59);
     for operation in operations() {
         assert_eq!(operation.version, 1, "{}", operation.id);
         assert!(!operation.overloads.is_empty(), "{}", operation.id);
@@ -287,8 +289,11 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "ramp",
             "instance_attribute",
             "vertex_attribute",
+            "sample_field",
         ])
     );
+    assert_eq!(find("sample_field").unwrap().requires, ["field"]);
+    assert_eq!(find("sample_field").unwrap().literal_values, SCENE_FIELDS);
     assert_eq!(find("ramp").unwrap().literal_values, RAMP_MODES);
     assert_eq!(find("instance_attribute").unwrap().requires, ["instance"]);
     assert_eq!(find("vertex_attribute").unwrap().requires, ["vertex"]);
@@ -420,6 +425,7 @@ fn argument(operation: &str, kind: Type, position: usize) -> String {
         Text if operation == "remap" => "\"clamp\"".into(),
         Text if operation == "ramp" => "\"linear\"".into(),
         Text if operation.ends_with("_attribute") => "\"root\"".into(),
+        Text if operation == "sample_field" => "\"ground.color\"".into(),
         Text => "\"img\"".into(),
     }
 }
@@ -494,7 +500,7 @@ fn every_catalog_overload_compiles_and_evaluates() {
         })
         .unwrap_or_else(|errors| panic!("{label}: {text}\n{errors:?}"));
         // Render-only inputs exist where the material is drawn; a CPU evaluation says so.
-        if label.contains("_attribute") {
+        if label.contains("_attribute") || label.starts_with("sample_field") {
             let error = program.evaluate(&inputs, &Sample::default()).unwrap_err();
             assert!(error.message.contains("render-only"), "{label}: {error}");
             continue;

@@ -244,7 +244,7 @@ fn sdk_and_catalog_commands_publish_the_generated_contract() {
     let catalog = json_of(&studio(temp.path(), &["catalog"]).stdout);
     assert_eq!(
         catalog["catalog"]["operations"].as_array().unwrap().len(),
-        57
+        59
     );
     assert_eq!(catalog["catalog"]["module"], "@superspec/material/v1");
 }

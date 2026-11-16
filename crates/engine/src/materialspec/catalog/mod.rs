@@ -62,7 +62,7 @@ pub fn inputs() -> &'static [Input] {
             summary,
         }
     }
-    static INPUTS: [Input; 13] = [
+    static INPUTS: [Input; 18] = [
         input(
             "uv",
             "uv",
@@ -140,6 +140,36 @@ pub fn inputs() -> &'static [Input] {
             "instance_w",
             Type::Scalar,
             "Render-only: the fourth component of the drawn instance's value. Only the shader reads it.",
+        ),
+        input(
+            "sunDirection",
+            "sun_direction",
+            Type::Vec3,
+            "Render-only: the unit vector from the scene toward the sun, from the scene's lighting record (uniform msSunDirection). Only the shader reads it; a bake of a value that reads it fails, naming it.",
+        ),
+        input(
+            "instanceRoot",
+            "instance_root",
+            Type::Vec3,
+            "Render-only: the world position of the drawn instance's origin, in meters (the mesh's origin outside an instanced batch).",
+        ),
+        input(
+            "instanceTint",
+            "instance_tint",
+            Type::Vec3,
+            "Render-only: the drawn instance's tint, linear RGB (white without one).",
+        ),
+        input(
+            "instanceRandom",
+            "instance_random",
+            Type::Scalar,
+            "Render-only: a stable number in [0, 1) per drawn instance (its `random` attribute, or one derived from its index; 0 outside a batch).",
+        ),
+        input(
+            "placedWorld",
+            "placed_world",
+            Type::Vec3,
+            "Render-only: the world position of the drawn point through its instance's placement, in meters; `world` is the batch's own space, where its one bake is made.",
         ),
     ];
     &INPUTS
@@ -884,6 +914,37 @@ fn build() -> Vec<Operation> {
             false,
         ),
         operation(
+            "shade_band",
+            "lighting",
+            "The painted shade factor in [0, 1]: smoothstep(-w, w, dot(normal, sun) - threshold), 0 in \
+             shade and 1 lit, where w is the larger of range and softness screen pixels of the \
+             difference's change (a bake, which has no pixels, reads softness as zero). Where the \
+             material is drawn the sun's cast shadow, in the scene's shadow style, is folded in by \
+             the minimum, so painted and lit surfaces share one shadow; a bake has no cast shadow. \
+             Add a world-anchored edge break to threshold to bite the boundary (see edgeBreak).",
+            "shadeBand(normal, sunDirection, 0.1, 1.5, 0.04)",
+            vec![overload(&[Vec3, Vec3, Scalar, Scalar, Scalar], Scalar)],
+        ),
+        {
+            let mut op = literal(
+                operation(
+                    "sample_field",
+                    "render",
+                    "Render-only: a named top-down scene field at a world XY position in meters, such as \
+                     the ground's linear color (ground.color) or its world normal (ground.normal), which \
+                     the renderer makes from the ground receiver's own material and binds as textures. \
+                     Bilinear between texel centers, the edge texels continuing outside the field. A \
+                     bake, or a renderer without the field, fails where it is read, naming it.",
+                    "sampleField(\"ground.color\", instanceRoot.xy)",
+                    vec![overload(&[Text, Vec2], Vec3)],
+                ),
+                &["field"],
+                false,
+            );
+            op.literal_values = SCENE_FIELDS;
+            op
+        },
+        operation(
             "adjust_normal",
             "receiver",
             "Turn a normal toward a target normal along the great circle; weight is clamped to [0, 1], \
@@ -904,6 +965,10 @@ pub const REMAP_MODES: &[&str] = &["clamp", "extrapolate"];
 
 /// Interpolation and color space accepted by `ramp`.
 pub const RAMP_MODES: &[&str] = &["linear", "constant", "display-linear", "display-constant"];
+
+/// Top-down scene fields `sample_field` reads, each a vec3: the ground's linear color and its
+/// world-space unit normal.
+pub const SCENE_FIELDS: &[&str] = &["ground.color", "ground.normal"];
 
 /// Stops a `ramp` takes at most: with the mode and the coordinate, a call's sixteen arguments.
 pub const RAMP_STOPS: usize = 7;

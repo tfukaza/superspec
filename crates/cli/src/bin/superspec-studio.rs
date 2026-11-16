@@ -97,6 +97,14 @@ fn main() -> ExitCode {
         Ok(bytes) => bytes,
         Err(error) => return failure(vec![Diagnostic::message(&source, error)], 1),
     };
+    // The export report: what a glTF importer without SuperSpec support skips and shows baked.
+    if arguments.command == "glb" {
+        if let Ok(scene) = output.scene(0) {
+            for line in superspec_export::live_report(&scene.manifest.materials) {
+                eprintln!("export: {line}");
+            }
+        }
+    }
     if cancelled() {
         return failure(
             vec![Diagnostic::message(&source, "Authoring cancelled.")],

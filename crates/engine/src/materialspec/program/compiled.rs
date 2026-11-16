@@ -24,18 +24,45 @@ pub(super) enum Input {
     Instance,
     /// Render-only: the fourth component of the instance's value.
     InstanceW,
+    /// Render-only: the unit vector from the scene toward the sun, from the lighting record
+    /// (`msSunDirection`).
+    SunDirection,
+    /// Render-only: the world position of the drawn instance's origin (`msInstanceRoot`).
+    InstanceRoot,
+    /// Render-only: the drawn instance's tint, linear RGB (`msInstanceTint`).
+    InstanceTint,
+    /// Render-only: a number in [0, 1) per drawn instance (`msInstanceRandom`).
+    InstanceRandom,
+    /// Render-only: the world position of the drawn point through its instance's placement
+    /// (`msPlacedWorld`); `world` is the batch's own space.
+    PlacedWorld,
 }
 
 impl Input {
     /// Whether only a renderer has the input: a bake cannot read it.
     pub(super) fn render_only(self) -> bool {
-        matches!(self, Self::Time | Self::Instance | Self::InstanceW)
+        matches!(
+            self,
+            Self::Time
+                | Self::Instance
+                | Self::InstanceW
+                | Self::SunDirection
+                | Self::InstanceRoot
+                | Self::InstanceTint
+                | Self::InstanceRandom
+                | Self::PlacedWorld
+        )
     }
     fn named(name: &str) -> Option<Self> {
         Some(match name {
             "time" => Self::Time,
             "instance" => Self::Instance,
             "instance_w" => Self::InstanceW,
+            "sun_direction" => Self::SunDirection,
+            "instance_root" => Self::InstanceRoot,
+            "instance_tint" => Self::InstanceTint,
+            "instance_random" => Self::InstanceRandom,
+            "placed_world" => Self::PlacedWorld,
             "uv" => Self::Uv,
             "surface" => Self::Surface,
             "object" => Self::Object,
@@ -179,6 +206,10 @@ pub(super) enum Builtin {
     InstanceAttribute,
     /// Render-only: a named attribute of the drawn vertex (`msVertex_<name>`).
     VertexAttribute,
+    /// The painted shade factor of a normal toward the sun, with cast shadows folded in.
+    ShadeBand,
+    /// Render-only: a named top-down scene field at a world XY position.
+    SampleField,
     /// A name outside the catalog; the checker rejects these before evaluation.
     Unknown,
 }
@@ -242,6 +273,8 @@ impl Builtin {
             "ramp" => Self::Ramp,
             "instance_attribute" => Self::InstanceAttribute,
             "vertex_attribute" => Self::VertexAttribute,
+            "shade_band" => Self::ShadeBand,
+            "sample_field" => Self::SampleField,
             _ => Self::Unknown,
         }
     }

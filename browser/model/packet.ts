@@ -96,6 +96,17 @@ export interface SceneMaterial {
   baseColorFactor?: number[] | null; emissiveFactor?: number[] | null;
   /** Live renderer operations applied on top of the baked maps, in order. */
   live?: LiveOperation[];
+  /** How the material is drawn; absent is lit. */
+  shading?: "lit" | "painted";
+  /** A painted material's per-pixel program; the maps above are its fallback (`LiveProgram` in `superspec_types::material`). */
+  program?: LiveProgram;
+}
+/** A delivered per-pixel program: GLSL with `ms_evaluate()`, its uniform values and the render inputs a host binds. */
+export interface LiveProgram {
+  version: 1; source: string; painted: string; mapping: "uv" | "object" | "world" | "anchored"; domain: [number, number];
+  uniforms: { uniform: string; type: "float" | "vec2" | "vec3" | "bool" | "uint"; value: number[] }[];
+  requires: string[];
+  inputs: { symbol: string; kind: "uniform" | "instance" | "vertex" | "derived" | "field"; glsl: string; name?: string; fallback?: string }[];
 }
 /** A live argument: one value, or a channel of a linear texture on UV0 decoded as byte/255 * scale + offset. */
 export type LiveArgument = { value: number } | { texture: string; channel: number; scale: number; offset: number };
@@ -199,6 +210,11 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
       || (material.heightOffset !== null && !Number.isFinite(material.heightOffset))
       || (material.opacity !== null && !factor(material.opacity))
       || (material.alphaCutoff !== null && (material.alphaMode != null ? !Number.isFinite(material.alphaCutoff) || material.alphaCutoff < 0 : !factor(material.alphaCutoff) || material.alphaCutoff === 0 || material.alphaCutoff === 1))) throw new Error("Invalid material channels.");
+    if ((material.shading != null && !["lit", "painted"].includes(material.shading))
+      || (material.program != null && (material.program.version !== 1 || typeof material.program.source !== "string"
+        || !material.program.source.includes("void ms_evaluate()") || typeof material.program.painted !== "string"
+        || !Array.isArray(material.program.uniforms) || !material.program.uniforms.every(uniform => Array.isArray(uniform.value) && uniform.value.every(Number.isFinite))
+        || !Array.isArray(material.program.inputs)))) throw new Error("Invalid material program.");
     materialIds.add(material.id);
   }
   const meshIds = new Set<string>();

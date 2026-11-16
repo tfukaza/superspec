@@ -484,6 +484,23 @@ pub fn groups() -> &'static [Group] {
                     let across = dot(position, side) / scale.y;\n\
                     let coordinates = vec2(along, across);",
             },
+            Group {
+                id: "edgeBreak",
+                version: 1,
+                kind: Kind::Group,
+                title: "Edge Break",
+                summary: "A signed offset for a painted shade boundary's threshold, anchored in the world: fractal noise over the position's XY, so the boundary bites into the surface where it lies and stays put as the sun or the camera moves. Add `offset` to shadeBand's threshold.",
+                example: "const edge = edgeBreak({ size: 0.35, amount: 0.12 });",
+                arguments: vec![
+                    argument("position", Vec3, "m", Some("world"), "Position in meters whose XY anchors the noise."),
+                    argument("size", Scalar, "m", Some("0.35"), "Feature size of the bites."),
+                    argument("amount", Scalar, "", Some("0.12"), "Largest offset either way, in units of the shade factor's dot product."),
+                ],
+                outputs: vec![GroupOutput { name: "offset", kind: Scalar, summary: "Offset in [-amount, amount] to add to a threshold." }],
+                requires: &["world", "seed"],
+                unavailable: None,
+                template: "let offset = (fbm(position.xy / size, seed(\"%ID%.edge\"), 3) - 0.5) * 2.0 * amount;",
+            },
         ]
     })
 }

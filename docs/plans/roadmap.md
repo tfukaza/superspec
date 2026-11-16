@@ -88,6 +88,34 @@ and is driven by fields.
 This pulls "separate intrinsic appearance from receiver mapping" forward from the
 roadmap's later list, because it is also the largest remaining cut to bake work.
 
+**GPU preview of layered slots (prototype, 2026-11-16).** The scene view composes a
+layered slot in the pass graph (`GpuBaker.bakeStack`; the program README's "Layered
+slots"): a plane node per channel of the base and of each layer, each layer reading the
+planes beneath it, maps composed from the planes that last changed each channel, and the
+base's intrinsic outputs read from shared lattice tiles. Measured on the split item
+washroom at 512 px on the real GPU (`tests/stage2-gpu-layers-browser.mjs`): see that
+test's report under `generated/verification/stage2-gpu-layers/`. Assumptions not yet
+reviewed:
+
+- The per-pixel look (first look, edits while they settle, handle drags, `?preview=shader`)
+  of a layered slot shows its base alone, and says so (`data-layers`, the status line).
+  Showing layers per pixel needs either one linked program per stack or planes the
+  per-pixel look can read; neither is built.
+- Planes are half floats (heights single precision) and carry no leg points, so a
+  layer's relief at a chart's edge and fine colour steps differ from the CPU's exact
+  planes. There is no GPU-against-CPU gate; the test reports the share of pixels off by
+  more than 16/255.
+- Intrinsic tiles are 512 lattice cells square from cell -64, at most eight per
+  receiver; a receiver with a chart off its anchor's lattice evaluates its base itself.
+- A layer's own CPU fields (the moss's `shelter`) are baked through
+  `bake_project_fields` names `stack.<k>/<field>`, with the layer's followed features.
+  The occluder service binds planes only for a slot's base program's external inputs
+  (`occlude_project`), so the moss's `occlusion` and `sunExposure` read their fallbacks
+  in the CPU bake and in the preview alike; whether layers should ask for planes is open.
+- Layer parameters reach the GPU bake through uniforms (`setShadingParameters`), as a
+  material's own do; the Studio has no control for them yet, so the test edits them by
+  opening the project again.
+
 ## Stages
 
 Each stage lists what it delivers and its gate. Stages overlap where the work is in
@@ -147,7 +175,10 @@ game runtime module for lights, shadow style and AO.
 ### Stage 5: live and painted materials, and shadows as inputs
 
 - Roadmap 1C and 1D: painted shading model, delivered live programs, `shadeBand`,
-  instance, vertex and scene-field inputs.
+  instance, vertex and scene-field inputs. **Prototype done 2026-11-16, unreviewed**: see
+  [tree-item-roadmap.md](tree-item-roadmap.md#1c-and-1d-prototype-roadmap-stage-5-2026-11-16)
+  for what exists, the checks and the assumptions (painted finishing is the lighting record's
+  `painted` setting; only painted materials are delivered with their program).
 - Occluder service and the `shadow`, `occlusion` and `sunExposure` fields, which
   weathering layers can then read (moss in the shade).
 

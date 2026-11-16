@@ -36,6 +36,17 @@ pub fn material_ts_result() -> Vec<u8> {
 
 #[cfg(target_arch = "wasm32")]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../crates/engine/tests/material_live.rs"]
+mod material_live;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn material_live_result() -> Vec<u8> {
+    material_live::live_program_result()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../crates/engine/tests/material_primitives.rs"]
 mod material_primitives;
 

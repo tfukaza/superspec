@@ -31,8 +31,13 @@ impl SampleInputs {
     pub const INSTANCE: Self = Self(1 << 10);
     /// Render-only: the drawn vertex's attributes.
     pub const VERTEX: Self = Self(1 << 11);
+    /// Render-only: the sun of the scene's lighting record.
+    pub const SUN: Self = Self(1 << 12);
+    /// Render-only: the scene's top-down fields (`sample_field`).
+    pub const FIELD: Self = Self(1 << 13);
     /// What only a renderer supplies, which no bake can read.
-    pub const RENDER_ONLY: Self = Self(Self::TIME.0 | Self::INSTANCE.0 | Self::VERTEX.0);
+    pub const RENDER_ONLY: Self =
+        Self(Self::TIME.0 | Self::INSTANCE.0 | Self::VERTEX.0 | Self::SUN.0 | Self::FIELD.0);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -58,6 +63,8 @@ impl SampleInputs {
             (Self::TIME, "time"),
             (Self::INSTANCE, "instance"),
             (Self::VERTEX, "vertex"),
+            (Self::SUN, "sun"),
+            (Self::FIELD, "field"),
         ]
         .into_iter()
         .filter(|(part, _)| self.contains(*part))
@@ -197,7 +204,14 @@ impl Walk<'_> {
                     Input::UvFootprint => S::UV_FOOTPRINT,
                     Input::BoundsMin | Input::BoundsMax => S::BOUNDS,
                     Input::Time => S::TIME,
-                    Input::Instance | Input::InstanceW => S::INSTANCE,
+                    Input::Instance
+                    | Input::InstanceW
+                    | Input::InstanceRoot
+                    | Input::InstanceTint
+                    | Input::InstanceRandom => S::INSTANCE,
+                    Input::SunDirection => S::SUN,
+                    // Through the instance's placement, with the sample's own footprint.
+                    Input::PlacedWorld => S::INSTANCE.union(S::WORLD).union(S::FOOTPRINT),
                 };
             }
             Kind::Parameter(index) => {
@@ -277,6 +291,9 @@ impl Walk<'_> {
                     }
                     Builtin::VertexAttribute => {
                         found.sample = found.sample.union(SampleInputs::VERTEX);
+                    }
+                    Builtin::SampleField => {
+                        found.sample = found.sample.union(SampleInputs::FIELD);
                     }
                     _ => {}
                 }

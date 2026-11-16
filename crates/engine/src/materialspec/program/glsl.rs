@@ -87,16 +87,31 @@ pub struct Shader {
     /// fails, naming it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub render_inputs: Vec<RenderInput>,
+    /// For a painted material, the GLSL expression holding the color that reaches the screen
+    /// after `ms_evaluate()`: linear RGB, drawn without the light loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub painted: Option<String>,
 }
 
 /// See [`Shader::render_inputs`].
 #[derive(Clone, Debug, Serialize)]
 pub struct RenderInput {
     pub symbol: String,
-    /// `uniform`, `instance` (one value per drawn instance) or `vertex`.
+    /// `uniform` (`msTime`, `msSunDirection`), `instance` (one value per drawn instance, from
+    /// the batch: `msInstanceValue`, `msInstance_<name>`), `vertex` (`msVertex_<name>`),
+    /// `derived` (varyings the host derives from what it draws: `msInstanceRoot`,
+    /// `msInstanceTint`, `msInstanceRandom`, `msPlacedWorld`) or `field` (a scene field's
+    /// texture `msField<k>` and its rectangle `msFieldRect<k>`, minimum then maximum corner).
     pub kind: &'static str,
-    /// The GLSL type: `float`, `vec2`, `vec3` or `vec4`.
+    /// The GLSL type: `float`, `vec2`, `vec3`, `vec4` or `sampler2D`.
     pub glsl: &'static str,
+    /// For a field, the scene field it is (`ground.color`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// For a named attribute, the GLSL of the value its call is typed by: what the host reads
+    /// where the drawn mesh has no such attribute (as the evaluator's default bindings do).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 }
 
 /// What the outputs and live arguments of a [`Shader`] read.
@@ -107,6 +122,9 @@ pub struct ShaderReads {
     /// By live operation id, then argument name.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub live: BTreeMap<String, BTreeMap<String, Reads>>,
+    /// What a painted material's color reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub painted: Option<Reads>,
 }
 
 /// Everything one value reads, through the fields and helpers upstream of it.
@@ -395,8 +413,15 @@ struct Emitter<'a> {
     /// Stop counts of the ramps emitted (each has a helper), and whether one is display-referred.
     ramps: std::collections::BTreeSet<usize>,
     display_ramp: bool,
-    /// Render-only inputs read: GLSL symbol, kind (`uniform`, `instance`, `vertex`) and type.
+    /// Render-only inputs read: GLSL symbol, kind (`uniform`, `instance`, `vertex`, `derived`)
+    /// and type.
     render: std::collections::BTreeSet<(String, &'static str, &'static str)>,
+    /// Whether `shade_band` is used, which needs its helper and `ms_cast_shadow`.
+    shade_band: bool,
+    /// Scene fields `sample_field` reads, in the order of their uniforms (`msField<k>`).
+    fields: Vec<String>,
+    /// Named attributes' fallbacks by symbol (see `RenderInput::fallback`).
+    fallbacks: BTreeMap<String, String>,
     field_state: Vec<u8>,
     field_order: Vec<usize>,
     function_order: Vec<usize>,
@@ -716,9 +741,11 @@ impl<'a> Emitter<'a> {
             Kind::Text(_) => Type::String,
             Kind::Input(input) => match input {
                 Input::Uv | Input::Surface => Type::Vec2,
-                Input::Footprint | Input::UvFootprint | Input::Time | Input::InstanceW => {
-                    Type::Scalar
-                }
+                Input::Footprint
+                | Input::UvFootprint
+                | Input::Time
+                | Input::InstanceW
+                | Input::InstanceRandom => Type::Scalar,
                 _ => Type::Vec3,
             },
             Kind::Parameter(index) => self.program.metadata.parameters[*index].kind,
@@ -753,6 +780,7 @@ impl<'a> Emitter<'a> {
                     | B::VariedColor
                     | B::SampleColor
                     | B::Ramp
+                    | B::SampleField
                     | B::SampleData => Type::Vec3,
                     B::Mix | B::Min | B::Max | B::Step => wider(of(0), of(1)),
                     B::Smoothstep => wider(wider(of(0), of(1)), of(2)),
@@ -957,6 +985,33 @@ impl<'a> Emitter<'a> {
                     } else {
                         "ms_instance.w"
                     }
+                }
+                Input::SunDirection => {
+                    self.render
+                        .insert(("msSunDirection".into(), "uniform", "vec3"));
+                    "ms_sun_direction"
+                }
+                // Varyings the host derives from what it draws: the instance's placement and
+                // tint, a number per instance, the placed position.
+                Input::InstanceRoot => {
+                    self.render
+                        .insert(("msInstanceRoot".into(), "derived", "vec3"));
+                    "msInstanceRoot"
+                }
+                Input::InstanceTint => {
+                    self.render
+                        .insert(("msInstanceTint".into(), "derived", "vec3"));
+                    "msInstanceTint"
+                }
+                Input::InstanceRandom => {
+                    self.render
+                        .insert(("msInstanceRandom".into(), "derived", "float"));
+                    "msInstanceRandom"
+                }
+                Input::PlacedWorld => {
+                    self.render
+                        .insert(("msPlacedWorld".into(), "derived", "vec3"));
+                    "msPlacedWorld"
                 }
             }
             .into(),
@@ -1228,7 +1283,34 @@ impl<'a> Emitter<'a> {
                     _ => "float",
                 };
                 self.render.insert((symbol.clone(), kind, glsl));
+                // What a host reads where the drawn mesh has no such attribute: the value the
+                // call is typed by, as the evaluator's bindings read it. The first call's wins.
+                self.fallbacks
+                    .entry(symbol.clone())
+                    .or_insert_with(|| a[1].clone());
                 symbol
+            }
+            B::ShadeBand => {
+                self.shade_band = true;
+                format!(
+                    "ms_shade_band({}, {}, {}, {}, {})",
+                    a[0], a[1], a[2], a[3], a[4]
+                )
+            }
+            B::SampleField => {
+                let field = Self::text(&args[0]);
+                let index = self
+                    .fields
+                    .iter()
+                    .position(|known| known == field)
+                    .unwrap_or_else(|| {
+                        self.fields.push(field.to_owned());
+                        self.fields.len() - 1
+                    });
+                format!(
+                    "ms_sample_field(msField{index}, msFieldRect{index}, {})",
+                    a[1]
+                )
             }
             B::AuthoredMask => format!(
                 "ms_authored_mask({}, {})",
@@ -1267,6 +1349,32 @@ vec3 ms_remap(vec3 v, float a, float b, float c, float d, bool clamped) { vec3 t
 float ms_mask(int mode, float x, float y) {
   x = clamp(x, 0.0, 1.0); y = clamp(y, 0.0, 1.0);
   return mode == 0 ? 1.0 - (1.0 - x) * (1.0 - y) : mode == 1 ? x * y : x * (1.0 - y);
+}
+";
+
+/// `shade_band`: as the evaluator computes it (`SHADE_BAND_FLOOR` is its narrowest half-width),
+/// widened by `softness` pixels of the difference's screen derivative, which a sample has not.
+/// `ms_cast_shadow` is the sun's cast shadow at the drawn point in the scene's shadow style; a
+/// host that draws shadows sets it before `ms_evaluate()`, and without one it stays lit.
+const SHADE_BAND: &str = "float ms_cast_shadow = 1.0;
+float ms_shade_band(vec3 n, vec3 s, float threshold, float softness, float range) {
+  float d = dot(n, s) - threshold;
+  float w = max(max(range, 1e-6), softness * fwidth(d));
+  return min(smoothstep(-w, w, d), clamp(ms_cast_shadow, 0.0, 1.0));
+}
+";
+
+/// `sample_field`: bilinear between texel centers of a float texture over a rectangle of the
+/// world's XY plane (`rect` is its minimum and maximum corner), edge texels continuing outside, as
+/// `SceneField::sample` reads it. Row 0 is the rectangle's lower edge.
+const SAMPLE_FIELD: &str = "vec3 ms_sample_field(highp sampler2D field, vec4 rect, vec2 p) {
+  ivec2 size = textureSize(field, 0);
+  vec2 x = clamp((p - rect.xy) / (rect.zw - rect.xy) * vec2(size) - 0.5, vec2(0.0), vec2(size - 1));
+  vec2 base = floor(x), t = x - base;
+  ivec2 c = ivec2(base), n = min(c + 1, size - 1);
+  vec3 low = mix(texelFetch(field, c, 0).xyz, texelFetch(field, ivec2(n.x, c.y), 0).xyz, t.x);
+  vec3 high = mix(texelFetch(field, ivec2(c.x, n.y), 0).xyz, texelFetch(field, n, 0).xyz, t.x);
+  return mix(low, high, t.y);
 }
 ";
 
@@ -1406,6 +1514,9 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
         ramps: Default::default(),
         display_ramp: false,
         render: Default::default(),
+        shade_band: false,
+        fields: Vec::new(),
+        fallbacks: BTreeMap::new(),
         field_state: vec![0; compiled.fields.len()],
         field_order: Vec::new(),
         function_order: Vec::new(),
@@ -1467,6 +1578,18 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             classes,
         });
     }
+    // A painted material's color: its paint field, which `ms_evaluate` computes, or the base color.
+    let mut paint_field = None;
+    let painted = match (program.metadata.shading, &program.metadata.paint) {
+        (super::Shading::Lit, _) => None,
+        (super::Shading::Painted, Some(name)) => {
+            let index = field_index(name)?;
+            emitter.require_field(index);
+            paint_field = Some(index);
+            Some(format!("ms_f{index}"))
+        }
+        (super::Shading::Painted, None) => Some("ms_base_color".to_owned()),
+    };
 
     if partition {
         for index in emitter.function_order.clone() {
@@ -1720,8 +1843,22 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
         match symbol.as_str() {
             "msTime" => source.push_str("uniform float msTime;\n#define ms_time msTime\n"),
             "msInstanceValue" => source.push_str("#define ms_instance msInstanceValue\n"),
+            "msSunDirection" => source.push_str(
+                "uniform vec3 msSunDirection;\n#define ms_sun_direction msSunDirection\n",
+            ),
             _ => {}
         }
+    }
+    if emitter.shade_band {
+        source.push_str(SHADE_BAND);
+    }
+    if !emitter.fields.is_empty() {
+        for index in 0..emitter.fields.len() {
+            source.push_str(&format!(
+                "uniform highp sampler2D msField{index};\nuniform vec4 msFieldRect{index};\n"
+            ));
+        }
+        source.push_str(SAMPLE_FIELD);
     }
     for stops in &emitter.ramps {
         source.push_str(&ramp_helper(*stops));
@@ -1740,6 +1877,9 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
     let names: Vec<&str> = outputs.iter().map(String::as_str).collect();
     let mut all_roots = live_roots.clone();
     all_roots.extend(values.values().flat_map(|(_, uses)| uses.iter().copied()));
+    if let Some(index) = paint_field {
+        all_roots.push(Use::Statement(emitter.field_statement[index]));
+    }
     source.push_str(&entry(
         "ms_evaluate",
         "  ms_base_color = vec3(0.0); ms_roughness = 1.0; ms_metalness = 0.0; ms_height = 0.0;\n  \
@@ -1884,7 +2024,39 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
                 (operation.id.clone(), arguments)
             })
             .collect(),
+        painted: match (&painted, &program.metadata.paint) {
+            (None, _) => None,
+            (Some(_), Some(field)) => all.fields.get(field).map(reads_of),
+            (Some(_), None) => all.outputs.get("base_color").map(reads_of),
+        },
     };
+    let mut render_inputs: Vec<RenderInput> = emitter
+        .render
+        .iter()
+        .map(|(symbol, kind, glsl)| RenderInput {
+            symbol: symbol.clone(),
+            kind,
+            glsl,
+            name: None,
+            fallback: emitter.fallbacks.get(symbol).cloned(),
+        })
+        .collect();
+    for (index, name) in emitter.fields.iter().enumerate() {
+        render_inputs.push(RenderInput {
+            symbol: format!("msField{index}"),
+            kind: "field",
+            glsl: "sampler2D",
+            name: Some(name.clone()),
+            fallback: None,
+        });
+        render_inputs.push(RenderInput {
+            symbol: format!("msFieldRect{index}"),
+            kind: "field",
+            glsl: "vec4",
+            name: Some(name.clone()),
+            fallback: None,
+        });
+    }
     Ok((
         Shader {
             source,
@@ -1902,15 +2074,8 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             samplers,
             entries,
             reads,
-            render_inputs: emitter
-                .render
-                .iter()
-                .map(|(symbol, kind, glsl)| RenderInput {
-                    symbol: symbol.clone(),
-                    kind,
-                    glsl,
-                })
-                .collect(),
+            render_inputs,
+            painted,
         },
         functions,
     ))

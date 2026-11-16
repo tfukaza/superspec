@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { AmbientOcclusion } from "./ambient-occlusion.ts";
-import { DEFAULT_LIGHTING, defaultLighting, lightingFromQuery, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
+import { DEFAULT_LIGHTING, defaultLighting, lightingFromQuery, paintedOf, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
 import { ShadowStyle } from "./shadow-style.ts";
+import { programSun, setPaintedFinishing } from "./shade.ts";
 import { softwareOcclusionDefault } from "./software-occlusion.ts";
 
 const TONE_MAPPING: Record<Lighting["toneMapping"], THREE.ToneMapping> = {
@@ -122,6 +123,9 @@ export class SceneLighting {
       this.direction.fromArray(sun.direction).normalize();
       this.sun.position.copy(this.sun.target.position).addScaledVector(this.direction, 10);
     }
+    // Programs read the record's sun (`sunDirection`) at the live stage: a moved sun redraws them, rebuilding nothing.
+    if (sun) programSun.value.fromArray(sun.direction).normalize();
+    else programSun.value.set(0, 0, 0);
     renderer.shadowMap.enabled = casting;
     this.sun.castShadow = casting;
     const shadow = sun?.shadow ?? DEFAULT_LIGHTING.lights[0].shadow;
@@ -148,6 +152,11 @@ export class SceneLighting {
       this.ambientOcclusion?.dispose();
       this.ambientOcclusion = undefined;
     }
+    // Painted materials: whether the tone curve and exposure apply is the scene's setting. Ambient occlusion is a pass
+    // over the finished image here, so it cannot leave painted pixels out.
+    const painted = paintedOf(lighting);
+    setPaintedFinishing(painted);
+    if (!painted.ambientOcclusion && this.ambientOcclusion) this.report("painted.ambientOcclusion is false, but ambient occlusion is a pass over the whole image in this viewer and also darkens painted materials.");
   }
 
   /** The session's exposure, which replaces the record's until the page is left. */

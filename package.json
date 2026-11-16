@@ -29,6 +29,7 @@
     "test:items:browser": "node tests/item-washroom-browser.mjs",
     "test:lighting:browser": "node tests/lighting-washroom-browser.mjs",
     "test:bake-keys:browser": "node tests/material-bake-keys-browser.mjs",
+    "test:live:browser": "node tests/live-program-browser.mjs",
     "bench:shader-compile": "node tests/shader-compile-bench.mjs",
     "test:world:browser": "node tests/authoring-world-browser.mjs"
   },

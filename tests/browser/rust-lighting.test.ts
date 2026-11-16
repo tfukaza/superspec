@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DEFAULT_LIGHTING, LightingError, defaultLighting, hexFromLinear, lightingFromQuery, linearFromHex, parseLighting, projectLighting, statesAmbientOcclusion,
+import { DEFAULT_LIGHTING, LightingError, defaultLighting, hexFromLinear, lightingFromQuery, linearFromHex, paintedOf, parseLighting, projectLighting, statesAmbientOcclusion,
   storedLighting, sunAngles, sunDirection, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
 
 /** The fixtures the Rust record is checked against (`crates/model/src/lighting.rs`). */
@@ -14,6 +14,16 @@ test("the viewer's default is the Rust record's default", () => {
   const sun = sunOf(DEFAULT_LIGHTING)!;
   // The viewer's sun stood at (-3, -5, 8) from the scene.
   assert.deepEqual(sun.direction.map(axis => Math.round(axis * Math.sqrt(98) * 1e9) / 1e9), [-3, -5, 8]);
+});
+
+test("painted finishing is a scene setting, held only when it differs from the default, as the Rust record writes it", () => {
+  assert.deepEqual(paintedOf(DEFAULT_LIGHTING), { toneMapping: false, ambientOcclusion: true });
+  assert.equal(parseLighting({ version: 1, painted: { toneMapping: false } }).painted, undefined);
+  const toned = parseLighting({ version: 1, painted: { toneMapping: true } });
+  assert.deepEqual(toned.painted, { toneMapping: true, ambientOcclusion: true });
+  assert.deepEqual(paintedOf(toned), toned.painted);
+  assert.throws(() => parseLighting({ version: 1, painted: { tint: 1 } }), (error: LightingError) => error.findings[0].field === "painted.tint");
+  assert.throws(() => parseLighting({ version: 1, painted: { toneMapping: 1 } }), (error: LightingError) => error.findings[0].field === "painted.toneMapping");
 });
 
 test("a partial record keeps the other defaults and is a copy", () => {

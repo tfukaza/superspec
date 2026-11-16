@@ -159,6 +159,30 @@ pub struct Metadata {
     /// For a layer, the channels of the surface beneath that it reads, by output name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reads: Vec<String>,
+    /// How the material is drawn: lit by the scene's lights (the default), or `painted`, whose
+    /// color reaches the screen without the light loop. A painted material declares live inputs:
+    /// it is delivered with its program (see `Shader::painted`), and its baked maps are the
+    /// fallback a renderer without the program shows.
+    #[serde(skip_serializing_if = "Shading::is_lit")]
+    pub shading: Shading,
+    /// For a painted material, the field holding the color that reaches the screen (a `vec3`,
+    /// linear RGB); without one it is the base color.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paint: Option<String>,
+}
+
+/// See [`Metadata::shading`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Shading {
+    #[default]
+    Lit,
+    Painted,
+}
+impl Shading {
+    fn is_lit(&self) -> bool {
+        *self == Self::Lit
+    }
 }
 
 /// See [`Metadata::kind`].
@@ -230,6 +254,8 @@ pub(crate) struct Traits {
     pub double_sided: bool,
     pub size: Option<[f64; 2]>,
     pub blend: BTreeMap<String, Blend>,
+    pub shading: Shading,
+    pub paint: Option<String>,
 }
 
 /// A named per-texel input a host may supply; see [`Metadata::externals`].
@@ -285,6 +311,114 @@ pub struct Inputs {
     /// and a host may give several inputs one cache so equal images are filtered once.
     #[serde(skip)]
     pub mips: images::MipCache,
+    /// The values of the render-only inputs, for an evaluation that stands for a drawn pixel: a
+    /// CPU reference of the shader, or a check of a program's live outputs. Bakes never bind
+    /// them, so a baked value that reads one fails where it is read (`MS_INPUT`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render: Option<RenderBindings>,
+}
+
+/// What a renderer supplies where a material is drawn, for evaluating render-only inputs on the
+/// CPU. [`RenderBindings::default`] holds the default bindings: the clock at zero, the lighting
+/// record's default sun, no instance (origin, white tint, random 0, value zero), no cast shadow,
+/// every named attribute at the value its call is typed by, and no scene field.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct RenderBindings {
+    pub time: f64,
+    /// Unit vector from the scene toward the sun.
+    pub sun_direction: [f64; 3],
+    /// The drawn instance's value (`instance` and `instance_w`).
+    pub instance: [f64; 4],
+    pub instance_root: [f64; 3],
+    pub instance_tint: [f64; 3],
+    pub instance_random: f64,
+    /// The drawn point through its instance's placement; `None` reads the sample's `world`.
+    pub placed_world: Option<[f64; 3]>,
+    /// The sun's cast shadow at the drawn point, 1 lit and 0 shadowed, which `shade_band` folds in.
+    pub cast_shadow: f64,
+    /// Named instance and vertex attributes; a name not bound reads the value its call is typed by.
+    pub instance_attributes: BTreeMap<String, Vec<f64>>,
+    pub vertex_attributes: BTreeMap<String, Vec<f64>>,
+    /// Top-down scene fields by name (see `catalog::SCENE_FIELDS`).
+    pub fields: BTreeMap<String, std::sync::Arc<SceneField>>,
+}
+impl Default for RenderBindings {
+    fn default() -> Self {
+        Self {
+            time: 0.,
+            // The lighting record's default sun (`superspec_types::lighting`), normalized.
+            sun_direction: superspec_types::lighting::Light::default().direction,
+            instance: [0.; 4],
+            instance_root: [0.; 3],
+            instance_tint: [1.; 3],
+            instance_random: 0.,
+            placed_world: None,
+            cast_shadow: 1.,
+            instance_attributes: BTreeMap::new(),
+            vertex_attributes: BTreeMap::new(),
+            fields: BTreeMap::new(),
+        }
+    }
+}
+
+/// A top-down field over a rectangle of the world's XY plane: `width` by `height` texels of
+/// `components` values each, rows from the rectangle's lower (minimum Y) edge, texel `(i, j)`
+/// standing for the point `min + (i + 0.5, j + 0.5) * (max - min) / (width, height)`. Sampling is
+/// bilinear between texel centers, with the edge texels continuing outside the rectangle, which
+/// is what a renderer's float texture with clamped `texelFetch` reads (see `glsl.rs`).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneField {
+    pub width: usize,
+    pub height: usize,
+    pub components: usize,
+    pub min: [f64; 2],
+    pub max: [f64; 2],
+    pub values: Vec<f32>,
+}
+impl SceneField {
+    /// Whether the field's sizes agree and every value is finite.
+    pub fn valid(&self) -> bool {
+        self.width > 0
+            && self.height > 0
+            && (1..=4).contains(&self.components)
+            && self.width.saturating_mul(self.height) <= 1 << 24
+            && self.values.len() == self.width * self.height * self.components
+            && self.min.iter().chain(&self.max).all(|v| v.is_finite())
+            && self.max[0] > self.min[0]
+            && self.max[1] > self.min[1]
+            && self.values.iter().all(|v| v.is_finite())
+    }
+    /// The field at a world XY position: the first three components (zero past `components`).
+    pub fn sample(&self, at: [f64; 2]) -> [f64; 3] {
+        let size = [self.width, self.height];
+        let mut cell = [0usize; 2];
+        let mut next = [0usize; 2];
+        let mut t = [0.; 2];
+        for axis in 0..2 {
+            let span = self.max[axis] - self.min[axis];
+            let x = (at[axis] - self.min[axis]) / span * size[axis] as f64 - 0.5;
+            let last = (size[axis] - 1) as f64;
+            let x = x.clamp(0., last);
+            let base = x.floor();
+            cell[axis] = base as usize;
+            next[axis] = (base + 1.).min(last) as usize;
+            t[axis] = x - base;
+        }
+        let at = |i: usize, j: usize, c: usize| {
+            if c < self.components {
+                f64::from(self.values[(j * self.width + i) * self.components + c])
+            } else {
+                0.
+            }
+        };
+        std::array::from_fn(|c| {
+            let low = at(cell[0], cell[1], c) * (1. - t[0]) + at(next[0], cell[1], c) * t[0];
+            let high = at(cell[0], next[1], c) * (1. - t[0]) + at(next[0], next[1], c) * t[0];
+            low * (1. - t[1]) + high * t[1]
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

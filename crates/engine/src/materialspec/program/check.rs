@@ -46,6 +46,8 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             size: None,
             blend: BTreeMap::new(),
             reads: Vec::new(),
+            shading: super::Shading::Lit,
+            paint: None,
         },
         compiled: Default::default(),
     };
@@ -433,6 +435,8 @@ fn load(
         program.metadata.double_sided = traits.double_sided;
         program.metadata.size = traits.size;
         program.metadata.blend = traits.blend;
+        program.metadata.shading = traits.shading;
+        program.metadata.paint = traits.paint;
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -468,8 +472,10 @@ pub(super) fn variable(name: &str) -> Option<Type> {
         "object" | "world" | "normal" | "gravity" | "bounds_min" | "bounds_max" => Some(Type::Vec3),
         "footprint" | "uv_footprint" => Some(Type::Scalar),
         // Render-only: what a renderer supplies where the material is drawn.
-        "time" | "instance_w" => Some(Type::Scalar),
-        "instance" => Some(Type::Vec3),
+        "time" | "instance_w" | "instance_random" => Some(Type::Scalar),
+        "instance" | "sun_direction" | "instance_root" | "instance_tint" | "placed_world" => {
+            Some(Type::Vec3)
+        }
         _ => None,
     }
 }

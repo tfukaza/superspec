@@ -229,7 +229,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                         I::BoundsMax => Value::vector(&sample.bounds_max, 0.),
                         I::Footprint => Value::scalar(sample.footprint),
                         I::UvFootprint => Value::scalar(sample.uv_footprint.unwrap_or(0.)),
-                        I::Time | I::Instance | I::InstanceW => unreachable!("declined above"),
+                        _ => unreachable!("render-only inputs are declined above"),
                     };
                     buf[lane] = value;
                 }
@@ -492,7 +492,12 @@ impl<'a, 'b> Lanes<'a, 'b> {
         if args.len() > 16
             || matches!(
                 name,
-                Builtin::Unknown | Builtin::InstanceAttribute | Builtin::VertexAttribute
+                Builtin::Unknown
+                    | Builtin::InstanceAttribute
+                    | Builtin::VertexAttribute
+                    // Shade bands are for what is drawn; their samples are evaluated one by one.
+                    | Builtin::ShadeBand
+                    | Builtin::SampleField
             )
         {
             return Err(Declined);

@@ -147,9 +147,35 @@ const STYLED = /* glsl */`
 		${PLAIN}
 		#endif
 `;
-/** Where the shaded color is final: the shadow multiplies everything but emission. */
-const FINAL = /* glsl */`
+/**
+ * The sun's cast shadow at the drawn point, 1 lit and 0 shadowed, in the scene's shadow style: the styled term where
+ * the style is on, three.js's own where it is plain. A painted material (shade.ts) folds it into its shade factor
+ * (`shadeBand`), so painted and lit surfaces share one shadow shape: the same softness, spread and edge noise. Only the
+ * cast part: a painted material's own band decides where a surface turns from the sun. Insert it after
+ * `#include <shadowmap_pars_fragment>` before `apply` patches the material, so the style's declarations precede it.
+ */
+export const CAST_SHADOW = /* glsl */`
+#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+float msCastShadow() {
+	if ( ! receiveShadow ) return 1.0;
+	DirectionalLightShadow msSun = directionalLightShadows[ 0 ];
 	#if defined( MS_SHADOW_STYLE )
+	return msStyledShadow( directionalShadowMap[ 0 ], msSun.shadowMapSize, msSun.shadowIntensity, msSun.shadowBias, vDirectionalShadowCoord[ 0 ] );
+	#else
+	return getShadow( directionalShadowMap[ 0 ], msSun.shadowMapSize, msSun.shadowIntensity, msSun.shadowBias, msSun.shadowRadius, vDirectionalShadowCoord[ 0 ] );
+	#endif
+}
+#else
+float msCastShadow() { return 1.0; }
+#endif
+`;
+
+/**
+ * Where the shaded color is final: the shadow multiplies everything but emission. A painted material (`MS_PAINTED`)
+ * has folded the cast shadow into its own shade factor and keeps its authored color.
+ */
+const FINAL = /* glsl */`
+	#if defined( MS_SHADOW_STYLE ) && ! defined( MS_PAINTED )
 	outgoingLight = totalEmissiveRadiance + ( outgoingLight - totalEmissiveRadiance ) * mix( msShadowShade, vec3( 1.0 ), msShadowTerm );
 	#endif
 	#include <opaque_fragment>`;

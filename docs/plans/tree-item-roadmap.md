@@ -157,6 +157,80 @@ Checks: with default bindings, a program using instance inputs bakes to the same
 result as before; a renderer unit test binds each input; a missing field reports
 a source-linked diagnostic.
 
+### 1C and 1D: prototype (roadmap stage 5, 2026-11-16)
+
+Status: prototype, implemented and checked; unreviewed. The language surface is in the
+[program README](../../crates/engine/src/materialspec/program/README.md) ("Render-only inputs" and
+"Painted shading, shade bands and delivered programs").
+
+What exists:
+
+- **1C.1** `defineMaterial({ shading: "painted", paint })`. The renderer (`browser/renderer/shade.ts`)
+  replaces the light loop's result with the paint (`MS_PAINTED`); the Studio never swaps a painted mesh
+  to GPU-baked maps. `Material::shading` and `Material::program` (`superspec-types`) carry it in the
+  packet; a GLB keeps the baked PBR maps and records `shading` and `program` in `extras.materialSpec`.
+- **1C.2** The delivered program: GLSL, painted expression, mapping, uniform values, required inputs and
+  the render inputs to bind (`authoring::material::live_program`). The viewer draws it for a packet it
+  has no shading for (`RustScene.deliveredLook`). `superspec_export::live_report`, printed by
+  `superspec-studio glb` as `export:` lines, names the skipped effects.
+- **1C.3** `sunDirection` reads the lighting record's sun: `SceneLighting.set` keeps the shared uniform
+  `programSun`, so a sun edit redraws painted materials with no rebuild and no bake. A bake that reads
+  it fails with `MS_INPUT` at the read.
+- **1C.4** `shadeBand` and the `edgeBreak` group; the cast shadow is folded in by the minimum through
+  `CAST_SHADOW` in `shadow-style.ts` (the styled term, or three.js's plain one).
+- **1D.1-4** `instanceRoot`, `instanceTint`, `instanceRandom`, `placedWorld`, named attributes with a
+  fallback where a mesh has none, `sampleField` with `ground.color` and `ground.normal` made from the
+  ground receiver (`browser/renderer/scene-fields.ts`, `GroundFields`), and instance-aware positions
+  in `shade.ts`.
+
+Checks (2026-11-16, RTX 5060 Ti through ANGLE D3D11 unless said):
+
+- `PAINTED=1 node tests/material-washroom-browser.mjs` (256 px, `?ao=off`): the slab is painted, not
+  tone mapped, and its pixels in the exact lit paint fall from 70,581 to 15,345 to 8,872 as the sun goes
+  from 70 to 33 to 15 degrees while those in the shade paint rise from 20,633 to 28,733 to 85,854 (a
+  boundary crosses the floor at 33); three sun moves with full read-backs took 54 ms, and the input and
+  draft revisions and the scene bake were unchanged (no rebuild, no bake).
+- `tests/live-program-browser.mjs`: the generated GLSL of the painted recipe and of a program reading
+  every other render input against the CPU on 48 samples, largest difference 8.3e-8 and 1.6e-6 (the
+  same on SwiftShader); the viewer's program material binds root, tint, random, placed position, a
+  vertex attribute, its fallback, the field and the sun; the ground fields of a plane read back its
+  color and normal.
+- `crates/engine/tests/material_live.rs` (8 tests) and `crates/export/tests/live.rs` (2).
+
+Assumptions made without review:
+
+- **Declared live inputs means `shading: "painted"`.** Only painted materials are delivered with their
+  program (open decision 1 taken as "declared"). A lit material whose baked channel reads a render-only
+  input still fails its bake.
+- **Paint is a declared field, not a new output.** The bake's channels stay the PBR fallback and must
+  not read the sun; `paint` is evaluated only where the material is drawn. Without `paint` a painted
+  material shows its base color unlit. TypeScript recipes only; `.ms` has no painted declaration yet.
+- **Painted output is display-referred by the lighting record's `painted.toneMapping`** (open decision
+  3): by default exposure and the tone curve are skipped, so the paint reaches the screen as authored;
+  the record can turn them on for the whole scene. Ambient occlusion applies to painted pixels (the GTAO
+  pass covers the finished image); `painted.ambientOcclusion: false` is reported as not honored.
+- **The cast shadow is folded in, the shadow tint is not.** Painted and lit shadows share their shape
+  (softness, spread, edge noise, the same shadow map), but the style's tint and interior noise act only
+  on lit materials; a painted material's shade color is its own.
+- **`shadeBand` softness is in screen pixels** (as the reference's): it widens the band by
+  `softness * fwidth`; the CPU, which has no pixels, reads it as zero. CPU and GLSL agree wherever the
+  derivative term is below `range`.
+- **Instance inputs are named `instanceRoot`, `instanceTint`, `instanceRandom`** rather than
+  `instance.root`: `instance` is already the drawn instance's value vector. `instanceRandom` without a
+  `random` attribute is an integer hash of the instance index, so it is stable but not authored.
+- **Default bindings are explicit, not what a bake reads.** `RenderBindings::default()` gives the
+  defaults (origin, white, 0, the record's default sun, typed attribute values); the authoring session
+  binds nothing, so render-only values never reach a bake key.
+- **Scene fields:** `ground.color` and `ground.normal` only, rendered on the GPU from straight above
+  at 256 texels on the longer side, from the mesh `?ground=` names or the widest flat mesh. The color is
+  the ground's base color (or color map), unlit and without a painted ground's shade band, which a blade
+  applies itself from `ground.normal` and the sun; the normal is the geometry's, without a normal map's
+  relief. They are made when a scene with programs that read them is
+  shown, not delivered in the packet or GLB yet (open decision 2: the viewer owns the bake for now).
+- **Delivered programs carry no images, features, edges or planes**; a painted program that reads them
+  is delivered with its maps only. A delivered program's `object` coordinates are measured from the
+  mesh's bounds in the viewer, which may differ from the bake's object frame.
+
 ## Phase 2: Shared delivery
 
 - **Instanced batches** in the model, packet and incremental updates: one mesh,

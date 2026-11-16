@@ -31,8 +31,17 @@ export const materials = [
   { id: "bench-wood", entry: "wood.material.ts", parameters: {}, meshes: ["bench"] },
 ];
 
-/** `batches: false` builds the scene without its instanced batch (the bolts) and their template mesh. */
-export function buildProject(resolution = 512, texelDensity = 128, { batches = true } = {}) {
+/**
+ * The slab's material with `painted: true` (roadmap stage 5): a painted ground whose shade boundary follows the sun of the
+ * lighting record, drawn by its program in place of the slab's concrete.
+ */
+export const paintedSlab = { id: "painted-ground", entry: "painted-ground.material.ts", parameters: {}, meshes: ["slab"] };
+
+/**
+ * `batches: false` builds the scene without its instanced batch (the bolts) and their template mesh; `painted: true`
+ * gives the slab the painted ground (`paintedSlab`) instead of concrete.
+ */
+export function buildProject(resolution = 512, texelDensity = 128, { batches = true, painted = false } = {}) {
   const meshes = buildMeshes({ batches });
   const glb = writeGlb(meshes);
   const identity = name => {
@@ -42,7 +51,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { batches = t
   };
   const example = name => readFileSync(resolve(examples, name), "utf8");
   const modules = Object.fromEntries(["kowloon-noise.material.ts", concrete, steel, "tiled-courtyard.material.ts"].map(name => [name, example(name)]));
-  for (const name of ["wood.material.ts"]) modules[name] = readFileSync(resolve(here, "materials", name), "utf8");
+  for (const name of ["wood.material.ts", ...(painted ? ["painted-ground.material.ts"] : [])]) modules[name] = readFileSync(resolve(here, "materials", name), "utf8");
+  const chosen = painted ? materials.map(material => material.id === "concrete-slab" ? paintedSlab : material) : materials;
   const assets = { "washroom.glb": glb };
   for (const name of ["textures/concrete-plain.png", "textures/concrete-fine-sand.png"]) assets[name] = readFileSync(resolve(examples, name));
   const project = {
@@ -50,7 +60,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { batches = t
     ...(texelDensity ? { texelDensity } : {}), inspection: "final", mapping: "world", domain: [1, 1], edges: [], gravity: [0, 0, -1],
     base: { kind: "swatch" }, target: { scope: "mesh", enabled: false },
     models: [{ id: "washroom", kind: "glb", name: "washroom.glb" }],
-    materials: materials.map(material => ({ ...material, seed: 7, meshes: material.meshes.filter(mesh => batches || mesh !== "bolt").map(identity) })),
+    materials: chosen.map(material => ({ ...material, seed: 7, meshes: material.meshes.filter(mesh => batches || mesh !== "bolt").map(identity) })),
     ...(batches ? { batches: buildBatches().map(batch => ({ ...batch, mesh: identity(batch.mesh) })) } : {}),
     assets: Object.fromEntries(Object.entries(assets).map(([name, bytes]) => [name, Buffer.from(bytes).toString("base64")])),
   };
@@ -58,7 +68,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { batches = t
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { glb, project } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128));
+  const { glb, project } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128), { painted: process.env.PAINTED === "1" });
   mkdirSync(out, { recursive: true });
   writeFileSync(resolve(out, "washroom.glb"), glb);
   writeFileSync(resolve(out, "washroom.studio.json"), JSON.stringify(project, null, 2) + "\n");

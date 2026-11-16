@@ -47,6 +47,91 @@ pub struct Material {
     /// in order. Exported as `extras.materialSpec`; renderers without support ignore them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub live: Vec<LiveOperation>,
+    /// How the material is drawn; absent is `lit`. Exported in `extras.materialSpec.shading`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shading: Option<Shading>,
+    /// The material's per-pixel program, delivered only for a material that declares live
+    /// inputs (`shading: painted`). The baked maps above stay the fallback a renderer without
+    /// it shows. Exported in `extras.materialSpec.program`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub program: Option<LiveProgram>,
+}
+
+/// How a material is drawn: `lit` by the scene's lights, or `painted`, whose program's color
+/// reaches the screen without the light loop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Shading {
+    #[default]
+    Lit,
+    Painted,
+}
+
+/// A material's generated fragment program, as a renderer binds and runs it per pixel: GLSL ES
+/// 3.00 that declares its uniforms and `void ms_evaluate()`. Before calling it the host sets the
+/// sample globals (`ms_world`, `ms_object`, `ms_normal`, `ms_uv`, `ms_surface`, `ms_footprint`,
+/// `ms_uv_footprint`), declares and sets the render inputs `inputs` lists, and sets
+/// `ms_cast_shadow` where the source declares it; afterwards `painted` holds the color.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveProgram {
+    /// Version of this contract.
+    pub version: u32,
+    pub source: String,
+    /// The GLSL expression holding the drawn color (linear RGB) after `ms_evaluate()`.
+    pub painted: String,
+    /// How `ms_surface` is measured: `uv`, `object`, `world` or `anchored`.
+    pub mapping: String,
+    /// Physical size of the UV square for `uv` mapping, meters.
+    pub domain: [f64; 2],
+    /// The values of the uniforms the source declares for parameters and named seeds.
+    pub uniforms: Vec<ProgramUniform>,
+    /// What the host must supply, by name: render inputs (`sun`, `instance`, `vertex`, `time`,
+    /// `field:<name>`) and the sample inputs the program reads (`world`, `normal`, ...).
+    pub requires: Vec<String>,
+    /// The render-only symbols the host declares or binds (see `ProgramInput`).
+    pub inputs: Vec<ProgramInput>,
+}
+
+/// One uniform value of a delivered program: `float`, `vec2`, `vec3`, `bool` (0 or 1) or `uint`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramUniform {
+    pub uniform: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub value: Vec<f64>,
+}
+
+/// A render-only input of a delivered program: a uniform the host binds, a varying it declares
+/// and sets, or a scene field's texture and rectangle.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramInput {
+    pub symbol: String,
+    /// `uniform`, `instance`, `vertex`, `derived` or `field`.
+    pub kind: String,
+    pub glsl: String,
+    /// For a field, the scene field it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// For a named attribute, the GLSL value to read where the drawn mesh has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+}
+
+impl LiveProgram {
+    pub const VERSION: u32 = 1;
+    /// Whether the program states what a host needs: its version, a source, finite uniforms.
+    pub fn valid(&self) -> bool {
+        self.version == Self::VERSION
+            && self.source.contains("void ms_evaluate()")
+            && !self.painted.is_empty()
+            && self.domain.iter().all(|v| v.is_finite() && *v > 0.)
+            && self.uniforms.iter().all(|uniform| {
+                !uniform.uniform.is_empty() && uniform.value.iter().all(|v| v.is_finite())
+            })
+    }
 }
 
 /// One live renderer operation and its arguments.
@@ -121,6 +206,8 @@ impl Default for Material {
             base_color_factor: None,
             emissive_factor: None,
             live: Vec::new(),
+            shading: None,
+            program: None,
         }
     }
 }
@@ -251,6 +338,15 @@ impl Material {
             .any(|path| path.trim().is_empty())
         {
             return Err(error("Texture channels must name a companion asset."));
+        }
+        if material
+            .program
+            .as_ref()
+            .is_some_and(|program| !program.valid())
+        {
+            return Err(error(
+                "A delivered program needs its version, a source with ms_evaluate, a painted color and finite uniforms.",
+            ));
         }
         Ok(())
     }

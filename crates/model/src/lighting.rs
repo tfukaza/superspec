@@ -148,6 +148,19 @@ mod tests {
     }
 
     #[test]
+    fn painted_finishing_is_a_scene_setting_written_only_when_changed() {
+        let json = serde_json::to_value(Lighting::default()).unwrap();
+        assert!(json.get("painted").is_none(), "{json}");
+        let read = from_json(r#"{"version":1,"painted":{"toneMapping":true}}"#).unwrap();
+        assert!(read.painted.tone_mapping && read.painted.ambient_occlusion);
+        assert_eq!(
+            serde_json::to_value(&read).unwrap()["painted"],
+            json!({"toneMapping": true, "ambientOcclusion": true})
+        );
+        assert!(from_json(r#"{"version":1,"painted":{"tint":1}}"#).is_err());
+    }
+
+    #[test]
     fn a_scene_without_a_record_delivers_no_lighting_key() {
         let mut scene = Scene::empty(1, "test");
         let manifest = serde_json::to_value(&scene.manifest).unwrap();

@@ -820,6 +820,7 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
             if let Some(mode) = material.alpha_mode {
                 entry["alphaMode"] = json!(mode);
             }
+            let mut spec = serde_json::Map::new();
             if !material.live.is_empty() {
                 // Live renderer operations travel with the portable PBR material; texture
                 // arguments name glTF textures on UV0.
@@ -853,7 +854,19 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
                         "requires": operation.requires, "arguments": arguments,
                     }));
                 }
-                entry["extras"] = json!({ "materialSpec": { "version": 1, "live": live } });
+                spec.insert("live".into(), json!(live));
+            }
+            // A painted material keeps its PBR maps as the fallback any glTF consumer shows; the
+            // shading model and the per-pixel program are for a SuperSpec runtime.
+            if let Some(shading) = material.shading {
+                spec.insert("shading".into(), json!(shading));
+            }
+            if let Some(program) = &material.program {
+                spec.insert("program".into(), json!(program));
+            }
+            if !spec.is_empty() {
+                spec.insert("version".into(), json!(1));
+                entry["extras"] = json!({ "materialSpec": spec });
             }
             material_indices.insert(id, materials.len());
             materials.push(entry);
