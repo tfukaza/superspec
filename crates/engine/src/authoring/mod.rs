@@ -2,6 +2,7 @@
 mod item;
 mod layout;
 pub(crate) mod material;
+pub mod occlusion;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
