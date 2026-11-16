@@ -2,6 +2,7 @@
 pub mod architecture;
 pub mod composition;
 pub mod instances;
+pub mod lighting;
 pub mod review;
 pub mod theme;
 pub mod updates;
@@ -72,6 +73,9 @@ pub struct Manifest {
     pub validation: Option<validation::Report>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lightmap: Option<LightmapAtlas>,
+    /// The scene's resolved lighting record; absent means the shipped default look.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lighting: Option<lighting::Lighting>,
     pub diagnostics: Vec<Diagnostic>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<review::Finding>,
@@ -164,6 +168,7 @@ impl Scene {
                 navigation_validation: "not-run",
                 validation: None,
                 lightmap: None,
+                lighting: None,
                 diagnostics: vec![],
                 reviews: vec![],
                 sign_plans: vec![],

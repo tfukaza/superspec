@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "exposure": 1.0,
+  "toneMapping": "aces",
+  "environment": { "source": "studio", "intensity": 0.35, "rotation": 0.0 },
+  "ambient": {
+    "sky": [1.0, 1.0, 1.0],
+    "ground": [0.184474994500441, 0.184474994500441, 0.13843161503245183],
+    "intensity": 0.65
+  },
+  "ambientOcclusion": { "enabled": true, "radius": 0.35, "intensity": 2.0, "thickness": 0.5 },
+  "lights": [
+    {
+      "id": "sun",
+      "role": "sun",
+      "kind": "directional",
+      "direction": [-0.30304576336566325, -0.5050762722761054, 0.8081220356417685],
+      "color": [1.0, 0.8631572134541023, 0.7083757798916868],
+      "intensity": 3.0,
+      "castsShadow": true,
+      "shadow": {
+        "style": "illustration",
+        "softness": 0.012,
+        "spread": 0.025,
+        "maxSoftness": 0.06,
+        "darkness": 0.25,
+        "tint": [0.028426039504420793, 0.1589608350608804, 0.7454042095403874],
+        "tintAlt": [0.04970656598412723, 0.07818742180518633, 0.6866853124353135],
+        "tintStrength": 0.22,
+        "wrap": 0.3,
+        "noise": { "scale": 1.1, "edge": 0.07, "amount": 0.6, "seed": 7 }
+      }
+    }
+  ]
+}
