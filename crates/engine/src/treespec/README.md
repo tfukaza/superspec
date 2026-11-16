@@ -30,14 +30,14 @@ ground. Angles in definitions are degrees.
 slot (`blade`, `bark`, `leaf`) and named per-vertex attributes: `scalars` and `vectors`,
 one value per vertex. `InstanceBatch` is a mesh index, one affine transform per instance
 (three basis columns and a translation) and named per-instance `scalars` and `vectors`.
-These are plain structs; nothing converts them to the portable record yet. Against
-`superspec_model::batches::InstanceBatch` as drafted on 2026-11-16: `mesh` and
-`transforms` map to its mesh and `placements`; four scalars fit its `values` (suggested:
-`random`, `threshold`, `variation`, `bendWeight`); `root` is the placement's translation;
-`tints` would be filled by the look profile from `variation`. The per-instance vectors
-`shadeNormal`, `groundNormal` and `pivot` have no slot there, and neither have the
-per-vertex attributes: those need the named vertex inputs of roadmap step 1D.2 and a
-second per-instance vector.
+`batches.rs` converts both to the portable `superspec_model::batches::InstanceBatch`: the
+transform becomes a placement, and the named attributes keep their names per vertex and per
+instance. A grass batch also carries `tile`, the index of each instance's tile in
+`GrassPatch::tiles` (a tile's instances are consecutive). `batches::grass_levels` gives every
+level of a patch, each batch with a foliage look (`superspec_types::batch::Foliage`: the
+shader family, the level's `distance` and `keep`, the patch's `far`, the recipe and the
+family parameters), which is how a renderer draws grass with its fixed shader families
+(roadmap stage 6; `browser/renderer/foliage.ts`).
 
 | Name | On | Meaning | Painted-material input |
 | --- | --- | --- | --- |
@@ -147,3 +147,16 @@ second opens each in the built Material Studio and saves pictures beside them, t
 the grass strip and the shrub to the washroom scene. The GLBs carry vertex colours
 derived from `heightRatio`, `variation`, `random` and light on `shadeNormal`; that is a
 stand-in for painted materials, not their design.
+
+Painted grass (roadmap stage 6) is the washroom's lawn, drawn by the grass shader families
+with a painted recipe:
+
+```bash
+cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_washroom_lawn
+BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist" node tests/grass-washroom-browser.mjs
+```
+
+The first writes `washroom-lawn.json` (the lawn's ground and the meadow grown on it, every
+level with its foliage look); `tests/studio/washroom/build.mjs` adds both to the washroom
+when asked for grass. The second measures and pictures both profiles under
+`generated/verification/grass/`.

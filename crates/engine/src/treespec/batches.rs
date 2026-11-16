@@ -174,6 +174,11 @@ fn local(
     (local, scalars, vectors)
 }
 
+/// The per-instance scalar a grass batch carries with the index of its instance's tile in
+/// `GrassPatch::tiles`: a tile's instances are consecutive, so a renderer can cull and choose a
+/// level per tile.
+pub const TILE: &str = "tile";
+
 /// Appends the first `count` instances of a generated batch, moved by `offset`.
 fn extend(
     target: &mut InstanceBatch,
@@ -237,8 +242,8 @@ fn batch(id: String, object: &str, mesh: &FoliageMesh, paint: Option<&Paint<'_>>
 }
 
 /// One level of a grass patch: a batch per clump variant that has instances, every tile's
-/// instances of the variant together, in tile order. Identities are
-/// `<patch>/clump-<variant>/lod<level>`.
+/// instances of the variant together, in tile order, each with its tile's index ([`TILE`]).
+/// Identities are `<patch>/clump-<variant>/lod<level>`.
 pub fn grass(
     patch: &GrassPatch,
     level: usize,
@@ -258,15 +263,52 @@ pub fn grass(
             mesh,
             paint,
         );
-        for source in patch.batches().filter(|batch| batch.mesh == variant) {
+        for (tile, source) in patch.tiles.iter().enumerate().flat_map(|(index, tile)| {
+            tile.batches
+                .iter()
+                .filter(|batch| batch.mesh == variant)
+                .map(move |batch| (index, batch))
+        }) {
             let drawn = GrassTile::drawn(source, lod.keep);
             extend(&mut converted.batch, source, drawn, offset, paint)?;
+            converted
+                .batch
+                .scalars
+                .entry(TILE.into())
+                .or_default()
+                .extend(std::iter::repeat_n(tile as f32, drawn));
         }
         if !converted.batch.placements.is_empty() {
             batches.push(converted);
         }
     }
     Ok(batches)
+}
+
+/// Every level of a grass patch ([`grass`]), each batch carrying `look` as its foliage look with
+/// the level's own `level`, `distance` and `keep` and the patch's identity: what a renderer needs
+/// to draw the patch with its foliage shader families, choosing a level per tile.
+pub fn grass_levels(
+    patch: &GrassPatch,
+    offset: V3,
+    look: &superspec_model::batches::Foliage,
+    paint: Option<&Paint<'_>>,
+) -> Result<Vec<FoliageBatch>, String> {
+    let mut all = vec![];
+    for (level, lod) in patch.lods.iter().enumerate() {
+        let mut found = grass(patch, level, offset, paint)?;
+        for converted in &mut found {
+            converted.batch.foliage = Some(superspec_model::batches::Foliage {
+                patch: patch.id.clone(),
+                level: level as u32,
+                distance: lod.distance,
+                keep: lod.keep,
+                ..look.clone()
+            });
+        }
+        all.extend(found);
+    }
+    Ok(all)
 }
 
 /// One level of a plant: its bark meshes as batches of one instance each (`<plant>/trunk`,
@@ -348,7 +390,7 @@ pub fn project_document(batches: &[FoliageBatch]) -> Value {
                         instance
                     })
                     .collect();
-                json!({
+                let mut document = json!({
                     "id": batch.id, "objectId": batch.object_id, "collision": batch.collision,
                     "mesh": {
                         "positions": flat(&mesh.positions), "normals": flat(&mesh.normals),
@@ -358,7 +400,11 @@ pub fn project_document(batches: &[FoliageBatch]) -> Value {
                     },
                     "instances": instances,
                     "scalars": batch.scalars, "vectors": named(&batch.vectors),
-                })
+                });
+                if let Some(foliage) = &batch.foliage {
+                    document["foliage"] = json!(foliage);
+                }
+                document
             })
             .collect(),
     )

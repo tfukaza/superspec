@@ -350,7 +350,105 @@ What exists, against the lists above:
 Needed next from other stages: the portable instanced batch and `InstancedMesh` branch
 (phase 2), named vertex and instance inputs and `sampleField` (1D), the painted shading
 model and `shadeBand` (1C), and the wind and rejection vertex stages of phase 4's
-renderer item.
+renderer item. (All done since; phase 4's renderer is the prototype below.)
+
+### Phase 4: painted grass prototype (roadmap stage 6, 2026-11-16)
+
+Status: prototype, implemented and checked; unreviewed.
+
+What exists:
+
+- **Foliage look on a batch.** `superspec_types::batch::Foliage` (`foliage` on a project batch, the model's
+  `InstanceBatch` and `Batch`, the packet's `SceneBatch.foliage`, and the instanced node's extras in a GLB): a family
+  (`grass`, the only one), the patch it belongs to, its level of detail with the camera `distance` it starts at and the
+  share `keep` of instances it holds, the patch's `far`, the profile (`painted` or `lit`), the project material that
+  colors it, and the parameters of each family (`bend`, `wind`, `rejection`, `tip`). Unknown families and fields are
+  refused (`deny_unknown_fields`), values are range-checked when the batch meets its scene, and a batch without a look
+  serializes as before. TreeSpec's `batches::grass` now gives each instance its `tile`, and `batches::grass_levels` emits
+  every level with its look.
+- **Renderer** (`browser/renderer/foliage.ts`, wired in `scene.ts`): the fixed families. *Bend* is a static lean about
+  each blade's root toward a stable heading; *wind* a rigid lean about the root by a gust field travelling over world XY
+  with `programTime` (the time-driven render mode) plus a per-blade flutter, after the reference's illustration grass;
+  *rejection* drops whole blades in the vertex stage (collapsed outside the clip volume). Painted profile: an unlit
+  `MeshBasicMaterial` that follows the scene's painted finishing; lit: `MeshStandardMaterial` with the shadow style.
+- **Per-blade color in the vertex stage.** The look's recipe (here `painted-grass.material.ts`) is the same generated
+  GLSL as any program, included in the vertex shader with screen derivatives defined as zero, evaluated once per vertex
+  with every input at the blade's root (`world` and `placedWorld` the root, `normal` the ground normal there,
+  `instanceRoot` the clump origin) and only for blades that survive rejection. The sun's cast shadow at the root is read
+  from the shadow map in the vertex stage and folded into `shadeBand`, whose result the families keep (`msFoliageBand`)
+  for the per-pixel tip highlight, which is the only per-pixel term. Lit: the recipe's base color as albedo.
+- **Optimizations of the list above.** (1) Rejection over the stable candidate set: a blade is kept by its stable
+  `random` against a share that falls from 1 at the shade boundary to 0 at `rejection.boundary` meters; moving the sun
+  changes no instance data. (2) The boundary-distance field (`FoliageBoundary`): the recipe evaluated at the ground point
+  under each texel of the ground fields' rectangle (a world-position target added to `GroundFields`), its band's 0.5
+  contour seeded and jump-flooded into meters; remade only when the sun, its shadow map, the ground or the recipe's
+  values change. (3) Per-blade color as above. (4) Per-tile culling and levels: tiles are the instances' `tile` runs;
+  each frame tiles are frustum-culled and given the level their distance has reached, and the instances of the tiles a
+  level draws are packed to the front of its buffers only when that choice changes (a level is one draw call per pass);
+  within a level instances thin by `threshold` toward the next level's `keep`, the last toward 0 at `far`. (5) Nothing
+  past `far`; levels step 12, 3 and 1 segments. (6) The grazing term keeps a share where the view runs along the ground.
+  (7) Clumps with per-vertex roots were already there.
+- **Terrain patch.** The washroom had no ground outside its slab, so the test adds one: `buildProject(..., { grass })`
+  adds a lawn (an L of rolling ground around the room's open sides) and the meadow grown on it, from one TreeSpec
+  document (`write_washroom_lawn`). Without it the washroom GLB and project are byte-identical (checked against `HEAD`).
+
+Checks (2026-11-16, RTX 5060 Ti through ANGLE D3D11, 1440 by 1000 page, 256 px textures, ambient occlusion off unless
+said; `tests/grass-washroom-browser.mjs`, report in `generated/verification/grass/washroom-grass.json`):
+
+- The lawn: 5,964 candidates, 3,349 clumps, 24,262 blades at level 0, 16 tiles, 12 batches (4 variants at 3 levels),
+  generated natively in 2 ms. The Wasm build delivers every clump at level 0 and each level's share; the native CLI's GLB
+  carries the 12 looks in its instancing nodes' extras.
+- Steady frame, GPU time (timer queries), median with the grass and without it: framed (the Studio's own framing,
+  levels 1 and 2) painted 0.12 / 0.12 ms, lit 0.13 / 0.14 ms; close (levels 0 and 1, 2,023 instances, 14,671 candidate
+  blades) painted 0.58 to 0.71 / 0.32 to 0.39 ms with 2,224 blades kept, lit 0.81 to 0.83 / 0.33 to 0.34 ms with 9,514
+  (two runs); low (15 of 16 tiles, 18,212
+  candidates) painted 0.53 / 0.18 ms with 4,408 kept (2,007 by the grazing term). With wind in the time-driven mode the
+  GPU time is the same within noise (0.55 and 0.79 ms close). The grass adds 8 draw calls (21 against 13: 4 variants at
+  the 2 levels in view). With ambient occlusion on, close: painted 2.47 / 2.29 ms, lit 2.66 / 2.21 ms (noisier).
+- Cold compile against steady: a profile's programs compiled the first time take 90 to 109 ms (painted) and 293 to
+  337 ms (lit) in a fresh browser; the page then draws a steady frame in the times above. Page time per frame is 0.3 to
+  0.6 ms.
+- Moving the sun (54, 62, 47, 33 degrees): 1.2 to 2.9 ms of page time for `setLighting` and two frames, of which the
+  boundary field is 0.06 to 0.27 ms of GPU time (made twice per move: once for the new sun, once more after the
+  frame that remakes the shadow map); no instance buffer was rewritten (no re-scatter, no re-pack), and the input and
+  draft revisions and the scene bake were unchanged. The blades kept follow the boundary (0, 448, 0 and 632 at the
+  framed view: a high sun lights every slope of the lawn and a low one shades it).
+- Frame-time budget for this scene on this GPU: grass at most 0.5 ms (painted) and 0.6 ms (lit) of GPU time added
+  to a frame at the close view, at most 12 added draw calls, a sun move at most 0.3 ms of GPU time and no re-scatter,
+  and at most 400 ms to compile a profile cold.
+- Pictures: `washroom-grass-{painted,lit}-{framed,close}.png` and `washroom-grass-painted-low.png` (and `-ao` ones).
+- `superspec-types` (foliage ranges), `superspec-model` (a look is read with its defaults, delivered beside the batch
+  and refused when unknown or out of range), `treespec_batches` (tiles and levels), `tests/browser/rust-batches.test.ts`
+  (decoding and refusing looks); `npm run check:architecture`; `bench_fingerprint` identities unchanged
+  (`ce6e3a55...`, `b6b04aec...`); `PAINTED=1 node tests/material-washroom-browser.mjs` (the painted slab's pixel counts
+  as recorded in stage 5), `tests/live-program-browser.mjs` and `tests/treespec-batches-browser.mjs` pass.
+
+Assumptions made without review:
+
+- **The look travels on the batch, its recipe by project material id.** `Foliage.material` names a project material (one
+  assigned to no mesh is allowed and bakes nothing), resolved in the Studio from the project's shading; a viewer of a
+  delivered packet alone has no program for it and draws the families with a neutral green. Delivering the recipe's
+  program for foliage (like a painted material's `program`) is not built. The GLB carries the look in the instancing
+  node's extras only, not on expanded instances.
+- **Blades take the ground's paint and band at their roots, the reference's design, by convention.** The grass recipe
+  reads `ground.color` and `ground.normal` at `placedWorld` and repeats the lawn's band parameters; nothing checks that
+  the two recipes agree. The vertex stage has no screen derivatives, so a band's softness in pixels is dropped there.
+- **Cast shadows at the root come from three.js's shadow map with nine plain taps**, not the scene's styled shadow
+  (which needs screen derivatives); edges of cast shadows on the ground and on blades differ by the style's softness and
+  edge noise. Foliage casts no shadow (its roots would shade themselves) and is left out of ambient occlusion's depth and
+  normals (its families do not run there); occlusion still multiplies the finished image.
+- **The boundary is the 0.5 contour of the recipe's band** at the ground fields' resolution (256 texels on the longer
+  side, 2.7 cm here), made from the ground the scene fields use (`findGround` or `?ground=`); one boundary per scene,
+  from the first patch's recipe. A recipe without `shadeBand` has only cast-shadow boundaries.
+- **Rejection parameters are the look's, defaults after the Blender study**: 22 cm from the boundary, grazing within
+  15 degrees of edge-on keeping half, no fill. The painted profile keeps 10 to 25 percent of candidates in these views.
+- **Levels:** a tile draws one level, chosen by the nearest point of its bounds; the meadow's suggested distances were
+  shortened for the washroom (7 and 14 m, `far` 22 m). Thinning by `threshold` inside a level makes the change gradual,
+  but a tile still switches meshes at once (no cross-fade). Survivors are widened per level (TreeSpec), not continuously.
+- **Profiles:** the profile is the batch's, or the page's `?foliage=lit|painted` (`RustScene.setFoliageProfile` in
+  tests). The lit profile lights blades by the clump's shade normals; the lawn under it stays painted.
+- **Measurement:** blades kept are counted on the CPU by repeating the vertex stage's tests against the boundary field
+  read back (`RustScene.foliageState`); the GPU reports nothing about what it rejected.
 
 ## Open decisions
 

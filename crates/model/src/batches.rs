@@ -35,8 +35,8 @@ use crate::{Scene, instances::LocalMesh};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub use superspec_types::batch::{
-    Collision, MAX_BATCH_INDICES, MAX_BATCH_VERTICES, MAX_BATCHES, MAX_INSTANCES, PLACEMENT_FLOATS,
-    Placement, basis, place,
+    Collision, Foliage, MAX_BATCH_INDICES, MAX_BATCH_VERTICES, MAX_BATCHES, MAX_INSTANCES,
+    PLACEMENT_FLOATS, Placement, basis, place,
 };
 use superspec_types::{architecture::V3, diagnostic::SourceLocation};
 
@@ -67,6 +67,8 @@ pub struct InstanceBatch {
     /// Named per-vertex scalars and vectors of the batch's mesh: one entry per vertex.
     pub vertex_scalars: BTreeMap<String, Vec<f32>>,
     pub vertex_vectors: BTreeMap<String, Vec<[f32; 3]>>,
+    /// How a renderer draws the batch as foliage (shader family and parameters), when it is some.
+    pub foliage: Option<Foliage>,
 }
 
 impl Default for InstanceBatch {
@@ -93,6 +95,7 @@ impl Default for InstanceBatch {
             vectors: BTreeMap::new(),
             vertex_scalars: BTreeMap::new(),
             vertex_vectors: BTreeMap::new(),
+            foliage: None,
         }
     }
 }
@@ -157,6 +160,9 @@ pub struct Batch {
     /// Bounds of every instance in the scene: the union of the placed local bounds (their eight
     /// corners each), so conservative for rotated instances and never too small.
     pub bounds: [V3; 2],
+    /// How a renderer draws the batch as foliage; absent for every other batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub foliage: Option<Foliage>,
 }
 
 /// Lengths of [`Buffers`], stated in the manifest so a packet's payload can be measured.
@@ -480,6 +486,9 @@ impl Scene {
             return Err(fail("its template mesh identity is invalid."));
         }
         mesh.validate().map_err(|message| fail(&message))?;
+        if let Some(foliage) = &batch.foliage {
+            foliage.validate().map_err(|message| fail(&message))?;
+        }
         // Named attributes, in delivery order, into a pool of their own.
         let mut attributes = vec![];
         let mut pool: Vec<f32> = vec![];
@@ -614,6 +623,7 @@ impl Scene {
             attributes,
             local_bounds,
             bounds: world,
+            foliage: batch.foliage.clone(),
         };
         let record = self.batches.push(
             record,
@@ -714,6 +724,8 @@ struct BatchDocument {
     vectors: BTreeMap<String, Vec<f32>>,
     mesh: MeshReference,
     instances: Vec<InstanceDocument>,
+    /// How a renderer draws the batch as foliage ([`Foliage`]).
+    foliage: Option<Foliage>,
 }
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -764,7 +776,8 @@ struct InstanceDocument {
 /// defaulting to zero and colors to white), which has no material.
 ///
 /// `objectId` defaults to the template's owner (or `id`); `rotation`, `scale`, `value` and `tint`
-/// are optional, the last two for every instance or none. Unknown fields are refused. The
+/// are optional, the last two for every instance or none. An optional `foliage` states how a
+/// renderer draws the batch as foliage ([`Foliage`]). Unknown fields are refused. The
 /// authoring engine's project ignores the field: a host that delivers the project reads it here,
 /// as it does the lighting record.
 pub fn of_project(document: &serde_json::Value) -> Result<Vec<ProjectBatch>, String> {
@@ -872,6 +885,7 @@ pub fn of_project(document: &serde_json::Value) -> Result<Vec<ProjectBatch>, Str
                     vectors: triples(document.vectors)?,
                     vertex_scalars,
                     vertex_vectors,
+                    foliage: document.foliage,
                 },
                 mesh,
             })
@@ -1246,6 +1260,62 @@ mod tests {
         let mut short = document;
         short["batches"][0]["mesh"]["normals"] = json!([0, 0, 1]);
         assert!(of_project(&short).unwrap_err().contains("per vertex"));
+    }
+
+    #[test]
+    fn a_foliage_look_is_read_with_its_defaults_and_delivered_beside_the_batch() {
+        let document = |foliage: serde_json::Value| {
+            json!({"batches": [{
+                "id": "grass",
+                "mesh": {"positions": [0, 0, 0, 1, 0, 0, 0, 1, 0], "normals": [0, 0, 1, 0, 0, 1, 0, 0, 1], "indices": [0, 1, 2]},
+                "instances": [{"translation": [1, 2, 3]}],
+                "foliage": foliage,
+            }]})
+        };
+        let given = document(
+            json!({"family": "grass", "patch": "lawn", "level": 1, "distance": 4, "keep": 0.5, "far": 30, "material": "painted-grass"}),
+        );
+        let found = of_project(&given).unwrap();
+        let foliage = found[0].batch.foliage.clone().unwrap();
+        assert_eq!(foliage.keep, 0.5);
+        assert_eq!(foliage.wind, superspec_types::batch::FoliageWind::default());
+        assert_eq!(
+            foliage.profile,
+            superspec_types::batch::FoliageProfile::Painted
+        );
+        let mut scene = Scene::empty(1, "test");
+        add_project(&mut scene, &given).unwrap();
+        assert_eq!(scene.manifest.batches[0].foliage.as_ref(), Some(&foliage));
+        let manifest = serde_json::to_value(&scene.manifest.batches[0]).unwrap();
+        assert_eq!(manifest["foliage"]["material"], "painted-grass");
+        assert_eq!(manifest["foliage"]["rejection"]["grazingKeep"], 0.5);
+        // A batch without a look delivers the record it always did.
+        let mut plain = Scene::empty(1, "test");
+        let mut bare = given.clone();
+        bare["batches"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("foliage");
+        add_project(&mut plain, &bare).unwrap();
+        assert!(
+            serde_json::to_value(&plain.manifest.batches[0])
+                .unwrap()
+                .get("foliage")
+                .is_none()
+        );
+        // Families and fields are a closed set: shader code is not a parameter.
+        for refused in [
+            json!({"family": "custom", "patch": "lawn", "far": 30}),
+            json!({"family": "grass", "patch": "lawn", "far": 30, "shader": "void main() {}"}),
+            json!({"family": "grass", "patch": "lawn", "far": 30, "wind": {"gust": 1}}),
+        ] {
+            assert!(of_project(&document(refused)).is_err());
+        }
+        // Values out of range are refused when the batch meets its scene, and change nothing.
+        let mut scene = Scene::empty(1, "test");
+        let far = document(json!({"family": "grass", "patch": "lawn", "distance": 40, "far": 30}));
+        assert!(add_project(&mut scene, &far).unwrap_err().contains("far"));
+        assert!(scene.manifest.batches.is_empty());
     }
 
     /// A scene of two placed triangles, the second a collider with tangents.

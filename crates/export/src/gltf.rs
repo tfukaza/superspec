@@ -670,10 +670,14 @@ fn write_batches(
                 instance[custom(&attribute.name)] =
                     json!(buffer.attribute(values, attribute.components, false, None)?);
             }
+            let mut extras = json!({"batchId":batch.id,"objectId":batch.object_id,"source":batch.source,
+                "instances":count,"collidable":collidable});
+            // A foliage look travels beside the batch for a renderer that has its shader families.
+            if let Some(foliage) = batch.foliage.as_ref().filter(|_| visual) {
+                extras["foliage"] = json!(foliage);
+            }
             nodes.push(json!({"name":batch.id,"mesh":mesh,
-                "extensions":{(INSTANCING):{"attributes":instance}},
-                "extras":{"batchId":batch.id,"objectId":batch.object_id,"source":batch.source,
-                    "instances":count,"collidable":collidable}}));
+                "extensions":{(INSTANCING):{"attributes":instance}},"extras":extras}));
         } else {
             for (index, placement) in view
                 .placements

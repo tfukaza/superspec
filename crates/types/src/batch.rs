@@ -133,9 +133,279 @@ pub enum Collision {
     Instances,
 }
 
+/// How a renderer draws a batch of foliage (roadmap phase 4): one of a small fixed set of vertex
+/// and pixel shader families, chosen and tuned by parameters, never by shader code. The batch's
+/// own mesh, placements and named attributes are what the families read (TreeSpec's `pivot`,
+/// `bendWeight`, `heightRatio` and `random` per vertex; `root`, `groundNormal`, `threshold`,
+/// `variation` and `tile` per instance); a batch without them still draws, with neutral values.
+///
+/// Every level of detail of one field of foliage is its own batch with the same `patch`: a
+/// renderer draws, per tile, the level whose `distance` the tile has reached, thins instances by
+/// their stable `threshold` toward the next level's `keep`, and draws nothing past `far`.
+///
+/// `material` names a material of the producing project (not a delivered scene material) whose
+/// painted program colors the instances, evaluated once per vertex at the blade's root. Shading is
+/// the renderer's business: a renderer without the program shows the batch's own colors.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Foliage {
+    pub family: FoliageFamily,
+    /// The field of foliage this batch is one level of: 1 to 256 characters.
+    pub patch: String,
+    /// The level of detail, 0 the most detailed.
+    #[serde(default)]
+    pub level: u32,
+    /// Meters from the camera at which a tile starts drawing this level.
+    #[serde(default)]
+    pub distance: f64,
+    /// The share of the patch's instances this level holds, in (0, 1]: its instances are those
+    /// whose `threshold` is below it.
+    #[serde(default = "one")]
+    pub keep: f64,
+    /// Meters from the camera past which nothing of the patch is drawn.
+    pub far: f64,
+    /// A material of the producing project whose painted program colors the instances.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    #[serde(default)]
+    pub profile: FoliageProfile,
+    #[serde(default)]
+    pub bend: FoliageBend,
+    #[serde(default)]
+    pub wind: FoliageWind,
+    #[serde(default)]
+    pub rejection: FoliageRejection,
+    #[serde(default)]
+    pub tip: FoliageTip,
+}
+
+fn one() -> f64 {
+    1.
+}
+
+/// The shader family. Grass is the only one: ribbons that lean and sway about their roots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FoliageFamily {
+    Grass,
+}
+
+/// The look over the same geometry and instances: `painted` (unlit, the program's paint, blades
+/// kept near shade boundaries) or `lit` (physically lit, every blade drawn).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FoliageProfile {
+    #[default]
+    Painted,
+    Lit,
+}
+
+/// A static lean of each blade about its root, toward a stable random heading.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageBend {
+    /// Degrees, 0 to 80.
+    pub angle: f64,
+    /// 0 to 1: each blade's angle varies by up to this share.
+    pub randomness: f64,
+}
+impl Default for FoliageBend {
+    fn default() -> Self {
+        Self {
+            angle: 0.,
+            randomness: 0.4,
+        }
+    }
+}
+
+/// Wind driven by the renderer's clock: a rigid lean of each blade about its root by a gust field
+/// that travels over the world's XY plane, plus a small flutter per blade.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageWind {
+    /// Degrees counterclockwise from +X that the wind blows toward.
+    pub azimuth: f64,
+    /// The strongest lean, degrees, 0 to 60. Zero turns wind off.
+    pub angle: f64,
+    /// Meters across one gust, above 0.
+    pub scale: f64,
+    /// Meters per second the gusts travel, 0 or more.
+    pub speed: f64,
+    /// 0 to 1: how much the lean follows `azimuth` rather than the gust's own direction.
+    pub bias: f64,
+    /// Degrees of each blade's own flutter, 0 to 20.
+    pub flutter: f64,
+}
+impl Default for FoliageWind {
+    fn default() -> Self {
+        Self {
+            azimuth: 30.,
+            angle: 14.,
+            scale: 2.5,
+            speed: 1.2,
+            bias: 0.6,
+            flutter: 2.,
+        }
+    }
+}
+
+/// Which blades the vertex stage draws in the painted profile: those near the boundary of the
+/// ground's shade (a distance field the renderer remakes when the sun or the ground changes),
+/// those where the view grazes the ground, and a share everywhere. Rejection is per blade over the
+/// stable candidate set, so nothing is scattered again when the sun moves.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageRejection {
+    /// Meters from the shade boundary within which blades are kept, densest at the boundary.
+    /// Zero keeps every blade.
+    pub boundary: f64,
+    /// Share of blades kept everywhere, 0 to 1.
+    pub fill: f64,
+    /// Degrees either side of edge-on (the view along the ground) within which blades are kept.
+    pub grazing: f64,
+    /// Share of blades kept where the view grazes the ground, 0 to 1.
+    pub grazing_keep: f64,
+}
+impl Default for FoliageRejection {
+    fn default() -> Self {
+        Self {
+            boundary: 0.22,
+            fill: 0.,
+            grazing: 15.,
+            grazing_keep: 0.5,
+        }
+    }
+}
+
+/// The per-pixel part of the painted profile: the paint lifts toward the tip and, on the lit side
+/// of the band, fades toward a highlight color.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageTip {
+    /// Multiplier of the paint at the tip, 0.5 to 2.
+    pub lift: f64,
+    /// Linear RGB, 0 to 1.
+    pub highlight: [f64; 3],
+    /// How far the tip fades toward `highlight`, 0 to 1.
+    pub amount: f64,
+    /// Share of the blade's height where the fade starts, 0 to 1.
+    pub start: f64,
+}
+impl Default for FoliageTip {
+    fn default() -> Self {
+        Self {
+            lift: 1.08,
+            highlight: [0.62, 0.72, 0.28],
+            amount: 0.35,
+            start: 0.55,
+        }
+    }
+}
+
+impl Foliage {
+    /// Every number finite and within its stated range.
+    pub fn validate(&self) -> Result<(), String> {
+        let within = |value: f64, low: f64, high: f64, name: &str| {
+            if value.is_finite() && value >= low && value <= high {
+                Ok(())
+            } else {
+                Err(format!("Foliage {name} must be from {low} to {high}."))
+            }
+        };
+        if self.patch.is_empty() || self.patch.len() > 256 {
+            return Err("Foliage patch identity must be 1 to 256 characters.".into());
+        }
+        if self
+            .material
+            .as_ref()
+            .is_some_and(|id| id.is_empty() || id.len() > 64)
+        {
+            return Err("Foliage material identity must be 1 to 64 characters.".into());
+        }
+        within(f64::from(self.level), 0., 15., "level")?;
+        within(self.distance, 0., 1e6, "distance")?;
+        within(self.far, 0., 1e6, "far")?;
+        if self.far <= self.distance {
+            return Err("Foliage far must be beyond the level's distance.".into());
+        }
+        if !(self.keep.is_finite() && self.keep > 0. && self.keep <= 1.) {
+            return Err("Foliage keep must be above 0 and at most 1.".into());
+        }
+        within(self.bend.angle, 0., 80., "bend angle")?;
+        within(self.bend.randomness, 0., 1., "bend randomness")?;
+        within(self.wind.azimuth, -360., 360., "wind azimuth")?;
+        within(self.wind.angle, 0., 60., "wind angle")?;
+        within(self.wind.scale, 1e-3, 1e4, "wind scale")?;
+        within(self.wind.speed, 0., 100., "wind speed")?;
+        within(self.wind.bias, 0., 1., "wind bias")?;
+        within(self.wind.flutter, 0., 20., "wind flutter")?;
+        within(self.rejection.boundary, 0., 100., "rejection boundary")?;
+        within(self.rejection.fill, 0., 1., "rejection fill")?;
+        within(self.rejection.grazing, 0., 89., "rejection grazing")?;
+        within(self.rejection.grazing_keep, 0., 1., "rejection grazingKeep")?;
+        within(self.tip.lift, 0.5, 2., "tip lift")?;
+        for channel in self.tip.highlight {
+            within(channel, 0., 1., "tip highlight")?;
+        }
+        within(self.tip.amount, 0., 1., "tip amount")?;
+        within(self.tip.start, 0., 1., "tip start")?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foliage_refuses_what_is_out_of_range() {
+        // Parsing (defaults, unknown fields) is checked where documents are read: superspec-model.
+        let parsed = Foliage {
+            family: FoliageFamily::Grass,
+            patch: "lawn".into(),
+            level: 0,
+            distance: 0.,
+            keep: 1.,
+            far: 40.,
+            material: None,
+            profile: FoliageProfile::default(),
+            bend: FoliageBend::default(),
+            wind: FoliageWind::default(),
+            rejection: FoliageRejection::default(),
+            tip: FoliageTip::default(),
+        };
+        parsed.validate().unwrap();
+        for broken in [
+            Foliage {
+                far: 0.,
+                ..parsed.clone()
+            },
+            Foliage {
+                keep: 0.,
+                ..parsed.clone()
+            },
+            Foliage {
+                patch: String::new(),
+                ..parsed.clone()
+            },
+            Foliage {
+                wind: FoliageWind {
+                    angle: 90.,
+                    ..FoliageWind::default()
+                },
+                ..parsed.clone()
+            },
+            Foliage {
+                tip: FoliageTip {
+                    highlight: [0., f64::NAN, 0.],
+                    ..FoliageTip::default()
+                },
+                ..parsed.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
+    }
 
     #[test]
     fn placements_validate_and_place_points() {

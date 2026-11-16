@@ -131,8 +131,36 @@ fn a_grass_patch_and_a_shrub_become_valid_batches_that_place_what_was_generated(
     for name in ["root", "groundNormal"] {
         assert_eq!(first.vectors[name].len(), first.placements.len(), "{name}");
     }
-    for name in ["threshold", "variation", "random"] {
+    for name in ["threshold", "variation", "random", "tile"] {
         assert_eq!(first.scalars[name].len(), first.placements.len(), "{name}");
+    }
+    // Each instance names its tile, and a tile's instances are consecutive.
+    let tiles = &first.scalars[batches::TILE];
+    assert!(tiles.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert!(
+        tiles
+            .iter()
+            .all(|tile| (*tile as usize) < patch.tiles.len())
+    );
+    // Every level, each batch with the look and its own level, distance and keep.
+    let look: superspec_model::batches::Foliage = serde_json::from_value(
+        serde_json::json!({"family": "grass", "patch": "ignored", "far": 50, "material": "grass"}),
+    )
+    .unwrap();
+    let levels = batches::grass_levels(&patch, [0.; 3], &look, None).unwrap();
+    for (level, lod) in patch.lods.iter().enumerate() {
+        let of_level: Vec<_> = levels
+            .iter()
+            .filter(|b| b.batch.foliage.as_ref().unwrap().level as usize == level)
+            .collect();
+        assert!(!of_level.is_empty());
+        for converted in of_level {
+            let foliage = converted.batch.foliage.as_ref().unwrap();
+            assert_eq!((foliage.keep, foliage.distance), (lod.keep, lod.distance));
+            assert_eq!(foliage.patch, patch.id);
+            assert_eq!(foliage.material.as_deref(), Some("grass"));
+            assert!(converted.batch.id.ends_with(&format!("/lod{level}")));
+        }
     }
     for name in ["heightRatio", "bendWeight", "random", "element"] {
         assert_eq!(
@@ -336,4 +364,132 @@ fn write_washroom_batches() {
     let text = serde_json::to_vec(&batches::project_document(&all)).unwrap();
     std::fs::write(out.join("washroom-foliage.batches.json"), &text).unwrap();
     println!("washroom-foliage.batches.json: {} bytes", text.len());
+}
+
+/// The washroom's slab in plan (world XY after the model's quarter turn), which the lawn surrounds.
+const SLAB: [[f64; 2]; 2] = [[-0.55, -2.45], [2.45, 0.4]];
+
+/// The lawn outside the washroom (roadmap stage 6): an L of gently rolling ground in front of the
+/// room's open sides, 15 cm cells over x -0.55 to 6.35 and y -5.45 to 0.4 with the slab's cells
+/// left out. It sits 3 cm below the slab's top at the slab and rolls by up to 25 cm a meter away.
+fn lawn_ground() -> GroundMesh {
+    let (low, cell, columns, rows) = ([-0.55, -5.45], 0.15, 46usize, 39usize);
+    let height = |x: f64, y: f64| {
+        let dx = (SLAB[0][0] - x).max(x - SLAB[1][0]).max(0.);
+        let dy = (SLAB[0][1] - y).max(y - SLAB[1][1]).max(0.);
+        let away = ((dx * dx + dy * dy).sqrt() / 1.2).min(1.);
+        let roll = 0.6 * (1.1 * x + 0.3).sin() * (0.9 * y - 0.5).cos()
+            + 0.4 * (0.6 * x - 0.8 * y + 1.).sin();
+        -0.03 + 0.25 * roll * away * away * (3. - 2. * away)
+    };
+    let mut ground = GroundMesh {
+        positions: vec![],
+        indices: vec![],
+    };
+    for row in 0..=rows {
+        for column in 0..=columns {
+            let (x, y) = (low[0] + column as f64 * cell, low[1] + row as f64 * cell);
+            ground.positions.push([x, y, height(x, y)]);
+        }
+    }
+    let width = columns as u32 + 1;
+    for row in 0..rows as u32 {
+        for column in 0..columns as u32 {
+            let center = [
+                low[0] + (column as f64 + 0.5) * cell,
+                low[1] + (row as f64 + 0.5) * cell,
+            ];
+            if center[0] > SLAB[0][0]
+                && center[0] < SLAB[1][0]
+                && center[1] > SLAB[0][1]
+                && center[1] < SLAB[1][1]
+            {
+                continue;
+            }
+            let a = row * width + column;
+            ground
+                .indices
+                .extend([a, a + 1, a + width + 1, a, a + width + 1, a + width]);
+        }
+    }
+    ground
+}
+
+/// Writes the washroom's lawn (`washroom-lawn.json` in `TREESPEC_OUTPUT`, default
+/// `generated/verification/treespec`): the ground mesh and the meadow grown on it as instanced
+/// batches, every level of detail, each with the foliage look the renderer draws it with
+/// (painted, colored by the project's `painted-grass` material). `tests/studio/washroom/build.mjs`
+/// adds both to the washroom when asked for grass (`GRASS=1`).
+#[test]
+#[ignore = "writes the washroom lawn for the browser grass test"]
+fn write_washroom_lawn() {
+    let out = std::env::var_os("TREESPEC_OUTPUT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../generated/verification/treespec"),
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let ground = lawn_ground();
+    let mut definition = meadow();
+    // The washroom is seen from a few meters: its levels step at 7 and 14 m and stop at 22 m.
+    for (lod, distance) in definition.lods.iter_mut().zip([0., 7., 14.]) {
+        lod.distance = distance;
+    }
+    let started = std::time::Instant::now();
+    let patch = grass::generate(
+        &definition,
+        &GrassSite {
+            ground: ground.clone(),
+            mask: DensityMask::Uniform,
+        },
+        &|| false,
+    )
+    .unwrap();
+    let generated = started.elapsed();
+    let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+        "family": "grass", "patch": "lawn", "far": 22, "material": "painted-grass",
+    }))
+    .unwrap();
+    let mut levels = batches::grass_levels(&patch, [0.; 3], &look, None).unwrap();
+    for level in &mut levels {
+        level.batch.id = level.batch.id.replacen(&patch.id, "lawn", 1);
+        level.batch.object_id = "lawn".into();
+        level.batch.foliage.as_mut().unwrap().patch = "lawn".into();
+    }
+    let mut scene = Scene::empty(1, "test");
+    for FoliageBatch { batch, mesh } in &levels {
+        scene.add_batch(batch, mesh).unwrap();
+    }
+    let counts = scene.batches.counts();
+    // Every level draws a prefix of each tile's instances, and the tile index is consecutive.
+    for level in &levels {
+        let tiles = &level.batch.scalars[batches::TILE];
+        assert!(
+            tiles.windows(2).all(|pair| pair[0] <= pair[1]),
+            "{}",
+            level.batch.id
+        );
+    }
+    println!(
+        "lawn: {} candidates, {} clumps, {} blades at level 0, {} tiles; {} batches, {} instances over every level, {} mesh vertices; generated in {:.1} ms",
+        patch.stats.candidates,
+        patch.stats.instances,
+        patch.stats.blades,
+        patch.tiles.len(),
+        levels.len(),
+        counts.instances,
+        counts.vertices,
+        generated.as_secs_f64() * 1000.
+    );
+    let document = serde_json::json!({
+        "ground": {
+            "positions": ground.positions.iter().flatten().map(|v| *v as f32).collect::<Vec<_>>(),
+            "indices": ground.indices,
+        },
+        "stats": patch.stats,
+        "tiles": patch.tiles.len(),
+        "batches": batches::project_document(&levels),
+    });
+    let text = serde_json::to_vec(&document).unwrap();
+    std::fs::write(out.join("washroom-lawn.json"), &text).unwrap();
+    println!("washroom-lawn.json: {} bytes", text.len());
 }

@@ -29,6 +29,33 @@ export interface SceneBatch {
   attributes?: BatchAttribute[];
   /** Bounds of the mesh in its own space, and of every instance in the scene. */
   localBounds: [number[], number[]]; bounds: [number[], number[]];
+  /** How a renderer draws the batch as foliage (`superspec_types::batch::Foliage`); absent for every other batch. */
+  foliage?: FoliageLook;
+}
+/**
+ * A batch's foliage look (`superspec_types::batch::Foliage`): one of a fixed set of shader families with parameters,
+ * never shader code. Every level of one field of foliage is its own batch with the same `patch`. `material` names a
+ * material of the producing project whose painted program colors the instances. Angles are degrees, lengths meters.
+ */
+export interface FoliageLook {
+  family: "grass"; patch: string; level: number; distance: number; keep: number; far: number;
+  material?: string; profile: "painted" | "lit";
+  bend: { angle: number; randomness: number };
+  wind: { azimuth: number; angle: number; scale: number; speed: number; bias: number; flutter: number };
+  rejection: { boundary: number; fill: number; grazing: number; grazingKeep: number };
+  tip: { lift: number; highlight: [number, number, number]; amount: number; start: number };
+}
+/** Whether a delivered foliage look is one this viewer can draw: the stated family with every parameter finite. */
+export function validFoliage(look: unknown): look is FoliageLook {
+  const value = look as FoliageLook;
+  const numbers = (record: unknown, names: string[]) => typeof record === "object" && record !== null
+    && names.every(name => Number.isFinite((record as Record<string, unknown>)[name]));
+  return typeof value === "object" && value !== null && value.family === "grass" && typeof value.patch === "string" && value.patch.length > 0
+    && Number.isInteger(value.level) && value.level >= 0 && numbers(value, ["distance", "keep", "far"]) && value.keep > 0 && value.far > value.distance
+    && (value.material === undefined || typeof value.material === "string") && ["painted", "lit"].includes(value.profile)
+    && numbers(value.bend, ["angle", "randomness"]) && numbers(value.wind, ["azimuth", "angle", "scale", "speed", "bias", "flutter"]) && value.wind.scale > 0
+    && numbers(value.rejection, ["boundary", "fill", "grazing", "grazingKeep"]) && numbers(value.tip, ["lift", "amount", "start"])
+    && Array.isArray(value.tip.highlight) && value.tip.highlight.length === 3 && value.tip.highlight.every(Number.isFinite);
 }
 export interface BatchAttribute { name: string; domain: "instance" | "vertex"; components: number; start: number }
 /** `attributes` counts the floats of named attributes. */
@@ -277,6 +304,7 @@ function validateBatches(packet: ScenePacket, meshIds: ReadonlySet<string>, mate
       || vertices + batch.vertexCount > counts.vertices || elements + batch.indexCount > counts.indices || instances + batch.instanceCount > counts.instances
       || (batch.valueStart !== undefined && batch.valueStart !== values) || (batch.tintStart !== undefined && batch.tintStart !== tints)
       || !bounds(batch.localBounds) || !bounds(batch.bounds)) throw new Error("Invalid batch range or identity.");
+    if (batch.foliage !== undefined && !validFoliage(batch.foliage)) throw new Error("Invalid batch foliage look.");
     for (let i = elements; i < elements + batch.indexCount; i++) if (batches.indices[i] >= batch.vertexCount) throw new Error("Batch index exceeds its mesh.");
     for (let i = instances; i < instances + batch.instanceCount; i++) {
       const at = i * PLACEMENT_FLOATS, p = batches.placements;

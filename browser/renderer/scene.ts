@@ -17,6 +17,7 @@ import { SceneLighting, studioEnvironment } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 import { ItemOverlays, type HandleChange, type OverlayItem } from "./item-overlays.ts";
+import { FoliageView, type FoliageProfile } from "./foliage.ts";
 
 /** Builds a translucent inspection surface from Rust-owned navigation polygons. */
 function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
@@ -132,6 +133,9 @@ const EDIT_LOOK_REST_MS = 250;
 /** Minimal Z-up scene adapter. Owns GPU resources; all model geometry and materials arrive from Rust. */
 export class RustScene {
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
+  /** Foliage batches drawn by their shader families (foliage.ts); `?foliage=lit|painted` overrides each batch's profile. */
+  private readonly foliage = new FoliageView(this.renderer, new URLSearchParams(location.search).get("foliage"));
+  private foliageReported = "";
   private readonly scene = new THREE.Scene();
   private readonly environment: THREE.WebGLRenderTarget;
   private readonly view = parseView(new URLSearchParams(location.search));
@@ -172,11 +176,43 @@ export class RustScene {
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
+    // Foliage first: its tiles are culled and its levels chosen for this view (foliage.ts).
+    this.camera.updateMatrixWorld();
+    const foliage = this.foliage.update(this.models, this.camera, this.lights.sun, this.shadows);
     // Draw calls and triangles of the whole frame: the shadow pass, the scene and any passes after it.
     this.renderer.info.reset();
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);
     this.frameStats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
+    if (!foliage) { if (this.foliageReported) { delete this.host.dataset.foliage; this.foliageReported = ""; } return; }
+    // The boundary field follows the sun, its shadow map (made during the frame) and the ground: when it was made again,
+    // the next frame shows the blades it keeps.
+    if (this.foliage.afterFrame(this.groundFields?.ground() ?? null)) this.invalidate();
+    const stats = this.foliage.stats;
+    const changed = `${stats.packs}:${stats.boundaryMade}:${this.foliage.profileOverride}`;
+    if (changed !== this.foliageReported) {
+      this.foliageReported = changed;
+      this.host.dataset.foliage = JSON.stringify(this.foliage.describe());
+    }
+  }
+
+  /**
+   * Draws every foliage patch with `profile` (null: each batch's own) and resolves when its programs are compiled, with
+   * how long that took (tests and measurements: the cold compile of a profile).
+   */
+  async setFoliageProfile(profile: FoliageProfile | null): Promise<{ compileMs: number }> {
+    const made = this.foliage.setProfile(profile);
+    const started = performance.now();
+    const meshes = this.foliage.meshes();
+    await this.compileLooks(meshes.map(mesh => ({ mesh, geometry: mesh.geometry, material: mesh.material as THREE.Material }))).catch(() => { /* compiled at the first draw */ });
+    this.foliageReported = "";
+    this.invalidate();
+    return { compileMs: made.length ? performance.now() - started : 0 };
+  }
+
+  /** The foliage the view draws now, with the blades its vertex stage keeps counted on the CPU (tests and measurements). */
+  foliageState(): { described: ReturnType<FoliageView["describe"]>; blades: ReturnType<FoliageView["countDrawnBlades"]> } {
+    return { described: this.foliage.describe(), blades: this.foliage.countDrawnBlades(this.camera) };
   }
 
   /** Draw calls and triangles of the frame last drawn, every pass counted. */
@@ -200,7 +236,9 @@ export class RustScene {
    */
   setLighting(record: Lighting, stated?: unknown): void {
     this.lights.set(record, stated);
-    for (const mesh of this.models.children) { mesh.receiveShadow = this.shadows; mesh.castShadow = this.shadows && !mesh.userData.decal; }
+    // Foliage casts no shadow: its blades take the ground's shade at their roots (foliage.ts).
+    for (const mesh of this.models.children) { mesh.receiveShadow = this.shadows; mesh.castShadow = this.shadows && !mesh.userData.decal && !mesh.userData.foliage; }
+    this.foliage.invalidate();
     this.fitShadows();
     this.stateLighting();
     this.invalidate();
@@ -240,7 +278,9 @@ export class RustScene {
     // The lights, shadows and ambient occlusion of the shipped look, until a scene brings its own record (`setLighting`).
     // Inspection overlays are drawn in the image but cast and receive no occlusion.
     this.lights = new SceneLighting(this.renderer, this.scene, this.camera, this.environment.texture, new URLSearchParams(location.search),
-      () => [this.navigation, this.itemGuides, this.itemOverlays.group].filter((group): group is THREE.Group => group !== undefined));
+      // Foliage too: the occlusion's depth and normals are drawn without its shader families, so every candidate blade
+      // would stand there unbent; it is left out of them and drawn in the image as usual.
+      () => [...[this.navigation, this.itemGuides, this.itemOverlays.group].filter((group): group is THREE.Group => group !== undefined), ...this.foliage.meshes()]);
     this.scene.add(this.models);
     this.stateLighting();
     host.append(this.renderer.domElement);
@@ -426,9 +466,11 @@ export class RustScene {
           material.polygonOffsetFactor = -2;
           material.polygonOffsetUnits = -4;
         }
+        // A foliage batch is drawn by its shader families (foliage.ts); its recipe's program arrives with the scene's shading.
+        if (batch?.foliage && !stress) this.foliage.prepare(mesh as THREE.InstancedMesh, batch.foliage);
         // A delivered painted material is drawn by its program wherever this view has no shading of its own for it;
         // its baked maps are the fallback a renderer without the program shows.
-        if (definition?.program && descriptor.visible && !decorate) mesh.material = this.deliveredLook(material, definition.program, descriptor, batch !== undefined, geometry);
+        else if (definition?.program && descriptor.visible && !decorate) mesh.material = this.deliveredLook(material, definition.program, descriptor, batch !== undefined, geometry);
         mesh.name = descriptor.id;
         mesh.visible = descriptor.visible;
         mesh.userData.source = descriptor;
@@ -599,12 +641,21 @@ export class RustScene {
       if (bake) {
         const baker = this.bakerInstance ??= this.newBaker();
         for (const entry of prepared.values()) {
+          // A painted material is never shown with GPU-baked maps, so nothing bakes its program here.
+          if (entry.material.shader.painted) continue;
           if (entry.layers && !entry.stackError) baker.precompileStack((entry.plan ?? entry).material, { channels: entry.channels ?? {},
             layers: entry.layers.map(layer => ({ id: layer.id, shading: layer.material, uniforms: {}, reads: layer.reads, receiver: "" })) });
           else baker.precompileAtlas((entry.plan ?? entry).material);
         }
       }
       for (const mesh of meshes) {
+        // A foliage batch takes its look's recipe (a project material, often assigned to no mesh) into its shader families.
+        const foliage = mesh.userData.foliage as SceneBatch["foliage"];
+        if (foliage) {
+          const entry = foliage.material ? prepared.get(foliage.material) : undefined;
+          if (entry) made.push({ mesh, material: this.foliage.withProgram(mesh as THREE.InstancedMesh, { shading: entry.material, uniforms: entry.uniforms }) as THREE.MeshStandardMaterial, shaded: foliage.material! });
+          continue;
+        }
         // An instanced batch is shaded and baked as its template: the mesh it was made from, where that mesh stood.
         // The engine describes the template as it does every receiver, so the batch's one bake is the template's.
         const template = (mesh.userData.source as SceneBatch | undefined)?.template;
@@ -717,6 +768,8 @@ export class RustScene {
     const named = new URLSearchParams(location.search).get("ground");
     const ground = named ? meshes.find(mesh => mesh.name === named) : findGround(meshes);
     const made = ground ? (this.groundFields ??= new GroundFields(this.renderer)).make(this.scene, [ground]) : null;
+    // Foliage's boundary field is made from the same ground.
+    this.foliage.invalidate();
     for (const name of read) if (!made || !name.startsWith("ground.")) reportMissingField(name, "on screen");
     this.host.dataset.sceneFields = JSON.stringify({ ground: ground?.name ?? null, fields: [...read], missing: missingSceneFields(), ...(made ?? {}) });
   }
@@ -1534,6 +1587,7 @@ export class RustScene {
     this.itemOverlays.dispose();
     cancelAnimationFrame(this.frame);
     document.removeEventListener("visibilitychange", this.visibilityChanged);
+    this.foliage.dispose();
     this.budgetReadout?.remove();
     this.resize.disconnect(); this.controls.removeEventListener("change", this.invalidate); this.controls.dispose();
     this.renderer.domElement.removeEventListener("click", this.pick);

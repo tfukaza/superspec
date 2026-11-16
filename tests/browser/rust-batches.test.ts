@@ -106,6 +106,28 @@ test("malformed batches are refused before anything is uploaded", () => {
   assert.throws(() => decodePacket(packet().slice(0, -4)), /length/);
 });
 
+test("a batch's foliage look is decoded when it is one the viewer can draw, and refused otherwise", () => {
+  // The look as `superspec_types::batch::Foliage` serializes it with every default stated.
+  const look = {
+    family: "grass", patch: "lawn", level: 1, distance: 7, keep: 0.5, far: 22, material: "painted-grass", profile: "painted",
+    bend: { angle: 0, randomness: 0.4 }, wind: { azimuth: 30, angle: 14, scale: 2.5, speed: 1.2, bias: 0.6, flutter: 2 },
+    rejection: { boundary: 0.22, fill: 0, grazing: 15, grazingKeep: 0.5 }, tip: { lift: 1.08, highlight: [0.62, 0.72, 0.28], amount: 0.35, start: 0.55 },
+  };
+  const scene = decodePacket(packet(manifest => { manifest.batches![0].foliage = structuredClone(look) as never; }));
+  assert.deepEqual(scene.manifest.batches![0].foliage, look);
+  assert.equal(scene.manifest.batches![1].foliage, undefined);
+  const refused = (change: (foliage: Record<string, unknown>) => void) => assert.throws(() => decodePacket(packet(manifest => {
+    const foliage = structuredClone(look) as Record<string, unknown>;
+    change(foliage);
+    manifest.batches![0].foliage = foliage as never;
+  })), /foliage look/i);
+  refused(foliage => { foliage.family = "custom"; });
+  refused(foliage => { foliage.far = 5; });
+  refused(foliage => { foliage.profile = "toon"; });
+  refused(foliage => { (foliage.wind as Record<string, number>).scale = 0; });
+  refused(foliage => { (foliage.tip as Record<string, unknown>).highlight = [1, 1]; });
+});
+
 const fixtures = resolve("generated/batches");
 test("the Rust exporter's packet and update decode to the batch it describes", { skip: !existsSync(resolve(fixtures, "batches.lsp3")) && "no fixtures: run the export crate's batch tests with BATCH_FIXTURE_OUTPUT=generated/batches" }, () => {
   const owned = (name: string) => Uint8Array.from(readFileSync(resolve(fixtures, name))).buffer;

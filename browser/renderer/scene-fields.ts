@@ -79,6 +79,18 @@ void main() {
 const NORMAL_FRAGMENT = /* glsl */`
 varying vec3 vWorldNormal;
 void main() { gl_FragColor = vec4(normalize(vWorldNormal), 1.0); }`;
+const POSITION_VERTEX = /* glsl */`
+varying vec3 vWorldPosition;
+void main() {
+  vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPosition, 1.0);
+}`;
+const POSITION_FRAGMENT = /* glsl */`
+varying vec3 vWorldPosition;
+void main() { gl_FragColor = vec4(vWorldPosition, 1.0); }`;
+
+/** The ground as the last `GroundFields.make` drew it: its world points (alpha 1 where there is ground) and normals. */
+export interface GroundPlan { positions: THREE.Texture; normals: THREE.Texture; rect: THREE.Vector4; width: number; height: number }
 
 /**
  * The ground fields of a scene: `ground.color` and `ground.normal`, drawn from straight above over the ground meshes'
@@ -90,7 +102,14 @@ void main() { gl_FragColor = vec4(normalize(vWorldNormal), 1.0); }`;
 export class GroundFields {
   private color?: THREE.WebGLRenderTarget;
   private normal?: THREE.WebGLRenderTarget;
+  /** The ground's world points under each texel (not a scene field: foliage's boundary is made from them). */
+  private position?: THREE.WebGLRenderTarget;
+  private plan: GroundPlan | null = null;
   private readonly normals = new THREE.ShaderMaterial({ vertexShader: NORMAL_VERTEX, fragmentShader: NORMAL_FRAGMENT });
+  private readonly positions = new THREE.ShaderMaterial({ vertexShader: POSITION_VERTEX, fragmentShader: POSITION_FRAGMENT, side: THREE.DoubleSide });
+
+  /** The ground as last drawn, or null before any. */
+  ground(): GroundPlan | null { return this.plan; }
 
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly resolution = 256) {}
 
@@ -117,6 +136,7 @@ export class GroundFields {
     };
     this.color = target(this.color);
     this.normal = target(this.normal);
+    this.position = target(this.position);
     const camera = new THREE.OrthographicCamera(min[0], max[0], max[1], min[1], 0.01, bounds.max.z - bounds.min.z + 2);
     camera.position.set(0, 0, bounds.max.z + 1);
     camera.up.set(0, 1, 0);
@@ -156,6 +176,10 @@ export class GroundFields {
       this.renderer.setRenderTarget(this.normal);
       this.renderer.clear();
       this.renderer.render(scene, camera);
+      for (const mesh of ground) mesh.material = this.positions;
+      this.renderer.setRenderTarget(this.position);
+      this.renderer.clear();
+      this.renderer.render(scene, camera);
     } finally {
       programFieldPass.value = 0;
       ground.forEach((mesh, index) => { mesh.material = materials[index]; });
@@ -166,6 +190,7 @@ export class GroundFields {
     }
     setSceneField("ground.color", this.color.texture, min, max);
     setSceneField("ground.normal", this.normal.texture, min, max);
+    this.plan = { positions: this.position.texture, normals: this.normal.texture, rect: new THREE.Vector4(min[0], min[1], max[0], max[1]), width, height };
     return { min, max };
   }
 
@@ -186,7 +211,9 @@ export class GroundFields {
   dispose(): void {
     this.color?.dispose();
     this.normal?.dispose();
+    this.position?.dispose();
     this.normals.dispose();
+    this.positions.dispose();
   }
 }
 

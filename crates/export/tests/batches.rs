@@ -81,6 +81,7 @@ fn model(collision: Collision) -> Model {
             scalars: BTreeMap::from([("variation".into(), vec![0.1, 0.2, 0.3])]),
             vertex_scalars: BTreeMap::from([("heightRatio".into(), vec![0., 0.5, 1.])]),
             vertex_vectors: BTreeMap::new(),
+            foliage: None,
         }],
         materials: BTreeMap::from([(
             "steel".into(),

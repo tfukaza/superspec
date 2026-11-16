@@ -139,6 +139,11 @@ samples are evaluated one at a time.
   (its maps are). `superspec_export::live_report` names what an importer without the payload skips.
 - `tests/material_live.rs` covers these; `tests/live-program-browser.mjs` evaluates the generated GLSL
   on the CPU's sample grid and checks that the viewer binds each input.
+- Foliage (roadmap stage 6, `browser/renderer/foliage.ts`) evaluates a painted program in the vertex
+  stage, once per vertex at a blade's root: the same `source`, with screen derivatives defined as zero
+  (so a band's `softness` in pixels does not apply) and `shade_band` wrapped so the host keeps the band
+  it reached. The program itself has no vertex form and no foliage input: the host sets `world`,
+  `placedWorld` and `normal` to the root's.
 
 ## Recipe kinds: decals and weathering layers
 

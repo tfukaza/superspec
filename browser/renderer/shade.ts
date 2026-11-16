@@ -41,6 +41,15 @@ export function setPaintedFinishing(finishing: PaintedFinishing): void {
   }
 }
 
+/**
+ * Makes a material drawn with painted output follow the scene's painted finishing (`setPaintedFinishing`) from now on,
+ * as program materials with `shading: painted` do: foliage's painted profile (foliage.ts) is one.
+ */
+export function followPaintedFinishing(material: THREE.Material): void {
+  material.toneMapped = paintedFinishing.toneMapping;
+  paintedMaterials.add(new WeakRef(material));
+}
+
 /** A MaterialSpec program as GLSL (`Program::shader` in the engine), with what it needs bound. */
 export interface ProgramShader {
   source: string;

@@ -186,6 +186,12 @@ game runtime module for lights, shadow style and AO.
 
 Painted grass, then shrubs and trees, as in the roadmap's phases 4 and 5.
 
+- Stage 6, painted grass: **prototype done 2026-11-16, unreviewed**: foliage looks on instanced batches, the fixed
+  grass shader families (bend, wind, rejection), per-blade color from a painted recipe in the vertex stage, the
+  boundary-distance field, per-tile levels, and a lawn with grass added to the washroom. See
+  [tree-item-roadmap.md](tree-item-roadmap.md#phase-4-painted-grass-prototype-roadmap-stage-6-2026-11-16) for what
+  exists, the measurements and frame-time budget, and the assumptions.
+
 ### Later
 
 Baked stylized shadow masks for static scenes; placement by shadow; Kowloon

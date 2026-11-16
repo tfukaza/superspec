@@ -90,8 +90,31 @@ export function buildBatches() {
   return [{ id: "bolts", mesh: "bolt", collision: "none", instances }];
 }
 
-/** `batches: false` leaves out the bolt template, for the scene as it was before it had instanced batches. */
-export function buildMeshes({ batches = true } = {}) {
+/**
+ * The lawn's ground from its TreeSpec document (`washroom-lawn.json`, see build.mjs): world points (already in the
+ * scene's turned frame) and triangles, with smooth normals weighted by triangle area.
+ */
+function lawnGround(mesh, ground) {
+  const { positions, indices } = ground;
+  const normals = new Array(positions.length).fill(0);
+  for (let at = 0; at < indices.length; at += 3) {
+    const [a, b, c] = [indices[at], indices[at + 1], indices[at + 2]].map(index => positions.slice(index * 3, index * 3 + 3));
+    const face = cross([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    for (const index of [indices[at], indices[at + 1], indices[at + 2]]) for (let axis = 0; axis < 3; axis++) normals[index * 3 + axis] += face[axis];
+  }
+  for (let vertex = 0; vertex < positions.length / 3; vertex++) {
+    const normal = normals.slice(vertex * 3, vertex * 3 + 3);
+    mesh.vertex(positions.slice(vertex * 3, vertex * 3 + 3), Math.hypot(...normal) > 0 ? unit(normal) : Z);
+  }
+  mesh.indices.push(...indices);
+  return mesh;
+}
+
+/**
+ * `batches: false` leaves out the bolt template, for the scene as it was before it had instanced batches. `lawn` (a
+ * TreeSpec lawn document) adds its ground as the mesh `lawn`, last, so every other mesh keeps its place.
+ */
+export function buildMeshes({ batches = true, lawn = null } = {}) {
   const meshes = [];
   const mesh = (name, color) => { const created = new Mesh(name, color); meshes.push(created); return created; };
 
@@ -158,6 +181,7 @@ export function buildMeshes({ batches = true } = {}) {
   }
   // The bolt template, last, so every other mesh keeps its place in the model.
   if (batches) bolt(mesh("bolt", [0.4, 0.4, 0.4]), BOLT_ORIGIN);
+  if (lawn) lawnGround(mesh("lawn", [0.3, 0.48, 0.14]), lawn.ground);
   return meshes;
 }
 

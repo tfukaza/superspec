@@ -11,7 +11,7 @@ fixtures (a sink, valves, taps) are left out on purpose: they are a job for Item
 | `geometry.mjs` | Mesh helpers (boxes, bars, tubes, ducts, tori) and a GLB writer. |
 | `model.mjs` | The scene: 11 meshes, one per material receiver, in meters with Z up, and the bolts: one instanced batch of a twelfth mesh, the bolt template. |
 | `build.mjs` | Writes `generated/washroom/washroom.glb` and `washroom.studio.json`, a version 2 project. |
-| `materials/` | The one recipe the examples lack: bench wood. |
+| `materials/` | The recipes the examples lack: bench wood, and the painted slab, lawn and grass of the stage 5 and 6 tests. |
 | `../../material-washroom-browser.mjs` | Opens the project in the built Material Studio and times it. |
 
 ## Materials
@@ -31,6 +31,21 @@ benchmark, gives the slab `materials/painted-ground.material.ts` instead of conc
 (roadmap stage 5) whose shade boundary follows the sun of the lighting record, with the room's cast
 shadows folded in. The browser benchmark then moves the sun and checks that the boundary moves with no
 rebuild and no bake (it adds `gpuprobe` and `ao=off` to the page's query).
+
+## Lawn and painted grass
+
+The washroom had no ground outside its slab, so the grass test (roadmap stage 6) adds one: `buildProject(resolution,
+density, { grass: true })`, or `GRASS=1` for `build.mjs`, adds an L of gently rolling lawn around the room's open
+sides (mesh `lawn`, last in the model, 3 cm below the slab's top at the slab and rolling by up to 25 cm a meter away)
+and the meadow grown on it. Both come from one TreeSpec document, `generated/verification/treespec/washroom-lawn.json`
+(`cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_washroom_lawn`; `LAWN` names
+another), so the grass stands on the ground it was grown on. The lawn is painted (`materials/painted-lawn.material.ts`);
+the grass is 12 instanced batches (4 clump variants at 3 levels of detail) whose foliage look names
+`materials/painted-grass.material.ts`, a material assigned to no mesh, which the grass shader families evaluate at each
+blade's root. Without `grass` the model and project are byte for byte what they were. `tests/grass-washroom-browser.mjs`
+measures and pictures it: on an RTX 5060 Ti at 256 px without ambient occlusion (2026-11-16) the grass added 0.26 to
+0.32 ms (painted) and 0.48 ms (lit) of GPU time to a frame seen from close by, 8 draw calls, and a sun move cost 0.06 ms of GPU
+time for its boundary field with nothing scattered again (details in docs/plans/tree-item-roadmap.md, phase 4).
 
 ## Instanced batch
 
