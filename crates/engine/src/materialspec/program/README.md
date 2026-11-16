@@ -130,9 +130,25 @@ chain of planes, not one linked program:
   removing a layer bakes only that layer and the ones above it that read it. One pass bakes every
   plane of one material over a receiver (each reads all the planes beneath that any of them reads).
 - The stack's output planes are in the exact form (`Plane::exact_external`: full precision, no
-  filtering estimate, 8 bytes a component) and are baked on the profile's threads. They are kept
-  apart from the build graph's store (`LAYER_PLANES`). A layered bake is not distributed to other
-  sessions: a Wasm host bakes it in one worker.
+  filtering estimate, 8 bytes a component) and are baked on the profile's threads. They are not
+  nodes the build graph runs (`StackPlanes`): a map is keyed by the keys of the planes it reads,
+  and the planes are made when the map's rows are evaluated in this session, from the planes
+  beneath, or found where an earlier build kept them (`LAYER_PLANES`, apart from the graph's
+  store). A preview build keeps the planes it made; a production build keeps none, and lets each
+  receiver's planes go once its maps are baked (and each plane once nothing more reads it).
+- A layered bake is distributed like any large bake (`Session::distribute_bakes`): a plane's value
+  at a texel reads the planes beneath only at that texel (and its leg points), so a session baking
+  a share makes the whole stack over its rows and the rows beside them (whose heights its relief
+  reads), into planes that hold just that window of the atlas (`Plane::exact_window`,
+  `Plane::new_window`), and returns rows of the maps. The session that reported the bake makes no
+  plane. A helper keeps the planes of its rows under keys of its share (index and count), so its
+  share of an edit bakes only the materials the edit can change. The bytes are a local bake's
+  (`a_distributed_stack_bakes_the_bytes_of_a_local_one_and_its_session_makes_no_plane`,
+  `tests/stage2-layers-parity.mjs`).
+- A composite that cannot be compiled (a stack whose channels and the base's live inputs exceed
+  the 64 inputs a composite reads) is reported on the slot's base module, and
+  `Session::check_layered` (which `shade_project` runs for a GPU host) refuses a slot as its bake
+  would: the stack, the composite and each layer's parameters.
 - Outputs of a material of the stack that are intrinsic (the anchored base's are) are also kept by
   lattice point (`INTRINSIC_OUTPUTS`), keyed by no layout, feature or plane: another receiver, a
   resized one and another stack over the same base read them instead of evaluating them.
@@ -258,9 +274,10 @@ evaluation, and both evaluators read it at the texel a sample is given with.
   as one program bake, the relief normal included: a relief needs heights one step along each
   chart leg, and where that point is no texel's center the plane bake evaluates the base there
   too and keeps the values as leg points (`Plane::leg`, `Plane::set_leg`). A plane a host
-  supplies has none, so a height read from it is flat between texels. Such bakes are not
-  distributed (a session baking a share would bake the planes again), and the materials planes
-  are baked from read no planes themselves.
+  supplies has none, so a height read from it is flat between texels. Such bakes of a request's
+  other materials are not distributed (a session baking a share would bake the planes again; a
+  layered slot's are, see "Layered slots"), and the materials planes are baked from read no
+  planes themselves.
 - **What a shader's outputs read.** `Shader::reads` lists, for each output and each live
   argument, the parameter uniforms, seed, images, edges, features, sample inputs, CPU fields
   and external planes it reads, and whether it is intrinsic.

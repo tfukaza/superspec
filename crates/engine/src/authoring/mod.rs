@@ -304,7 +304,16 @@ impl Session {
     /// Discovers explicit built-in image identities from checked material modules, never source text guesses.
     pub fn library_assets(&mut self, request: &Request) -> Vec<String> {
         let entries = if request.kind == "material" {
-            vec![request.entry.clone()]
+            // A slot's layers and the materials its planes are baked from read images too.
+            std::iter::once(request.entry.clone())
+                .chain(request.layers.iter().map(|layer| layer.entry.clone()))
+                .chain(
+                    request
+                        .materials
+                        .values()
+                        .map(|material| material.entry.clone()),
+                )
+                .collect()
         } else if request.kind == "item" {
             crate::itemspec::definition::parse(&request.entry, &request.source)
                 .map(|mut definition| {

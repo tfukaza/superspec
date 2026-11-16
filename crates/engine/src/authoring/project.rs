@@ -904,6 +904,8 @@ impl Session {
             }
             metadata["shader"] = serde_json::to_value(shader).unwrap();
             if !assignment.layers.is_empty() {
+                // A slot its bake would refuse is refused here too, with the same diagnostics.
+                self.check_layered(&material_request(project, assignment, source, Vec::new()))?;
                 let (layers, channels) = self.layer_shaders(project, assignment, &program)?;
                 metadata["layers"] = layers;
                 metadata["channels"] = channels;

@@ -1,6 +1,7 @@
 import initialize, { Authoring, prepareTextures } from "../../generated/wasm/superspec_wasm.js";
 import wasmUrl from "../../generated/wasm/superspec_wasm_bg.wasm?url";
-import { OCCLUSION_PLANES, type AuthoringMessage, type AuthoringProgress, type AuthoringResult, type OcclusionReport } from "./authoring.ts";
+import { OCCLUSION_PLANES, type AuthoringMessage, type AuthoringProgress, type AuthoringResult, type OcclusionReport, type PlanesAnswer,
+  type PlanesBaked, type PlanesWanted } from "./authoring.ts";
 import { bakeHelpers, bakeShares } from "./bake-pool.ts";
 import { libraryAsset } from "./library.ts";
 import { encodeTextures, type TextureJob } from "./texture-encoder.ts";
@@ -85,8 +86,9 @@ async function distributed<T>(active: Authoring, assets: Record<string, Uint8Arr
         continue;
       }
       for (const bake of pending) reported.add(bake);
+      // Every bake of the build at once: each helper bakes its share of one after another.
       try {
-        for (const bake of pending) for (const rows of await bakeShares(bake, assets)) active.provide_bake_share(rows);
+        for (const rows of await bakeShares(pending, assets)) active.provide_bake_share(rows);
       } catch {
         active.distribute_bakes(false);
       }
@@ -96,13 +98,30 @@ async function distributed<T>(active: Authoring, assets: Record<string, Uint8Arr
   }
 }
 
+/** The planes the page holds (`PlaneStore`), as the current request was sent. */
+let pageHeld: string[] = [];
+/** The page's answer to a request for planes, while one is awaited. */
+let answer: ((planes: Record<string, Uint8Array>) => void) | undefined;
+
+/** The planes of `names` the page holds, copied into this worker; names the page no longer holds are left out. */
+function fromPage(names: string[]): Promise<Record<string, Uint8Array>> {
+  return new Promise(resolve => {
+    answer = resolve;
+    self.postMessage({ planesWanted: names } satisfies PlanesWanted);
+  });
+}
+
+type OccludedPlane = { name: string; key: string; asset: string; width: number; height: number; rays: number; occluders: number; baked: boolean };
+
 /**
  * Bakes the occluder service's planes that a scene project's materials read (`Authoring::occlude_project`) and returns
- * the project with them bound, as JSON, with a report. The session keeps the planes by content, so only planes whose
- * key is new cast rays: after a moved sun that is `shadow` alone. One call per plane name, so each is timed on its
- * own. A project without scene materials, or none of whose materials reads a plane, is returned as it is.
+ * the project with them bound, as JSON, with a report. Planes are kept by content: by this session, and by the page
+ * for every worker (`PlaneStore`), so only planes whose key neither holds cast rays (after a moved sun, `shadow`
+ * alone); a plane the page holds is copied in, and every plane baked here goes to the page. One call per plane name,
+ * so each is timed on its own. A project without scene materials, or none of whose materials reads a plane, is
+ * returned as it is.
  */
-function occluded(active: Authoring, project: Record<string, unknown>, requestId: number, meshes?: string[]): { encoded: string; report?: OcclusionReport; keys: Map<string, Record<string, string>> } {
+async function occluded(active: Authoring, project: Record<string, unknown>, requestId: number, meshes?: string[]): Promise<{ encoded: string; report?: OcclusionReport; keys: Map<string, Record<string, string>> }> {
   const keys = new Map<string, Record<string, string>>();
   const encoded = JSON.stringify(project);
   if (project.schemaVersion !== 2 || project.kind !== "material" || !Array.isArray(project.materials) || !project.materials.length) return { encoded, keys };
@@ -110,16 +129,32 @@ function occluded(active: Authoring, project: Record<string, unknown>, requestId
   const bound: Record<string, Record<string, unknown>> = {};
   for (const name of OCCLUSION_PLANES) {
     const started = performance.now();
-    const reply = JSON.parse(active.occlude_project(encoded, requestId, JSON.stringify({ names: [name], ...(meshes ? { meshes } : {}) })));
-    if (!reply.success) throw new Error(JSON.stringify(reply.diagnostics));
-    const receivers = reply.receivers as { id: string; planes: { name: string; key: string; width: number; height: number; rays: number; occluders: number; baked: boolean }[] }[];
+    const occlude = (held: string[]) => {
+      const reply = JSON.parse(active.occlude_project(encoded, requestId, JSON.stringify({ names: [name], held, ...(meshes ? { meshes } : {}) })));
+      if (!reply.success) throw new Error(JSON.stringify(reply.diagnostics));
+      return reply as { receivers: { id: string; planes: OccludedPlane[] }[]; planes: Record<string, Record<string, unknown>> };
+    };
+    const offered = pageHeld.filter(asset => asset.startsWith(`occlusion/${name}/`));
+    let reply = occlude(offered);
+    // Planes keyed as held that this session lacks are the page's: copy them in. One the page let go meanwhile is
+    // baked by a second call that is not offered it.
+    const lacking = [...new Set(reply.receivers.flatMap(receiver => receiver.planes).filter(plane => !plane.baked && !active.holds_occlusion_plane(plane.asset)).map(plane => plane.asset))];
+    if (lacking.length) {
+      const copied = await fromPage(lacking);
+      for (const [asset, bytes] of Object.entries(copied)) active.hold_occlusion_plane(asset, bytes);
+      if (lacking.some(asset => !copied[asset])) reply = occlude(offered.filter(asset => copied[asset] || !lacking.includes(asset)));
+    }
+    const receivers = reply.receivers;
     if (!receivers.length) continue;
     report.ms[name] = +(performance.now() - started).toFixed(1);
+    const baked: Record<string, Uint8Array> = {};
     for (const receiver of receivers) for (const plane of receiver.planes) {
       report.planes.push({ mesh: receiver.id, name: plane.name, key: plane.key, width: plane.width, height: plane.height, rays: plane.rays, occluders: plane.occluders, baked: plane.baked });
       (keys.get(receiver.id) ?? keys.set(receiver.id, {}).get(receiver.id)!)[plane.name] = plane.key;
+      if (plane.baked) baked[plane.asset] = active.occlusion_plane(plane.asset);
     }
-    for (const [mesh, planes] of Object.entries(reply.planes as Record<string, Record<string, unknown>>)) bound[mesh] = { ...bound[mesh], ...planes };
+    if (Object.keys(baked).length) self.postMessage({ planesBaked: baked } satisfies PlanesBaked, { transfer: Object.values(baked).map(bytes => bytes.buffer as ArrayBuffer) });
+    for (const [mesh, planes] of Object.entries(reply.planes)) bound[mesh] = { ...bound[mesh], ...planes };
   }
   if (!report.planes.length) return { encoded, keys };
   // Over what the project binds itself: the service's plane of a name is the current one.
@@ -136,11 +171,22 @@ function occluded(active: Authoring, project: Record<string, unknown>, requestId
  * abandoned one is still running.
  */
 let turn: Promise<void> = Promise.resolve();
-self.onmessage = (event: MessageEvent<AuthoringMessage>) => { turn = turn.then(() => handle(event.data)); };
+self.onmessage = (event: MessageEvent<AuthoringMessage | PlanesAnswer>) => {
+  // The page's answer to the request being handled, not a request of its own.
+  if ("planesAnswer" in event.data) {
+    const resolve = answer;
+    answer = undefined;
+    resolve?.(event.data.planesAnswer);
+    return;
+  }
+  const message = event.data;
+  turn = turn.then(() => handle(message));
+};
 
 /** Answers one request with exactly one final message; it never rejects. */
 async function handle(message: AuthoringMessage): Promise<void> {
-  const { requestId, assets, cancelToken: token, ...request } = message as AuthoringMessage & { cancelToken?: string };
+  const { requestId, assets, cancelToken: token, heldPlanes, ...request } = message as AuthoringMessage & { cancelToken?: string; heldPlanes?: string[] };
+  pageHeld = heldPlanes ?? [];
   try {
     await (ready ??= initialize({ module_or_path: wasmUrl }));
     session ??= new Authoring();
@@ -176,7 +222,7 @@ async function handle(message: AuthoringMessage): Promise<void> {
         active.set_asset(name, images[name]);
       }
       // The occluder service's planes these meshes' materials read, bound for the field bakes below.
-      const occlusion = request.occlusion ? occluded(active, request.project as unknown as Record<string, unknown>, requestId, request.meshes.map(entry => entry.mesh)) : undefined;
+      const occlusion = request.occlusion ? await occluded(active, request.project as unknown as Record<string, unknown>, requestId, request.meshes.map(entry => entry.mesh)) : undefined;
       const encodedProject = occlusion?.encoded ?? JSON.stringify(request.project);
       const projectFields: NonNullable<AuthoringResult["projectFields"]> = [];
       const transfer: ArrayBufferLike[] = [];
@@ -204,7 +250,7 @@ async function handle(message: AuthoringMessage): Promise<void> {
     // baked here, lit by the project's lighting record, and bound for this build alone.
     let occlusion: OcclusionReport | undefined;
     if (whole && !shading && "project" in request) {
-      const made = occluded(active, request.project as unknown as Record<string, unknown>, requestId);
+      const made = await occluded(active, request.project as unknown as Record<string, unknown>, requestId);
       encoded = made.encoded; occlusion = made.report;
       // Helpers that bake a share of a material read the planes as assets, like its images.
       if (occlusion && bakeHelpers() > 1) {
@@ -223,7 +269,7 @@ async function handle(message: AuthoringMessage): Promise<void> {
       } else {
         bytes = await distributed(active, images, () => active.export_project(encoded, requestId, false));
       }
-      self.postMessage({ requestId, download: bytes.buffer }, { transfer: [bytes.buffer] });
+      self.postMessage({ requestId, download: bytes.buffer, ...(occlusion ? { occlusion } : {}) }, { transfer: [bytes.buffer] });
       return;
     }
     const result = JSON.parse(shading ? active.shade_project(encoded, requestId)

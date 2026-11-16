@@ -99,7 +99,7 @@ export const OCCLUSION_PLANES = ["shadow", "occlusion", "sunExposure"] as const;
 /**
  * What the occluder service did for a request: for each plane name, the milliseconds its call took in the worker
  * (composing the scene, laying out the receivers and keying every plane included), then every plane with its key, its
- * size, the rays cast for it and whether it was baked now (`false`: the session held a plane of that key).
+ * size, the rays cast for it and whether it was baked now (`false`: the worker or the page held a plane of that key).
  */
 export interface OcclusionReport {
   ms: Record<string, number>;
@@ -257,6 +257,49 @@ export interface AuthoringResult {
 export interface ExportProgress { encoded: number; textures: number }
 /** An interim worker message; the request stays pending. */
 export interface AuthoringProgress { requestId: number; progress: ExportProgress }
+/**
+ * Messages about the occluder service's planes between a worker and the page (see `PlaneStore`): planes a worker baked,
+ * for the page to keep; a worker asking for planes the page holds; and the page's answer.
+ */
+export interface PlanesBaked { planesBaked: Record<string, Uint8Array> }
+export interface PlanesWanted { planesWanted: string[] }
+export interface PlanesAnswer { planesAnswer: Record<string, Uint8Array> }
+
+/**
+ * The occluder service's planes of the page, by the asset name a project binds them under (`occlusion/<name>/<key>`;
+ * the key names everything that decides the plane's values). Every authoring worker of the page (the build's and the
+ * GPU preview lane's) reads and adds to it, and it outlives a replaced worker, so a plane is computed once per page
+ * whichever worker, build or lighting edit asks for it: a moved sun bakes `shadow` again and finds the others here.
+ */
+export class PlaneStore {
+  /** Encoded planes kept at most; the least recently used go first. */
+  static readonly ALLOWANCE = 96 * 1024 * 1024;
+  private readonly planes = new Map<string, Uint8Array>();
+  private bytes = 0;
+  names(): string[] { return [...this.planes.keys()]; }
+  keep(name: string, plane: Uint8Array): void {
+    const previous = this.planes.get(name);
+    if (previous) { this.bytes -= previous.byteLength; this.planes.delete(name); }
+    this.planes.set(name, plane); this.bytes += plane.byteLength;
+    for (const [oldest, bytes] of this.planes) {
+      if (this.bytes <= PlaneStore.ALLOWANCE || oldest === name) break;
+      this.planes.delete(oldest); this.bytes -= bytes.byteLength;
+    }
+  }
+  /** Copies of the planes of `names` the page holds (a worker keeps its own); the others are left out. */
+  copies(names: string[]): Record<string, Uint8Array> {
+    const found: Record<string, Uint8Array> = {};
+    for (const name of names) {
+      const plane = this.planes.get(name);
+      if (!plane) continue;
+      this.planes.delete(name); this.planes.set(name, plane);
+      found[name] = plane.slice();
+    }
+    return found;
+  }
+}
+/** The page's planes, shared by every `AuthoringCompiler`. */
+export const pagePlanes = new PlaneStore();
 
 /** How long a worker may go on with a cancelled request before it is replaced. */
 const CANCEL_GRACE_MS = 1500;
@@ -330,7 +373,16 @@ export class AuthoringCompiler {
     let worker = this.worker;
     if (!worker) {
       const created = worker = this.worker = new Worker(new URL("./authoring-worker.ts", import.meta.url), { type: "module" });
-      created.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress>) => {
+      created.onmessage = (event: MessageEvent<AuthoringResult | AuthoringProgress | PlanesBaked | PlanesWanted>) => {
+        // Planes are the page's whoever asked for them, and a worker waiting for planes is answered even if replaced.
+        if ("planesBaked" in event.data) {
+          for (const [name, plane] of Object.entries(event.data.planesBaked)) pagePlanes.keep(name, plane);
+          return;
+        }
+        if ("planesWanted" in event.data) {
+          created.postMessage({ planesAnswer: pagePlanes.copies(event.data.planesWanted) } satisfies PlanesAnswer);
+          return;
+        }
         if (this.worker !== created) return;
         // The worker answers every request it was sent, cancelled ones too; each answer frees it for the newest one waiting.
         if (!("progress" in event.data)) {
@@ -350,15 +402,34 @@ export class AuthoringCompiler {
       };
       created.onerror = event => {
         if (this.worker !== created) return;
-        this.pending?.reject(new Error(event.message || "Authoring worker failed."));
-        this.pending = undefined;
-        this.close();
+        this.failed(new Error(event.message || "Authoring worker failed."));
+      };
+      // A message the page cannot read (it never answers its request) fails the request like a crash.
+      created.onmessageerror = () => {
+        if (this.worker !== created) return;
+        this.failed(new Error("The authoring worker sent a message the page could not read."));
       };
     }
     // The worker cannot hear a message while it computes, but it can ask whether this URL still exists (see `cancel`).
     this.token = URL.createObjectURL(new Blob(["1"]));
     this.running = true;
-    worker.postMessage({ ...request, cancelToken: this.token });
+    // The planes the page holds, by name: the worker casts no ray for them and asks for the bytes it lacks.
+    worker.postMessage({ ...request, cancelToken: this.token, heldPlanes: pagePlanes.names() });
+  }
+
+  /**
+   * The worker failed outside any request's answer: the request fails with the reason (the Studio shows it and keeps its
+   * last valid scene) and a new worker serves the next request.
+   */
+  private failed(error: Error): void {
+    // A newer request waiting for the worker was never sent to it: a new worker runs it.
+    const next = this.waiting;
+    if (!next) {
+      this.pending?.reject(error);
+      this.pending = undefined;
+    }
+    this.close();
+    if (next) this.start(next);
   }
 
   /** The worker has a request it has not answered, and the newest request made meanwhile. */

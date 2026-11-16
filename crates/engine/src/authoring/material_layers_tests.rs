@@ -466,6 +466,200 @@ fn a_base_with_live_operations_keeps_them_under_its_layers() {
     assert!(bakes.iter().any(|(entry, ..)| entry == "live.material.ts"));
 }
 
+/// A build of `request` shared with `helpers` (`Session::distribute_bakes`): the session stops
+/// for its bake, each helper bakes its share of the rows, and the session builds again with
+/// them. Returns the output, the plane bakes of the session (both builds) and of the helpers.
+fn distributed(
+    session: &mut Session,
+    helpers: &mut [Session],
+    revision: u64,
+    request: &Request,
+) -> (Output, Bakes, Bakes) {
+    let assets = |name: &str| Err(format!("{name} is unavailable"));
+    LAYER_BAKES.with(|bakes| bakes.borrow_mut().clear());
+    session.distribute_bakes(true);
+    let stopped = session
+        .build(request, revision, &assets, &|| false)
+        .err()
+        .expect("the bake is handed to other sessions");
+    assert!(
+        stopped.iter().all(|error| error.code == "BAKE_PENDING"),
+        "{stopped:?}"
+    );
+    let mut own = LAYER_BAKES.with(|bakes| std::mem::take(&mut *bakes.borrow_mut()));
+    let pending = session.take_pending_bake().expect("a pending bake");
+    assert!(session.take_pending_bake().is_none());
+    // Helpers are handed the slot as written, not its composite.
+    assert_eq!(pending.request.layers, request.layers);
+    let count = helpers.len();
+    for (index, helper) in helpers.iter_mut().enumerate() {
+        let rows = helper
+            .bake_share(&pending, index, count, &assets, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        session.provide_bake_share(&rows).unwrap();
+    }
+    let shared = LAYER_BAKES.with(|bakes| std::mem::take(&mut *bakes.borrow_mut()));
+    let output = session
+        .build(request, revision, &assets, &|| false)
+        .unwrap_or_else(|e| panic!("{e:?}"));
+    session.distribute_bakes(false);
+    own.extend(LAYER_BAKES.with(|bakes| std::mem::take(&mut *bakes.borrow_mut())));
+    (output, own, shared)
+}
+
+#[test]
+fn a_distributed_stack_bakes_the_bytes_of_a_local_one_and_its_session_makes_no_plane() {
+    let mut live = stack(0.5, vec![layer("stain.material.ts", &[])], 96);
+    live.entry = "live.material.ts".into();
+    live.source = LIVE.into();
+    live.parameters.clear();
+    let layers = || {
+        vec![
+            layer("grime.material.ts", &[("amount", 0.8)]),
+            layer("moss.material.ts", &[("spread", 0.5)]),
+        ]
+    };
+    for (what, request, edited) in [
+        (
+            "swatch",
+            grime_and_moss(0.5, 0.8, 0.5, 96),
+            grime_and_moss(0.5, 0.8, 0.9, 96),
+        ),
+        ("anchored wall", wall(1.5, layers()), wall(2.0, layers())),
+        ("live base", live.clone(), {
+            let mut edited = live.clone();
+            edited
+                .layers
+                .push(layer("moss.material.ts", &[("spread", 0.2)]));
+            edited
+        }),
+        (
+            "production",
+            Request {
+                profile: Profile::Production,
+                ..grime_and_moss(0.5, 0.8, 0.5, 96)
+            },
+            Request {
+                profile: Profile::Production,
+                ..grime_and_moss(0.5, 0.4, 0.5, 96)
+            },
+        ),
+    ] {
+        for count in [1, 3, 5] {
+            let mut session = Session::default();
+            let mut helpers: Vec<Session> = (0..count).map(|_| Session::default()).collect();
+            let (output, own, shared) = distributed(&mut session, &mut helpers, 1, &request);
+            assert_same(
+                &output,
+                &fresh(&request),
+                &format!("{what}, {count} shares"),
+            );
+            assert!(
+                own.is_empty(),
+                "{what}: the reporting session made planes: {own:?}"
+            );
+            assert!(!shared.is_empty(), "{what}: the helpers made the planes");
+            // An edit: every share reads the planes beneath it that it kept for its rows.
+            let (output, own, shared) = distributed(&mut session, &mut helpers, 2, &edited);
+            assert_same(
+                &output,
+                &fresh(&edited),
+                &format!("{what} edited, {count} shares"),
+            );
+            assert!(own.is_empty(), "{what}: {own:?}");
+            if what == "swatch" {
+                // One pass of the moss for each share, over its rows.
+                assert_eq!(shared.len(), count, "{what}: {shared:?}");
+                for (entry, values, _, _) in &shared {
+                    assert_eq!((entry.as_str(), values.len()), ("moss.material.ts", 2));
+                }
+            }
+            // The same edit again is kept whole by the reporting session.
+            let again = session
+                .build(
+                    &edited,
+                    3,
+                    &|name| Err(format!("{name} is unavailable")),
+                    &|| false,
+                )
+                .unwrap();
+            assert_same(&again, &output, &format!("{what} kept"));
+        }
+    }
+}
+
+#[test]
+fn a_stack_that_reads_more_than_one_program_may_is_refused_on_its_base() {
+    // Sixty live operations, each reading a field of its own, under a layer that adds height and
+    // opacity: the composite would read sixty-five planes.
+    let operations: Vec<String> = (1..=60)
+        .map(|k| {
+            format!(
+                "scaleSpecular({{ factor: add(1, mul(0.01, noise(mul(surface, {k}), seed(\"s{k}\")))) }})"
+            )
+        })
+        .collect();
+    let busy = format!(
+        "import {{ defineMaterial, scaleSpecular, noise, seed, surface, mul, add, vec3 }} from \"@superspec/material/v1\";
+export default defineMaterial({{
+  base: {{ baseColor: vec3(0.3, 0.32, 0.35), roughness: 0.4, metalness: 0.9 }},
+  live: [{}],
+}});
+",
+        operations.join(", ")
+    );
+    let veil = r#"import { defineLayer, vec3 } from "@superspec/material/v1";
+export default defineLayer({ coverage: 0.5, baseColor: vec3(0.5, 0.4, 0.3), height: 0.001, opacity: 0.9 });
+"#;
+    let mut request = stack(0.5, Vec::new(), 32);
+    request.entry = "busy.material.ts".into();
+    request.source = busy;
+    request.parameters.clear();
+    request
+        .modules
+        .insert("veil.material.ts".into(), veil.into());
+    request.layers = vec![layer("veil.material.ts", &[])];
+    let errors = Session::default()
+        .build(
+            &request,
+            1,
+            &|name| Err(format!("{name} is unavailable")),
+            &|| false,
+        )
+        .err()
+        .expect("the slot is refused");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.source_name == "busy.material.ts"
+                && error.message.contains("cannot compose its base and layers")
+                && error.message.contains("at most 64 external inputs")),
+        "{errors:?}"
+    );
+    // The GPU preview's check refuses it the same way.
+    let errors = Session::default().check_layered(&request).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.source_name == "busy.material.ts"),
+        "{errors:?}"
+    );
+    // So is a layer's parameter out of its range, on the layer's module.
+    let mut request = grime_and_moss(0.5, 3.0, 0.5, 32);
+    let errors = Session::default().check_layered(&request).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.source_name == "grime.material.ts"
+                && error.message.contains("amount")),
+        "{errors:?}"
+    );
+    request.layers[0]
+        .parameters
+        .insert("amount".into(), 0.5.into());
+    assert!(Session::default().check_layered(&request).is_ok());
+}
+
 #[test]
 fn a_slot_written_wrong_says_how() {
     let mut session = Session::default();

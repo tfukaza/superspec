@@ -713,6 +713,7 @@ class Studio {
     if (revision !== this.revision) return false;
     // A CPU-baked scene whose materials read the occluder service's planes had them baked for this build.
     if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - built);
+    if (scene && !result.error && !result.diagnostics?.length) this.readsShadow = result.occlusion?.planes.some(plane => plane.name === "shadow") ?? false;
     // What a scene build says about its items and their bindings, before the metadata is narrowed to the active material.
     const itemMetadata = result.metadata;
     if (scene && result.metadata) {
@@ -815,8 +816,15 @@ class Studio {
     if (sun === this.shadowSun) return;
     this.shadowSun = sun;
     clearTimeout(this.shadowTimer);
-    this.shadowTimer = setTimeout(() => this.scene.planesChanged(["shadow"]), 200);
+    this.shadowTimer = setTimeout(() => {
+      // A CPU-baked scene builds again when a material read `shadow` in its last build: the worker bakes the new
+      // `shadow` planes and finds the others by key, and only the maps that read `shadow` are baked again.
+      if (this.sceneMode(this.project) && !this.liveScene(this.project)) { if (this.readsShadow) this.edit(true); }
+      else this.scene.planesChanged(["shadow"]);
+    }, 200);
   }
+  /** Whether the last CPU build of the scene bound `shadow` planes (see `noteOcclusion`). */
+  private readsShadow = false;
   /** The sun the scene's `shadow` planes were last asked for (`sunKey`). */
   private shadowSun?: string;
   private shadowTimer?: ReturnType<typeof setTimeout>;
@@ -926,7 +934,7 @@ class Studio {
    * set back) asks the CPU for nothing, and a moved sun asks only for the fields that read `shadow`. The worker bakes
    * the planes those fields read first and keeps them by content: it casts rays only for planes whose key is new.
    */
-  private async sceneFields(requests: { mesh: string; names: string[]; planes: string[][] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }> | null> {
+  private async sceneFields(requests: { mesh: string; names: string[]; planes: string[][] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] } | { error: string }> | null> {
     const baseline = this.bakeProject;
     if (!baseline) return null;
     // The lighting record is not part of a build: the planes are lit by the one in effect now.
@@ -943,6 +951,8 @@ class Studio {
     };
     type Kept = { width: number; height: number; field: Float32Array; planes?: string };
     const kept = new Map<string, (Kept | undefined)[]>();
+    // Meshes whose bake failed, with the engine's reason: the baker shows it for them.
+    const failed = new Map<string, string>();
     const missing: { mesh: string; names: string[] }[] = [];
     let occlusion = false;
     for (const request of requests) {
@@ -966,6 +976,7 @@ class Studio {
       if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - started);
       for (const baked of result.projectFields) {
         const request = requests.find(candidate => candidate.mesh === baked.mesh), asked = missing.find(candidate => candidate.mesh === baked.mesh);
+        if ("error" in baked) failed.set(baked.mesh, baked.error);
         if (!("fields" in baked) || !request || !asked) continue;
         asked.names.forEach((name, index) => {
           const at = request.names.indexOf(name), planes = request.planes[at] ?? [];
@@ -979,8 +990,10 @@ class Studio {
       // Least recently used first; a field is four floats per texel of its receiver's atlas.
       while (this.sceneFieldCache.size > 256) this.sceneFieldCache.delete(this.sceneFieldCache.keys().next().value!);
     }
-    const found = new Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }>();
+    const found = new Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] } | { error: string }>();
     for (const request of requests) {
+      const error = failed.get(request.mesh);
+      if (error !== undefined) { found.set(request.mesh, { error }); continue; }
       const fields = kept.get(request.mesh)!;
       // A mesh whose bake failed is left out: the scene's baker says so for that mesh.
       if (!fields.length || fields.some(field => !field || field.width !== fields[0]!.width || field.height !== fields[0]!.height)) continue;
@@ -1020,6 +1033,8 @@ class Studio {
         this.diagnostics(result.diagnostics ?? [], candidate);
         throw new Error(result.error || "Project could not be exported.");
       }
+      // The export's planes: those the preview already baked are found by key in the page's store.
+      if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - started);
       download(`${this.kind}.glb`, result.download, "model/gltf-binary");
       this.ready(`GLB downloaded from the current project (${textures === "ktx2" ? "KTX2" : "PNG"} textures, ${(result.download.byteLength / 1048576).toFixed(1)} MB, ${((performance.now() - started) / 1000).toFixed(1)} s).`);
     } catch (error) { if (revision === this.revision) this.failure(error); }

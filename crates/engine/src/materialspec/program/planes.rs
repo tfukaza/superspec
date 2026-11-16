@@ -47,8 +47,13 @@ pub struct Plane {
     /// Exact form, one number per component and texel at full precision, with no footprint
     /// estimate (the estimate of every value is zero): an output of another material, which has
     /// none, in a quarter to a half of the full form's bytes. A texel without a value holds NaN as
-    /// its first component.
+    /// its first component. It may hold only a window of the texels, from `start` on
+    /// ([`Self::exact_window`]); texels outside it hold no value.
     exact: Vec<f64>,
+    /// The first texel the exact form holds (0 unless it is a window).
+    start: usize,
+    /// Texels the plane covers: the atlas's, whatever part of it a window holds.
+    span: usize,
     /// Values one step along a chart leg from a texel, where that point is no texel's center,
     /// by [`Self::leg`] index: the four numbers of the full form. A relief needs the height
     /// there, and a plane has no value between texels unless it holds these.
@@ -75,12 +80,26 @@ impl Plane {
     /// An empty plane for `field` (a value of `components` numbers, or a boolean when 0) over
     /// `texels` texels.
     pub fn new(field: usize, components: usize, texels: usize) -> Self {
+        Self::new_window(field, components, texels, 0..texels)
+    }
+
+    /// [`Self::new`] over `texels` texels that holds values for the texels of `window` only (see
+    /// [`Self::exact_window`]).
+    pub fn new_window(
+        field: usize,
+        components: usize,
+        texels: usize,
+        window: std::ops::Range<usize>,
+    ) -> Self {
+        let (start, end) = (window.start.min(texels), window.end.min(texels));
         Self {
             binding: Binding::Field(field),
             kind: if components == 0 { 4 } else { components as u8 },
-            full: [0., 0., 0., f64::NAN].repeat(texels),
+            full: [0., 0., 0., f64::NAN].repeat(end.saturating_sub(start)),
             single: Vec::new(),
             exact: Vec::new(),
+            start,
+            span: texels,
             legs: BTreeMap::new(),
             stored: 0,
             added: 0,
@@ -107,12 +126,15 @@ impl Plane {
             }
             stored += 1;
         }
+        let span = values.len() / components;
         Ok(Self {
             binding: Binding::External(Arc::from(name)),
             kind: components as u8,
             full: Vec::new(),
             single: values,
             exact: Vec::new(),
+            start: 0,
+            span,
             legs: BTreeMap::new(),
             stored,
             added: 0,
@@ -136,10 +158,23 @@ impl Plane {
     /// `components` (1 to 3) numbers per texel at full precision, every value with a zero
     /// filtering estimate, as the outputs of a material have.
     pub fn exact_external(name: &str, components: usize, texels: usize) -> Result<Self, String> {
+        Self::exact_window(name, components, texels, 0..texels)
+    }
+
+    /// [`Self::exact_external`] over `texels` texels that holds values for the texels of
+    /// `window` only: a plane another session fills for a share of an atlas's rows, in the bytes
+    /// of that share. Reading it anywhere else finds no value; leg points are kept for any texel.
+    pub fn exact_window(
+        name: &str,
+        components: usize,
+        texels: usize,
+        window: std::ops::Range<usize>,
+    ) -> Result<Self, String> {
         if !(1..=3).contains(&components) {
             return Err(format!("External plane '{name}' needs 1 to 3 components."));
         }
-        let mut exact = vec![0.; components * texels];
+        let (start, end) = (window.start.min(texels), window.end.min(texels));
+        let mut exact = vec![0.; components * end.saturating_sub(start)];
         for texel in exact.chunks_exact_mut(components) {
             texel[0] = f64::NAN;
         }
@@ -149,6 +184,8 @@ impl Plane {
             full: Vec::new(),
             single: Vec::new(),
             exact,
+            start,
+            span: texels,
             legs: BTreeMap::new(),
             stored: 0,
             added: 0,
@@ -239,7 +276,8 @@ impl Plane {
         if !self.has(texel) {
             self.stored += 1;
         }
-        self.full[texel * 4..texel * 4 + 4].copy_from_slice(&raw);
+        let at = (texel - self.start) * 4;
+        self.full[at..at + 4].copy_from_slice(&raw);
     }
 
     /// Gives texel `to` the value of texel `from` (none, if `from` holds none), for texels that
@@ -248,6 +286,11 @@ impl Plane {
         if !self.exact.is_empty() {
             let count = self.kind.clamp(1, 3) as usize;
             let texels = self.exact.len() / count;
+            // Positions in the window; texels outside it hold nothing and take nothing.
+            let (Some(from), Some(to)) = (from.checked_sub(self.start), to.checked_sub(self.start))
+            else {
+                return;
+            };
             if from >= texels || to >= texels {
                 return;
             }
@@ -274,7 +317,7 @@ impl Plane {
                 if self.has(to) {
                     self.stored -= 1;
                 }
-                self.full[to * 4 + 3] = f64::NAN;
+                self.full[(to - self.start) * 4 + 3] = f64::NAN;
             }
         }
     }
@@ -408,19 +451,20 @@ impl Plane {
     }
     /// Texels this plane covers.
     pub fn texels(&self) -> usize {
-        self.full.len() / 4
-            + (self.single.len() + self.exact.len()) / (self.kind.clamp(1, 3) as usize)
+        self.span
     }
     /// The numbers of `texel` in the exact form; `None` outside it and for other forms.
     fn exact_at_mut(&mut self, texel: usize) -> Option<&mut [f64]> {
         let count = self.kind.clamp(1, 3) as usize;
-        let start = texel.checked_mul(count)?;
+        let start = texel.checked_sub(self.start)?.checked_mul(count)?;
         self.exact.get_mut(start..start.checked_add(count)?)
     }
     /// The four numbers of `texel` in the full form; `None` outside it, and for every texel of
     /// a plane in the single form.
     #[inline(always)]
     fn full_at(&self, texel: usize) -> Option<&[f64]> {
+        // Below a window's start the difference wraps past every index, so it finds nothing.
+        let texel = texel.wrapping_sub(self.start);
         if texel >= usize::MAX / 4 {
             return None;
         }
@@ -473,7 +517,7 @@ impl Plane {
     #[inline(never)]
     fn exact_at<'a>(&self, texel: usize) -> Option<Value<'a>> {
         let components = self.kind.clamp(1, 3) as usize;
-        let start = texel.checked_mul(components)?;
+        let start = texel.checked_sub(self.start)?.checked_mul(components)?;
         let at = self.exact.get(start..start.checked_add(components)?)?;
         if at[0].is_nan() {
             return None;
@@ -501,7 +545,14 @@ impl Plane {
     /// that are filled.
     #[inline(always)]
     pub(super) fn store(&mut self, texel: usize, value: &Value<'_>) {
-        let at = &mut self.full[texel * 4..texel * 4 + 4];
+        // A window keeps what falls in it.
+        let texel = texel.wrapping_sub(self.start);
+        let Some(at) = self
+            .full
+            .get_mut(texel.wrapping_mul(4)..texel.wrapping_mul(4).wrapping_add(4))
+        else {
+            return;
+        };
         if at[3].is_nan() {
             self.stored += 1;
             self.added += 1;
@@ -600,6 +651,38 @@ mod tests {
         exact.repeat(0, 3);
         assert_eq!((exact.stored(), exact.value(3).is_none()), (1, true));
         assert!(Plane::exact_external("x", 4, 1).is_err());
+    }
+
+    #[test]
+    fn a_window_of_an_exact_plane_reads_as_the_whole_plane_within_it_in_its_bytes() {
+        let mut whole = Plane::exact_external("base.height", 1, 8).unwrap();
+        let mut window = Plane::exact_window("base.height", 1, 8, 3..6).unwrap();
+        for plane in [&mut whole, &mut window] {
+            for texel in 0..8 {
+                plane.set(texel, &[texel as f64 * 0.5]);
+            }
+            plane.repeat(3, 4);
+            plane.set_leg(4, 1, None, &[9.]);
+        }
+        assert!(window.bytes() < whole.bytes());
+        assert_eq!((window.texels(), window.stored()), (8, 3));
+        for texel in 3..6 {
+            assert_eq!(
+                window.value(texel).map(|value| value.data()),
+                whole.value(texel).map(|value| value.data()),
+                "{texel}"
+            );
+        }
+        for texel in [0, 2, 6, 7] {
+            assert!(
+                window.value(texel).is_none() && !window.has(texel),
+                "{texel}"
+            );
+        }
+        // Leg points index the whole atlas.
+        assert_eq!(window.value(Plane::leg(8, 4, 1)).unwrap().data().0[0], 9.);
+        assert_eq!(window.value(Plane::leg(8, 5, 0)).unwrap().data().0[0], 2.5);
+        assert!(window.value(Plane::leg(8, 1, 0)).is_none());
     }
 
     #[test]

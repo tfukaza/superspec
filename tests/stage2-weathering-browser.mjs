@@ -8,6 +8,8 @@
  *    bytes: the shipped recipe measures its pattern from each face's bounds, the split one from the pattern anchor).
  * 2. Widening the tall wall 2.7 to 3.2 m: how much of the wall that existed before changes, in each project.
  * 3. In the split project, the ground band reaches the new stretch of wall, and the sill grime follows a raised sill.
+ * 4. A split project whose slot its bake refuses (a layer's parameter out of range) reports it on the layer's module and
+ *    keeps the last valid scene.
  *
  * Pictures and a JSON report go to generated/verification/stage2/. STUDIO_UI_ROOT names the built Studio (default
  * generated/stage2/rust-editor, built against the Stage 2 Wasm by generated/stage2/vite.stage2.config.mjs);
@@ -186,6 +188,14 @@ try {
       result.underOldSill = await project2d([[0.16, -0.001, 0.8], [0.6, -0.001, 0.8], [0.6, -0.001, 0.92], [0.16, -0.001, 0.92]]);
       result.underNewSill = await project2d([[0.16, -0.001, 1.0], [0.6, -0.001, 1.0], [0.6, -0.001, 1.12], [0.16, -0.001, 1.12]]);
       result.sillBands = { underNew: brightness(result.sill, result.underNewSill, width), underOld: brightness(result.sill, result.underOldSill, width) };
+      // 4. A slot its bake refuses (a layer's parameter out of its range) is reported on the layer's module, and the
+      //    last valid scene stays.
+      const wrong = structuredClone(project);
+      wrong.materials.find(material => material.id === "rusted-pipe").layers[0].parameters.amount = 3;
+      await page.locator("#open-project").setInputFiles({ name: "wrong.studio.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(wrong)) });
+      await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "error", {}, { timeout: 1800000 });
+      result.refused = { status: await page.locator("#status").textContent(), diagnostics: await page.locator("#diagnostics button").allTextContents() };
+      result.kept = await page.evaluate(() => document.querySelector("#viewport").dataset.inputRevision);
     }
     assert.equal(errors.length, 0, errors.join("\n"));
     await page.close();
@@ -223,6 +233,10 @@ try {
   assert.ok(report.newStretch.base < report.newStretch.above - 8, "the ground band reaches the new stretch of wall");
   assert.ok(report.sill.underOld.share > 0.3, "the sill grime moved with the sill");
   assert.ok(report.sill.bands.underNew < report.sill.bands.underOld - 8, "the grime lies under the raised sill");
+  // 4. The refused slot.
+  console.log(`Refused slot: ${JSON.stringify(layered.refused)}`);
+  assert.match(layered.refused.status, /Last valid preview retained/, "the last valid scene stays");
+  assert.ok(layered.refused.diagnostics.some(text => /^kowloon-joint-rust\.material\.ts:\d+:\d+ .*amount/.test(text)), "the error names the layer's module and its parameter");
 } finally {
   await browser?.close();
   server.close();

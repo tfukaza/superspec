@@ -312,7 +312,9 @@ impl Authoring {
     /// field bake of a project whose `planes` carry those bindings reads them from here.
     ///
     /// `options` is JSON: `names` (which planes; all three when absent), `meshes` (narrows the
-    /// receivers) and `settings` (`OcclusionSettings`; the defaults when absent). The sun is
+    /// receivers), `settings` (`OcclusionSettings`; the defaults when absent) and `held` (asset
+    /// names of planes the host holds: they are keyed but not baked, and the host hands over the
+    /// bytes of those this session lacks with [`Self::hold_occlusion_plane`] before it builds). The sun is
     /// the one of the project document's `lighting` record (the shipped look without one). A
     /// plane whose key this session already holds is not baked again (`baked` is false, no ray
     /// is cast): its key names everything that decides its values.
@@ -360,8 +362,21 @@ impl Authoring {
                 None => PLANES.to_vec(),
             };
             let meshes = list("meshes")?;
+            // Planes the host holds for this session to copy in (`occlusion/<name>/<key>`): it
+            // asks the host for those it lacks before it builds with them.
+            let offered: std::collections::BTreeSet<String> = list("held")?
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|asset| {
+                    let rest = asset.strip_prefix("occlusion/")?;
+                    let (_, key) = rest.split_once('/')?;
+                    Some(key.to_owned())
+                })
+                .collect();
             let store = &self.occlusion;
-            let held = |key: &str| PLANES.iter().any(|name| store.holds(name, key));
+            let held = |key: &str| {
+                offered.contains(key) || PLANES.iter().any(|name| store.holds(name, key))
+            };
             let job = OcclusionJob {
                 lighting: &lighting,
                 settings: &settings,
@@ -433,6 +448,29 @@ impl Authoring {
             .unwrap_or_default()
     }
 
+    /// Whether this session holds the plane bound under `asset`.
+    pub fn holds_occlusion_plane(&self, asset: &str) -> bool {
+        self.occlusion.planes.contains_key(asset)
+    }
+
+    /// Keeps a plane another session baked (the host's copy of it), under the asset name
+    /// [`Self::occlude_project`] binds it with. Bytes that are not an encoded plane are refused.
+    pub fn hold_occlusion_plane(&mut self, asset: String, bytes: &[u8]) -> Result<(), JsValue> {
+        if !asset.starts_with("occlusion/")
+            || asset.len() > 4096
+            || !bytes.starts_with(superspec_engine::materialspec::program::PLANE_MAGIC)
+        {
+            return Err(JsValue::from_str(&format!(
+                "{asset} is not an occlusion plane."
+            )));
+        }
+        self.occlusion.keep(
+            std::slice::from_ref(&asset),
+            [(asset.clone(), Arc::from(bytes))].into(),
+        );
+        Ok(())
+    }
+
     /// The triangle records of the last [`Self::layout_project`], moved out.
     pub fn layout_records(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.layout_records)
@@ -476,11 +514,14 @@ impl Authoring {
         }
         for material in &project.materials {
             if let Some(source) = project.modules.get(&material.entry) {
+                // The slot's layers read images of their own: an image only a layer reads is
+                // fetched like the base's.
                 names.extend(self.session.library_assets(&Request {
                     kind: "material".into(),
                     entry: material.entry.clone(),
                     source: source.clone(),
                     modules: project.modules.clone(),
+                    layers: material.layers.clone(),
                     ..Default::default()
                 }));
             }

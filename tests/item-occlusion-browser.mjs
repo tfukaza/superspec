@@ -5,9 +5,11 @@
  *
  * 1. The GPU preview bakes the planes in the authoring worker (Wasm), binds them to the CPU fields of the slab's hybrid
  *    plan and draws its maps; moss shows on the slab and nowhere it did not before.
- * 2. The CPU bake (`?preview=bake`) of the same project reads the same planes; the slab's picture is compared.
+ * 2. The CPU bake (`?preview=bake`) of the same project reads the same planes; the slab's picture is compared. Each plane
+ *    is baked once (the 64 px draft's are planes of their own atlas), and a moved sun there bakes `shadow` alone too.
  * 3. Moving the sun in the lighting panel bakes `shadow` again and nothing else: `occlusion` and `sunExposure` are held
- *    by key, and only the meshes whose material reads `shadow` are baked again.
+ *    by key, and only the meshes whose material reads `shadow` are baked again. Planes are the page's: an export on the
+ *    build worker finds every plane the preview lane baked and casts no ray.
  *
  * RESOLUTION (default 256) sets the texture size; SCREENSHOTS (default generated/verification/occlusion) names a
  * directory for PNGs and the generated project. Nothing under tests/studio is changed: the project is a copy.
@@ -186,6 +188,16 @@ try {
   const shadowMoved = differing(gpuShot, sunShot, gpu.floor, gpu.clientWidth, 4);
   console.log(`The floor after the sun moved: ${shadowMoved.changed} of ${shadowMoved.pixels} pixels differ by more than 4/255 (mean ${shadowMoved.mean}/255, largest ${shadowMoved.worst}/255)`);
   assert.ok(shadowMoved.changed > 100, "the shadow darkening moved with the sun");
+  // Planes are the page's, not a worker's: a CPU build on the build worker (a PNG export) finds every plane the GPU
+  // preview lane baked and casts no ray.
+  const exported = moved.run;
+  await gpu.page.evaluate(() => { const box = document.querySelector("#export-ktx2"); box.checked = false; document.querySelector("#export-glb").click(); });
+  await gpu.page.waitForFunction(run => JSON.parse(document.querySelector("#viewport").dataset.occlusion ?? "{}").run > run, exported, { timeout: 900000 });
+  const reused = await gpu.json("occlusion");
+  console.log(`Export on the build worker: occluder service ${JSON.stringify(reused)}`);
+  assert.deepEqual(reused.baked, {}, "the export bakes no plane another worker of the page baked");
+  for (const name of ["shadow", "occlusion", "sunExposure"]) assert.equal(reused.held[name], moved.baked[name] ?? moved.held[name], `the export holds ${name}`);
+  assert.deepEqual(reused.rays, {}, "and casts no ray");
   assert.equal(gpu.errors.length, 0, gpu.errors.join("\n"));
   await gpu.page.close();
 
@@ -194,9 +206,29 @@ try {
   const cpuShot = await cpu.shot(`slab-moss-cpu-${resolution}`);
   const cpuMoss = mossy(cpuShot, cpu.floor, cpu.clientWidth);
   const close = differing(gpuShot, cpuShot, gpu.floor, gpu.clientWidth, 16);
-  console.log(`CPU bake: occluder service ${JSON.stringify(await cpu.json("occlusion"))}; moss ${cpuMoss.green} of ${cpuMoss.pixels} pixels; GPU against CPU on the floor: ${close.changed} of ${close.pixels} pixels differ by more than 16/255 (${(close.share * 100).toFixed(2)} %, mean ${close.mean}/255, largest ${close.worst}/255)`);
+  const opened = await cpu.json("occlusion");
+  console.log(`CPU bake: occluder service ${JSON.stringify(opened)}; moss ${cpuMoss.green} of ${cpuMoss.pixels} pixels; GPU against CPU on the floor: ${close.changed} of ${close.pixels} pixels differ by more than 16/255 (${(close.share * 100).toFixed(2)} %, mean ${close.mean}/255, largest ${close.worst}/255)`);
   assert.ok(cpuMoss.share > 0.01, "the CPU bake grows the same moss");
   assert.ok(close.share < 0.05, "the GPU preview of the planes is the CPU bake's picture");
+  // Opening builds a quick 64 px draft and then the full size: each atlas's planes once, the full ones in the second run.
+  assert.equal(opened.run, resolution >= 128 ? 2 : 1, "the draft's planes and the full planes, each baked by one run");
+  assert.deepEqual(opened.held, {}, "a fresh page holds no plane");
+  assert.deepEqual(opened.baked, first.baked, "the full-size planes are baked once");
+  // A moved sun on the CPU-baked page builds again: `shadow` alone is baked, the other planes are found by key.
+  const cpuSun = Date.now();
+  await cpu.page.evaluate(() => {
+    const input = document.querySelector("#lighting-azimuth");
+    input.value = String((Number(input.value) + 70) % 360);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await cpu.page.waitForFunction(run => JSON.parse(document.querySelector("#viewport").dataset.occlusion ?? "{}").run >= run, opened.run + (resolution >= 128 ? 2 : 1), { timeout: 900000 });
+  await cpu.baked();
+  const cpuMoved = await cpu.json("occlusion");
+  console.log(`CPU bake, sun moved 70 degrees: settled in ${Date.now() - cpuSun} ms; occluder service ${JSON.stringify(cpuMoved)}`);
+  assert.deepEqual(Object.keys(cpuMoved.baked), ["shadow"], "a moved sun bakes the shadow plane alone");
+  assert.deepEqual(cpuMoved.held, { occlusion: opened.baked.occlusion, sunExposure: opened.baked.sunExposure }, "occlusion and sun exposure are held by key");
+  const cpuSunShot = await cpu.shot(`slab-moss-cpu-sun-${resolution}`);
+  assert.ok(differing(cpuShot, cpuSunShot, cpu.floor, cpu.clientWidth, 4).changed > 100, "the CPU bake's shadow darkening moved with the sun");
   assert.equal(cpu.errors.length, 0, cpu.errors.join("\n"));
   await cpu.page.close();
   console.log(`Occlusion planes in the Studio passed at ${resolution} px.`);

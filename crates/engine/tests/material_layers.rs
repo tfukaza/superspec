@@ -507,6 +507,111 @@ fn native_layered_packets_for_parity() {
     }
 }
 
+/// A layered project built in one session against the same build shared with other sessions
+/// (`Session::distribute_bakes`, as the browser's helper workers bake it): the time of the local
+/// build, and of each share and of the build that merges them, which must deliver the same bytes:
+/// `cargo test --release -p superspec-engine --test material_layers bench_distributed_layers -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_distributed_layers() {
+    let shares = 6;
+    let mut projects = vec![
+        ("steel under joint rust", pipe_project(0.9)),
+        ("split concrete wall", wall_project(2.7, &[], full())),
+    ];
+    for project in &mut projects {
+        project.1.resolution = 512;
+        project.1.texel_density = Some(128.);
+    }
+    // A Studio project file (assets in base64), such as the split washroom of
+    // tests/stage2-weathering-browser.mjs.
+    let mut supplied: BTreeMap<String, Arc<[u8]>> = BTreeMap::new();
+    if let Ok(path) = std::env::var("SPLIT_PROJECT") {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for (name, text) in value["assets"].as_object().unwrap() {
+            let (mut bytes, mut bits, mut count) = (Vec::new(), 0u32, 0);
+            for c in text.as_str().unwrap().bytes().filter(|c| *c != b'=') {
+                let six = match c {
+                    b'A'..=b'Z' => c - b'A',
+                    b'a'..=b'z' => c - b'a' + 26,
+                    b'0'..=b'9' => c - b'0' + 52,
+                    b'+' => 62,
+                    _ => 63,
+                };
+                bits = bits << 6 | u32::from(six);
+                count += 6;
+                if count >= 8 {
+                    count -= 8;
+                    bytes.push((bits >> count) as u8);
+                }
+            }
+            supplied.insert(name.clone(), bytes.into());
+        }
+        value.as_object_mut().unwrap().remove("assets");
+        projects = vec![("project file", serde_json::from_value(value).unwrap())];
+    }
+    let asset = |name: &str| match supplied.get(name) {
+        Some(bytes) => Ok(bytes.clone()),
+        None => asset(name),
+    };
+    for (label, project) in projects {
+        let started = Instant::now();
+        let local = Session::default()
+            .build_project(&project, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let local_seconds = started.elapsed().as_secs_f64();
+        let mut session = Session::default();
+        session.distribute_bakes(true);
+        let started = Instant::now();
+        assert!(
+            session
+                .build_project(&project, 1, &asset, &|| false)
+                .is_err()
+        );
+        let first = started.elapsed().as_secs_f64();
+        let mut pending = Vec::new();
+        while let Some(bake) = session.take_pending_bake() {
+            pending.push(bake);
+        }
+        let mut helpers: Vec<Session> = (0..shares).map(|_| Session::default()).collect();
+        let mut times = Vec::new();
+        for bake in &pending {
+            for (index, helper) in helpers.iter_mut().enumerate() {
+                let started = Instant::now();
+                let rows = helper
+                    .bake_share(bake, index, shares, &asset, &|| false)
+                    .unwrap_or_else(|e| panic!("{e:?}"));
+                times.push((
+                    bake.keys.len(),
+                    bake.request.layers.len(),
+                    started.elapsed().as_secs_f64(),
+                ));
+                session.provide_bake_share(&rows).unwrap();
+            }
+        }
+        let started = Instant::now();
+        let merged = session
+            .build_project(&project, 1, &asset, &|| false)
+            .unwrap_or_else(|e| panic!("{e:?}"));
+        let last = started.elapsed().as_secs_f64();
+        assert_eq!(
+            merged.scene(1).unwrap().packet(),
+            local.scene(1).unwrap().packet(),
+            "{label}"
+        );
+        println!(
+            "{label}: local {local_seconds:.2} s; distributed: report {first:.2} s, shares {:?}, merge {last:.2} s",
+            times
+                .iter()
+                .map(|(keys, layers, seconds)| format!(
+                    "{keys} keys/{layers} layers {seconds:.2} s"
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
 fn rss() -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     let field = |name: &str| {

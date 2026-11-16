@@ -55,10 +55,10 @@ export interface SceneBakeTarget {
  * superseded. `planes` lists, for each name, the external planes the field reads (the occluder service's `shadow`,
  * `occlusion`, `sunExposure`): the source binds them. `keys`, when the source gives them, name for each field the
  * content of the planes it was baked from, so a field whose planes did not change keeps its identity (and the textures
- * drawn from it) through a request made for another plane.
+ * drawn from it) through a request made for another plane. A mesh whose bake failed carries the engine's reason.
  */
 export type FieldSource = (requests: { mesh: string; names: string[]; planes: string[][] }[]) =>
-  Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] }> | null>;
+  Promise<Map<string, { width: number; height: number; fields: Float32Array[]; keys?: string[] } | { error: string }> | null>;
 
 /** What the scene view gives the baker. */
 export interface SceneBakeHost {
@@ -477,6 +477,10 @@ export class SceneBaker {
         const found = baked.get(entry.target.fieldsId ?? entry.target.mesh.name);
         const wanted = entry.target.shading.shader.cpuFields!;
         const { width, height } = entry.target.layout;
+        if (found && "error" in found) {
+          entry.unsupported = `the CPU field bake failed: ${found.error}`;
+          continue;
+        }
         if (!found || found.fields.length !== wanted.length || found.width !== width || found.height !== height) {
           entry.unsupported = "the CPU field bake did not match the receiver's atlas";
           continue;

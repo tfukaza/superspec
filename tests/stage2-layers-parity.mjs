@@ -30,4 +30,39 @@ for (const step of index.steps) {
   assert.ok(packet.equals(native), `${step}: the packets are the same bytes`);
   console.log(`${step}: ${native.length} bytes identical natively and in Wasm (Wasm build ${elapsed.toFixed(0)} ms)`);
 }
-console.log(`Layered and anchored parity passed: ${index.steps.length} packets.`);
+// The same sequence shared with helper sessions, as the browser's bake helpers share it (`distribute_bakes`): each
+// helper bakes its rows of every layered stack, keeping what it made for its rows of the next step.
+const shares = Number(process.env.SHARES ?? 3);
+const distributed = new Authoring(), helpers = Array.from({ length: shares }, () => new Authoring());
+const assets = Object.fromEntries(index.assets.map(({ name, file }) => [name, readFileSync(resolve(directory, file))]));
+for (const [name, bytes] of Object.entries(assets)) distributed.set_asset(name, bytes);
+revision = 0;
+let shared = 0;
+for (const step of index.steps) {
+  revision++;
+  const source = readFileSync(resolve(directory, `${step}.json`), "utf8");
+  distributed.distribute_bakes(true);
+  let reply;
+  // As the authoring worker does: a build reports every large bake, the helpers bake them all, and it builds again.
+  for (let round = 0; ; round++) {
+    reply = JSON.parse(distributed.preview_project(source, revision));
+    const pending = [];
+    for (let bake = distributed.take_pending_bake(); bake; bake = distributed.take_pending_bake()) pending.push(bake);
+    if (!pending.length) break;
+    assert.ok(round < 2, `${step}: the shares are taken`);
+    for (const bake of pending) {
+      const described = JSON.parse(bake);
+      shared += described.request.layers?.length ? 1 : 0;
+      for (const [at, helper] of helpers.entries()) {
+        helper.clear_assets();
+        for (const name of [...described.images, ...(described.planes ?? [])]) helper.set_asset(name, assets[name]);
+        distributed.provide_bake_share(helper.bake_share(bake, at, shares));
+      }
+    }
+  }
+  distributed.distribute_bakes(false);
+  assert.equal(reply.success, true, `${step} (distributed): ${JSON.stringify(reply.diagnostics)}`);
+  assert.ok(Buffer.from(distributed.packet()).equals(readFileSync(resolve(directory, `${step}.bin`))), `${step}: the distributed packet is the same bytes`);
+}
+assert.ok(shared > 0, "layered stacks were shared with helpers");
+console.log(`Layered and anchored parity passed: ${index.steps.length} packets, and ${index.steps.length} again with ${shared} layered bakes shared across ${shares} helper sessions.`);

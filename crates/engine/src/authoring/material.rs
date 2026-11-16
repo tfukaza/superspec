@@ -820,6 +820,66 @@ impl Session {
         programs.extend(layers);
         Ok(Some((composite, chain, programs)))
     }
+
+    /// The composite a layered request bakes, compiled with the base's live operations. The
+    /// composite is the engine's own text, so what fails in it is reported on the slot's base
+    /// module (`slot`): a stack whose channels and live inputs exceed what one program reads.
+    fn composite(
+        &mut self,
+        composite: &Request,
+        chain: &Chain,
+        slot: &str,
+    ) -> Result<Arc<Program>, Vec<Diagnostic>> {
+        let attribute = |errors: Vec<Diagnostic>| -> Vec<Diagnostic> {
+            errors
+                .into_iter()
+                .map(|error| {
+                    if error.source_name != COMPOSITE_ENTRY {
+                        return error;
+                    }
+                    Diagnostic {
+                        code: error.code,
+                        ..Diagnostic::message(
+                            slot,
+                            format!(
+                                "The layered slot cannot compose its base and layers: {}",
+                                error.message
+                            ),
+                        )
+                    }
+                })
+                .collect()
+        };
+        let mut program = self.program(composite).map_err(attribute)?;
+        if !chain.live.is_empty() {
+            let live = program.with_live(chain.live.clone()).map_err(|message| {
+                attribute(vec![Diagnostic::message(COMPOSITE_ENTRY, message)])
+            })?;
+            program = Arc::new(live);
+        }
+        Ok(program)
+    }
+
+    /// Checks a layered slot as its build does before it bakes anything: the stack, the
+    /// composite it bakes and each layer's parameters. Hosts that compose the layers themselves
+    /// (a GPU preview) report the same errors as a bake.
+    pub(super) fn check_layered(&mut self, request: &Request) -> Result<(), Vec<Diagnostic>> {
+        let Some((composite, chain, programs)) = self.layered(request)? else {
+            return Ok(());
+        };
+        self.composite(&composite, &chain, &request.entry)?;
+        for (program, layer) in programs[1..].iter().zip(&request.layers) {
+            let inputs = Inputs {
+                parameters: layer.parameters.clone(),
+                seed: layer.seed,
+                ..Inputs::default()
+            };
+            program
+                .input_fingerprint(&inputs, &program::Dependencies::default())
+                .map_err(|error| vec![Diagnostic::from(error)])?;
+        }
+        Ok(())
+    }
 }
 
 /// Layers a slot composes over its base at most.
@@ -1270,7 +1330,8 @@ fn output_rows(
 /// stack beneath it) at each texel and leg point. Rows are split across `threads` and written
 /// back in order, so threads never change a value; values on the lattice of an intrinsic output
 /// are read from and added to its raster (`rasters`, by wanted slot), which never changes one
-/// either.
+/// either. With `only`, just those rows are baked (a texel's values read nothing of other
+/// rows), into planes that hold the texels from the first of them to the last.
 #[allow(clippy::too_many_arguments)]
 fn bake_output_planes(
     program: &Program,
@@ -1282,6 +1343,7 @@ fn bake_output_planes(
     externals: &[&program::Plane],
     threads: usize,
     rasters: &mut [Option<&mut IntrinsicRaster>],
+    only: Option<&RowSet>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<program::Plane>, Diagnostic> {
     #[cfg(test)]
@@ -1292,6 +1354,11 @@ fn bake_output_planes(
     let entry = program.metadata().entry.as_str();
     let failure = |message: String| Diagnostic::message(entry, message);
     let pixels = atlas.width * atlas.height;
+    let mut rows = atlas_rows(atlas);
+    if let Some(only) = only {
+        rows.retain(|row| only.contains(row));
+    }
+    let window = rows_window(atlas, only);
     let mut outputs = program::OutputSet::NONE;
     let mut planes = Vec::with_capacity(wanted.len());
     let mut values = Vec::with_capacity(wanted.len());
@@ -1304,10 +1371,12 @@ fn bake_output_planes(
             )));
         }
         outputs = outputs.union(program::OutputSet::named(value));
-        planes.push(program::Plane::exact_external(name, components, pixels).map_err(&failure)?);
+        planes.push(
+            program::Plane::exact_window(name, components, pixels, window.clone())
+                .map_err(&failure)?,
+        );
         values.push(*value);
     }
-    let rows = atlas_rows(atlas);
     let evaluator = || -> Result<program::Evaluator<'_>, Diagnostic> {
         static NONE: std::sync::OnceLock<program::FeatureSet> = std::sync::OnceLock::new();
         let features = if queries_features(program) {
@@ -1403,12 +1472,13 @@ fn bake_output_planes(
 /// the external inputs `wanted` names (input name, value), exactly as that material's own bake
 /// evaluates them at each texel: fields keep their filtering estimates, outputs have none. A
 /// texel that samples the point of the texel before it in its row repeats that texel, as the
-/// maps baked from these planes do.
+/// maps baked from these planes do. With `only`, just those rows are baked.
 fn bake_source_planes(
     source: &Source,
     decoded: &Inputs,
     atlas: &Atlas,
     wanted: &[(&str, &str)],
+    only: Option<&RowSet>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<program::Plane>, Diagnostic> {
     #[cfg(test)]
@@ -1434,6 +1504,7 @@ fn bake_source_planes(
         mips: decoded.mips.clone(),
     };
     // Planes of fields are filled by the evaluator; planes of outputs from each sample's result.
+    let window = rows_window(atlas, only);
     let mut filled: Vec<program::Plane> = Vec::new();
     let mut field_names: Vec<&str> = Vec::new();
     let mut outputs = program::OutputSet::NONE;
@@ -1445,13 +1516,18 @@ fn bake_source_planes(
         match field {
             Some(index) => {
                 order.push((true, filled.len()));
-                filled.push(program::Plane::new(index, components, pixels));
+                filled.push(program::Plane::new_window(
+                    index,
+                    components,
+                    pixels,
+                    window.clone(),
+                ));
                 field_names.push(value);
             }
             None => {
                 outputs = outputs.union(program::OutputSet::named(value));
-                let plane =
-                    program::Plane::exact_external(name, components, pixels).map_err(&failure)?;
+                let plane = program::Plane::exact_window(name, components, pixels, window.clone())
+                    .map_err(&failure)?;
                 order.push((false, output_planes.len()));
                 output_planes.push((slot, value, plane));
             }
@@ -1460,8 +1536,11 @@ fn bake_source_planes(
     let selection = program.select_fields(&field_names).map_err(&failure)?;
     let mut evaluator = receiver_evaluator(program, &inputs, atlas).map_err(Diagnostic::from)?;
     let mut values = Vec::new();
-    for chart in &atlas.charts {
+    for (chart_index, chart) in atlas.charts.iter().enumerate() {
         for y in 0..chart.height {
+            if only.is_some_and(|only| !only.contains(&(chart_index, y))) {
+                continue;
+            }
             if cancelled() {
                 return Err(failure("Material authoring cancelled.".into()));
             }
@@ -1579,6 +1658,412 @@ fn bake_source_planes(
             }
         })
         .collect()
+}
+
+/// Rows of an atlas, as (chart, row in the chart).
+type RowSet = std::collections::BTreeSet<(usize, usize)>;
+
+/// The texels from the first of `only`'s rows to the last (all of the atlas without it): the
+/// window of a plane baked over those rows.
+fn rows_window(atlas: &Atlas, only: Option<&RowSet>) -> std::ops::Range<usize> {
+    let pixels = atlas.width * atlas.height;
+    let Some(only) = only else {
+        return 0..pixels;
+    };
+    only.iter()
+        .map(|&(chart, y)| {
+            let chart = &atlas.charts[chart];
+            let start = (chart.y + y) * atlas.width + chart.x;
+            start..start + chart.width
+        })
+        .fold(pixels..0, |window, row| {
+            window.start.min(row.start)..window.end.max(row.end)
+        })
+}
+
+/// The rows whose planes a share of a layered bake reads: its own (see [`bake_rows`]) and the
+/// rows of the same chart just above and below them, whose heights its relief reads.
+fn share_rows(atlas: &Atlas, index: usize, count: usize) -> RowSet {
+    let rows = atlas_rows(atlas);
+    let (first, last) = (rows.len() * index / count, rows.len() * (index + 1) / count);
+    let mut wanted = RowSet::new();
+    for &(chart, y) in &rows[first..last] {
+        wanted.insert((chart, y));
+        if y > 0 {
+            wanted.insert((chart, y - 1));
+        }
+        if y + 1 < atlas.charts[chart].height {
+            wanted.insert((chart, y + 1));
+        }
+    }
+    wanted
+}
+
+/// The decoded images of a layered stack's materials, by material name, among the artifacts
+/// of a node's dependencies or a run's targets whose names start with `prefix`.
+fn stack_sources(
+    artifacts: &BTreeMap<String, Arc<Artifact>>,
+    prefix: &str,
+) -> BTreeMap<String, Arc<Inputs>> {
+    artifacts
+        .iter()
+        .filter_map(|(name, artifact)| match artifact.as_ref() {
+            Artifact::Inputs(inputs) => {
+                Some((name.strip_prefix(prefix)?.to_owned(), inputs.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A layered stack's planes in one build (see [`Request::layers`]). Planes are not nodes the
+/// build graph runs: the maps that read them make them when those maps' rows are evaluated
+/// here, so a map whose rows other sessions evaluated (each making the stack over its own
+/// rows) costs none, and a map an earlier build kept costs none either.
+#[derive(Default)]
+struct StackPlanes {
+    /// Planes by node id: kept by an earlier build, or made by this one.
+    made: BTreeMap<String, Arc<BakedReceiver>>,
+    /// Planes this build made, to keep when it finishes; empty when it keeps none.
+    baked: Vec<(String, Arc<BakedReceiver>)>,
+    /// Whether the build keeps what it makes. A build that does not lets each receiver's planes
+    /// go once its maps are baked, and each plane once nothing more of its receiver reads it.
+    keep: bool,
+    /// The rasters of the stack's intrinsic outputs the build reads and adds to, and which
+    /// plane each serves.
+    rasters: Rasters,
+    raster_of: BTreeMap<String, ContentKey>,
+}
+
+impl StackPlanes {
+    /// Lets the planes of receiver `index` go (a build that keeps none, once its maps are baked).
+    fn release(&mut self, context: &StackContext<'_>, index: usize) {
+        self.made.retain(|id, _| {
+            context
+                .planes
+                .nodes
+                .get(id)
+                .is_none_or(|node| node.index != index)
+        });
+    }
+}
+
+/// What a layered build makes its stack's planes from.
+struct StackContext<'a> {
+    planes: &'a BoundPlanes,
+    /// The composite program, which with the stack's materials says how an asset plane is read.
+    compiled: &'a Program,
+    /// The composite request: its receivers' named features and its planes.
+    request: &'a Request,
+    receivers: &'a [super::Receiver],
+    threads: usize,
+}
+
+impl StackContext<'_> {
+    /// Makes the planes `wanted` of receiver `index` (node ids), and the planes they read,
+    /// over `only` rows or all. Each material bakes the planes of it the receiver needs in one
+    /// pass, after the planes beneath it; planes kept by an earlier build are read, not made.
+    /// `sources` holds each material's decoded images.
+    #[allow(clippy::too_many_arguments)]
+    fn make(
+        &self,
+        stack: &mut StackPlanes,
+        index: usize,
+        atlas: &Atlas,
+        sources: &BTreeMap<String, Arc<Inputs>>,
+        wanted: &[String],
+        only: Option<&RowSet>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Diagnostic> {
+        let mut needed = std::collections::BTreeSet::new();
+        let mut pending: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        while let Some(id) = pending.pop() {
+            if stack.made.contains_key(id) || !needed.insert(id.to_owned()) {
+                continue;
+            }
+            pending.extend(
+                self.planes.nodes[id]
+                    .reads
+                    .iter()
+                    .map(|(_, read)| read.as_str()),
+            );
+        }
+        for id in wanted {
+            self.ensure(
+                stack, index, atlas, sources, id, &needed, wanted, only, stopped,
+            )?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn ensure(
+        &self,
+        stack: &mut StackPlanes,
+        index: usize,
+        atlas: &Atlas,
+        sources: &BTreeMap<String, Arc<Inputs>>,
+        id: &str,
+        needed: &std::collections::BTreeSet<String>,
+        wanted: &[String],
+        only: Option<&RowSet>,
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), Diagnostic> {
+        if stack.made.contains_key(id) {
+            return Ok(());
+        }
+        let entry = self.request.entry.as_str();
+        let node = &self.planes.nodes[id];
+        let (material, value) = match &node.bound {
+            Bound::Asset(bytes) => {
+                let components = plane_components(self.compiled, self.planes, &node.name);
+                let (decoded, _) = decoded_plane(components, &node.name, bytes, atlas)
+                    .map_err(|message| Diagnostic::message(entry, message))?;
+                let Artifact::Material(plane) = decoded else {
+                    unreachable!("a decoded plane")
+                };
+                stack.made.insert(id.to_owned(), plane);
+                return Ok(());
+            }
+            Bound::Material { material, value } => (material, value),
+        };
+        for (_, read) in &node.reads {
+            self.ensure(
+                stack, index, atlas, sources, read, needed, wanted, only, stopped,
+            )?;
+        }
+        let source = &self.planes.sources[material];
+        // A stack's field planes (a base's live inputs) and output planes are baked apart:
+        // outputs have the faster pass.
+        let field = |value: &str| {
+            matches!(
+                source_value(&source.program, &source.table, value),
+                Some((Some(_), _, _))
+            )
+        };
+        let own_field = field(value);
+        let held: Vec<&String> = node.reads.iter().map(|(_, read)| read).collect();
+        let mut group: Vec<(&str, &str, &str)> = vec![(id, &node.name, value)];
+        for (other_id, other) in &self.planes.nodes {
+            let Bound::Material {
+                material: from,
+                value,
+            } = &other.bound
+            else {
+                continue;
+            };
+            if from == material
+                && other_id != id
+                && other.index == index
+                && PlaneNode::layered(other_id)
+                && needed.contains(other_id)
+                && !stack.made.contains_key(other_id)
+                && other.reads.iter().all(|(_, read)| held.contains(&read))
+                && field(value) == own_field
+            {
+                group.push((other_id, &other.name, value));
+            }
+        }
+        let decoded = sources.get(material).ok_or_else(|| {
+            Diagnostic::message(
+                entry,
+                format!("The images of '{material}' are not decoded."),
+            )
+        })?;
+        let pairs: Vec<(&str, &str)> = group
+            .iter()
+            .map(|(_, name, value)| (*name, *value))
+            .collect();
+        let StackPlanes {
+            made,
+            baked,
+            keep,
+            rasters,
+            raster_of,
+        } = stack;
+        let baked_now = if own_field {
+            bake_source_planes(source, decoded, atlas, &pairs, only, stopped)?
+        } else {
+            let inputs = Inputs {
+                parameters: source.request.parameters.clone(),
+                seed: source.request.seed,
+                images: decoded.images.clone(),
+                edges: source.request.edges.clone(),
+                features: Vec::new(),
+                mips: decoded.mips.clone(),
+            };
+            let renamed;
+            let named = if source.follow.is_empty() {
+                &atlas.named
+            } else {
+                let features = self
+                    .request
+                    .features
+                    .get(&self.receivers[index].id)
+                    .map_or(&[][..], Vec::as_slice);
+                renamed = followed(features, &source.follow)
+                    .map_err(|message| Diagnostic::message(entry, message))?;
+                &renamed
+            };
+            let externals: Vec<&program::Plane> = node
+                .reads
+                .iter()
+                .filter_map(|(_, read)| match made.get(read)?.as_ref() {
+                    BakedReceiver::Plane(plane) => Some(plane),
+                    _ => None,
+                })
+                .collect();
+            // The rasters of the intrinsic outputs, out of the build's map while this pass reads
+            // and fills them.
+            let mut taken: Vec<Option<(ContentKey, WorkingRaster)>> = group
+                .iter()
+                .map(|(made, _, _)| {
+                    let key = raster_of.get(*made)?;
+                    Some((*key, rasters.remove(key)?))
+                })
+                .collect();
+            let before: Vec<usize> = taken
+                .iter()
+                .map(|taken| taken.as_ref().map_or(0, |(_, w)| w.raster.points))
+                .collect();
+            let mut reading: Vec<Option<&mut IntrinsicRaster>> = taken
+                .iter_mut()
+                .map(|taken| taken.as_mut().map(|(_, w)| &mut w.raster))
+                .collect();
+            let result = bake_output_planes(
+                &source.program,
+                &source.table,
+                &inputs,
+                atlas,
+                named,
+                &pairs,
+                &externals,
+                self.threads,
+                &mut reading,
+                only,
+                stopped,
+            );
+            drop(reading);
+            for (taken, before) in taken.into_iter().zip(before) {
+                if let Some((key, mut working)) = taken {
+                    working.changed |= working.raster.points != before;
+                    rasters.insert(key, working);
+                }
+            }
+            result?
+        };
+        for ((made_id, _, _), plane) in group.iter().zip(baked_now) {
+            let plane = Arc::new(BakedReceiver::Plane(plane));
+            if *keep {
+                baked.push(((*made_id).to_owned(), plane.clone()));
+            }
+            made.insert((*made_id).to_owned(), plane);
+        }
+        // A build that keeps no plane lets each go once nothing more of the receiver reads it.
+        if !*keep {
+            let planes = self.planes;
+            let unread: Vec<String> = made
+                .keys()
+                .filter(|candidate| {
+                    planes
+                        .nodes
+                        .get(*candidate)
+                        .is_some_and(|node| node.index == index)
+                        && !wanted.contains(candidate)
+                        && needed.iter().all(|consumer| {
+                            made.contains_key(consumer)
+                                || !planes.nodes[consumer]
+                                    .reads
+                                    .iter()
+                                    .any(|(_, read)| read == *candidate)
+                        })
+                })
+                .cloned()
+                .collect();
+            for id in unread {
+                made.remove(&id);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether rows evaluated elsewhere (`have` says what they carry) fit `atlas` and hold the data
+/// of the maps `wanted` (see [`bake_groups`]), which then merges them instead of evaluating.
+fn provided_fits(
+    atlas: &Atlas,
+    wanted: Groups,
+    live_count: usize,
+    have: Groups,
+    provided: &[Row],
+) -> bool {
+    let data = if live_count == 0 {
+        wanted.rows().without(Group::Live)
+    } else {
+        wanted.rows()
+    };
+    let has = |group: Group| data.contains(group);
+    // The width of every chart row, in the order rows are merged (see `atlas_rows`).
+    let cells = || {
+        atlas
+            .charts
+            .iter()
+            .flat_map(|chart| std::iter::repeat_n(chart.width, chart.height))
+    };
+    have.contains_all(data)
+        && provided.len() == cells().count()
+        && provided.iter().zip(cells()).all(|(row, cell)| {
+            row.cell == cell
+                && (!has(Group::Color) || row.color.len() == cell * 4)
+                && (!has(Group::Normal) || row.normal.len() == cell * 4)
+                && (!has(Group::Properties)
+                    || (row.roughness.len() == cell && row.metalness.len() == cell))
+                && (!has(Group::Live)
+                    || (row.live.len() == live_count
+                        && row.live.iter().all(|values| values.len() == cell)))
+                && (!has(Group::Emissive) || !row.emits || row.emitted.len() == cell)
+        })
+}
+
+impl Session {
+    /// Keeps what a finished build made of its layered stacks: their planes (under `key`) and the
+    /// rasters of intrinsic outputs that gained values; nothing for a build that keeps none.
+    fn keep_stack(&self, stack: StackPlanes, key: &dyn Fn(&str) -> ContentKey, keep: bool) {
+        if !keep {
+            return;
+        }
+        for (raster, working) in stack.rasters {
+            if working.changed {
+                let bytes = working.raster.bytes();
+                self.runtime.retain(
+                    INTRINSIC_OUTPUTS,
+                    raster,
+                    Artifact::Material(Arc::new(BakedReceiver::Intrinsic(working.raster))),
+                    bytes,
+                    true,
+                );
+            }
+        }
+        self.keep_planes(stack.baked, key);
+    }
+
+    /// Keeps planes of a layered stack under `key`, apart from the build graph's store.
+    fn keep_planes(
+        &self,
+        planes: Vec<(String, Arc<BakedReceiver>)>,
+        key: &dyn Fn(&str) -> ContentKey,
+    ) {
+        for (id, plane) in planes {
+            let bytes = plane.bytes();
+            self.runtime.retain(
+                LAYER_PLANES,
+                key(&id),
+                Artifact::Material(plane),
+                bytes,
+                false,
+            );
+        }
+    }
 }
 
 /// A plane baked for the external input `name`, as a `plane/` node's artifact, checked against
@@ -2207,16 +2692,13 @@ impl Session {
             _ => request,
         };
         // A layered slot bakes a composite that reads its stack's planes; what the slot declares
-        // about how it is drawn is its base's.
+        // about how it is drawn is its base's. Other sessions bake shares of the slot as written.
+        let original = request;
         let layered = self.layered(request)?;
         let declared = compiled.metadata().clone();
         let (request, chain, compiled) = match &layered {
             Some((composite, chain, _)) => {
-                let mut program = self.program(composite)?;
-                if !chain.live.is_empty() {
-                    let fail = |message| vec![Diagnostic::message(&composite.entry, message)];
-                    program = Arc::new(program.with_live(chain.live.clone()).map_err(fail)?);
-                }
+                let program = self.composite(composite, chain, &original.entry)?;
                 (composite, Some(chain), program)
             }
             None => (request, None, compiled),
@@ -2266,8 +2748,6 @@ impl Session {
         };
         let mut targets = vec![];
         for (i, receiver) in receivers.iter().enumerate() {
-            let layout = format!("layout/{i}");
-            let bake = format!("bake/{i}");
             nodes.push(layout_node(i, receiver, request));
             plane_nodes(
                 &planes,
@@ -2278,6 +2758,62 @@ impl Session {
                 chain.is_some(),
             )
             .map_err(&fail)?;
+        }
+        // A layered stack's planes are made by the maps that read them, when those maps are
+        // evaluated here (see `StackPlanes`): never for maps whose rows other sessions evaluated.
+        // A map is keyed by the keys of the planes it reads, and depends on the decoded images of
+        // the stack's materials, which it bakes them from.
+        let stack_keys: BTreeMap<String, ContentKey> = if chain.is_some() {
+            let ids: Vec<String> = planes
+                .nodes
+                .keys()
+                .filter(|id| PlaneNode::layered(id))
+                .cloned()
+                .collect();
+            let keyed = Plan::new(nodes.clone(), ids.clone()).map_err(|e| fail(e.to_string()))?;
+            ids.into_iter()
+                .map(|id| {
+                    let key = keyed.key(&id).expect("planned plane");
+                    (id, key)
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        let stack_materials: Vec<String> = planes
+            .nodes
+            .iter()
+            .filter(|(id, _)| PlaneNode::layered(id))
+            .filter_map(|(_, plane)| match &plane.bound {
+                Bound::Material { material, .. } => Some(material.clone()),
+                Bound::Asset(_) => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let stack_dependencies = |i: usize, read: Option<&program::Dependencies>| {
+            let mut inputs = Vec::new();
+            for (name, id) in &planes[i] {
+                if read.is_none_or(|read| read.externals.contains(name)) {
+                    inputs.extend(name.as_bytes());
+                    inputs.push(0);
+                    inputs.extend(stack_keys[id]);
+                }
+            }
+            let dependencies: Vec<Dependency> = stack_materials
+                .iter()
+                .map(|material| {
+                    dependency(
+                        &format!("stack-assets/{material}"),
+                        format!("assets:{material}"),
+                    )
+                })
+                .collect();
+            (inputs, dependencies)
+        };
+        for i in 0..receivers.len() {
+            let layout = format!("layout/{i}");
+            let bake = format!("bake/{i}");
             let mut bake_dependencies = vec![
                 dependency("mapping", layout.clone()),
                 dependency("program", "program"),
@@ -2324,7 +2860,14 @@ impl Session {
                     dependency("program", "program"),
                     dependency("assets", "assets"),
                 ];
-                group_inputs.extend(plane_dependencies(i, Some(&dependencies)));
+                if chain.is_some() {
+                    let (planes_read, stack) = stack_dependencies(i, Some(&dependencies));
+                    inputs_identity.push(0);
+                    inputs_identity.extend(planes_read);
+                    group_inputs.extend(stack);
+                } else {
+                    group_inputs.extend(plane_dependencies(i, Some(&dependencies)));
+                }
                 nodes.push(node(
                     id.clone(),
                     "material-group-v2",
@@ -2343,9 +2886,20 @@ impl Session {
                 .filter(|node| !node.id.starts_with("bake/"))
                 .cloned()
                 .collect();
+            // A layered share bakes the planes its rows read itself, from the decoded images of
+            // the stack's materials.
+            let layered = chain.is_some();
             let targets = (0..receivers.len())
-                .flat_map(|i| std::iter::once(format!("layout/{i}")).chain(plane_ids(i)))
+                .flat_map(|i| {
+                    std::iter::once(format!("layout/{i}"))
+                        .chain(plane_ids(i).filter(move |_| !layered))
+                })
                 .chain(["program".to_owned(), "inputs".to_owned()])
+                .chain(
+                    stack_materials
+                        .iter()
+                        .map(|material| format!("assets:{material}")),
+                )
                 .collect();
             Plan::new(nodes, targets)
         });
@@ -2375,9 +2929,14 @@ impl Session {
                     .fold(Groups::NONE, Groups::with)
             })
             .collect();
-        // A bake that reads planes baked from another material stays here: a session that bakes a
-        // share would have to bake those planes over again, or be sent them.
-        if share.is_none() && self.distribution.enabled && planes.sources.is_empty() {
+        // A bake that reads planes baked from another material of the request stays here: a
+        // session that bakes a share would have to bake those planes over again, or be sent them.
+        // A layered slot's share is the whole stack over its rows (the planes of a texel read
+        // only the planes beneath at that texel), which the session baking it makes itself.
+        if share.is_none()
+            && self.distribution.enabled
+            && (planes.sources.is_empty() || chain.is_some())
+        {
             let complete = |key: &ContentKey, wanted: Groups| {
                 self.distribution.provided.get(key).is_some_and(|provided| {
                     provided.groups.contains_all(wanted.rows())
@@ -2398,23 +2957,34 @@ impl Session {
                 for key in keys.iter().filter_map(|key| parse_key(key)) {
                     self.distribution.report(key);
                 }
-                let plane_assets: std::collections::BTreeSet<String> = receivers
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, receiver)| {
-                        let named = request.planes.get(&receiver.id);
-                        planes[i]
-                            .iter()
-                            .filter_map(move |(name, _)| match named?.get(name)? {
-                                super::PlaneSource::Asset(asset) => Some(asset.clone()),
-                                super::PlaneSource::Material { .. } => None,
-                            })
+                // Every asset plane the build reads: the entry's, and those a stack's layers read.
+                let plane_assets: std::collections::BTreeSet<String> = planes
+                    .nodes
+                    .values()
+                    .filter_map(|plane| {
+                        let Bound::Asset(_) = plane.bound else {
+                            return None;
+                        };
+                        let named = request.planes.get(&receivers[plane.index].id)?;
+                        match named.get(&plane.name)? {
+                            super::PlaneSource::Asset(asset) => Some(asset.clone()),
+                            super::PlaneSource::Material { .. } => None,
+                        }
                     })
                     .collect();
+                let images: std::collections::BTreeSet<String> = image_bytes
+                    .keys()
+                    .chain(source_images.keys().filter(|_| chain.is_some()))
+                    .cloned()
+                    .collect();
                 self.distribution.pending.push(PendingBake {
-                    request: request.clone(),
+                    request: if chain.is_some() {
+                        original.clone()
+                    } else {
+                        request.clone()
+                    },
                     keys,
-                    images: image_bytes.keys().cloned().collect(),
+                    images: images.into_iter().collect(),
                     groups,
                     planes: plane_assets.into_iter().collect(),
                 });
@@ -2568,22 +3138,37 @@ impl Session {
         // Planes baked alongside the one a producer was asked for, and the planes no retained
         // artifact holds.
         let mut baked_planes: BTreeMap<String, Arc<BakedReceiver>> = BTreeMap::new();
-        // Planes of a layered stack an earlier build kept apart from the graph's store, by id.
-        let mut kept_layer_planes: BTreeMap<String, Arc<BakedReceiver>> = BTreeMap::new();
-        // The rasters of the stack's intrinsic outputs this build reads and adds to, and which
-        // plane each serves.
-        let mut output_rasters: Rasters = Rasters::new();
-        let mut raster_of: BTreeMap<String, ContentKey> = BTreeMap::new();
+        // A layered stack's planes: those an earlier build kept apart from the graph's store,
+        // by id, then those this build bakes. A share keeps the planes of its rows under keys
+        // of its own. A production build keeps none beyond the receiver that reads them.
+        let keep_stack = request.profile != super::Profile::Production;
+        let stack_key = |id: &str| -> ContentKey {
+            let key = stack_keys[id];
+            match &share {
+                None => key,
+                Some(share) => {
+                    let mut digest = Sha256::new();
+                    digest.update(b"material-layer-share-v1");
+                    digest.update(key);
+                    digest.update((share.index as u64).to_le_bytes());
+                    digest.update((share.count as u64).to_le_bytes());
+                    digest.finalize().into()
+                }
+            }
+        };
+        let mut stack = StackPlanes {
+            keep: keep_stack,
+            ..StackPlanes::default()
+        };
         for (id, plane) in &planes.nodes {
             let (true, Bound::Material { material, value }) =
                 (PlaneNode::layered(id), &plane.bound)
             else {
                 continue;
             };
-            let Some(key) = plan.key(id) else { continue };
-            if let Some(found) = self.runtime.lookup(LAYER_PLANES, &key) {
+            if let Some(found) = self.runtime.lookup(LAYER_PLANES, &stack_key(id)) {
                 if let Artifact::Material(baked) = found.as_ref() {
-                    kept_layer_planes.insert(id.clone(), baked.clone());
+                    stack.made.insert(id.clone(), baked.clone());
                     continue;
                 }
             }
@@ -2619,8 +3204,8 @@ impl Session {
                 Err(_) => continue,
             }
             let raster: ContentKey = digest.finalize().into();
-            raster_of.insert(id.clone(), raster);
-            if !output_rasters.contains_key(&raster) {
+            stack.raster_of.insert(id.clone(), raster);
+            if !stack.rasters.contains_key(&raster) {
                 let kept = self.runtime.lookup(INTRINSIC_OUTPUTS, &raster);
                 let kept = kept.and_then(|found| match found.as_ref() {
                     Artifact::Material(baked) => match baked.as_ref() {
@@ -2633,7 +3218,7 @@ impl Session {
                     cap: INTRINSIC_OUTPUT_BYTES,
                     ..Default::default()
                 });
-                output_rasters.insert(
+                stack.rasters.insert(
                     raster,
                     WorkingRaster {
                         raster: raster_value,
@@ -2643,16 +3228,23 @@ impl Session {
                 );
             }
         }
+        // The planes of other materials of the request (not of a stack) no retained artifact holds.
         let mut plane_dirty: std::collections::BTreeSet<String> = planes
             .nodes
             .keys()
             .filter(|id| {
                 let key = plan.key(id).expect("planned plane");
-                !self.runtime.holds(&key) && !kept_layer_planes.contains_key(*id)
+                !PlaneNode::layered(id) && !self.runtime.holds(&key)
             })
             .cloned()
             .collect();
-        let mut made_layer_planes: Vec<(String, Arc<BakedReceiver>)> = Vec::new();
+        let stack_context = StackContext {
+            planes: &planes,
+            compiled: &compiled,
+            request,
+            receivers: &receivers,
+            threads: request.profile.threads(),
+        };
         let mips = self.mips.clone();
         let complete = self
             .runtime
@@ -2730,32 +3322,15 @@ impl Session {
                             Bound::Material { material, value } => (material, value),
                         };
                         if let Some(done) = baked_planes.remove(id) {
-                            if PlaneNode::layered(id) {
-                                made_layer_planes.push((id.to_owned(), done.clone()));
-                            }
                             let bytes = done.bytes();
                             return Ok((Artifact::Material(done), bytes));
                         }
-                        if let Some(done) = kept_layer_planes.get(id) {
-                            let bytes = done.bytes();
-                            return Ok((Artifact::Material(done.clone()), bytes));
-                        }
-                        // One pass bakes every plane of this material the build still needs for
-                        // the receiver whose inputs this node holds, so what the values share is
-                        // evaluated once.
-                        let layered = PlaneNode::layered(id);
+                        // A plane of another material of the request (a stack's planes are made
+                        // by the maps that read them, see `StackPlanes`). One pass bakes every
+                        // plane of this material the build still needs for the receiver whose
+                        // inputs this node holds, so what the values share is evaluated once.
                         let held: Vec<&String> = plane.reads.iter().map(|(_, id)| id).collect();
                         let mut wanted: Vec<(&str, &str, &str)> = vec![(id, &plane.name, value)];
-                        let source = &planes.sources[material];
-                        // A stack's field planes (a base's live inputs) and output planes are
-                        // baked apart: outputs have the faster pass.
-                        let field = |value: &str| {
-                            matches!(
-                                source_value(&source.program, &source.table, value),
-                                Some((Some(_), _, _))
-                            )
-                        };
-                        let own_field = field(value);
                         for (other_id, other) in &planes.nodes {
                             let Bound::Material {
                                 material: from,
@@ -2767,10 +3342,8 @@ impl Session {
                             if from == material
                                 && other_id != id
                                 && other.index == index
-                                && PlaneNode::layered(other_id) == layered
                                 && plane_dirty.contains(other_id)
                                 && other.reads.iter().all(|(_, read)| held.contains(&read))
-                                && (!layered || field(value) == own_field)
                             {
                                 wanted.push((other_id, &other.name, value));
                             }
@@ -2799,57 +3372,21 @@ impl Session {
                                 features: Vec::new(),
                                 mips: decoded.mips.clone(),
                             };
-                            let renamed;
-                            let named = if source.follow.is_empty() {
-                                &atlas.named
-                            } else {
-                                let features = request
-                                    .features
-                                    .get(&receivers[index].id)
-                                    .map_or(&[][..], Vec::as_slice);
-                                renamed = followed(features, &source.follow)?;
-                                &renamed
-                            };
-                            let externals = external_planes(dependencies);
-                            // The rasters of the intrinsic outputs, out of the build's map while
-                            // this pass reads and fills them.
-                            let mut taken: Vec<Option<(ContentKey, WorkingRaster)>> = wanted
-                                .iter()
-                                .map(|(made, _, _)| {
-                                    let key = raster_of.get(*made)?;
-                                    Some((*key, output_rasters.remove(key)?))
-                                })
-                                .collect();
-                            let before: Vec<usize> = taken
-                                .iter()
-                                .map(|taken| taken.as_ref().map_or(0, |(_, w)| w.raster.points))
-                                .collect();
-                            let mut reading: Vec<Option<&mut IntrinsicRaster>> = taken
-                                .iter_mut()
-                                .map(|taken| taken.as_mut().map(|(_, w)| &mut w.raster))
-                                .collect();
-                            let baked = bake_output_planes(
+                            bake_output_planes(
                                 &source.program,
                                 &source.table,
                                 &inputs,
                                 atlas,
-                                named,
+                                &atlas.named,
                                 &pairs,
-                                &externals,
+                                &external_planes(dependencies),
                                 request.profile.threads(),
-                                &mut reading,
+                                &mut [],
+                                None,
                                 stopped,
-                            );
-                            drop(reading);
-                            for (taken, before) in taken.into_iter().zip(before) {
-                                if let Some((key, mut working)) = taken {
-                                    working.changed |= working.raster.points != before;
-                                    output_rasters.insert(key, working);
-                                }
-                            }
-                            baked
+                            )
                         } else {
-                            bake_source_planes(source, decoded, atlas, &pairs, stopped)
+                            bake_source_planes(source, decoded, atlas, &pairs, None, stopped)
                         }
                         .map_err(|error| {
                             let message = error.message.clone();
@@ -2859,11 +3396,7 @@ impl Session {
                         let mut requested = None;
                         for ((made, name, _), plane) in wanted.iter().zip(baked) {
                             plane_dirty.remove(*made);
-                            let plane = if layered {
-                                Arc::new(BakedReceiver::Plane(plane))
-                            } else {
-                                baked_plane(&compiled, name, plane)?
-                            };
+                            let plane = baked_plane(&compiled, name, plane)?;
                             if *made == id {
                                 requested = Some(plane);
                             } else {
@@ -2871,9 +3404,6 @@ impl Session {
                             }
                         }
                         let plane = requested.expect("the requested plane was baked");
-                        if layered {
-                            made_layer_planes.push((id.to_owned(), plane.clone()));
-                        }
                         let bytes = plane.bytes();
                         Ok((Artifact::Material(plane), bytes))
                     }
@@ -2900,9 +3430,56 @@ impl Session {
                         // outputs the maps share are computed once. A producer holds the planes
                         // of the external inputs its own map reads, so maps that read others
                         // are left to their own producers.
-                        let externals = external_planes(dependencies);
+                        let wanted = dirty[index].with(group);
+                        let rows = provided.remove(&index);
+                        let layered = chain.is_some();
+                        // A stack's planes are made here for the maps evaluated here: all the
+                        // maps this build needs of the receiver, unless other sessions evaluated
+                        // their rows.
+                        let mut stacked: Vec<Arc<BakedReceiver>> = Vec::new();
+                        if layered
+                            && !rows.as_ref().is_some_and(|(have, rows)| {
+                                provided_fits(atlas, wanted, live_fields.len(), *have, rows)
+                            })
+                        {
+                            let read = wanted.iter().fold(
+                                program::Dependencies::default(),
+                                |read, group| {
+                                    read.union(&group_dependencies(
+                                        &dependency_table,
+                                        group,
+                                        &live_fields,
+                                    ))
+                                },
+                            );
+                            let ids: Vec<String> = planes[index]
+                                .iter()
+                                .filter(|(name, _)| read.externals.contains(name))
+                                .map(|(_, id)| id.clone())
+                                .collect();
+                            let sources = stack_sources(dependencies, "stack-assets/");
+                            stack_context
+                                .make(&mut stack, index, atlas, &sources, &ids, None, stopped)
+                                .map_err(|error| {
+                                    let message = error.message.clone();
+                                    evaluation_error = Some(error);
+                                    message
+                                })?;
+                            stacked = ids.iter().map(|id| stack.made[id].clone()).collect();
+                        }
+                        let externals: Vec<&program::Plane> = if layered {
+                            stacked
+                                .iter()
+                                .filter_map(|baked| match baked.as_ref() {
+                                    BakedReceiver::Plane(plane) => Some(plane),
+                                    _ => None,
+                                })
+                                .collect()
+                        } else {
+                            external_planes(dependencies)
+                        };
                         // Rows evaluated elsewhere were evaluated with every plane.
-                        let whole = planes[index].is_empty();
+                        let whole = planes[index].is_empty() || layered;
                         let evaluable = dirty[index]
                             .iter()
                             .filter(|other| {
@@ -2925,8 +3502,6 @@ impl Session {
                             })
                             .fold(Groups::NONE, Groups::with)
                             .with(group);
-                        // Rows evaluated elsewhere were evaluated with every plane.
-                        let wanted = dirty[index].with(group);
                         let inputs = if inspecting {
                             let Artifact::Inputs(inputs) = dependencies["inputs"].as_ref() else {
                                 unreachable!()
@@ -2953,7 +3528,7 @@ impl Session {
                             request.profile.threads(),
                             compact,
                             [wanted, evaluable],
-                            provided.remove(&index),
+                            rows,
                             field_plans.get(index),
                             &externals,
                             &mut capture_budget,
@@ -2962,6 +3537,13 @@ impl Session {
                         ) {
                             Ok((results, planes)) => {
                                 captured_planes.extend(planes);
+                                // Every map of the receiver this build needs is baked: a build
+                                // that keeps no plane lets the receiver's go.
+                                drop(externals);
+                                drop(stacked);
+                                if layered && !keep_stack {
+                                    stack.release(&stack_context, index);
+                                }
                                 let mut requested = None;
                                 for (made, value) in results {
                                     dirty[index] = dirty[index].without(made);
@@ -3027,31 +3609,14 @@ impl Session {
                 );
             }
         }
-        for (key, working) in output_rasters {
-            if working.changed {
-                let bytes = working.raster.bytes();
-                self.runtime.retain(
-                    INTRINSIC_OUTPUTS,
-                    key,
-                    Artifact::Material(Arc::new(BakedReceiver::Intrinsic(working.raster))),
-                    bytes,
-                    true,
-                );
-            }
-        }
-        for (id, plane) in made_layer_planes {
-            let key = plan.key(&id).expect("planned plane");
-            let bytes = plane.bytes();
-            self.runtime
-                .retain(LAYER_PLANES, key, Artifact::Material(plane), bytes, false);
-        }
-        if let Some(share) = share {
+        if let Some(share) = &share {
             let Artifact::Program(program) = complete["program"].as_ref() else {
                 unreachable!()
             };
             let Artifact::Inputs(inputs) = complete["inputs"].as_ref() else {
                 unreachable!()
             };
+            let sources = stack_sources(&complete, "assets:");
             let mut bytes = Vec::new();
             for (i, key) in bake_keys.iter().enumerate() {
                 let Some(position) = share.keys.iter().position(|wanted| wanted == key) else {
@@ -3061,15 +3626,51 @@ impl Session {
                     unreachable!()
                 };
                 let groups = share.groups[position];
-                let externals: Vec<&program::Plane> = plane_ids(i)
-                    .filter_map(|id| match complete[&id].as_ref() {
-                        Artifact::Material(baked) => match baked.as_ref() {
+                // A layered share makes the stack's planes over its rows and the rows beside
+                // them (a relief reads the heights of the rows next to its own), from the
+                // planes beneath at the same texels.
+                let mut stacked: Vec<Arc<BakedReceiver>> = Vec::new();
+                if chain.is_some() {
+                    let read =
+                        groups
+                            .iter()
+                            .fold(program::Dependencies::default(), |read, group| {
+                                read.union(&group_dependencies(
+                                    &dependency_table,
+                                    group,
+                                    &live_fields,
+                                ))
+                            });
+                    let ids: Vec<String> = planes[i]
+                        .iter()
+                        .filter(|(name, _)| read.externals.contains(name))
+                        .map(|(_, id)| id.clone())
+                        .collect();
+                    let only = share_rows(atlas, share.index, share.count);
+                    stack_context
+                        .make(&mut stack, i, atlas, &sources, &ids, Some(&only), cancelled)
+                        .map_err(|error| vec![error])?;
+                    stacked = ids.iter().map(|id| stack.made[id].clone()).collect();
+                }
+                let externals: Vec<&program::Plane> = if chain.is_some() {
+                    stacked
+                        .iter()
+                        .filter_map(|baked| match baked.as_ref() {
                             BakedReceiver::Plane(plane) => Some(plane),
                             _ => None,
-                        },
-                        _ => None,
-                    })
-                    .collect();
+                        })
+                        .collect()
+                } else {
+                    plane_ids(i)
+                        .filter_map(|id| match complete[&id].as_ref() {
+                            Artifact::Material(baked) => match baked.as_ref() {
+                                BakedReceiver::Plane(plane) => Some(plane),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect()
+                };
                 let (total, rows) = bake_rows(
                     program,
                     inputs,
@@ -3082,9 +3683,21 @@ impl Session {
                 )
                 .map_err(|error| vec![error])?;
                 write_share(&mut bytes, key, groups, total, &rows);
+                // The receiver's planes are kept (within the partition's bounds) or let go now,
+                // so a share of many receivers holds one receiver's planes at a time.
+                if chain.is_some() {
+                    drop(externals);
+                    drop(stacked);
+                    if keep_stack {
+                        self.keep_planes(std::mem::take(&mut stack.baked), &stack_key);
+                    }
+                    stack.release(&stack_context, i);
+                }
             }
+            self.keep_stack(stack, &stack_key, keep_stack);
             return Ok(Built::Share(bytes));
         }
+        self.keep_stack(stack, &stack_key, keep_stack);
         let mut model = Model {
             id: "studio/material".into(),
             name: "Material preview".into(),
@@ -4348,28 +4961,7 @@ fn bake_groups(
     // Rows evaluated elsewhere are merged exactly like rows evaluated here; a set that does not
     // fit this atlas or lacks data is ignored and the rows are evaluated here instead.
     let provided = provided.filter(|(have, provided)| {
-        let data = data_of(wanted);
-        let has = |group: Group| data.contains(group);
-        // The width of every chart row, in the order rows are merged (see `atlas_rows`).
-        let cells = || {
-            atlas
-                .charts
-                .iter()
-                .flat_map(|chart| std::iter::repeat_n(chart.width, chart.height))
-        };
-        have.contains_all(data)
-            && provided.len() == cells().count()
-            && provided.iter().zip(cells()).all(|(row, cell)| {
-                row.cell == cell
-                    && (!has(Group::Color) || row.color.len() == cell * 4)
-                    && (!has(Group::Normal) || row.normal.len() == cell * 4)
-                    && (!has(Group::Properties)
-                        || (row.roughness.len() == cell && row.metalness.len() == cell))
-                    && (!has(Group::Live)
-                        || (row.live.len() == live_fields.len()
-                            && row.live.iter().all(|values| values.len() == cell)))
-                    && (!has(Group::Emissive) || !row.emits || row.emitted.len() == cell)
-            })
+        provided_fits(atlas, wanted, live_fields.len(), *have, provided)
     });
     // Rows evaluated here read only the planes this call was given (`externals`), so they are
     // evaluated for the maps those planes serve; `evaluable` is every wanted map unless the
@@ -4839,6 +5431,7 @@ impl Session {
                                     decoded,
                                     atlas,
                                     &[(name, value.as_str())],
+                                    None,
                                     cancelled,
                                 )
                                 .map_err(|error| error.message)?;

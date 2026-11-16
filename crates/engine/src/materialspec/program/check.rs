@@ -513,6 +513,15 @@ struct Checker<'a> {
     depth: usize,
 }
 impl Checker<'_> {
+    /// External inputs this program may read: a layered slot's composite reads more.
+    fn most_externals(&self) -> usize {
+        if self.program.metadata.entry == super::LAYERED_COMPOSITE {
+            MAX_COMPOSITE_EXTERNALS
+        } else {
+            MAX_EXTERNALS
+        }
+    }
+
     /// Notes one `external(name, fallback)` of type `kind`. A name stands for one plane, so its
     /// uses agree on a type, and a program reads a bounded number of them.
     fn external(&mut self, name: &str, kind: Type, mark: &Mark) -> Result<(), ProgramDiagnostic> {
@@ -536,19 +545,14 @@ impl Checker<'_> {
                 mark,
             )),
             Some(_) => Ok(()),
-            None if self.externals.len()
-                >= if self.program.metadata.entry == super::LAYERED_COMPOSITE {
-                    MAX_COMPOSITE_EXTERNALS
-                } else {
-                    MAX_EXTERNALS
-                } =>
-            {
-                Err(self.program.diagnostic(
-                    "MS_LIMIT",
-                    format!("A program reads at most {MAX_EXTERNALS} external inputs."),
-                    mark,
-                ))
-            }
+            None if self.externals.len() >= self.most_externals() => Err(self.program.diagnostic(
+                "MS_LIMIT",
+                format!(
+                    "A program reads at most {} external inputs.",
+                    self.most_externals()
+                ),
+                mark,
+            )),
             None => {
                 self.externals.insert(name.to_owned(), kind);
                 Ok(())
