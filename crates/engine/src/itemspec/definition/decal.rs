@@ -157,7 +157,8 @@ pub(super) fn resolve(
         }
     }
     for column in 0..columns - 1 {
-        let [a, b, c, d] = [column * 2, column * 2 + 2, column * 2 + 3, column * 2 + 1].map(|i| i as u32);
+        let [a, b, c, d] =
+            [column * 2, column * 2 + 2, column * 2 + 3, column * 2 + 1].map(|i| i as u32);
         indices.extend(if mirrored {
             [a, c, b, a, d, c]
         } else {
@@ -309,13 +310,14 @@ fn wrapped(
         ));
     }
     let path = route.path();
-    let stations = route::stations(context, along, path, &format!("{pointer}/along"))
-        .map_err(|mut error| {
+    let stations = route::stations(context, along, path, &format!("{pointer}/along")).map_err(
+        |mut error| {
             if error.code == "ITEM_FITTING" {
                 error.code = "ITEM_DECAL".into();
             }
             error
-        })?;
+        },
+    )?;
     let [station] = stations[..] else {
         return Err(context.fail(
             &format!("{pointer}/along"),
@@ -376,12 +378,15 @@ fn wrapped(
                     ),
                 ));
             }
-            let steps = ((span / (std::f64::consts::TAU / *segments as f64)).ceil() as usize).max(2);
+            let steps =
+                ((span / (std::f64::consts::TAU / *segments as f64)).ceil() as usize).max(2);
             for step in 0..=steps {
                 let t = step as f64 / steps as f64;
                 let normal = radial(angle + span * (t - 0.5));
                 for (ring, v) in [(&low, 0.), (&high, 1.)] {
-                    sheet.positions.push(add(ring.position, scale(normal, reach)));
+                    sheet
+                        .positions
+                        .push(add(ring.position, scale(normal, reach)));
                     sheet.normals.push(normal);
                     sheet.uvs.push([t, v]);
                 }

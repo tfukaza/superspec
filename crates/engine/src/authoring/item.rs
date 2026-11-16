@@ -252,12 +252,8 @@ impl Session {
         let mut mesh_slots = BTreeMap::new();
         // Each receiver's pattern anchor: its part's, under the placement, in world meters.
         let mut anchors = request.anchors.clone();
-        for (index, (node, transform)) in generated
-            .geometry
-            .nodes
-            .iter()
-            .zip(&transforms)
-            .enumerate()
+        for (index, (node, transform)) in
+            generated.geometry.nodes.iter().zip(&transforms).enumerate()
         {
             let anchor = generated
                 .geometry
@@ -489,9 +485,7 @@ impl Session {
                 rebuilt,
             ),
             Some((item, generation, _)) => {
-                let (item, built) = prepared
-                    .rebuild(&item, cancelled)
-                    .map_err(&item_failure)?;
+                let (item, built) = prepared.rebuild(&item, cancelled).map_err(&item_failure)?;
                 (item, generation + 1, built)
             }
             None => {
@@ -499,7 +493,11 @@ impl Session {
                 let built = if prepared.part_keys.is_empty() {
                     vec!["item".to_owned()]
                 } else {
-                    prepared.part_keys.iter().map(|(id, _)| id.clone()).collect()
+                    prepared
+                        .part_keys
+                        .iter()
+                        .map(|(id, _)| id.clone())
+                        .collect()
                 };
                 (item, 1, built)
             }
@@ -583,9 +581,7 @@ impl Session {
             for &mesh_index in &node.meshes {
                 let mesh = &geometry.meshes[mesh_index];
                 if !mesh.colors.is_empty() || !mesh.tangents.is_empty() {
-                    return Err(fail(
-                        "A placed item has plain generated meshes.".into(),
-                    ));
+                    return Err(fail("A placed item has plain generated meshes.".into()));
                 }
                 let count = mesh.positions.len();
                 // The resource is named by its part's key, so an unchanged part shares its
@@ -666,11 +662,15 @@ impl Session {
             let decoded = image::decode(&bytes).map_err(&fail)?;
             let image_id = format!("studio/decal/image/{:x}", Sha256::digest(&bytes));
             let material_id = format!("studio/decal/material/{:x}", Sha256::digest(&bytes));
-            placed.model.images.entry(image_id.clone()).or_insert(ImageResource {
-                mime: decoded.mime,
-                bytes: bytes.clone(),
-                pixels: decoded.width * decoded.height,
-            });
+            placed
+                .model
+                .images
+                .entry(image_id.clone())
+                .or_insert(ImageResource {
+                    mime: decoded.mime,
+                    bytes: bytes.clone(),
+                    pixels: decoded.width * decoded.height,
+                });
             placed
                 .model
                 .materials

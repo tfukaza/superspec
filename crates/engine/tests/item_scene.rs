@@ -113,7 +113,12 @@ fn washroom() -> Project {
                 &[("concrete", "concrete"), ("frame", "steel")],
                 [1., 2., 0.],
             ),
-            item("pipe", "pipe.item.json", &[("steel", "steel")], [1., 0., 0.]),
+            item(
+                "pipe",
+                "pipe.item.json",
+                &[("steel", "steel")],
+                [1., 0., 0.],
+            ),
         ],
         materials: vec![
             assignment("concrete", "follows.ms"),
@@ -233,8 +238,14 @@ fn a_scene_places_items_and_bakes_a_material_per_slot() {
             .clone()
             .unwrap()
     };
-    assert_eq!(material("wall/part/wall/wall/glazing"), "studio/item/slot/glass");
-    assert_ne!(material("wall/part/wall/wall/front"), "studio/item/slot/concrete");
+    assert_eq!(
+        material("wall/part/wall/wall/glazing"),
+        "studio/item/slot/glass"
+    );
+    assert_ne!(
+        material("wall/part/wall/wall/front"),
+        "studio/item/slot/concrete"
+    );
     assert_ne!(
         material("wall/part/wall/wall/front"),
         material("pipe/part/riser/riser/body")
@@ -242,18 +253,32 @@ fn a_scene_places_items_and_bakes_a_material_per_slot() {
     // The wall stands where the model's transform puts it: its front face is the plane y = 2.
     let front = positions(&output, "wall/part/wall/wall/front");
     assert!(front.chunks_exact(3).all(|p| p[1] == 2.));
-    let (low, high) = front.chunks_exact(3).fold((f32::MAX, f32::MIN), |(low, high), p| {
-        (low.min(p[0]), high.max(p[0]))
-    });
+    let (low, high) = front
+        .chunks_exact(3)
+        .fold((f32::MAX, f32::MIN), |(low, high), p| {
+            (low.min(p[0]), high.max(p[0]))
+        });
     assert!(close(low, 1.) && close(high, 3.7), "{low} {high}");
     // A slot the item does not have, and a material the project does not have, are refused.
     let mut wrong = washroom();
     wrong.models[0].slots.insert("paint".into(), "steel".into());
-    let error = messages(Session::default().build_project(&wrong, 1, &asset, &|| false).err().unwrap());
+    let error = messages(
+        Session::default()
+            .build_project(&wrong, 1, &asset, &|| false)
+            .err()
+            .unwrap(),
+    );
     assert!(error.contains("binds slot paint"), "{error}");
     let mut wrong = washroom();
-    wrong.models[1].slots.insert("steel".into(), "chrome".into());
-    let error = messages(Session::default().build_project(&wrong, 1, &asset, &|| false).err().unwrap());
+    wrong.models[1]
+        .slots
+        .insert("steel".into(), "chrome".into());
+    let error = messages(
+        Session::default()
+            .build_project(&wrong, 1, &asset, &|| false)
+            .err()
+            .unwrap(),
+    );
     assert!(error.contains("chrome, which is not a material"), "{error}");
 }
 
@@ -275,9 +300,14 @@ fn an_edit_regenerates_only_the_parts_whose_key_changed() {
     assert_eq!(second.metadata["items"]["wall"]["generation"], 1);
     assert_eq!(part(&second.metadata, "wall", "wall")["key"], wall_key);
     assert_eq!(second.metadata["items"]["pipe"]["generation"], 2);
-    assert_eq!(second.metadata["items"]["pipe"]["rebuilt"], json!(["riser"]));
+    assert_eq!(
+        second.metadata["items"]["pipe"]["rebuilt"],
+        json!(["riser"])
+    );
     assert_ne!(part(&second.metadata, "pipe", "riser")["key"], riser_key);
-    for group in ["front", "back", "edge", "reveal", "frame", "glazing", "sill"] {
+    for group in [
+        "front", "back", "edge", "reveal", "frame", "glazing", "sill",
+    ] {
         let id = format!("wall/part/wall/wall/{group}");
         assert_eq!(positions(&first, &id), positions(&second, &id), "{id}");
     }
@@ -312,7 +342,9 @@ fn an_edit_regenerates_only_the_parts_whose_key_changed() {
     let reveal = |output: &ProjectOutput| {
         positions(output, "wall/part/wall/wall/reveal")
             .chunks_exact(3)
-            .fold((f32::MAX, f32::MIN), |(low, high), p| (low.min(p[0]), high.max(p[0])))
+            .fold((f32::MAX, f32::MIN), |(low, high), p| {
+                (low.min(p[0]), high.max(p[0]))
+            })
     };
     let (low, high) = reveal(&narrow);
     assert!(close(low, 1.5) && close(high, 2.1), "{low} {high}");
@@ -352,17 +384,22 @@ fn a_parts_features_reach_its_receivers_in_world_meters() {
         })
     };
     assert!(has(&front, 5., [1., 2., 0.], [3.7, 2., 0.]), "{front:?}");
-    assert!(has(&front, 5., [1., 2.25, 0.], [3.7, 2.25, 0.]), "{front:?}");
+    assert!(
+        has(&front, 5., [1., 2.25, 0.], [3.7, 2.25, 0.]),
+        "{front:?}"
+    );
     assert!(
         has(&front, 6., [2.2 - 0.03, 2., 1.1], [3.1 + 0.03, 2., 1.1]),
         "{front:?}"
     );
     // Every receiver of the part is given them; the pipe's receivers are given none of the wall's.
     assert!(!named(&output.metadata, "wall/part/wall/wall/sill").is_empty());
-    assert!(output.metadata["shading"]["pipe/part/riser/riser/body"]["features"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        output.metadata["shading"]["pipe/part/riser/riser/body"]["features"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     // The item reports the same features, its anchors and attachments for overlays.
     let wall = &output.metadata["items"]["wall"];
     let names: Vec<&str> = wall["features"]
@@ -379,16 +416,20 @@ fn a_parts_features_reach_its_receivers_in_world_meters() {
         json!([1.0, 2.0, 0.0])
     );
     let pipe = &output.metadata["items"]["pipe"];
-    assert!(pipe["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|feature| feature["name"] == "joint"));
-    assert!(pipe["attachments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|attachment| attachment["name"] == "riser/start"));
+    assert!(
+        pipe["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature["name"] == "joint")
+    );
+    assert!(
+        pipe["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|attachment| attachment["name"] == "riser/start")
+    );
     assert_eq!(pipe["derived"]["spacing"], json!((2.3 - 0.1) / 4.));
 }
 
@@ -404,17 +445,20 @@ fn a_decal_is_a_render_only_sheet_two_millimeters_off_its_face() {
         let sheet = positions(&output, "wall/decal/notice");
         assert_eq!(sheet.len(), 12);
         for point in sheet.chunks_exact(3) {
-            assert!((f64::from(point[1]) - (2. - 0.002)).abs() < 1e-6, "{point:?}");
+            assert!(
+                (f64::from(point[1]) - (2. - 0.002)).abs() < 1e-6,
+                "{point:?}"
+            );
         }
-        let bounds = sheet.chunks_exact(3).fold(
-            ([f32::MAX; 2], [f32::MIN; 2]),
-            |(low, high), p| {
-                (
-                    [low[0].min(p[0]), low[1].min(p[2])],
-                    [high[0].max(p[0]), high[1].max(p[2])],
-                )
-            },
-        );
+        let bounds =
+            sheet
+                .chunks_exact(3)
+                .fold(([f32::MAX; 2], [f32::MIN; 2]), |(low, high), p| {
+                    (
+                        [low[0].min(p[0]), low[1].min(p[2])],
+                        [high[0].max(p[0]), high[1].max(p[2])],
+                    )
+                });
         let ([left, low], [right, high]) = bounds;
         assert!(
             close(left, 1.1) && close(low, 2.) && close(right, 1.4) && close(high, 2.2),
@@ -449,20 +493,38 @@ fn a_decal_that_does_not_fit_is_a_source_linked_error_and_the_session_goes_on() 
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].code, "ITEM_DECAL_FIT");
     assert_eq!(errors[0].source_name, "tiled.item.json");
-    assert!(errors[0].message.starts_with("/decals/0 "), "{}", errors[0].message);
-    assert!(errors[0].message.contains("must stay 0.02 m inside the 2.4 by 2.6 m face"));
+    assert!(
+        errors[0].message.starts_with("/decals/0 "),
+        "{}",
+        errors[0].message
+    );
+    assert!(
+        errors[0]
+            .message
+            .contains("must stay 0.02 m inside the 2.4 by 2.6 m face")
+    );
     // The diagnostic selects the decal in the definition text.
     let text = &narrow.modules["tiled.item.json"];
     let selected = &text[errors[0].offset..errors[0].end.unwrap()];
-    assert!(selected.starts_with('{') && selected.contains("\"notice\""), "{selected}");
+    assert!(
+        selected.starts_with('{') && selected.contains("\"notice\""),
+        "{selected}"
+    );
     // In the window (0.5 to 1.1 m from the start, 0.95 to 1.65 m up) it lands in an opening.
     let mut inside = tiled(2.7, 0.6);
     redefine(&mut inside, |definition| {
         definition["decals"][0]["v"]["offset"] = json!(1.0)
     });
-    let errors = session.shade_project(&inside, 3, &asset, &|| false).err().unwrap();
+    let errors = session
+        .shade_project(&inside, 3, &asset, &|| false)
+        .err()
+        .unwrap();
     assert_eq!(errors[0].code, "ITEM_DECAL_FIT");
-    assert!(errors[0].message.contains("lands in opening window"), "{}", errors[0].message);
+    assert!(
+        errors[0].message.contains("lands in opening window"),
+        "{}",
+        errors[0].message
+    );
     // The session still builds the last valid scene, without generating anything again.
     let again = shade(&mut session, &tiled(2.7, 2.2), 4);
     assert_eq!(again.metadata["items"]["wall"]["generation"], 1);
@@ -475,7 +537,9 @@ fn a_decal_wraps_a_round_route_on_a_straight_run_clear_of_fittings() {
         definition["decals"] = json!([{"id": "label", "image": "notice.png", "size": [0.12, 0.08],
             "on": {"part": "riser"}, "along": {"from": "start", "offset": along}, "around": 90}]);
         let mut project = washroom();
-        project.modules.insert("pipe.item.json".into(), definition.to_string());
+        project
+            .modules
+            .insert("pipe.item.json".into(), definition.to_string());
         project
     };
     let output = shade(&mut Session::default(), &pipe(0.3), 1);
@@ -487,6 +551,27 @@ fn a_decal_wraps_a_round_route_on_a_straight_run_clear_of_fittings() {
         let radius = f64::from(point[0] - 1.14).hypot(f64::from(point[1] - 2.12));
         assert!((radius - 0.092).abs() < 1e-5, "{radius}");
         assert!((0.26 - 1e-6..=0.34 + 1e-6).contains(&f64::from(point[2])));
+    }
+    // Every triangle faces away from the pipe's axis, so the sheet is seen from outside.
+    let scene = output.scene(1).unwrap();
+    let mesh = scene
+        .manifest
+        .meshes
+        .iter()
+        .find(|mesh| mesh.id == "pipe/decal/label")
+        .unwrap();
+    let indices = &scene.indices[mesh.index_start..mesh.index_start + mesh.index_count];
+    for triangle in indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|k| {
+            let at = triangle[k] as usize * 3;
+            [sheet[at], sheet[at + 1], sheet[at + 2]].map(f64::from)
+        });
+        let normal = [
+            (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+            (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+        ];
+        let outward = [(a[0] + b[0] + c[0]) / 3. - 1.14, (a[1] + b[1] + c[1]) / 3. - 2.12];
+        assert!(normal[0] * outward[0] + normal[1] * outward[1] > 0., "{triangle:?}");
     }
     // On the coupling at 0.55 m it is refused; so it is on the bend at the top.
     for along in [0.55, 2.25] {
@@ -514,7 +599,9 @@ fn a_handle_links_a_dimension_to_a_control() {
         json!([4.4, 2.0, 1.3])
     );
     // The controls are reported with their ranges and current values.
-    let parameters = narrow.metadata["items"]["wall"]["parameters"].as_array().unwrap();
+    let parameters = narrow.metadata["items"]["wall"]["parameters"]
+        .as_array()
+        .unwrap();
     assert_eq!(parameters[0]["name"], "width");
     assert_eq!(parameters[0]["value"], 2.7);
     assert_eq!(parameters[0]["min"], 1.7);
@@ -523,7 +610,10 @@ fn a_handle_links_a_dimension_to_a_control() {
     redefine(&mut wrong, |definition| {
         definition["handles"][0]["parameter"] = json!("depth")
     });
-    let errors = Session::default().shade_project(&wrong, 1, &asset, &|| false).err().unwrap();
+    let errors = Session::default()
+        .shade_project(&wrong, 1, &asset, &|| false)
+        .err()
+        .unwrap();
     assert_eq!(errors[0].code, "ITEM_HANDLE");
 }
 
@@ -545,7 +635,11 @@ fn native_item_scene_packet_for_parity() {
     if let Ok(directory) = std::env::var("ITEM_SCENE_PARITY_OUTPUT") {
         let directory = std::path::PathBuf::from(directory);
         std::fs::create_dir_all(&directory).unwrap();
-        std::fs::write(directory.join("project.json"), serde_json::to_vec(&project).unwrap()).unwrap();
+        std::fs::write(
+            directory.join("project.json"),
+            serde_json::to_vec(&project).unwrap(),
+        )
+        .unwrap();
         std::fs::write(directory.join("notice.png"), notice()).unwrap();
         std::fs::write(directory.join("packet.bin"), packet).unwrap();
     }

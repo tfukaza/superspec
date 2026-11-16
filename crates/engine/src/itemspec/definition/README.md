@@ -136,7 +136,27 @@ Materials cannot read them yet. Each part's geometry key hashes the values it
 resolved, its placement and its slot map; the item key hashes the part keys and the
 transform. `PreparedItem::rebuild` regenerates only parts whose key changed.
 
-Limits: 64 parts, 64 derived values, 128 route points, 256 fittings per route, 32
+**Decals.** `decals` lists images placed on a part: `{"id", "image", "size": [w, h],
+"on": {"part", "face"}, "u", "v"}` on a panel face (`front` or `back`) or a box's
+`front` (its y = 0 side), and `{"along", "around"}` on a route, where `size` is around
+by along and `around` is in degrees from the section's first axis. A decal stays 0.02 m
+inside its face and clear of openings, or on one straight run and clear of fittings;
+otherwise `prepare` fails with `ITEM_DECAL_FIT` at `/decals/<i>`. `GeneratedItem.decals`
+holds each sheet 2 mm off its surface (0.6 mm more per `layer`), flat or wrapped, in
+the space of `bounds`. Decals are outside every geometry key and are placed again from
+their rules for each set of control values.
+
+**Handles.** `handles` lists `{"id", "parameter", "at", "axis", "scale"}`: an editor may
+drag the point `at` along `axis`, and `d` meters change the numeric geometry control
+`parameter` by `d * scale` (default 1). `GeneratedItem.handles` gives them resolved,
+with the control's value and range.
+
+In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
+its slots are bound to the project's materials, every part and face group is a receiver
+named `<model>/part/<part>/<part>/<group>`, and each receiver is given its part's
+features and pattern anchor.
+
+Limits: 64 decals, 32 handles, 64 parts, 64 derived values, 128 route points, 256 fittings per route, 32
 openings per panel, 250000 triangles per item.
 
 Diagnostics carry source identity and JSON pointers. `parse` locates its errors;

@@ -26,6 +26,7 @@
     "test:recipe:browser": "node tests/material-ts-browser.mjs",
     "test:scene:browser": "node tests/material-scene-browser.mjs",
     "test:washroom:browser": "node tests/material-washroom-browser.mjs",
+    "test:items:browser": "node tests/item-washroom-browser.mjs",
     "test:lighting:browser": "node tests/lighting-washroom-browser.mjs",
     "test:bake-keys:browser": "node tests/material-bake-keys-browser.mjs",
     "bench:shader-compile": "node tests/shader-compile-bench.mjs",

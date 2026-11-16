@@ -342,11 +342,7 @@ pub(super) fn decals(
 ) -> Result<Vec<ItemDecal>, ItemDiagnostic> {
     let definitions = &context.definition.decals;
     if definitions.len() > decal::MAXIMUM {
-        return Err(context.fail(
-            "/decals",
-            "ITEM_LIMIT",
-            "An item has at most 64 decals.",
-        ));
+        return Err(context.fail("/decals", "ITEM_LIMIT", "An item has at most 64 decals."));
     }
     let mut ids = BTreeSet::new();
     let mut placed = Vec::with_capacity(definitions.len());

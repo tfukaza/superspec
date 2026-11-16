@@ -88,7 +88,7 @@ export const pipe = {
         coupling("coupling-3", "third"), flange("wall", { from: "end", offset: 0.015 })] },
     slots: { body: "steel", fitting: "steel", bolt: "bolt", end: "steel" } }],
   decals: [{ id: "label", image: "decals/label.png", size: [0.16, 0.1], on: { part: "riser" },
-    along: { from: "start", offset: { derived: "label" } }, around: -45 }],
+    along: { from: "start", offset: { derived: "label" } }, around: 135 }],
   handles: [{ id: "height", parameter: "height", at: [{ parameter: "standoff" }, 2.12, { parameter: "height" }], axis: [0, 0, 1] }],
 };
 

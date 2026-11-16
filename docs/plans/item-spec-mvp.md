@@ -27,6 +27,43 @@
 >   glazing is an opaque slab with its own slot (open decision 2 stays open).
 > - Per-part reuse is `PreparedItem::rebuild`; `reuse` is unchanged.
 
+> **Assumed pending review (2026-11-16, steps 4 to 7).** Prototyped in
+> `authoring/item.rs` and `authoring/project.rs` (`place_item`, `resolve_items`),
+> `itemspec/definition/decal.rs`, the Studio (`editor/studio/items.ts`,
+> `browser/renderer/item-overlays.ts`) and `superspec-studio inspect`. Tests:
+> `crates/engine/tests/item_scene.rs`, `tests/item-washroom-browser.mjs`,
+> `tests/item-scene-parity.mjs`; scene: `tests/studio/washroom-items`. Choices made:
+>
+> - A scene model is `{"kind": "item", "entry", "parameters", "transform", "slots"}`.
+>   `transform` is four affine columns. `slots` maps an item slot to a project material
+>   (a `materials[].id`); the item's own `slots` entries are not read in a scene, and a
+>   slot left unbound keeps a plain surface. Mesh identities are
+>   `<model>/part/<part>/<part>/<group>`.
+> - A receiver is given the features and the pattern anchor of its own part (not of the
+>   whole item), in world meters, through `Project.features` and `Project.anchors`.
+> - The session keeps the last generated item per model identity and calls
+>   `PreparedItem::rebuild`; mesh resources are named by part key. `metadata.items`
+>   reports `generation`, `rebuilt`, part keys, controls, derived values, features,
+>   attachments, decals and handles.
+> - Decals live on the item (`decals`), outside every geometry key. They sit on a panel
+>   face (`front`, `back`), a box's `front` (its y = 0 side) or a route (`along`,
+>   `around`; `size` is around by along). A route decal must also clear the fittings. A
+>   decal covers at most half a round section. Delivery is a visible, non-collidable
+>   mesh listed in `Manifest.decals`, with a blended material that names the image by
+>   its bytes. Recipe decals are not implemented.
+> - The dimension-to-control link is `handles: [{"id", "parameter", "at", "axis",
+>   "scale"}]`: moving the handle `d` meters along `axis` changes the control by
+>   `d * scale`. `at` may read controls and derived values.
+> - While a slider or handle moves, the Studio shows the per-pixel look and asks for no
+>   layouts or bakes; the value it is let go on is baked. The bake graph keeps up to
+>   4096 idle nodes (256 MiB) so the maps of untouched parts survive the drag.
+> - In `tests/studio/washroom-items` the grime and rust that follow features are layers
+>   that the build script adds to copies of the shipped concrete and steel recipes. The
+>   shipped recipes read no named feature yet.
+> - Acceptance check 1 holds for geometry, tile and decals. The shipped concrete still
+>   changes on the old part of a widened wall (it reads receiver bounds); this waits for
+>   the roadmap's concrete split.
+
 **Ordering and reconciliation: see [roadmap.md](roadmap.md).** Steps 1 to 3 run in
 roadmap stage 1, steps 4 to 7 in stage 3. Changes the roadmap makes here:
 
