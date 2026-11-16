@@ -7,6 +7,7 @@ pub fn checked_module(owner: &[String]) -> bool {
             Some(
                 "materialspec"
                     | "itemspec"
+                    | "treespec"
                     | "assets"
                     | "runtime"
                     | "session"
@@ -43,7 +44,10 @@ pub fn module_edge(from: &[String], to: &[String]) -> Option<&'static str> {
     let owner = from.get(1).map(String::as_str).unwrap_or("");
     let target_crate = to.first().map(String::as_str).unwrap_or("");
     let target = to.get(1).map(String::as_str).unwrap_or("");
-    if matches!(owner, "materialspec" | "itemspec" | "assets" | "runtime") {
+    if matches!(
+        owner,
+        "materialspec" | "itemspec" | "treespec" | "assets" | "runtime"
+    ) {
         if matches!(target_crate, "superspec_aml" | "superspec_profiles")
             || (target_crate == "superspec_engine"
                 && matches!(

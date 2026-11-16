@@ -14,6 +14,7 @@ pub mod updates;
 pub use runtime::cache::Stats as BakeStats;
 pub use session::{CacheStats, Session};
 pub mod tracing;
+pub mod treespec;
 pub mod validation;
 pub mod visibility;
 pub mod worldspec;

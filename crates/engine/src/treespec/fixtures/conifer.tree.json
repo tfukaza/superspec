@@ -1,0 +1,19 @@
+{
+  "format": "treespec",
+  "version": 1,
+  "kind": "tree",
+  "id": "conifer",
+  "seed": 5,
+  "trunk": { "height": 8.5, "radius": 0.16, "tip": 0.08, "segments": 16, "wobble": 0.8, "lean": 1 },
+  "levels": [
+    { "count": 64, "start": 0.14, "end": 0.99, "angle": [100, 58], "length": [0.3, 0.03], "radius": 0.34, "tip": 0.2, "segments": 6, "gravity": 12, "wobble": 2.5, "jitter": 0.4 },
+    { "count": 9, "start": 0.2, "end": 0.95, "angle": [55, 40], "length": [0.4, 0.2], "radius": 0.5, "tip": 0.4, "segments": 3, "gravity": 10, "wobble": 4, "jitter": 0.5, "flatten": 0.8 }
+  ],
+  "envelope": { "kind": "cone", "base": 0.8, "top": 9.2, "radius": 2.5 },
+  "leaves": { "level": 1, "spacing": 0.09, "start": 0.12, "size": [0.13, 0.2], "aspect": 0.11, "cards": 5, "spread": 110, "angle": 42, "lift": 0, "shape": "leaf" },
+  "lods": [
+    { "radialSegments": 8, "ringStep": 1, "maxLevel": 2, "leafKeep": 1, "leafCards": 5, "distance": 0 },
+    { "radialSegments": 5, "ringStep": 2, "maxLevel": 1, "leafKeep": 0.4, "leafCards": 3, "distance": 30 },
+    { "radialSegments": 3, "ringStep": 4, "maxLevel": 0, "leafKeep": 0.12, "leafCards": 2, "distance": 80 }
+  ]
+}

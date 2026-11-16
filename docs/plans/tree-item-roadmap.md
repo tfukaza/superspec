@@ -234,6 +234,50 @@ leaves with cutout alpha, level-of-detail steps and a shadow proxy. The lit
 profile adds two-sided diffuse, glints and translucency. An optional
 half-resolution stroke layer covers the Blender study's blurred blades.
 
+### Phases 4 and 5: geometry prototype (2026-11-16)
+
+Status: prototype, geometry only. `crates/engine/src/treespec` generates grass
+patches, shrubs and trees; its [README](../../crates/engine/src/treespec/README.md)
+describes the records and every attribute. Nothing here is rendered with painted
+materials yet.
+
+Assumptions made without review:
+
+- Open decision 4 is taken as "Rust API with JSON fixtures first". Definitions are
+  `*.grass.json` and `*.tree.json`, shaped like item definitions.
+- The instanced batch is a plain struct in the module (mesh index, transforms, named
+  per-instance scalars and vectors); nothing converts it to the portable record of
+  phase 2 yet. That record's four `values` and a tint per instance do not hold the
+  per-instance `shadeNormal`, `groundNormal` and `pivot` vectors a plant needs.
+- Grass is placed by looking straight down at a ground triangle mesh, so density is per
+  square meter of plan and overhangs are not supported, as in the reference tools.
+- Colour is not TreeSpec's: an instance carries a `variation` value for a ramp, not a
+  tint. `instance.tint` is left to the look profile.
+- Wind data is a per-vertex weight and a pivot, not a shader. The fixed shader families
+  stay as listed above.
+- `base` is the only named feature a plant reports.
+
+What exists, against the lists above:
+
+- Phase 4 structure and distribution: blade clumps of 5 to 10 blades with per-vertex
+  root offsets (optimization 7), a stable candidate set with a per-instance thinning
+  threshold (1 and 4), square tiles with bounds (4), and segment steps 12, 3 and 1 with
+  widened survivors (4 and 5). Not started: the boundary-distance field (2), per-blade
+  colour evaluation (3), the grazing-angle term (6), both look profiles and the
+  renderer's shader families.
+- Phase 5: branch skeletons with a pruning envelope, bark tubes with metric coordinates,
+  leaf clusters as one instance batch with canopy shade normals, three fixtures (shrub,
+  broadleaf, conifer) and three levels of detail each. Branch junctions overlap; they are
+  not welded. Not started: metaball canopy hulls (only the per-limb balls are reported),
+  camera-facing dabs, the shadow proxy, the lit profile and the stroke layer. The far
+  level of a tree is thinned cards, which reads poorly up close; a hull or impostor
+  should replace it.
+
+Needed next from other stages: the portable instanced batch and `InstancedMesh` branch
+(phase 2), named vertex and instance inputs and `sampleField` (1D), the painted shading
+model and `shadeBand` (1C), and the wind and rejection vertex stages of phase 4's
+renderer item.
+
 ## Open decisions
 
 1. Whether live programs travel in the packet for every scene or only for
