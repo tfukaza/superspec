@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import type { MaterialShading } from "./shade.ts";
 import { MAP_ANISOTROPY } from "./textures.ts";
+import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
+import { ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, atlasFragment, programLayout, type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 
 /**
  * GPU preview bake: a MaterialSpec program's shader (`Program::shader`, see shade.ts) drawn over a
@@ -103,6 +105,50 @@ export interface GpuBake {
 /** A live operation whose every argument reads a baked texture channel, unscaled. */
 export interface LiveArgumentOperation { id: string; arguments: Record<string, { texture: string; channel: number; scale: number; offset: number }> }
 
+/**
+ * The textures of one receiver's atlas bake. `targets` hold what the evaluate pass writes, one per attachment of the
+ * program's layout (see `AtlasProgramLayout`), `normalTarget` the normals pass's output. `key` names what they hold (`GpuBaker.atlasKey`), or is empty while they
+ * hold nothing complete. The height (and offset) stay materialized, so later passes can read them.
+ */
+export interface AtlasMaps {
+  profile: typeof GPU_PREVIEW_PROFILE;
+  key: string;
+  width: number;
+  height: number;
+  layout: AtlasProgramLayout;
+  targets: THREE.WebGLRenderTarget[];
+  normalTarget: THREE.WebGLRenderTarget;
+  baseColor: THREE.Texture;
+  /** Packed properties: R=1, G=roughness, B=metalness. */
+  properties: THREE.Texture;
+  /** Height in meters (with the program's `receiver_normal` output beside it when it has one). */
+  heightMap: THREE.Texture;
+  emissive?: THREE.Texture;
+  offset?: THREE.Texture;
+  normal: THREE.Texture;
+  /** Live renderer argument textures by the identity `layout.liveOperations` names them with. */
+  live: Record<string, THREE.Texture>;
+  /** GPU memory of the set, mips included. */
+  bytes: number;
+  /** The context generation the textures belong to. */
+  generation: number;
+  flatNormal: boolean;
+  cleared?: boolean;
+}
+
+export interface AtlasBakeTimings {
+  /** Shader compile (only when the program is new), milliseconds. */
+  compile: number;
+  evaluate: number;
+  normals: number;
+  mips: number;
+  total: number;
+  bands: number;
+  units: { bake: number; limit: number };
+}
+
+const atlasPassKey = (source: string, layout: AtlasProgramLayout): string => `atlas:${layout.key}:${source}`;
+
 const VERTEX = `void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 
 const PASS1_HEAD = `
@@ -193,7 +239,7 @@ uniform bool msOrient;
 uniform bool msBend;
 layout(location = 0) out vec4 msNormalOut;
 // A tangent-space normal whose world direction faces away from the receiver cannot be encoded; alpha 0 marks it.
-bool msFailed = false;
+${RELIEF_ADJUST}
 vec3 relief(ivec2 p, ivec2 size) {
   vec4 center = texelFetch(msHeightMap, p, 0);
   float h = center.r;
@@ -201,56 +247,16 @@ vec3 relief(ivec2 p, ivec2 size) {
   float right = texelFetch(msHeightMap, ivec2(min(p.x + 1, size.x - 1), p.y), 0).r;
   float down = texelFetch(msHeightMap, ivec2(p.x, max(p.y - 1, 0)), 0).r;
   vec3 relief = normalize(vec3(-(right - h) / msStep.x, (down - h) / msStep.y, 1.0));
-  vec3 n = msFrameZ;
-  if (msOrient) {
-    // orient_relief: the smallest rotation from the receiver normal to the receiver_normal output.
-    vec3 target = normalize(center.gba);
-    float cosine = dot(n, target);
-    if (!(cosine > 1e-6)) msFailed = true;
-    else if (cosine < 1.0 - 1e-6) {
-      vec3 world = relief.x * msFrameX + relief.y * msFrameY + relief.z * n;
-      vec3 axis = cross(n, target);
-      vec3 kw = cross(axis, world);
-      vec3 turned = world + kw + cross(axis, kw) / (1.0 + cosine);
-      relief = normalize(vec3(dot(turned, msFrameX), dot(turned, msFrameY), dot(turned, n)));
-    }
-  }
-  if (msBend) {
-    // bend_shaded: add the world-space offset, renormalize, and hold the result just above the horizon.
-    vec3 offset = texelFetch(msOffsetMap, p, 0).rgb;
-    if (any(notEqual(offset, vec3(0.0)))) {
-      vec3 world = relief.x * msFrameX + relief.y * msFrameY + relief.z * n + offset;
-      if (dot(world, world) > 1e-24) {
-        vec3 bent = normalize(world);
-        vec3 local = vec3(dot(bent, msFrameX), dot(bent, msFrameY), dot(bent, n));
-        if (local.z > 1e-6) relief = local;
-        else {
-          float sideways = length(local.xy);
-          if (sideways >= 1e-12) relief = vec3(local.xy * (sqrt(1.0 - 0.02 * 0.02) / sideways), 0.02);
-        }
-      }
-    }
-  }
-  return relief;
+  vec3 offset = msBend ? texelFetch(msOffsetMap, p, 0).rgb : vec3(0.0);
+  return msAdjustRelief(relief, center.gba, offset, msFrameX, msFrameY, msFrameZ, msOrient, msBend);
 }
-float dither(ivec2 texel, int channel, float amount) {
-  uint h = uint(texel.x) * 0x9E3779B1u + uint(texel.y) * 0x85EBCA77u + uint(channel) * 0xC2B2AE3Du;
-  h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12; h *= 0x297A2D39u; h ^= h >> 15;
-  return (float(h) / 4294967296.0 - 0.5) * amount;
-}
+${NORMAL_ENCODE}
 void main() {
   ivec2 size = textureSize(msHeightMap, 0);
   ivec2 p = ivec2(gl_FragCoord.xy);
   vec3 n = relief(p, size);
   vec3 before = p.x > 0 ? relief(p - ivec2(1, 0), size) : n;
-  ivec2 texel = ivec2(p.x, size.y - 1 - p.y);
-  vec3 encoded = vec3(0.0);
-  for (int channel = 0; channel < 3; channel++) {
-    // Full dither on plateaus (under a step per texel), none where the relief already varies.
-    float amount = clamp(1.0 - abs(n[channel] - before[channel]) * 127.5, 0.0, 1.0);
-    encoded[channel] = clamp(floor((n[channel] * 0.5 + 0.5) * 255.0 + dither(texel, channel, amount) + 0.5), 0.0, 255.0) / 255.0;
-  }
-  msNormalOut = vec4(encoded, msFailed ? 0.0 : 1.0);
+  msNormalOut = vec4(msEncodeNormal(n, before, ivec2(p.x, size.y - 1 - p.y)), msFailed ? 0.0 : 1.0);
 }
 `;
 
@@ -273,7 +279,7 @@ void main() {
 type Uniforms = Record<string, THREE.IUniform>;
 
 /** One shader's compiled bake material, shared by every bake of that source. */
-interface Pass { material: THREE.ShaderMaterial; scene: THREE.Scene; }
+interface Pass { material: THREE.ShaderMaterial; scene: THREE.Scene; mesh: THREE.Mesh }
 interface Target { width: number; height: number; color: THREE.WebGLRenderTarget; normal: THREE.WebGLRenderTarget; flatNormal: boolean }
 
 /**
@@ -400,6 +406,9 @@ export class GpuBaker {
     this.failureCheck = undefined;
     this.livePasses.clear();
     this.liveTargets.clear();
+    this.atlasPasses.clear();
+    this.atlasNormalPass = undefined;
+    this.atlasCompileTarget = undefined;
     this.displayed.clear();
     this.held.clear();
     this.targets.clear();
@@ -440,7 +449,7 @@ export class GpuBaker {
 
   /** Drops the least recently used programs beyond what is kept; one a bake is using waits for the next trim. */
   private trim(): void {
-    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.livePasses, KEPT_LIVE_PASSES]] as const) {
+    for (const [passes, kept] of [[this.passes, KEPT_PASSES], [this.livePasses, KEPT_LIVE_PASSES], [this.atlasPasses, KEPT_PASSES]] as const) {
       for (const [key, pass] of [...passes]) {
         if (passes.size <= kept) break;
         if (!this.evictable(pass)) continue;
@@ -631,13 +640,16 @@ export class GpuBaker {
    * status is read here: a program the driver rejects fails the bake instead of leaving the targets as they were. A
    * failure is remembered under `key`.
    */
-  private async compiled(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget, into: Map<string, Pass> | undefined, key: string): Promise<Pass> {
+  private async compiled(material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget, into: Map<string, Pass> | undefined, key: string,
+    geometry: THREE.BufferGeometry = this.geometry): Promise<Pass> {
     const known = this.failed.get(key);
     if (known) { material.dispose(); throw new Error(known); }
     if (this.inject) material.fragmentShader += this.inject;
     const generation = this.generation;
     const scene = new THREE.Scene();
-    const quad = new THREE.Mesh(this.geometry, material);
+    // three.js keys a program by what its mesh's geometry has (normals, colors, tangents) as well as by its material: a
+    // program compiled for one kind of geometry is compiled again, on the page's thread, at the first draw of another.
+    const quad = new THREE.Mesh(geometry, material);
     quad.frustumCulled = false;
     scene.add(quad);
     // compileAsync creates the programs at once and then waits for the driver (KHR_parallel_shader_compile where present,
@@ -665,7 +677,7 @@ export class GpuBaker {
       while (this.failed.size > KEPT_FAILURES) this.failed.delete(this.failed.keys().next().value!);
       throw new Error(message);
     }
-    const pass = { material, scene };
+    const pass = { material, scene, mesh: quad };
     into?.set(key, pass);
     return pass;
   }
@@ -948,6 +960,251 @@ export class GpuBaker {
     return bake;
   }
 
+  // ---- Receiver atlases (scene projects) ----
+
+  private atlasPasses = new Map<string, Pass>();
+  private atlasNormalPass?: Pass;
+  /** What an atlas pass's mesh holds between draws: positions only, like the bake geometry of a receiver (`bakeGeometry`). */
+  private readonly atlasIdle = new THREE.BufferGeometry().setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
+
+  /** How the evaluate pass of `shading` is laid out on this device (see `programLayout`). */
+  atlasProgram(shading: MaterialShading): AtlasProgramLayout {
+    return programLayout(shading);
+  }
+
+  /**
+   * Textures for one receiver's atlas bake, owned by the caller (a scene keeps one set per displayed receiver and
+   * disposes it with `disposeAtlasMaps`). They are not part of the baker's own target cache, which only holds a swatch's.
+   */
+  createAtlasMaps(width: number, height: number, layout: AtlasProgramLayout): AtlasMaps {
+    // One target per texture (see `atlasFragment` for why the evaluate pass is not one draw into several buffers).
+    const targets = layout.attachments.map(() => new THREE.WebGLRenderTarget(width, height, { depthBuffer: false, stencilBuffer: false }));
+    const live: Record<string, THREE.Texture> = {};
+    let bytes = 0;
+    const named: Partial<Record<AtlasAttachment, THREE.Texture>> = {};
+    layout.attachments.forEach((name, index) => {
+      const texture = targets[index].texture;
+      named[name] = texture;
+      texture.name = `gpu-atlas ${name}`;
+      texture.format = THREE.RGBAFormat; texture.colorSpace = THREE.NoColorSpace;
+      texture.wrapS = texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.generateMipmaps = false;
+      // Mips are generated once after all bands (see `mips`); heights and offsets are read with texelFetch only.
+      const sampled = name !== "height" && name !== "offset";
+      texture.minFilter = sampled ? THREE.LinearMipmapLinearFilter : THREE.NearestFilter;
+      texture.magFilter = sampled ? THREE.LinearFilter : THREE.NearestFilter;
+      if (sampled) texture.anisotropy = MAP_ANISOTROPY;
+      if (name === "base") { texture.type = THREE.UnsignedByteType; texture.colorSpace = THREE.SRGBColorSpace; bytes += 4 * 4 / 3; }
+      else if (name === "properties") { texture.type = THREE.UnsignedByteType; bytes += 4 * 4 / 3; }
+      else if (name === "height") {
+        texture.type = THREE.FloatType;
+        // One channel unless the program's receiver_normal output rides beside the height.
+        if (!layout.orient) texture.format = THREE.RedFormat;
+        bytes += layout.orient ? 16 : 4;
+      } else {
+        texture.type = THREE.HalfFloatType; bytes += name === "offset" ? 8 : 8 * 4 / 3;
+        if (name.startsWith("live")) live[`gpu-live-${name.slice(4)}`] = texture;
+      }
+    });
+    const normalTarget = new THREE.WebGLRenderTarget(width, height, { depthBuffer: false, stencilBuffer: false,
+      format: THREE.RGBAFormat, type: THREE.UnsignedByteType, colorSpace: THREE.NoColorSpace,
+      minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false });
+    normalTarget.texture.wrapS = normalTarget.texture.wrapT = THREE.ClampToEdgeWrapping;
+    normalTarget.texture.anisotropy = MAP_ANISOTROPY;
+    normalTarget.texture.name = "gpu-atlas normal";
+    bytes += 4 * 4 / 3;
+    return { profile: GPU_PREVIEW_PROFILE, key: "", width, height, layout, targets, normalTarget, baseColor: named.base!, properties: named.properties!,
+      heightMap: named.height!, emissive: named.emissive, offset: named.offset, normal: normalTarget.texture, live,
+      bytes: Math.round(bytes * width * height), generation: this.generation, flatNormal: false };
+  }
+
+  disposeAtlasMaps(maps: AtlasMaps): void { for (const target of maps.targets) target.dispose(); maps.normalTarget.dispose(); }
+
+  /** Whether `maps` still exist on the GPU: a context lost since they were made took them. */
+  atlasMapsAlive(maps: AtlasMaps): boolean { return !this.lost && maps.generation === this.generation; }
+
+  /** Whether the program that bakes `shading` into `layout` is compiled and has drawn once (so a bake costs only its pixels). */
+  atlasWarm(shading: MaterialShading, layout: AtlasProgramLayout): boolean { return this.drawn.has(atlasPassKey(shading.shader.source, layout)); }
+
+  /** A target the atlas programs are compiled against before any receiver's maps exist (any render target gives the same program). */
+  private atlasCompileTarget?: THREE.WebGLRenderTarget;
+
+  /**
+   * Starts compiling the programs a bake of `shading` over an atlas draws with, without waiting for them: the driver
+   * compiles beside whatever else is going on, and the first bake finds them ready (or waits for the rest).
+   * Errors are left for that bake to report.
+   */
+  precompileAtlas(shading: MaterialShading): void {
+    if (this.unavailable() || gpuBakeUnsupported(shading, true)) return;
+    const target = this.atlasCompileTarget ??= new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, stencilBuffer: false });
+    const layout = this.atlasProgram(shading);
+    void this.atlasPass(shading.shader.source, layout, target).catch(() => {});
+    const flat = !shading.shader.outputs.includes("height") && !layout.orient && !layout.attachments.includes("offset");
+    if (!flat) void this.atlasNormals(target).catch(() => {});
+  }
+
+  private async atlasPass(source: string, layout: AtlasProgramLayout, target: THREE.WebGLRenderTarget): Promise<Pass> {
+    const key = atlasPassKey(source, layout);
+    const cached = this.atlasPasses.get(key);
+    if (cached) { this.atlasPasses.delete(key); this.atlasPasses.set(key, cached); return cached; }
+    const waiting = this.compiling.get(key);
+    if (waiting) return waiting;
+    const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: ATLAS_VERTEX, fragmentShader: atlasFragment(source, layout),
+      uniforms: {}, depthTest: false, depthWrite: false, blending: THREE.NoBlending, side: THREE.DoubleSide });
+    const started: Promise<Pass> = this.compiled(material, target, this.atlasPasses, key, this.atlasIdle)
+      .finally(() => { if (this.compiling.get(key) === started) this.compiling.delete(key); });
+    this.compiling.set(key, started);
+    return started;
+  }
+
+  private async atlasNormals(target: THREE.WebGLRenderTarget): Promise<Pass> {
+    if (this.atlasNormalPass) return this.atlasNormalPass;
+    const waiting = this.compiling.get("atlas-normals");
+    if (waiting) return waiting;
+    const material = new THREE.ShaderMaterial({ glslVersion: THREE.GLSL3, vertexShader: ATLAS_VERTEX, fragmentShader: ATLAS_NORMAL_FRAGMENT,
+      uniforms: { msHeightMap: { value: null }, msOffsetMap: { value: null }, msAtlas: { value: new THREE.Vector2(1, 1) }, msGutter: { value: 0 },
+        msOrient: { value: false }, msBend: { value: false } },
+      depthTest: false, depthWrite: false, blending: THREE.NoBlending, side: THREE.DoubleSide });
+    const started: Promise<Pass> = this.compiled(material, target, undefined, "atlas-normals", this.atlasIdle)
+      .then(pass => this.atlasNormalPass = pass)
+      .finally(() => { if (this.compiling.get("atlas-normals") === started) this.compiling.delete("atlas-normals"); });
+    this.compiling.set("atlas-normals", started);
+    return started;
+  }
+
+  /** Fills a target with one value (a flat normal), leaving the renderer's own clear settings as they were. */
+  private fill(target: THREE.WebGLRenderTarget, red: number, green: number, blue: number): void {
+    const before = this.renderer.getRenderTarget(), color = this.renderer.getClearColor(new THREE.Color()), alpha = this.renderer.getClearAlpha();
+    try {
+      this.renderer.setRenderTarget(target);
+      this.renderer.setClearColor(new THREE.Color().setRGB(red, green, blue, THREE.LinearSRGBColorSpace), 1);
+      this.renderer.clear(true, false, false);
+    } finally {
+      this.renderer.setClearColor(color, alpha);
+      this.renderer.setRenderTarget(before);
+    }
+  }
+
+  /** The cache key of an atlas bake: everything that changes a texel. `receiver` names the receiver inputs that are textures (its features). */
+  static atlasKey(shading: MaterialShading, uniforms: Uniforms, atlas: AtlasLayout, layout: AtlasProgramLayout, fieldIds: string[], receiver: string): string {
+    const values = Object.entries(uniforms).filter(([, uniform]) => !(uniform.value as { isTexture?: boolean } | null)?.isTexture)
+      .map(([name, uniform]) => [name, JSON.stringify(uniform.value)]).sort();
+    const images = shading.shader.images.map(image => `${image.name}:${image.linear}:${(uniforms[image.uniform]?.value as THREE.Texture | undefined)?.uuid}`);
+    return `${GPU_PREVIEW_PROFILE}:${GPU_PREVIEW_VERSION}:atlas:${hash(shading.shader.source)}:${layout.key}:${atlas.key}:${hash(JSON.stringify([values, images, fieldIds, receiver]))}`;
+  }
+
+  /**
+   * Bakes `shading` over one receiver's atlas into `maps`, in UV space: the evaluate pass draws every chart with the
+   * program (and its live renderer arguments, in the same draw), the normals pass turns the height into tangent-space
+   * normals at the same resolution, and mips are built for everything a viewer samples. `uniforms` holds the program's
+   * parameter, seed and image uniforms and the receiver's own (`ms_features`, bounds, gravity, `msObjectFromWorld`,
+   * `msMapping`). A PREVIEW, like every bake here. Returns null when `current` went false or the context was lost, and
+   * throws when the program cannot be baked; `maps` then hold nothing a viewer should show.
+   */
+  async bakeAtlas(shading: MaterialShading, uniforms: Uniforms, atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry; extent: [number, number]; receiver: string },
+    maps: AtlasMaps, options: BakeOptions = {}): Promise<AtlasBakeTimings | null> {
+    this.busy++;
+    const holds: object[] = [];
+    try { return await this.bakeAtlasNow(shading, uniforms, atlas, maps, options, holds); }
+    catch (error) { if (error instanceof Abandoned) return null; throw error; }
+    finally { this.release(holds); this.busy--; this.trim(); }
+  }
+
+  private async bakeAtlasNow(shading: MaterialShading, uniforms: Uniforms, atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry; extent: [number, number]; receiver: string },
+    maps: AtlasMaps, options: BakeOptions, holds: object[]): Promise<AtlasBakeTimings | null> {
+    const { measure = false, bandTexels = BAND_TEXELS, fields = {} } = options;
+    const reason = this.unavailable();
+    if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
+    const unsupported = gpuBakeUnsupported(shading, true) ?? maps.layout.unsupported;
+    if (unsupported) throw new Error(`GPU preview does not support this program: ${unsupported}.`);
+    const { width, height } = atlas.layout;
+    if (width !== maps.width || height !== maps.height) throw new Error("Atlas and map sizes differ.");
+    if (width < 1 || height < 1 || width > 4096 || height > 4096) throw new Error("GPU preview size is out of range.");
+    if (!this.atlasMapsAlive(maps)) return null;
+    const generation = this.generation;
+    const current = () => generation === this.generation && (options.current?.() ?? true);
+    const settle = (target: THREE.WebGLRenderTarget) => {
+      if (!measure) return;
+      const type = target.textures[0].type;
+      const texel = type === THREE.FloatType ? new Float32Array(4) : type === THREE.HalfFloatType ? new Uint16Array(4) : new Uint8Array(4);
+      this.renderer.readRenderTargetPixels(target, 0, 0, 1, 1, texel, undefined, 0);
+    };
+    const started = performance.now();
+    const unitLimit = this.renderer.capabilities.maxTextures;
+    const bakeUnits = (shading.shader.source.match(/uniform\s+(?:highp\s+)?sampler2D/g) ?? []).length;
+    if (bakeUnits > unitLimit) throw new Error(`GPU preview needs ${bakeUnits} texture units to bake; this device has ${unitLimit}.`);
+    const passKey = atlasPassKey(shading.shader.source, maps.layout);
+    const hadPass = this.atlasPasses.has(passKey);
+    const outputs = shading.shader.outputs;
+    const bend = maps.layout.attachments.includes("offset");
+    const flat = !outputs.includes("height") && !maps.layout.orient && !bend;
+    // Compiled before anything is drawn, as for a swatch.
+    const pass = await this.atlasPass(shading.shader.source, maps.layout, maps.targets[0]);
+    this.hold(pass, holds);
+    const normals = flat ? undefined : await this.atlasNormals(maps.normalTarget);
+    if (!current()) return null;
+    const compiled = performance.now();
+
+    const bound: Uniforms = { ...uniforms,
+      msAtlas: { value: new THREE.Vector2(width, height) }, msGutter: { value: atlas.layout.gutter },
+      msExtent: { value: new THREE.Vector2(atlas.extent[0], atlas.extent[1]) } };
+    const fieldIds: string[] = [];
+    for (const wanted of shading.shader.cpuFields ?? []) {
+      const field = fields[wanted.uniform];
+      if (!field) throw new Error(`GPU preview needs the CPU field ${wanted.name}.`);
+      if (field.width !== width || field.height !== height) throw new Error("CPU field and atlas sizes differ.");
+      bound[wanted.uniform] = { value: this.fieldTexture(field) };
+      fieldIds.push(`${wanted.name}=${field.id}`);
+    }
+    const bandRows = Math.max(1, Math.floor(bandTexels / width));
+    // The maps hold a mix of two bakes until the last pass is drawn.
+    maps.key = "";
+    let bands = 0;
+    try {
+      // One draw per texture, the program choosing its output by a uniform (see `atlasFragment`).
+      for (let index = 0; index < maps.targets.length; index++) {
+        if (index > 0 && bands > 1) { await yieldToBrowser(); if (!current()) return null; }
+        // Another bake may have used the program while this one yielded.
+        Object.assign(pass.material.uniforms, bound);
+        pass.material.uniforms.msOutput = { value: index };
+        pass.material.uniformsNeedUpdate = true;
+        pass.mesh.geometry = atlas.geometry;
+        bands = await this.draw(maps.targets[index], pass.scene, bandRows, current);
+        if (bands < 0) return null;
+        settle(maps.targets[index]);
+      }
+    } finally { pass.mesh.geometry = this.atlasIdle; }
+    const evaluated = performance.now();
+    if (normals) {
+      const uniform = normals.material.uniforms;
+      uniform.msHeightMap.value = maps.heightMap;
+      uniform.msOffsetMap.value = maps.offset ?? maps.heightMap;
+      (uniform.msAtlas.value as THREE.Vector2).set(width, height);
+      uniform.msGutter.value = atlas.layout.gutter;
+      uniform.msOrient.value = maps.layout.orient; uniform.msBend.value = bend;
+      normals.material.uniformsNeedUpdate = true;
+      // Texels no chart covers read as a flat normal when a mip or a filter tap reaches them.
+      if (!maps.cleared) { this.fill(maps.normalTarget, 0.5, 0.5, 1); maps.cleared = true; }
+      normals.mesh.geometry = atlas.geometry;
+      const drawn = await this.draw(maps.normalTarget, normals.scene, bandRows, current);
+      normals.mesh.geometry = this.atlasIdle;
+      if (drawn < 0) return null;
+      maps.flatNormal = false;
+    } else if (!maps.flatNormal) {
+      this.fill(maps.normalTarget, 0.5, 0.5, 1);
+      maps.flatNormal = maps.cleared = true;
+    }
+    settle(maps.normalTarget);
+    const normalsDone = performance.now();
+    this.mips([...maps.targets.map(target => target.texture).filter(texture => texture.minFilter === THREE.LinearMipmapLinearFilter), maps.normal]);
+    settle(maps.normalTarget); settle(maps.targets[0]);
+    const done = performance.now();
+    maps.key = GpuBaker.atlasKey(shading, uniforms, atlas.layout, maps.layout, fieldIds, atlas.receiver);
+    if (this.atlasPasses.has(passKey)) this.drawn.add(passKey);
+    return { compile: hadPass ? 0 : compiled - started, evaluate: evaluated - compiled, normals: normalsDone - evaluated, mips: done - normalsDone,
+      total: done - started, bands, units: { bake: bakeUnits, limit: unitLimit } };
+  }
+
   /** The base color and normal texels of the last bake, for tests and diagnostics (not for display). */
   readBack(bake: GpuBake): { baseColor: Uint8Array; normal: Uint8Array; height: Float32Array; properties: Uint8Array } {
     const targets = this.targets.get(`${bake.width}x${bake.height}`);
@@ -993,9 +1250,13 @@ export class GpuBaker {
     this.renderer.domElement.removeEventListener("webglcontextrestored", this.contextRestored);
     for (const pass of this.passes.values()) pass.material.dispose();
     this.normalPass?.material.dispose();
+    for (const pass of this.atlasPasses.values()) pass.material.dispose();
+    this.atlasPasses.clear();
+    this.atlasNormalPass?.material.dispose(); this.atlasNormalPass = undefined;
+    this.atlasCompileTarget?.dispose(); this.atlasCompileTarget = undefined;
     this.failureCheck?.pass.material.dispose(); this.failureCheck?.target.dispose(); this.failureCheck = undefined;
     this.disposeTargets();
-    this.geometry.dispose();
+    this.geometry.dispose(); this.atlasIdle.dispose();
     this.passes.clear();
     this.normalPass = undefined;
   }

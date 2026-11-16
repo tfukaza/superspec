@@ -10,7 +10,9 @@ pub struct Authoring {
     assets: BTreeMap<String, Arc<[u8]>>,
     accepted: Option<Output>,
     packet: Vec<u8>,
-    field_texels: Vec<f32>,
+    /// The fields of the last field bake, each moved in from the engine and out to the host.
+    field_texels: Vec<Vec<f32>>,
+    layout_records: Vec<f32>,
     staged: crate::staged::StagedExport,
 }
 
@@ -99,9 +101,9 @@ impl Authoring {
     }
 
     /// Evaluates fields of a material request's program over its receiver atlas, for a GPU preview
-    /// that binds them as textures. The reply lists each field's size; the texels (four `f32` per
-    /// texel per field, in order) are then taken with [`Self::field_texels`]. Builds nothing and
-    /// never replaces the accepted model.
+    /// that binds them as textures. The reply gives the grid size and the number of fields; each
+    /// field's texels (four `f32` per texel) are then taken with [`Self::field_texels`]. Builds
+    /// nothing and never replaces the accepted model.
     pub fn bake_fields(&mut self, source: &str, revision: u32, names: &str) -> String {
         let result = (|| {
             if source.len() > 32 * 1024 * 1024 {
@@ -128,10 +130,99 @@ impl Authoring {
             )
         })();
         match result {
-            Ok(baked) => {
-                self.field_texels = baked.fields.into_iter().flatten().collect();
-                serde_json::json!({"success":true,"width":baked.width,"height":baked.height})
-                    .to_string()
+            Ok(baked) => self.keep_fields(baked),
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// The texels of field `index` of the last field bake, moved out: each field is handed over
+    /// once and never copied or joined inside the module. Empty for a field already taken.
+    pub fn field_texels(&mut self, index: usize) -> Vec<f32> {
+        let texels = self
+            .field_texels
+            .get_mut(index)
+            .map(std::mem::take)
+            .unwrap_or_default();
+        if self.field_texels.iter().all(Vec::is_empty) {
+            self.field_texels = Vec::new();
+        }
+        texels
+    }
+
+    /// [`Self::bake_fields`] for one mesh of a scene project: the fields of the material assigned
+    /// to `mesh`, over that receiver's atlas as `preview_project` bakes it.
+    pub fn bake_project_fields(
+        &mut self,
+        source: &str,
+        revision: u32,
+        mesh: &str,
+        names: &str,
+    ) -> String {
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(vec![Diagnostic::message(
+                    "project",
+                    "Authoring project allowance exceeded.",
+                )]);
+            }
+            let project: Project = serde_json::from_str(source)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            let names: Vec<String> = serde_json::from_str(names)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            self.session.bake_project_fields(
+                &project,
+                mesh,
+                &names,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| false,
+            )
+        })();
+        match result {
+            Ok(baked) => self.keep_fields(baked),
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// The atlas layout of every assigned receiver of a scene project, as its CPU bake lays them
+    /// out, for a renderer that bakes in UV space. The reply lists the receivers; their triangle
+    /// records (see `superspec_engine::authoring::LAYOUT_RECORD`) are then taken with
+    /// [`Self::layout_records`].
+    pub fn layout_project(&mut self, source: &str, revision: u32) -> String {
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(vec![Diagnostic::message(
+                    "project",
+                    "Authoring project allowance exceeded.",
+                )]);
+            }
+            let project: Project = serde_json::from_str(source)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            self.session.project_layouts(
+                &project,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| false,
+            )
+        })();
+        match result {
+            Ok(mut layouts) => {
+                self.layout_records = std::mem::take(&mut layouts.records);
+                serde_json::json!({"success":true,"layouts":layouts}).to_string()
             }
             Err(diagnostics) => {
                 serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
@@ -139,9 +230,9 @@ impl Authoring {
         }
     }
 
-    /// The texels of the last [`Self::bake_fields`], all fields end to end.
-    pub fn field_texels(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.field_texels)
+    /// The triangle records of the last [`Self::layout_project`], moved out.
+    pub fn layout_records(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.layout_records)
     }
 
     pub fn export_glb(&self) -> Result<Vec<u8>, JsValue> {
@@ -397,6 +488,16 @@ impl Authoring {
 }
 
 impl Authoring {
+    /// Holds a field bake's texels for [`Self::field_texels`] without copying them, and answers
+    /// with the grid size and field count.
+    fn keep_fields(&mut self, baked: superspec_engine::authoring::FieldBake) -> String {
+        let reply = serde_json::json!({
+            "success": true, "width": baked.width, "height": baked.height, "fields": baked.fields.len(),
+        });
+        self.field_texels = baked.fields;
+        reply.to_string()
+    }
+
     fn export_build(&mut self, source: &str, revision: u32) -> Result<ProjectOutput, JsValue> {
         if source.len() > 32 * 1024 * 1024 {
             return Err(JsValue::from_str("Authoring project allowance exceeded."));

@@ -6,10 +6,13 @@ import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
 import { hasPixelRelief, programMaterial, programTexture, setParameters, setSeeds, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
-import { GpuBaker, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
-import { ShadowStyle } from "./shadow-style.ts";
-import { AmbientOcclusion } from "./ambient-occlusion.ts";
-import { renderingFromQuery, type RenderingSettings } from "./rendering.ts";
+import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake } from "./bake.ts";
+import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
+import { SceneBaker, type FieldSource, type SceneBakeTarget } from "./scene-bake.ts";
+import type { ShadowStyle } from "./shadow-style.ts";
+import type { AmbientOcclusion } from "./ambient-occlusion.ts";
+import type { Lighting } from "./lighting.ts";
+import { SceneLighting } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 
@@ -46,8 +49,10 @@ function sameGeometry(mesh: THREE.Mesh, packet: ScenePacket, source: SceneMesh):
     for (let i = 0; i < count; i++) if (current[i] !== incoming[start + i]) return false;
     return true;
   };
+  // A mesh showing GPU-baked maps is drawn with its atlas's geometry; the packet's is kept beside it (scene-bake.ts).
+  const geometry = (mesh.userData.sourceGeometry as THREE.BufferGeometry | undefined) ?? mesh.geometry;
   const tangents = packet.manifest.meshTangents?.[source.id];
-  const currentTangents = mesh.geometry.getAttribute("tangent");
+  const currentTangents = geometry.getAttribute("tangent");
   if (Boolean(tangents) !== Boolean(currentTangents)) return false;
   if (tangents && currentTangents) {
     if (currentTangents.count !== tangents.length) return false;
@@ -57,11 +62,39 @@ function sameGeometry(mesh: THREE.Mesh, packet: ScenePacket, source: SceneMesh):
       }
     }
   }
-  return matches(mesh.geometry.getAttribute("position").array, packet.positions, source.vertexStart * 3, source.vertexCount * 3)
-    && matches(mesh.geometry.getAttribute("normal").array, packet.normals, source.vertexStart * 3, source.vertexCount * 3)
-    && matches(mesh.geometry.getAttribute("uv").array, packet.uvs, source.vertexStart * 2, source.vertexCount * 2)
-    && matches(mesh.geometry.getAttribute("color").array, packet.colors, source.vertexStart * 3, source.vertexCount * 3)
-    && matches(mesh.geometry.getIndex()!.array, packet.indices, source.indexStart, source.indexCount);
+  return matches(geometry.getAttribute("position").array, packet.positions, source.vertexStart * 3, source.vertexCount * 3)
+    && matches(geometry.getAttribute("normal").array, packet.normals, source.vertexStart * 3, source.vertexCount * 3)
+    && matches(geometry.getAttribute("uv").array, packet.uvs, source.vertexStart * 2, source.vertexCount * 2)
+    && matches(geometry.getAttribute("color").array, packet.colors, source.vertexStart * 3, source.vertexCount * 3)
+    && matches(geometry.getIndex()!.array, packet.indices, source.indexStart, source.indexCount);
+}
+
+/** A shaded material as the viewer holds it: the uniforms every mesh of it shares, and its plan's when it bakes from one. */
+interface ShadedMaterial {
+  uniforms: Record<string, THREE.IUniform>;
+  material: MaterialShading;
+  /** The parameter values last applied, to tell a change from a repeat. */
+  values: string;
+  plan?: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading };
+}
+/** A material's shading with the hybrid plan the engine adds for programs with CPU-only parts (`shade_project`). */
+type PlannedShading = MaterialShading & { plan?: { shader: MaterialShading["shader"]; seedValues: number[] } };
+/**
+ * Asks `prepareShading` for GPU-baked maps once the first look is shown: the receivers' atlas layouts from the engine
+ * (`layout_project`) and, for programs with CPU-only parts, a source of their CPU-baked fields.
+ */
+export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSource }
+/** Materials prepared for a scene's meshes while the scene before it is still displayed: put on them, or given up. */
+export interface SceneLook { commit(): void; discard(): void }
+/** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
+const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msMapping"];
+
+/** A small content hash of numbers (FNV-1a over their float bits), for cache keys. */
+function hashNumbers(values: number[]): string {
+  const bits = new Uint32Array(new Float32Array(values).buffer);
+  let value = 0x811c9dc5;
+  for (let index = 0; index < bits.length; index++) value = Math.imul(value ^ bits[index], 0x01000193);
+  return (value >>> 0).toString(16);
 }
 
 /** One shaded mesh waiting for its per-pixel relief program: the first-look material it shows and how to make the other. */
@@ -82,7 +115,7 @@ export class RustScene {
   private readonly texturePool = new TexturePool(this.renderer);
   private textureLeases = new Set<string>();
   /** Shaded materials by identity: the uniforms every mesh of the material shares. */
-  private shading = new Map<string, { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }>();
+  private shading = new Map<string, ShadedMaterial>();
   /** Program images by their bytes, per color role; kept while the viewer lives. */
   private readonly programImages = new WeakMap<Uint8Array, Map<boolean, Promise<THREE.Texture>>>();
   private readonly programTextures = new Set<THREE.Texture>();
@@ -93,18 +126,18 @@ export class RustScene {
   private sceneId?: string;
   private frame = 0;
   private closed = false;
-  private readonly sun: THREE.DirectionalLight;
   /**
-   * How this view renders its scene, whatever the materials: shadows, their look and ambient occlusion. Global settings
-   * of the scene view, filled from the page's parameters (see `renderingFromQuery`).
+   * How this view lights and renders its scene, whatever the materials: the lights, shadows and their look, ambient
+   * occlusion, tone mapping. Built from the scene's lighting record (`setLighting`; the shipped look until one is
+   * given), with the page's parameters on top as session overrides.
    */
-  readonly rendering: RenderingSettings = renderingFromQuery(new URLSearchParams(location.search));
-  /** Whether the viewer casts and receives shadows (on unless `?shadows=off`). */
-  readonly shadows = this.rendering.shadows;
-  /** The shadows' look (on unless `?shadowstyle=plain`); plain three.js shadows without it. */
-  private readonly shadowStyle = this.rendering.shadowStyle ? new ShadowStyle(this.rendering.shadowStyle) : undefined;
-  /** Ambient occlusion (on unless `?ao=off` or the renderer cannot composite); frames then go through it. */
-  private ambientOcclusion?: AmbientOcclusion;
+  private readonly lights: SceneLighting;
+  /** Whether the viewer casts and receives shadows (the record's sun casts them, unless `?shadows=off`). */
+  get shadows(): boolean { return this.lights.shadows; }
+  /** The shadows' look, patched into every scene material; it draws three.js's plain shadows while the style is `plain`. */
+  private get shadowStyle(): ShadowStyle { return this.lights.shadowStyle; }
+  /** Ambient occlusion (on unless the record or `?ao=off` turns it off, or the renderer cannot composite); frames then go through it. */
+  private get ambientOcclusion(): AmbientOcclusion | undefined { return this.lights.ambientOcclusion; }
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
@@ -114,30 +147,33 @@ export class RustScene {
 
   /** Fits the sun's shadow camera to the models' bounds and asks for one new shadow map; the light direction is unchanged. */
   private fitShadows(): void {
-    if (!this.shadows) return;
-    const bounds = new THREE.Box3().setFromObject(this.models);
-    if (bounds.isEmpty()) return;
-    const sphere = bounds.getBoundingSphere(new THREE.Sphere());
-    const direction = new THREE.Vector3(-3, -5, 8).normalize();
-    const radius = Math.max(sphere.radius, 0.05);
-    this.sun.target.position.copy(sphere.center);
-    this.sun.position.copy(sphere.center).addScaledVector(direction, radius * 3);
-    Object.assign(this.sun.shadow.camera, { left: -radius, right: radius, top: radius, bottom: -radius, near: radius * 0.5, far: radius * 5.5 });
-    this.sun.shadow.camera.updateProjectionMatrix();
-    this.sun.target.updateMatrixWorld();
-    this.shadowStyle?.fit(this.sun);
-    this.renderer.shadowMap.needsUpdate = true;
+    this.lights.fit(this.models);
+  }
+
+  /**
+   * Lights and renders the view by a scene's lighting record (see `lighting.ts`); the page's parameters and the
+   * exposure control stay on top of it. Values change in place; only turning shadows, their style or ambient occlusion
+   * on or off recompiles programs.
+   */
+  setLighting(record: Lighting): void {
+    this.lights.set(record);
+    for (const mesh of this.models.children) mesh.castShadow = mesh.receiveShadow = this.shadows;
+    this.fitShadows();
+    this.stateLighting();
+    this.invalidate();
+  }
+
+  /** States on the host what is drawn (`data-rendering`) and the record in effect with the session's overrides (`data-lighting`), for inspection and tests. */
+  private stateLighting(): void {
+    this.host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.lights.styledShadows, ambientOcclusion: this.ambientOcclusion !== undefined });
+    this.host.dataset.lighting = JSON.stringify(this.lights.lighting);
   }
 
   constructor(private readonly host: HTMLElement, private readonly inspect: (mesh?: SceneMesh) => void) {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.scene.background = new THREE.Color("#d5d7ce");
     this.environment = reflectionEnvironment(this.renderer);
-    this.scene.environment = this.environment.texture;
-    this.scene.environmentRotation.set(Math.PI / 2, 0, 0);
-    this.scene.environmentIntensity = 0.35;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.addEventListener("change", this.invalidate);
     this.controls.target.fromArray(this.view.target);
@@ -147,31 +183,12 @@ export class RustScene {
       this.controls.enabled = !active;
       if (!active) this.controls.target.copy(this.camera.position).addScaledVector(this.camera.getWorldDirection(new THREE.Vector3()), 3);
     }, text => host.dispatchEvent(new CustomEvent("walkstatus", { detail: text })));
-    const ambient = new THREE.HemisphereLight(0xffffff, 0x777768, 0.65);
-    ambient.position.set(0, 0, 1);
-    const sun = new THREE.DirectionalLight(0xffefdb, 3);
-    sun.position.set(-3, -5, 8);
-    this.sun = sun;
-    // Shadows are on by default (`?shadows=off` disables them for debugging). The sun does not move and the viewer renders on
-    // demand, so the shadow map is drawn when the models change (`shadowMap.needsUpdate`), not every frame.
-    if (this.shadows) {
-      this.renderer.shadowMap.enabled = true;
-      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-      this.renderer.shadowMap.autoUpdate = false;
-      sun.castShadow = true;
-      sun.shadow.mapSize.set(2048, 2048);
-      // A small bias against acne and a normal bias that keeps thin parts (ducts, pipes) attached to their shadows.
-      sun.shadow.bias = -0.0003;
-      sun.shadow.normalBias = 0.02;
-    }
-    this.scene.add(ambient, sun, sun.target, this.models);
-    const occlusion = this.rendering.ambientOcclusion;
-    if (occlusion && !AmbientOcclusion.unavailable(this.renderer)) {
-      // Inspection overlays are drawn in the image but cast and receive no occlusion.
-      this.ambientOcclusion = new AmbientOcclusion(this.renderer, this.scene, this.camera, occlusion,
-        () => [this.navigation, this.itemGuides].filter((group): group is THREE.Group => group !== undefined));
-    }
-    host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.shadowStyle !== undefined, ambientOcclusion: this.ambientOcclusion !== undefined });
+    // The lights, shadows and ambient occlusion of the shipped look, until a scene brings its own record (`setLighting`).
+    // Inspection overlays are drawn in the image but cast and receive no occlusion.
+    this.lights = new SceneLighting(this.renderer, this.scene, this.camera, this.environment.texture, new URLSearchParams(location.search),
+      () => [this.navigation, this.itemGuides].filter((group): group is THREE.Group => group !== undefined));
+    this.scene.add(this.models);
+    this.stateLighting();
     host.append(this.renderer.domElement);
     this.renderer.domElement.addEventListener("click", this.pick);
     this.renderer.domElement.addEventListener("webglcontextrestored", this.contextRestored);
@@ -194,7 +211,7 @@ export class RustScene {
   }
 
   /** Atomically replaces a scene and preserves selection; explicit new-file opens may request camera framing. */
-  async apply(packet: ScenePacket, current: () => boolean = () => true, fit = false, decorate?: (meshes: THREE.Mesh[]) => void): Promise<boolean> {
+  async apply(packet: ScenePacket, current: () => boolean = () => true, fit = false, decorate?: (meshes: THREE.Mesh[]) => Promise<SceneLook>): Promise<boolean> {
     const next = new THREE.Group();
     const textures = new Map<string, THREE.Texture>();
     const leases = new Set<string>();
@@ -249,6 +266,8 @@ export class RustScene {
       const failed = prepared.find(result => result.status === "rejected");
       if (failed?.status === "rejected") throw failed.reason;
       checkCurrent();
+      // A scene without shaded materials replaces one that may show GPU-baked looks: its meshes get their own back first.
+      if (!decorate) this.sceneBaker?.reset();
       for (const descriptor of packet.manifest.meshes) {
         checkCurrent();
         const definition = descriptor.material === null ? undefined : materials.get(descriptor.material);
@@ -323,7 +342,9 @@ export class RustScene {
         mesh.userData.source = descriptor;
         mesh.userData.materialSignature = signature;
       }
-      if (!current() || this.closed) { this.release(next); this.texturePool.release(leases); return false; }
+      // Shaded materials are made and compiled while the scene before this one stays on screen, untouched.
+      const look = await decorate?.(ordered);
+      if (!current() || this.closed) { look?.discard(); this.release(next); this.texturePool.release(leases); return false; }
       for (const item of reused) {
         item.mesh.userData.source = item.source;
         // A reused mesh may still show a GPU preview; the build's own maps replace it.
@@ -332,7 +353,7 @@ export class RustScene {
       delete this.host.dataset.gpuPreviewKey; delete this.host.dataset.gpuLiveOperations;
       // The build's own maps are shown from here on, on reused and new meshes alike.
       this.bakerInstance?.display(null);
-      decorate?.(ordered);
+      look?.commit();
       for (const mesh of ordered) next.add(mesh);
       this.scene.add(next);
       const previous = this.models;
@@ -405,10 +426,18 @@ export class RustScene {
    * overrides by material; `image` supplies the bytes of each image a program samples.
    */
   async prepareShading(shading: SceneShading, values: Record<string, Record<string, unknown>>,
-    image: (name: string) => Promise<Uint8Array>): Promise<(meshes: THREE.Mesh[]) => void> {
-    const prepared = new Map<string, { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }>();
+    image: (name: string) => Promise<Uint8Array>, bake?: SceneBakeRequest): Promise<(meshes: THREE.Mesh[]) => Promise<SceneLook>> {
+    const prepared = new Map<string, ShadedMaterial>();
+    const layouts = bake ? atlasLayouts(bake.layouts) : undefined;
     for (const [id, material] of Object.entries(shading.materials)) {
-      prepared.set(id, { uniforms: await this.programUniforms(material, values[id] ?? {}, image), material });
+      const entry: ShadedMaterial = { uniforms: await this.programUniforms(material, values[id] ?? {}, image), material, values: JSON.stringify(values[id] ?? {}) };
+      // A program with CPU-only parts is baked from its plan: a shader that reads those parts as CPU-baked fields.
+      const plan = (material as PlannedShading).plan;
+      if (bake && plan && gpuBakeUnsupported(material, true)) {
+        const planned: MaterialShading = { ...material, shader: plan.shader, seedValues: plan.seedValues };
+        entry.plan = { material: planned, uniforms: await this.programUniforms(planned, values[id] ?? {}, image) };
+      }
+      prepared.set(id, entry);
     }
     const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad") => {
       const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode);
@@ -417,29 +446,108 @@ export class RustScene {
       material.side = THREE.DoubleSide;
       return material;
     };
-    return meshes => {
-      this.shading = prepared;
-      // The first look uses the relief that compiles fast; the per-pixel programs follow in the background (`refineRelief`).
+    return async meshes => {
+      // The first look uses the relief that compiles fast. With baking, GPU-baked maps follow (scene-bake.ts); without
+      // it the per-pixel relief programs do, in the background (`refineRelief`).
       const refine: ReliefRefinement[] = [];
+      const targets: SceneBakeTarget[] = [];
+      const made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[] = [];
+      // The programs the bakes will draw with start compiling now, beside the first look's (the driver compiles in parallel).
+      if (bake) {
+        const baker = this.bakerInstance ??= this.newBaker();
+        for (const entry of prepared.values()) baker.precompileAtlas((entry.plan ?? entry).material);
+      }
+      const stage = new THREE.Group();
       for (const mesh of meshes) {
         const spec = shading.meshes[mesh.name];
         const entry = spec && prepared.get(spec.material);
         if (!spec || !entry) continue;
-        (mesh.material as THREE.Material).dispose();
         const material = make(entry, spec, "quad");
-        mesh.material = material;
-        mesh.userData.liveOperations = material.userData.liveOperations;
-        mesh.userData.shaded = spec.material;
+        made.push({ mesh, material, shaded: spec.material });
+        const twin = new THREE.Mesh(mesh.geometry, material);
+        twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
+        stage.add(twin);
         if (this.pixelRelief && hasPixelRelief(entry.material)) {
           refine.push({ mesh, first: material, source: entry.material.shader.source, make: () => make(entry, spec, "pixel") });
         }
+        const layout = layouts?.get(mesh.name);
+        if (layout) {
+          const use = entry.plan ?? entry;
+          const own = material.userData.programUniforms as Record<string, THREE.IUniform>;
+          // The program's shared uniforms (the plan's, when it bakes from one) with this receiver's own.
+          const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
+          targets.push({ mesh, material: spec.material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
+            receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1] });
+        }
+      }
+      // Compiled as the meshes that will show them, with the displayed scene's lights, shadows and environment, and
+      // without blocking the page: drawn uncompiled, each program would stall the first frame for as long as it compiles.
+      const started = performance.now();
+      const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
+      try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { /* compiled at the first draw instead */ }
+      this.host.dataset.firstLookCompileMs = String(Math.round(performance.now() - started));
+      return { discard: () => { for (const item of made) item.material.dispose(); }, commit: () => this.commitShading(prepared, made, refine, targets, bake) };
+    };
+  }
+
+  /** Puts prepared per-pixel materials on their meshes and starts what follows the first look: baked maps, or the per-pixel relief. */
+  private commitShading(prepared: Map<string, ShadedMaterial>, made: { mesh: THREE.Mesh; material: THREE.MeshStandardMaterial; shaded: string }[],
+    refine: ReliefRefinement[], targets: SceneBakeTarget[], bake?: SceneBakeRequest): void {
+    {
+      // Meshes kept from the scene before may show baked looks; they get their per-pixel ones back before those are replaced.
+      this.sceneBaker?.reset();
+      this.shading = prepared;
+      for (const { mesh, material, shaded } of made) {
+        (mesh.material as THREE.Material).dispose();
+        mesh.material = material;
+        mesh.userData.liveOperations = material.userData.liveOperations;
+        mesh.userData.shaded = shaded;
       }
       const run = ++this.reliefRun;
-      this.host.dataset.relief = refine.length ? "quad" : this.pixelRelief ? "pixel" : "quad";
       delete this.host.dataset.reliefMs;
+      if (bake) {
+        delete this.host.dataset.relief;
+        // Meshes that cannot be baked keep the per-pixel look and get its better relief once the others show their maps.
+        this.unbakedRefinement = () => {
+          this.unbakedRefinement = undefined;
+          const unbaked = new Set(this.sceneBaker?.unbaked());
+          const left = refine.filter(item => unbaked.has(item.mesh));
+          if (left.length && run === this.reliefRun) void this.refineRelief(left, run);
+        };
+        (this.sceneBaker ??= this.newSceneBaker()).begin(targets, bake.fields);
+        return;
+      }
+      delete this.host.dataset.sceneBake;
+      this.host.dataset.relief = refine.length ? "quad" : this.pixelRelief ? "pixel" : "quad";
       // After `apply` has drawn the first look.
       if (refine.length) setTimeout(() => void this.refineRelief(refine, run), 0);
-    };
+    }
+  }
+
+  private sceneBaker?: SceneBaker;
+  private unbakedRefinement?: () => void;
+
+  private newSceneBaker(): SceneBaker {
+    return new SceneBaker({
+      baker: () => this.bakerInstance ??= this.newBaker(),
+      style: material => { this.shadowStyle?.apply(material); material.wireframe = this.view.wireframe; },
+      compile: async (mesh, geometry, material) => {
+        // Compiled as the mesh that will show it, with the displayed scene's lights, shadows and environment.
+        const stage = new THREE.Group();
+        const twin = new THREE.Mesh(geometry, material);
+        twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
+        stage.add(twin);
+        const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
+        await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile());
+      },
+      displayed: mesh => !this.closed && this.models.children.includes(mesh),
+      draw: () => this.invalidate(),
+      finished: () => this.gpuFinished(),
+      report: status => {
+        this.host.dataset.sceneBake = JSON.stringify(status);
+        if (status.state === "baked") this.unbakedRefinement?.();
+      },
+    });
   }
 
   /** Per-pixel relief in the shader preview unless the page asks for the cheaper one alone (`?relief=quad`). */
@@ -544,7 +652,7 @@ export class RustScene {
 
   private newBaker(): GpuBaker {
     const baker = new GpuBaker(this.renderer);
-    baker.onLost = () => { this.gpuUniforms = undefined; this.clearBakedPreview(); };
+    baker.onLost = () => { this.gpuUniforms = undefined; this.sceneBaker?.lost(); this.clearBakedPreview(); };
     return baker;
   }
 
@@ -758,7 +866,13 @@ export class RustScene {
   setShadingParameters(material: string, values: Record<string, unknown>): boolean {
     const entry = this.shading.get(material);
     if (!entry) return false;
+    const next = JSON.stringify(values);
+    if (next === entry.values) return true;
+    entry.values = next;
     setParameters(entry.uniforms, entry.material, values);
+    if (entry.plan) setParameters(entry.plan.uniforms, entry.plan.material, values);
+    // Meshes showing baked maps of this material go back to the per-pixel look until the change settles.
+    this.sceneBaker?.invalidate(material);
     this.invalidate();
     return true;
   }
@@ -773,7 +887,7 @@ export class RustScene {
   /** Adjusts preview lighting exposure without changing model data, textures, camera or authored material values. */
   setExposure(value: number): void {
     if (!Number.isFinite(value) || value < 0.25 || value > 3) throw new Error("Preview exposure must be between 0.25 and 3.");
-    this.renderer.toneMappingExposure = value;
+    this.lights.setExposure(value);
     this.invalidate();
   }
 
@@ -877,6 +991,8 @@ export class RustScene {
   /** A restored context has an empty shadow map, and the map is only drawn on request. */
   private readonly contextRestored = (): void => {
     if (this.shadows) this.renderer.shadowMap.needsUpdate = true;
+    // The baked maps went with the old context. Baked again once every listener has run (the GPU baker's own comes later).
+    setTimeout(() => { if (!this.closed) this.sceneBaker?.rebake(); }, 0);
     this.invalidate();
   };
 
@@ -912,13 +1028,14 @@ export class RustScene {
     this.resize.disconnect(); this.controls.removeEventListener("change", this.invalidate); this.controls.dispose();
     this.renderer.domElement.removeEventListener("click", this.pick);
     this.renderer.domElement.removeEventListener("webglcontextrestored", this.contextRestored);
+    this.sceneBaker?.dispose();
     this.release(this.models);
     this.texturePool.dispose();
     this.bakerInstance?.dispose();
     for (const texture of this.programTextures) texture.dispose();
+    this.lights.dispose();
     this.scene.environment = null;
     this.environment.dispose();
-    this.ambientOcclusion?.dispose();
     this.renderer.dispose(); this.renderer.domElement.remove();
   }
 }

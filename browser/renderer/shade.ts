@@ -44,6 +44,8 @@ export interface SceneShading {
   materials: Record<string, MaterialShading>;
   meshes: Record<string, MeshShading>;
   gravity: number[];
+  /** Physical size of the UV square for `uv` mapping, meters (the project's domain). */
+  domain?: number[];
 }
 type Uniforms = Record<string, THREE.IUniform>;
 
@@ -226,6 +228,8 @@ ${relief ? "  msHeightAcross -= ms_height; msHeightDown -= ms_height;" : "  msHe
   const liveKey = material.customProgramCacheKey();
   material.customProgramCacheKey = () => `materialSpec-program:${id}:${relief ? "pixel" : "quad"}:${liveKey}`;
   material.userData.liveOperations = live;
+  // The program's inputs for this mesh (the shared ones and the receiver's own), for a bake of the same program.
+  material.userData.programUniforms = uniforms;
   material.needsUpdate = true;
   return material;
 }

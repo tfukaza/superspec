@@ -2,7 +2,8 @@
  * The MaterialSpec benchmark scene (tests/studio/washroom) in the built Material Studio: opens
  * the project through the production Wasm workers, checks every material landed on its meshes
  * and reports how long the scene took to load. RESOLUTION (default 256) sets the texture size;
- * SCREENSHOT names a PNG of the loaded viewport.
+ * SCREENSHOT names a PNG of the loaded viewport. LIGHTING names a JSON lighting record the project
+ * then carries (see docs/plans/lighting-settings.md); without it the scene has the shipped look.
  */
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -30,6 +31,7 @@ try {
   // ONLY=id,id keeps just those materials, to see what each costs.
   const only = process.env.ONLY?.split(",");
   if (only) project.materials = project.materials.filter(material => only.includes(material.id));
+  if (process.env.LIGHTING) project.lighting = JSON.parse(await readFile(process.env.LIGHTING, "utf8"));
   browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   const errors = [];
@@ -60,12 +62,42 @@ try {
     await page.waitForFunction(() => document.querySelector("#viewport").dataset.relief === "pixel", {}, { timeout: 900000 });
     perPixel = `, per-pixel relief ${Date.now() - started} ms`;
   }
+  // By default GPU-baked maps follow the first look (scene-bake.ts): the scene is baked when every mesh shows its maps.
+  const sceneBake = () => page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null"));
+  const baked = async () => {
+    if (!await sceneBake()) return null;
+    await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake).state === "baked", {}, { timeout: 900000 });
+    await waitForFrames(page);
+    return sceneBake();
+  };
+  let bakedMaps = "";
+  const firstBake = await baked();
+  if (firstBake) {
+    bakedMaps = `, GPU-baked maps ${Date.now() - started} ms`;
+    console.log(`Scene bake: ${JSON.stringify(firstBake)}`);
+    if (!/preview=/.test(process.env.QUERY ?? "")) {
+      assert.deepEqual(firstBake.unsupported, {}, "every mesh of the washroom shows GPU-baked maps");
+      assert.equal(firstBake.baked, firstBake.meshes);
+    }
+  }
 
   const bindings = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.bindings ?? "{}"));
   const expected = Object.fromEntries(project.materials.flatMap(material => material.meshes.map(mesh => [mesh, material.id])));
   assert.deepEqual(bindings, expected, "every mesh shows its material");
   if (!only) assert.equal(Object.keys(expected).length, materials.reduce((sum, material) => sum + material.meshes.length, 0));
   assert.equal(errors.length, 0, errors.join("\n"));
+  // The view is lit by the project's record (the shipped look without one), under the page's overrides.
+  {
+    const lighting = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.lighting ?? "null"));
+    assert.ok(lighting, "the viewport states the lighting record in effect");
+    const record = project.lighting ?? {}, query = new URLSearchParams(process.env.QUERY ?? "");
+    assert.equal(lighting.version, 1);
+    assert.equal(lighting.exposure, record.exposure ?? 1);
+    assert.equal(lighting.ambient.intensity, record.ambient?.intensity ?? 0.65);
+    assert.deepEqual(lighting.lights[0]?.direction.map(axis => +axis.toFixed(3)), (record.lights?.[0]?.direction ?? [-0.303, -0.505, 0.808]).map(axis => +axis.toFixed(3)));
+    if (query.get("ao") === "off") assert.equal(lighting.ambientOcclusion.enabled, false);
+    if (query.get("shadowstyle") === "plain") assert.equal(lighting.lights[0].shadow.style, "plain");
+  }
   // Edit latency: one parameter of a light material (tile) and of the heaviest (concrete walls),
   // from the keystroke to the draft in the viewport and to the full-size result.
   const edits = {};
@@ -85,6 +117,9 @@ try {
     const draft = Date.now() - began;
     await shown("inputRevision"); await ready();
     edits[material] = { draft, full: Date.now() - began };
+    // With GPU-baked maps the edit shows per pixel at once and is baked again when it settles.
+    const rebaked = await baked();
+    if (rebaked) Object.assign(edits[material], { baked: Date.now() - began, drawn: rebaked.drawn, reused: rebaked.reused, drawMs: rebaked.drawMs, fieldMs: rebaked.fieldMs });
   }
   console.log(`Edit latency (ms): ${JSON.stringify(edits)}`);
   // Frame time: redraw the loaded scene several times and wait for the GPU to finish each frame.
@@ -146,7 +181,7 @@ try {
     await waitForFrames(page, 6);
     await writeFile(process.env.CLOSEUP, await page.locator("#viewport canvas").screenshot());
   }
-  console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms${perPixel} (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
+  console.log(`Washroom benchmark passed at ${resolution} px: first preview ${firstPreview} ms, loaded ${loaded} ms${perPixel}${bakedMaps} (${project.materials.length} materials, ${Object.keys(expected).length} meshes).`);
 } finally {
   await browser?.close();
   server.close();

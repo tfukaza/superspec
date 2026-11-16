@@ -1,6 +1,6 @@
 import initialize, { Authoring, prepareTextures } from "../../generated/wasm/superspec_wasm.js";
 import wasmUrl from "../../generated/wasm/superspec_wasm_bg.wasm?url";
-import type { AuthoringMessage, AuthoringProgress } from "./authoring.ts";
+import type { AuthoringMessage, AuthoringProgress, AuthoringResult } from "./authoring.ts";
 import { bakeHelpers, bakeShares } from "./bake-pool.ts";
 import { libraryAsset } from "./library.ts";
 import { encodeTextures, type TextureJob } from "./texture-encoder.ts";
@@ -79,8 +79,28 @@ async function handle(message: AuthoringMessage): Promise<void> {
       }
       const reply = JSON.parse(active.bake_fields(encodedRequest, requestId, JSON.stringify(request.names)));
       if (!reply.success) { self.postMessage({ requestId, diagnostics: reply.diagnostics }); return; }
-      const texels = active.field_texels();
-      self.postMessage({ requestId, fields: { width: reply.width, height: reply.height, texels } }, { transfer: [texels.buffer] });
+      // Each field is moved out of the module on its own: nothing joins them into a second copy.
+      const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
+      self.postMessage({ requestId, fields: { width: reply.width, height: reply.height, fields } }, { transfer: fields.map(field => field.buffer) });
+      return;
+    }
+    if (action === "bake-project-fields" && "meshes" in request) {
+      // The CPU-only fields of a scene's hybrid materials, one receiver at a time; a mesh that fails does not stop the others.
+      const encodedProject = JSON.stringify(request.project);
+      for (const name of JSON.parse(active.project_library_assets(encodedProject)) as string[]) {
+        images[name] = await libraryAsset(name);
+        active.set_asset(name, images[name]);
+      }
+      const projectFields: NonNullable<AuthoringResult["projectFields"]> = [];
+      const transfer: ArrayBufferLike[] = [];
+      for (const { mesh, names } of request.meshes) {
+        const reply = JSON.parse(active.bake_project_fields(encodedProject, requestId, mesh, JSON.stringify(names)));
+        if (!reply.success) { projectFields.push({ mesh, error: (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n") }); continue; }
+        const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
+        transfer.push(...fields.map(field => field.buffer));
+        projectFields.push({ mesh, width: reply.width, height: reply.height, fields });
+      }
+      self.postMessage({ requestId, projectFields }, { transfer: transfer as Transferable[] });
       return;
     }
     const exporting = action === "export-project";
@@ -115,6 +135,17 @@ async function handle(message: AuthoringMessage): Promise<void> {
       return;
     }
     const bytes = active.packet();
+    if (shading && "layouts" in request && request.layouts) {
+      // The receivers' atlases as the CPU bake lays them out, for a GPU bake in UV space. A scene the layout refuses
+      // (a degenerate receiver) is still shown per pixel: the reason travels with the result.
+      const reply = JSON.parse(active.layout_project(encoded, requestId));
+      if (reply.success) {
+        const records = active.layout_records();
+        self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, layouts: { ...reply.layouts, records } }, { transfer: [bytes.buffer, records.buffer] });
+        return;
+      }
+      result.metadata.layoutError = (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n");
+    }
     self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer }, { transfer: [bytes.buffer] });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

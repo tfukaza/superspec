@@ -2,6 +2,7 @@ import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_B
 import "./style.css";
 import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
+import { projectLighting } from "../../browser/renderer/lighting.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
 import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
@@ -89,6 +90,14 @@ class Studio {
    * shows at once; textures are baked when a GLB is exported. `?preview=bake` previews bakes.
    */
   private readonly live = new URLSearchParams(location.search).get("preview") !== "bake";
+  /**
+   * The shaded scene is the first look and the look while a value is being changed; once an edit settles, each mesh is
+   * baked on the GPU over its receiver atlas and shows ordinary textured maps (a preview of the bake, never saved or
+   * exported). `?preview=shader` keeps the per-pixel look alone.
+   */
+  private readonly sceneBake = this.live && new URLSearchParams(location.search).get("preview") !== "shader";
+  /** The project the scene's GPU bake asks CPU fields for: the one last previewed, parameters included. */
+  private bakeProject?: StudioProject;
   /** The project the viewport's shaders were last built for, with what the engine returned. */
   private shaded?: { key: string; metadata: AuthoringMetadata; packet: ScenePacket };
   /** The swatch shader the GPU preview last asked the engine for, by source, entry, seed and domain (not parameters). */
@@ -605,12 +614,11 @@ class Studio {
         const result = await this.lane.bakeFields(request, cpuFields.map(field => field.name), revision);
         if (!current()) return;
         if (result.error || result.diagnostics?.length || !result.fields) return fallback(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
-        const { width, height, texels } = result.fields;
-        if (width !== domain.width || height !== domain.height) return fallback("the CPU field grid does not match the preview's");
-        const size = width * height * 4;
+        const { width, height, fields: texels } = result.fields;
+        if (width !== domain.width || height !== domain.height || texels.length !== cpuFields.length) return fallback("the CPU field grid does not match the preview's");
         const baked: Record<string, FieldTexels> = {};
         cpuFields.forEach((field, index) => {
-          baked[field.uniform] = { id: `${fieldKey}#${field.name}`, width, height, rgba: texels.subarray(index * size, (index + 1) * size) };
+          baked[field.uniform] = { id: `${fieldKey}#${field.name}`, width, height, rgba: texels[index] };
         });
         this.gpuFields = { key: fieldKey, layout: `${key}:${resolution}`, fields: baked };
         fieldMs = performance.now() - fieldStarted;
@@ -677,6 +685,7 @@ class Studio {
     }
     if (opened) {
       this.project = candidate; this.base = base; this.baseMetadata = baseMetadata;
+      this.scene.setLighting(projectLighting(candidate));
       this.module = candidate.entry;
       if (fit && !scene) this.selected = candidate.target.mesh;
       if (scene && !candidate.materials?.some(material => material.id === this.activeMaterial)) this.activeMaterial = candidate.materials?.[0]?.id;
@@ -716,28 +725,40 @@ class Studio {
     const values = Object.fromEntries((candidate.materials ?? []).map(material => [material.id, material.parameters]));
     const key = JSON.stringify([candidate.modules, candidate.models, candidate.mapping, candidate.gravity, candidate.domain,
       (candidate.materials ?? []).map(({ id, entry, seed, meshes }) => [id, entry, seed, meshes]),
-      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length])]);
+      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
+      // Baked maps follow the receivers' atlases, which these size.
+      this.sceneBake ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
     let packet: ScenePacket, metadata: AuthoringMetadata;
+    // Before the uniforms change: a bake they start asks for CPU fields of this project.
+    const previous = this.bakeProject;
+    this.bakeProject = candidate;
     if (this.shaded?.key === key && Object.entries(values).every(([id, parameters]) => this.scene.setShadingParameters(id, parameters))) {
       ({ packet, metadata } = this.shaded);
     } else {
-      const result = await this.authoring.shadeProject(candidate, revision);
+      this.bakeProject = previous;
+      const result = await this.authoring.shadeProject(candidate, revision, this.sceneBake);
       if (revision !== this.revision) return false;
       if (result.error || !result.packet || !result.metadata || result.diagnostics?.length) {
         this.diagnostics(result.diagnostics ?? [], candidate); void this.recipe?.refresh();
         throw new Error(result.error || "Source could not be compiled.");
       }
       packet = decodePacket(result.packet); metadata = result.metadata;
-      const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity } as unknown as SceneShading;
-      const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name));
+      const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity, domain: metadata.domain } as unknown as SceneShading;
+      // With the receivers' atlas layouts, GPU-baked maps follow the first look; without them the scene stays per pixel.
+      const bake = this.sceneBake && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[] }[]) => this.sceneFields(requests) } : undefined;
+      if (this.sceneBake && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
+      else delete element("viewport").dataset.sceneBakeFallback;
+      const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake);
       if (revision !== this.revision) return false;
-      if (!await this.scene.apply(packet, () => revision === this.revision, fit, decorate)) return false;
+      this.bakeProject = candidate;
+      if (!await this.scene.apply(packet, () => revision === this.revision, fit, decorate)) { this.bakeProject = previous; return false; }
       this.shownResolution = undefined;
       this.shaded = { key, metadata, packet };
     }
     const materials = (metadata.materials ?? {}) as Record<string, AuthoringMetadata>;
     if (opened) {
       this.project = candidate; this.base = undefined; this.baseMetadata = undefined;
+      this.scene.setLighting(projectLighting(candidate));
       this.module = candidate.entry;
       if (!candidate.materials?.some(material => material.id === this.activeMaterial)) this.activeMaterial = candidate.materials?.[0]?.id;
       const active = this.active();
@@ -749,7 +770,7 @@ class Studio {
     const bindings: Record<string, string> = {};
     for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
     element("viewport").dataset.bindings = JSON.stringify(bindings);
-    element("viewport").dataset.preview = "shader";
+    element("viewport").dataset.preview = this.sceneBake && !element("viewport").dataset.sceneBakeFallback ? "gpu-bake" : "shader";
     this.accepted = copyProject(candidate);
     this.draftVisible = false;
     this.visible = packet; this.metadata = shown;
@@ -760,6 +781,22 @@ class Studio {
     element("viewport").dataset.inputRevision = String(revision);
     this.guides(); this.ready(`Revision ${revision} ready · shader preview`);
     return true;
+  }
+
+  /**
+   * CPU-baked fields for the scene's GPU bake: the parts of hybrid programs only the CPU evaluates (runoff), per mesh
+   * over its receiver's atlas, on the preview lane's worker. Null when a newer edit superseded the request.
+   */
+  private async sceneFields(requests: { mesh: string; names: string[] }[]): Promise<Map<string, { width: number; height: number; fields: Float32Array[] }> | null> {
+    const project = this.bakeProject;
+    if (!project) return null;
+    let result;
+    try { result = await this.lane.bakeProjectFields(project, requests, this.revision); }
+    catch (error) { if (error instanceof DOMException && error.name === "AbortError") return null; throw error; }
+    if (result.error || !result.projectFields) throw new Error(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
+    const found = new Map<string, { width: number; height: number; fields: Float32Array[] }>();
+    for (const baked of result.projectFields) if ("fields" in baked) found.set(baked.mesh, baked);
+    return found;
   }
 
   /** Exports only a captured ready revision; a newer edit cancels delivery without changing the viewport. */
@@ -843,6 +880,8 @@ class Studio {
     this.documentRevision++;
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error(`${file.name} exceeds the ${megabytes(MAX_PROJECT_FILE_BYTES)} project file limit.`);
     const candidate = await openProject(file, this.kind);
+    // The project's optional `lighting` record is admitted here, so an invalid one is refused before anything is replaced.
+    projectLighting(candidate);
     if (revision !== this.revision) return;
     await this.compileOpenedInputs(candidate, revision, true);
   }

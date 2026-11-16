@@ -1,9 +1,11 @@
 //! Native/browser authoring sessions. Source, supplied bytes and preview assignments are explicit.
 mod item;
+mod layout;
 pub(crate) mod material;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
+pub use layout::{LAYOUT_RECORD, ProjectLayouts, ReceiverLayout};
 pub use material::{FieldBake, PendingBake};
 pub use project::{
     Base, MAX_ASSIGNMENTS, MAX_MODELS, MaterialAssignment, ModelSource, Project, ProjectOutput,

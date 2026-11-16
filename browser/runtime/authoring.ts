@@ -1,3 +1,5 @@
+import type { ProjectLayouts } from "../renderer/atlas.ts";
+
 export type ParameterValue = number | boolean | string | number[];
 export interface SourceEdge { start: number[]; end: number[] }
 /** One imported model of a scene project; its meshes are named `<id>/<mesh>` after composition. */
@@ -90,6 +92,19 @@ export interface AuthoringShadeRequest {
   requestId: number;
   project: Omit<AuthoringProject, "assets">;
   assets: Record<string, Uint8Array>;
+  /** Also lay out every assigned receiver's atlas as the CPU bake would (`AuthoringResult.layouts`), for a GPU bake in UV space. */
+  layouts?: boolean;
+}
+/**
+ * Evaluates CPU-only fields for meshes of a scene project, each over its receiver's atlas, for a GPU bake of the scene
+ * that binds them as textures. Nothing is built.
+ */
+export interface AuthoringProjectFieldsRequest {
+  action: "bake-project-fields";
+  requestId: number;
+  project: Omit<AuthoringProject, "assets">;
+  meshes: { mesh: string; names: string[] }[];
+  assets: Record<string, Uint8Array>;
 }
 /**
  * Evaluates fields of a material request's program over its receiver atlas on the CPU, for a GPU preview that binds
@@ -102,9 +117,10 @@ export interface AuthoringFieldsRequest {
   names: string[];
   assets: Record<string, Uint8Array>;
 }
-/** Texels of baked fields: four floats per texel per field, fields end to end, rows from the atlas's upper edge. */
-export interface BakedFields { width: number; height: number; texels: Float32Array }
-export type AuthoringMessage = AuthoringRequest | AuthoringExportRequest | AuthoringPreviewRequest | AuthoringShadeRequest | AuthoringFieldsRequest;
+/** Texels of baked fields: one array per field, four floats per texel, rows from the atlas's upper edge. */
+export interface BakedFields { width: number; height: number; fields: Float32Array[] }
+export type AuthoringMessage = AuthoringRequest | AuthoringExportRequest | AuthoringPreviewRequest | AuthoringShadeRequest | AuthoringFieldsRequest
+  | AuthoringProjectFieldsRequest;
 /** KTX2 is several times smaller on disk and in GPU memory; PNG suits tools without KTX2 support (Blender). */
 export type ExportTextures = "ktx2" | "png";
 export interface AuthoringDiagnostic {
@@ -136,6 +152,10 @@ export interface AuthoringResult {
   requestId: number;
   packet?: ArrayBuffer;
   fields?: BakedFields;
+  /** Receiver atlases, when a shade request asked for them. */
+  layouts?: ProjectLayouts;
+  /** Baked fields by mesh, for a `bake-project-fields` request; a mesh whose bake failed carries the reason instead. */
+  projectFields?: ({ mesh: string } & (BakedFields | { error: string }))[];
   download?: ArrayBuffer;
   metadata?: AuthoringMetadata;
   diagnostics?: AuthoringDiagnostic[];
@@ -178,12 +198,18 @@ export class AuthoringCompiler {
   }
 
   /** Composes a project's models and compiles its materials to preview shaders; nothing is baked. */
-  shadeProject(project: AuthoringProject, requestId: number): Promise<AuthoringResult> {
+  shadeProject(project: AuthoringProject, requestId: number, layouts = false): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
     // Shaders read images on the page; the engine only needs the models.
     const models = Object.fromEntries(Object.entries(assets).filter(([name]) => /\.(glb|ktx2)$/i.test(name)
       || inputs.models?.some(model => model.name === name)));
-    return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models });
+    return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models, layouts });
+  }
+
+  /** Bakes CPU-only fields for meshes of a scene project (see `AuthoringProjectFieldsRequest`). */
+  bakeProjectFields(project: AuthoringProject, meshes: { mesh: string; names: string[] }[], requestId: number): Promise<AuthoringResult> {
+    const { assets, ...inputs } = project;
+    return this.dispatch({ action: "bake-project-fields", requestId, project: inputs, meshes, assets });
   }
 
   /** Bakes fields of `request`'s program on the CPU (see `AuthoringFieldsRequest`). */

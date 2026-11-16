@@ -116,6 +116,30 @@ pub fn swatch(domain: [f64; 2]) -> Receiver {
 }
 
 impl Atlas {
+    /// The atlas a bake of `request` gives `receiver`: the request's resolution, mapping, domain,
+    /// gravity, profile allowance and texel density, so every consumer sizes it by one rule.
+    pub fn for_request(receiver: Receiver, request: &super::Request) -> Result<Self, String> {
+        Self::new(
+            receiver,
+            request.resolution,
+            request.mapping,
+            request.domain,
+            request.gravity,
+            request.profile.max_resolution(),
+            request.texel_density,
+        )
+    }
+
+    /// Receiver vertex indices of a triangle, starting at its chart corner.
+    pub fn corners(&self, triangle: usize) -> [u32; 3] {
+        self.corners[triangle]
+    }
+
+    /// Quarter turns from a triangle's legs to the atlas axes (see [`Chart`]).
+    pub fn turn(&self, triangle: usize) -> u8 {
+        self.turns[triangle]
+    }
+
     pub fn new(
         receiver: Receiver,
         resolution: usize,

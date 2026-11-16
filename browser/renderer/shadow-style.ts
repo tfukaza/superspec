@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { LightShadow, Rgb } from "./lighting.ts";
 
 /**
  * Stylized directional shadows for standard materials (an illustration look): the shadowed region is darker than a
@@ -20,77 +21,13 @@ import * as THREE from "three";
  * The noise lives in the light's shadow-map plane, in meters, like a gobo in front of the sun: it is stable in the
  * world and does not move with the camera. It is procedural, so the style uses no texture unit.
  *
- * The same module is meant for other three.js hosts (a game runtime): construct one `ShadowStyle`, call `apply` on
- * each standard material and `fit` whenever the light's shadow camera changes.
+ * The look is the `shadow` of a light in the lighting record (`lighting.ts`); its `illustration` default is a tight
+ * edge that still widens a little with distance and a nearly neutral shade with a slight cool cast. With the record's
+ * `plain` style the patch stays out of the shader and three.js's own shadow is drawn.
+ *
+ * The same module is meant for other three.js hosts (a game runtime): construct one `ShadowStyle` from the sun's
+ * `shadow`, call `apply` on each standard material and `fit` whenever the light's shadow camera changes.
  */
-export interface ShadowStyleParameters {
-  /** Penumbra radius where the occluder touches the receiver, meters. */
-  softness: number;
-  /** Penumbra radius gained per meter between occluder and receiver. */
-  spread: number;
-  /** Largest penumbra radius, meters; also how far around a point occluders are looked for. */
-  softnessMax: number;
-  /** Size of the noise features, meters. */
-  noiseScale: number;
-  /** How far the noise displaces the shadow's edge, meters. */
-  edgeNoise: number;
-  /** How much the noise varies darkness and hue inside the shadow, 0 to 1. It only darkens. */
-  noiseAmount: number;
-  /** Hue of the shadow (linear RGB when given as a `THREE.Color`). */
-  tint: THREE.ColorRepresentation;
-  /** Second hue the interior noise drifts to. */
-  tintAlt: THREE.ColorRepresentation;
-  /** How saturated the shadow is, 0 (neutral) to 1 (the tint's own saturation). */
-  tintStrength: number;
-  /** How much of the shaded color the shadow removes beyond the tint, 0 to 1. */
-  darkness: number;
-  /** Cosine of the angle to the light below which a face starts to count as shadowed. */
-  wrap: number;
-  seed: number;
-}
-
-/**
- * Named looks. `illustration` is the Studio viewer's default: a tight edge that still widens a little with distance, and
- * a nearly neutral shade with a slight cool cast. `plain` (no style at all) is three.js's own shadow.
- */
-export const SHADOW_STYLES: Record<string, ShadowStyleParameters> = {
-  illustration: {
-    softness: 0.012, spread: 0.025, softnessMax: 0.06, noiseScale: 1.1, edgeNoise: 0.07, noiseAmount: 0.6,
-    tint: "#2f6fe0", tintAlt: "#3f4fd8", tintStrength: 0.22, darkness: 0.25, wrap: 0.3, seed: 7,
-  },
-};
-
-/**
- * The style page parameters ask for: the default look unless `shadowstyle=plain` (or `off`) asks for three.js's plain
- * shadows (null), with optional overrides of each value.
- */
-export function shadowStyleFromQuery(query: URLSearchParams): ShadowStyleParameters | null {
-  const name = query.get("shadowstyle") ?? "illustration";
-  if (name === "plain" || name === "off" || name === "none") return null;
-  const preset = SHADOW_STYLES[name] ?? SHADOW_STYLES.illustration;
-  const number = (name: string, fallback: number, min: number, max: number): number => {
-    const value = Number(query.get(name) ?? NaN);
-    return Number.isFinite(value) ? Math.min(Math.max(value, min), max) : fallback;
-  };
-  const color = (name: string, fallback: THREE.ColorRepresentation): THREE.ColorRepresentation => {
-    const value = query.get(name);
-    return value && /^[0-9a-f]{6}$/i.test(value) ? `#${value}` : fallback;
-  };
-  return {
-    softness: number("shadowblur", preset.softness, 0, 1),
-    spread: number("shadowspread", preset.spread, 0, 2),
-    softnessMax: number("shadowblurmax", preset.softnessMax, 0, 2),
-    noiseScale: number("shadownoisescale", preset.noiseScale, 0.01, 100),
-    edgeNoise: number("shadowedge", preset.edgeNoise, 0, 1),
-    noiseAmount: number("shadownoise", preset.noiseAmount, 0, 1),
-    tint: color("shadowtint", preset.tint),
-    tintAlt: color("shadowtint2", preset.tintAlt),
-    tintStrength: number("shadowtintstrength", preset.tintStrength, 0, 1),
-    darkness: number("shadowdark", preset.darkness, 0, 1),
-    wrap: number("shadowwrap", preset.wrap, 0.01, 1),
-    seed: number("shadowseed", preset.seed, 0, 4294967295),
-  };
-}
 
 const DECLARATIONS = /* glsl */`
 #if defined( USE_SHADOWMAP ) && defined( SHADOWMAP_TYPE_PCF ) && NUM_DIR_LIGHT_SHADOWS > 0
@@ -217,19 +154,27 @@ const FINAL = /* glsl */`
 	#endif
 	#include <opaque_fragment>`;
 
+/** The style each patched material belongs to. */
+const styles = new WeakMap<THREE.Material, ShadowStyle>();
+
 /** Appended to a material's program cache key by every patch that sets its own key (live.ts, shade.ts). */
 export function shadowStyleKey(material: THREE.Material): string {
-  return material.userData.shadowStyle ? "|shadow-style" : "";
+  return styles.get(material)?.enabled ? "|shadow-style" : "";
 }
 
 /** What the shaded color is multiplied by in full shadow: the tint at full brightness, desaturated by `1 - strength`, then darkened. */
-function shade(target: THREE.Color, tint: THREE.ColorRepresentation, parameters: ShadowStyleParameters): THREE.Color {
-  target.set(tint);
+function shade(target: THREE.Color, tint: Rgb, shadow: LightShadow): THREE.Color {
+  target.setRGB(tint[0], tint[1], tint[2], THREE.LinearSRGBColorSpace);
   const peak = Math.max(target.r, target.g, target.b, 1e-6);
-  return target.multiplyScalar(1 / peak).lerp(new THREE.Color(1, 1, 1), 1 - parameters.tintStrength).multiplyScalar(1 - parameters.darkness);
+  return target.multiplyScalar(1 / peak).lerp(new THREE.Color(1, 1, 1), 1 - shadow.tintStrength).multiplyScalar(1 - shadow.darkness);
 }
 
 export class ShadowStyle {
+  /** Whether patched materials draw the styled shadow (the record's `illustration`) or three.js's plain one. */
+  private styled = true;
+  /** Every material patched so far, to recompile them when the style is turned on or off. */
+  private readonly materials = new Set<WeakRef<THREE.Material>>();
+
   /** Shared by every styled material: assigning a value restyles all of them with no recompile. */
   readonly uniforms: Record<string, THREE.IUniform> = {
     msShadowSoftness: { value: 0 }, msShadowSpread: { value: 0 }, msShadowSoftnessMax: { value: 0 },
@@ -239,23 +184,36 @@ export class ShadowStyle {
     msShadowWrap: { value: 0.3 }, msShadowSeed: { value: 0 },
   };
 
-  constructor(parameters: ShadowStyleParameters) {
-    this.set(parameters);
+  constructor(shadow: LightShadow) {
+    this.set(shadow);
   }
 
-  /** Changes the look in place. */
-  set(parameters: ShadowStyleParameters): void {
+  get enabled(): boolean { return this.styled; }
+
+  /**
+   * Changes the look in place. Values are uniforms, so they cost nothing; only a change between `plain` and
+   * `illustration` recompiles the patched materials' programs.
+   */
+  set(shadow: LightShadow): void {
     const uniforms = this.uniforms;
-    uniforms.msShadowSoftness.value = parameters.softness;
-    uniforms.msShadowSpread.value = parameters.spread;
-    uniforms.msShadowSoftnessMax.value = parameters.softnessMax;
-    uniforms.msShadowNoiseScale.value = parameters.noiseScale;
-    uniforms.msShadowEdgeNoise.value = parameters.edgeNoise;
-    uniforms.msShadowNoiseAmount.value = parameters.noiseAmount;
-    shade(uniforms.msShadowColor.value as THREE.Color, parameters.tint, parameters);
-    shade(uniforms.msShadowColorAlt.value as THREE.Color, parameters.tintAlt, parameters);
-    uniforms.msShadowWrap.value = Math.max(parameters.wrap, 1e-3);
-    uniforms.msShadowSeed.value = Math.floor(parameters.seed);
+    uniforms.msShadowSoftness.value = shadow.softness;
+    uniforms.msShadowSpread.value = shadow.spread;
+    uniforms.msShadowSoftnessMax.value = shadow.maxSoftness;
+    uniforms.msShadowNoiseScale.value = shadow.noise.scale;
+    uniforms.msShadowEdgeNoise.value = shadow.noise.edge;
+    uniforms.msShadowNoiseAmount.value = shadow.noise.amount;
+    shade(uniforms.msShadowColor.value as THREE.Color, shadow.tint, shadow);
+    shade(uniforms.msShadowColorAlt.value as THREE.Color, shadow.tintAlt, shadow);
+    uniforms.msShadowWrap.value = Math.max(shadow.wrap, 1e-3);
+    uniforms.msShadowSeed.value = Math.floor(shadow.noise.seed);
+    const styled = shadow.style === "illustration";
+    if (styled === this.styled) return;
+    this.styled = styled;
+    for (const reference of this.materials) {
+      const material = reference.deref();
+      if (material) material.needsUpdate = true;
+      else this.materials.delete(reference);
+    }
   }
 
   /** Tells the style what the light's (orthographic) shadow map spans, across and in depth, so its lengths stay in meters. */
@@ -271,11 +229,13 @@ export class ShadowStyle {
    * either order. Patches that set `customProgramCacheKey` afterwards include `shadowStyleKey(material)`.
    */
   apply(material: THREE.Material): void {
-    material.userData.shadowStyle = true;
+    styles.set(material, this);
+    this.materials.add(new WeakRef(material));
     const previous = material.onBeforeCompile;
     const uniforms = this.uniforms;
     material.onBeforeCompile = (shader, renderer) => {
       previous.call(material, shader, renderer);
+      if (!this.styled) return;
       const lights = THREE.ShaderChunk.lights_fragment_begin;
       // If three.js changes what this replaces, the material keeps its plain shadows.
       if (!lights.includes(PLAIN) || !["#include <lights_fragment_begin>", "#include <shadowmap_pars_fragment>", "#include <opaque_fragment>"]
@@ -287,7 +247,7 @@ export class ShadowStyle {
         .replace("#include <opaque_fragment>", FINAL);
     };
     const key = material.customProgramCacheKey;
-    material.customProgramCacheKey = () => `${key.call(material)}|shadow-style`;
+    material.customProgramCacheKey = () => `${key.call(material)}${this.styled ? "|shadow-style" : ""}`;
     material.needsUpdate = true;
   }
 }

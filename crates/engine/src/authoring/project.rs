@@ -326,7 +326,7 @@ fn valid_identity(id: &str) -> bool {
 impl Session {
     /// Composes every project model into one scene, each under its own `<id>/` identities, with
     /// the object-to-world transforms of imported GLB receivers under the same identities.
-    fn compose_models(
+    pub(super) fn compose_models(
         &mut self,
         project: &Project,
         revision: u64,
@@ -475,31 +475,19 @@ impl Session {
                 return Err(fail("Project authoring cancelled.".into()));
             }
             let ids: BTreeSet<String> = assignment.meshes.iter().cloned().collect();
-            let request = Request {
-                kind: "material".into(),
-                entry: assignment.entry.clone(),
-                source: source.clone(),
-                modules: project.modules.clone(),
-                parameters: assignment.parameters.clone(),
-                seed: assignment.seed,
-                resolution: project.resolution,
-                inspection: (project.inspection != "final").then(|| project.inspection.clone()),
-                mapping: project.mapping,
-                domain: project.domain,
-                edges: project.edges.clone(),
-                gravity: project.gravity,
-                profile: project.profile,
-                texel_density: project.texel_density,
+            let request = material_request(
+                project,
+                assignment,
+                source,
                 // Contacts with the rest of the composed scene become `contact` features.
-                receivers: receivers(&scene, &ids, &transforms)
+                receivers(&scene, &ids, &transforms)
                     .into_iter()
                     .map(|mut receiver| {
                         receiver.contacts = contacts(&scene, &receiver);
                         receiver
                     })
                     .collect(),
-                ..Default::default()
-            };
+            );
             if ids.is_empty() {
                 let program = self.program(&request)?;
                 let mut metadata = serde_json::to_value(program.metadata()).unwrap();
@@ -535,6 +523,34 @@ impl Session {
                 "receiverTransforms": transforms,
             }),
         })
+    }
+}
+
+/// The bake request of one material assignment of a scene project over `receivers`: what
+/// `build_project` bakes, and what a layout or field bake of the same project must describe.
+pub(super) fn material_request(
+    project: &Project,
+    assignment: &MaterialAssignment,
+    source: &str,
+    receivers: Vec<Receiver>,
+) -> Request {
+    Request {
+        kind: "material".into(),
+        entry: assignment.entry.clone(),
+        source: source.to_owned(),
+        modules: project.modules.clone(),
+        parameters: assignment.parameters.clone(),
+        seed: assignment.seed,
+        resolution: project.resolution,
+        inspection: (project.inspection != "final").then(|| project.inspection.clone()),
+        mapping: project.mapping,
+        domain: project.domain,
+        edges: project.edges.clone(),
+        gravity: project.gravity,
+        profile: project.profile,
+        texel_density: project.texel_density,
+        receivers,
+        ..Default::default()
     }
 }
 
@@ -702,6 +718,7 @@ impl Session {
                 "meshes": ids,
                 "shading": meshes,
                 "gravity": project.gravity,
+                "domain": project.domain,
             }),
         })
     }
@@ -750,7 +767,7 @@ fn closest_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f
 /// Crease and rim edges of `receiver` that lie on another visible mesh of `scene`: both ends and
 /// the midpoint within [`CONTACT_TOLERANCE`] of its triangles. A wall's base on a slab or a
 /// crate's bottom edges on the ground are contacts.
-fn contacts(scene: &Scene, receiver: &Receiver) -> Vec<super::Contact> {
+pub(super) fn contacts(scene: &Scene, receiver: &Receiver) -> Vec<super::Contact> {
     let tolerance = CONTACT_TOLERANCE;
     let others: Vec<_> = scene
         .manifest

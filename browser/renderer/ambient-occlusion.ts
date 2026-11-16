@@ -3,7 +3,10 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import type { AmbientOcclusionParameters } from "./rendering.ts";
+import type { AmbientOcclusionSettings } from "./lighting.ts";
+
+/** The lighting record's ambient occlusion values; whether the effect is on (`enabled`) is its host's decision. */
+type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "intensity" | "thickness">;
 
 /**
  * The last pass: the renderer's own tone mapping, exposure and output color space (three.js applies them to a material
@@ -29,8 +32,9 @@ void main() {
 
 /**
  * Screen-space ambient occlusion for a scene view: soft darkening in creases and where objects meet, from the depth and
- * geometric normals the camera sees (three.js's GTAO pass with its denoise). A global rendering setting of the scene,
- * never part of a material; the planned baked `occlusion()` material field is a different thing.
+ * geometric normals the camera sees (three.js's GTAO pass with its denoise). A global rendering setting of the scene
+ * (`ambientOcclusion` in the lighting record), never part of a material; the planned baked `occlusion()` material
+ * field is a different thing.
  *
  * The scene is drawn into a multisampled linear half-float target (so edges stay antialiased), the occlusion multiplies
  * it, and an output pass applies the renderer's tone mapping, exposure and output color space, as drawing straight to
