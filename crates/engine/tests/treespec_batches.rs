@@ -448,7 +448,26 @@ fn write_washroom_trees() {
             })
             .map(|v| (v * 1000.).round() / 1000.)
             .collect();
+        // Every leaf-bearing branch's leafy stretch (from `leaves.start` to its tip) as 9 points in the scene, flat
+        // `[x, y, z, ...]`: the painted trees' twig strips follow them.
+        let twigs: Vec<Vec<f64>> = plant
+            .skeleton
+            .iter()
+            .filter(|b| b.level >= definition.leaves.level && b.length > 0.)
+            .map(|b| {
+                (0..9)
+                    .flat_map(|k| {
+                        let t = definition.leaves.start
+                            + (1. - definition.leaves.start) * k as f64 / 8.;
+                        let (p, _, _) = b.at(t);
+                        [p[0] + base[0], p[1] + base[1], p[2] + base[2]]
+                    })
+                    .map(|v| (v * 1000.).round() / 1000.)
+                    .collect()
+            })
+            .collect();
         plants.push(serde_json::json!({
+            "twigs": twigs,
             "id": plant.id, "base": base, "branches": plant.skeleton.len(), "leafClusters": plant.leaves.len(),
             "blobs": plant.canopy.blobs.len(), "generatedMs": generated.as_secs_f64() * 1000., "mass": plant.mass,
             "sites": sites,

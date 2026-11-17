@@ -111,11 +111,20 @@ try {
       // The looser foliage below the core: cards through the field (density-cards.ts), shaded as the core is.
       const started = performance.now();
       const cards = window.__densityCards(f, window.__leafCards().cards, { level: densityBase.level, size: densityBase.cardSize,
-        keep: densityBase.keep, spacing: densityBase.spacing, sun, leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
+        keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, sun,
+        leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
       s.models.add(cards);
       surface.cards = cards.userData.densityCards.cards;
       surface.cardsMs = performance.now() - started;
+    }
+    if (densityBase?.strips) {
+      // Every leafy twig as one strip along it (twig-strips.ts).
+      const strips = window.__twigStrips(f, densityBase.twigs, { level: densityBase.level, width: densityBase.stripWidth, lobe: densityBase.stripLobe,
+        sun, leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
+      strips.name = "painted/strips";
+      s.models.add(strips);
+      surface.strips = strips.userData.twigStrips;
     }
     // HIDE: painted parts left out of the pictures, by name (surface, fuzz, cards), comma separated.
     for (const m of s.models.children) if (hide.includes(m.name.replace("painted/", "")) && m.name.startsWith("painted/")) m.visible = false;
@@ -145,14 +154,19 @@ try {
       // The looser foliage below the core as cards (CARDS=0 leaves it out): CARD_SIZE meters at the core, CARD_KEEP of
       // the candidates kept there, CARD_SPACING meters between candidates.
       cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.55),
-      spacing: Number(process.env.CARD_SPACING ?? 0.25) } : null,
+      spacing: Number(process.env.CARD_SPACING ?? 0.25), cardFloor: Number(process.env.CARD_FLOOR ?? 0.06),
+      // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: half-width meters at its widest, STRIP_LOBE: meters
+      // between a side's leaves).
+      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.13),
+      stripLobe: Number(process.env.STRIP_LOBE ?? 0.09) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
   if (info.error) throw new Error(info.error);
   console.log(`clumps centre ${info.centre.map(v => v.toFixed(2))}, ${info.anchors} fuzz anchors, built in ${info.built.toFixed(1)} ms`);
   if (info.surface) console.log(`density surface: ${info.surface.triangles} triangles, field full ${info.surface.full.toFixed(1)}, built in ${info.surface.ms.toFixed(1)} ms`
-    + (info.surface.cards !== undefined ? `; ${info.surface.cards} density cards in ${info.surface.cardsMs.toFixed(1)} ms` : ""));
+    + (info.surface.cards !== undefined ? `; ${info.surface.cards} density cards in ${info.surface.cardsMs.toFixed(1)} ms` : "")
+    + (info.surface.strips ? `; ${info.surface.strips.strips} twig strips, ${info.surface.strips.triangles} triangles` : ""));
   if (info.field) console.log(`density field ${info.field.dims.join("x")}, densest ${info.field.max.toFixed(1)}, full ${info.field.full.toFixed(1)}, cells by quarter of full ${info.field.quarters.join(" / ")}`);
   const [cx, cy, cz] = info.centre, r = Number(process.env.DIST ?? 3.6);
   if (process.env.TIME) {
@@ -164,7 +178,7 @@ try {
       s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update();
       // COPIES: a square grid of this many copies of the painted parts (the original among them), 6 m apart, as a stand
       // of trees would draw.
-      const parts = Object.fromEntries(["surface", "fuzz", "cards"].map(k => [k, s.models.children.filter(m => m.name === `painted/${k}`)]));
+      const parts = Object.fromEntries(["surface", "fuzz", "cards", "strips"].map(k => [k, s.models.children.filter(m => m.name === `painted/${k}`)]));
       const side = Math.round(Math.sqrt(view.copies));
       for (let k = 1; k < side * side; k++) {
         const x = (k % side) * 6, y = Math.floor(k / side) * 6;

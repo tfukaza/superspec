@@ -615,6 +615,13 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     the birch.
   - Bands are cut by a normal's angle from the sun, not its cosine, and the shaded side takes the sky as a floor (up to
     the third band for a leaf facing up): every leaf map shader shares it (`msLeafLight`), the shrub candidate included.
+  - Round cards in the faint rim read as floating seeds, not shoots. `twig-strips.ts` paints each leaf-bearing
+    branch's leafy stretch as one strip along it (`STRIPS=1`; the plants carry the stretches as `twigs`): facing the
+    camera across its width, swelling over its first third and tapering to a point, narrower where the field is thin,
+    its edges cut into leaf lobes alternating between the sides (spacing drifting, some leaves missing, ragged), and
+    shaded as the core with its normal turned toward each edge. With the cards kept to mid density and above
+    (`CARD_FLOOR=0.35`), the rim is strips: 237 on the poplar (7,584 triangles), 102 on the birch. Alone they still
+    lean toward fern fronds.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
