@@ -56,6 +56,14 @@ export interface BranchCardOptions {
   lopsided?: number;
   /** Twig length as a share of the main stem's (the spray's breadth). */
   reach?: [number, number];
+  /**
+   * Gradual density: more leaves go missing (up to this share more), and the rest grow a little smaller, toward each
+   * stem's tip, and more so on twigs and twiglets than on the main stem, so a card thins from a full middle to open
+   * tips. 0 keeps every stem evenly leafed.
+   */
+  fade?: number;
+  /** Stems are drawn as thick as on a card this many texels across (default: the card's own size). */
+  stemRef?: number;
   /** Angle of the side twigs off the main stem, radians (lower: a narrower spray). */
   spread?: [number, number];
   /** Short twiglets off each side twig: the fewest, and how many more at random. */
@@ -100,7 +108,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   // Small leaves, close together, on three orders of stem (main, side twigs, and short twiglets off those), so a card
   // carries many leaves.
   const { size = 256, seed = 1, leaf = 0.08, step = 0.032, twigs = [3, 1], missing = 0.05, width = 0.42, droop = 0.25,
-    lopsided = 0.2, reach = [0.38, 0.52], twiglets = [1, 1], spread = [0.5, 0.8] } = options;
+    lopsided = 0.2, reach = [0.38, 0.52], twiglets = [1, 1], spread = [0.5, 0.8], fade = 0 } = options;
   const random = generator(seed * 6007 + 29);
   const between = (a: number, b: number) => a + (b - a) * random();
   const data = new Float32Array(size * size * 4);
@@ -139,7 +147,8 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   // Stems first, thin and darker; the leaves lie over them.
   for (const stem of stems) {
     // Thick enough to outlast the melt (a blur of a few texels cut again at a half takes anything thinner).
-    const thick = (stem.side === 0 ? 0.017 : Math.abs(stem.side) === 1 ? 0.013 : 0.011) * s;
+    // Stems are as thick as on a card of `stemRef` texels, so a bigger card of the same leaves keeps its stems thin.
+    const thick = (stem.side === 0 ? 0.017 : Math.abs(stem.side) === 1 ? 0.013 : 0.011) * (options.stemRef ?? s);
     // No bare root: the main stem is drawn only from where its leaves and twigs begin, so the card has no stalk.
     const from = stem.side === 0 ? Math.floor(0.1 * (stem.points.length - 1)) : 0;
     for (let k = from; k + 1 < stem.points.length; k++) {
@@ -155,12 +164,15 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
     for (let k = 1; k < stem.points.length; k++) length += Math.hypot(stem.points[k][0] - stem.points[k - 1][0], stem.points[k][1] - stem.points[k - 1][1]);
     const start = stem.side === 0 ? 0.1 : 0.08;
     let flip = random() < 0.5 ? -1 : 1;
+    // Twigs and twiglets fade more than the main stem.
+    const order = stem.side === 0 ? 0.55 : Math.abs(stem.side) === 1 ? 1 : 1.25;
     for (let d = start * length; d < length - 0.4 * gap; d += gap * between(0.85, 1.15)) {
       flip = -flip;
-      if (random() < missing) continue;
-      const p = at(stem.points, d / length);
+      const u = d / length;
+      if (random() < missing + fade * order * Math.pow(u, 1.4)) continue;
+      const p = at(stem.points, u);
       const angle = p.heading + flip * between(0.65, 1.0);
-      stamp(data, size, p.x, p.y, angle, leafLength * between(0.9, 1.1), width * between(0.85, 1.15), between(0.6, 1), random);
+      stamp(data, size, p.x, p.y, angle, leafLength * between(0.9, 1.1) * (1 - 0.25 * fade * u), width * between(0.85, 1.15), between(0.6, 1), random);
     }
     const tip = at(stem.points, 1);
     stamp(data, size, tip.x, tip.y, tip.heading + between(-0.2, 0.2), leafLength * between(0.85, 1.0), width, between(0.6, 1), random);
