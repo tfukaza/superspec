@@ -169,32 +169,51 @@ void main() {
   // oval of one size (leafLength long, two fifths as wide) standing off the stem about 50 degrees toward the tip, its
   // place and angle a little jittered; smaller only toward the shoot's tip, as a real shoot's are. Some are missing,
   // more where the foliage is thin, so a shoot at the rim is sparse. A leaf reaches past its own step along the
-  // shoot, so each pixel tests the leaves of its step and the two before.
-  float side = vSide < 0.0 ? 0.0 : 1.0;
+  // shoot, so each pixel tests the leaves of its step and the two before (and one after), on both sides.
+  //
+  // Blur and re-threshold, in closed form: every leaf is a distance from its outline, and the leaves and the stem are
+  // joined by a smooth union, which fills the gaps between shapes nearer than its radius as a blur cut again would.
+  // The radius follows the foliage: large where it is dense and near the shoot's base, so there the leaves fuse into
+  // one mass running on from the clump, and falling to nothing toward the sparse tip, where they part into single
+  // leaves. So a shoot thins from the clump to loose leaves instead of hanging off it as separate ones.
   // The strip's random, rounded: interpolation does not carry a value the same at every vertex through bit for bit,
   // and the hash below magnifies the difference, so unrounded it picked leaves per pixel (white pinholes).
   float strip = floor(vStrip * 4096.0 + 0.5) / 4096.0;
-  // Across in leaf space: end-on, the band narrows on screen, and the leaves with it.
-  float s = abs(vSide) / max(vNarrow, 1e-3);
-  float shift = side * 0.5 + strip * 7.0;
-  float first = floor(vU / lobe - shift);
-  bool inside = false;
-  // The next step's leaf too: its jittered base can fall just behind this pixel.
-  for (int j = 0; j < 4; j++) {
-    float index = first + 1.0 - float(j);
-    float h = hash(index + side * 31.0 + strip * 17.0);
-    if (h < 0.1 + 0.3 * (1.0 - clamp(vShoot.y, 0.0, 1.0))) continue;
-    float u0 = (index + shift + 0.3 * (hash(index * 2.7 + side * 3.0 + strip * 11.0) - 0.5)) * lobe;
-    float at = u0 / max(vShoot.x, 1e-3);
-    if (at < 0.0 || at > 1.0) continue;
-    float size = leafLength * clamp(1.0 - pow(max(at - 0.55, 0.0) / 0.45, 2.0), 0.35, 1.0);
-    float angle = 0.87 + 0.35 * (hash(index * 5.3 + side * 9.0 + strip * 3.0) - 0.5);
-    float dx = vU - u0;
-    float along = dx * cos(angle) + s * sin(angle), off = -dx * sin(angle) + s * cos(angle);
-    if (along <= 0.0 || along >= size) continue;
-    if (abs(off) < 0.21 * size * pow(sin(3.14159265 * along / size), 0.75)) { inside = true; break; }
+  // Across in leaf space, signed: end-on, the band narrows on screen, and the leaves with it.
+  float across = vSide / max(vNarrow, 1e-3);
+  float along01 = clamp(vU / max(vShoot.x, 1e-3), 0.0, 1.0);
+  float merge = 0.075 * max(smoothstep(0.15, 0.75, vShoot.y), 1.0 - smoothstep(0.0, 0.55, along01));
+  // The stem: a thin line along the shoot, to its tip.
+  float d = abs(across) - 0.005;
+  for (int k = 0; k < 2; k++) {
+    float side = float(k);
+    float s = across * (k == 0 ? -1.0 : 1.0);
+    float shift = side * 0.5 + strip * 7.0;
+    float first = floor(vU / lobe - shift);
+    for (int j = 0; j < 4; j++) {
+      float index = first + 1.0 - float(j);
+      float h = hash(index + side * 31.0 + strip * 17.0);
+      if (h < 0.1 + 0.3 * (1.0 - clamp(vShoot.y, 0.0, 1.0))) continue;
+      float u0 = (index + shift + 0.3 * (hash(index * 2.7 + side * 3.0 + strip * 11.0) - 0.5)) * lobe;
+      float at = u0 / max(vShoot.x, 1e-3);
+      if (at < 0.0 || at > 1.0) continue;
+      float size = leafLength * clamp(1.0 - pow(max(at - 0.55, 0.0) / 0.45, 2.0), 0.35, 1.0);
+      float angle = 0.87 + 0.35 * (hash(index * 5.3 + side * 9.0 + strip * 3.0) - 0.5);
+      float dx = vU - u0;
+      float along = dx * cos(angle) + s * sin(angle), off = -dx * sin(angle) + s * cos(angle);
+      // A pointed oval's distance, roughly in meters: across it, from its edge (which narrows toward both ends);
+      // past its ends, from the nearer end.
+      float half_ = 0.5 * size, width_ = 0.21 * size;
+      float x = (along - half_) / half_;
+      float taper = pow(max(1.0 - x * x, 0.0), 0.375);
+      float leaf = abs(x) < 1.0 ? abs(off) - width_ * taper : length(vec2(abs(along - half_) - half_, off));
+      // Smooth union (polynomial smooth minimum) of radius merge.
+      float k2 = max(merge, 1e-4);
+      float hh = clamp(0.5 + 0.5 * (leaf - d) / k2, 0.0, 1.0);
+      d = mix(leaf, d, hh) - k2 * hh * (1.0 - hh);
+    }
   }
-  if (!inside) discard;
+  if (d > 0.0) discard;
   vec3 t, b;
   vec3 m = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(m.xy, m.xy)));
