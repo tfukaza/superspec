@@ -30,6 +30,10 @@ export interface BranchCardOptions {
   width?: number;
   /** How far the stems bend over (positive: their tips turn down toward the card's sides). */
   droop?: number;
+  /** How much farther one side's twigs reach than the other's (0 even, 0.35 the open, lopsided sprays). */
+  lopsided?: number;
+  /** Twig length as a share of the main stem's (the spray's breadth). */
+  reach?: [number, number];
 }
 
 function generator(seed: number): () => number {
@@ -66,7 +70,9 @@ function at(points: [number, number][], t: number): { x: number; y: number; head
 }
 
 export function branchCard(options: BranchCardOptions = {}): LeafCard {
-  const { size = 256, seed = 1, leaf = 0.12, step = 0.06, twigs = [2, 2], missing = 0.12, width = 0.42, droop = 0.25 } = options;
+  // The defaults are the dense, bushy spray (many short twigs fanning from a short stem into a full crown).
+  const { size = 256, seed = 1, leaf = 0.12, step = 0.05, twigs = [3, 1], missing = 0.05, width = 0.42, droop = 0.25,
+    lopsided = 0.35, reach = [0.55, 0.75] } = options;
   const random = generator(seed * 6007 + 29);
   const between = (a: number, b: number) => a + (b - a) * random();
   const data = new Float32Array(size * size * 4);
@@ -87,7 +93,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
     const t = 0.1 + 0.6 * (k + between(0.2, 0.8)) / count;
     const base = at(main, t);
     const out = side * between(0.95, 1.4);
-    const length = mainLength * between(0.55, 0.75) * (side === longSide ? 1.15 : 0.8) * (1 - 0.3 * t);
+    const length = mainLength * between(reach[0], reach[1]) * (side === longSide ? 1 + 0.43 * lopsided : 1 - 0.57 * lopsided) * (1 - 0.3 * t);
     // Back toward the main direction, then over with the droop.
     stems.push({ points: grow(base.x, base.y, base.heading + out, length, -out * 0.45 - side * droop * 0.6), side });
     side = -side;

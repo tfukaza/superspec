@@ -34,9 +34,15 @@ const srgb = (v: number) => Math.round(255 * (v <= 0.0031308 ? 12.92 * v : 1.055
 const cream = [246, 236, 220];
 // The sun from the upper left and toward the viewer (card space: +x right, +y up, +z out of the card).
 const sun = [-0.5, 0.55, 0.67]; const sl = Math.hypot(...sun); sun.forEach((v, k) => { sun[k] = v / sl; });
-const rows: { name: string; options: BranchCardOptions }[] = [
-  { name: "dense", options: { twigs: [3, 1], missing: 0.05, step: 0.05 } },
-  { name: "regular", options: {} },
+// ROWS=variants: the dense spray (the defaults) and variations on it; otherwise dense, regular and sparse.
+const rows: { name: string; options: BranchCardOptions }[] = process.env.ROWS === "variants" ? [
+  { name: "dense", options: {} },
+  { name: "fuller, rounder: more, shorter twigs, even", options: { twigs: [4, 1], reach: [0.45, 0.6], lopsided: 0.1 } },
+  { name: "even, wider fan", options: { lopsided: 0.05, reach: [0.6, 0.8] } },
+  { name: "bushier: bigger leaves closer", options: { leaf: 0.14, step: 0.045, twigs: [4, 1] } },
+] : [
+  { name: "dense", options: {} },
+  { name: "regular", options: { twigs: [2, 2], missing: 0.12, step: 0.06 } },
   { name: "sparse", options: { twigs: [1, 1], missing: 0.3, step: 0.075 } },
 ];
 const size = 256, gap = 12, columns = 4;
