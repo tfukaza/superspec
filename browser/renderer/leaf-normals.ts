@@ -266,21 +266,14 @@ float msLeafLight(vec3 n, vec3 sun, float offset) {
   float sky = 0.42 * (0.5 + 0.5 * n.z);
   return max(direct, sky);
 }
-// Highlights, as a painted metal takes its sheen from its normal map and a mask rather than from geometry: on the side
-// of the plant facing the sun (its form's normal, macro), a leaf whose own normal (leaf, one per leaf from the map)
-// turns toward the sun's reflection to the eye is painted in the highlight colour, a lime above the top band. Lighter
-// leaves (the map's tone, its diffuse) catch it sooner, so whole leaves light, in patches, with hard painted edges.
-vec3 msLeafPaint(vec3 band, vec3 leaf, vec3 macro, vec3 sun, vec3 world, float tone, float amount) {
-  vec3 view = normalize(cameraPosition - world);
-  vec3 h = normalize(sun + view);
-  vec3 form = normalize(macro);
-  float facing = smoothstep(0.25, 0.7, dot(form, sun));
-  // How much further this leaf turns to the reflection than the form around it does: single leaves, not the whole
-  // patch of form that faces it.
-  float glint = dot(leaf, h) - dot(form, h) + 0.3 * (tone - 0.5) - 0.07;
-  float w = max(fwidth(glint), 1e-4);
-  float mask = facing * smoothstep(-w, w, glint) * amount;
-  return mix(band, vec3(0.50, 0.76, 0.13), mask);
+// Highlights as one more band, above the top one: a leaf whose light (msLeafLight of its own normal from the leaf map)
+// passes the highlight level is painted lime, the edge blended over a pixel like the other bands'. Each leaf has one
+// normal, so whole leaves light, where the leaf map tips them nearest the sun. Lighter leaves (the map's tone, its
+// diffuse) reach it a little sooner. amount 0 turns the band off.
+vec3 msLeafPaint(vec3 band, float light, float tone, float amount) {
+  float over = light + 0.04 * (tone - 0.5) - 0.9;
+  float w = max(fwidth(over), 1e-4);
+  return mix(band, vec3(0.50, 0.76, 0.13), smoothstep(-w, w, over) * step(0.001, amount));
 }
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
@@ -455,7 +448,7 @@ void main() {
   vec3 shaded = normalize(n * m.z + (t * m.x + b * m.y) * strength);
   float light = msLeafLight(shaded, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.b);
-  gl_FragColor = vec4(msLeafPaint(paint, shaded, n, sun, vWorld, leaf.b, highlight), 1.0);
+  gl_FragColor = vec4(msLeafPaint(paint, light, leaf.b, highlight), 1.0);
   #include <colorspace_fragment>
 }`,
   });

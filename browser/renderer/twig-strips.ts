@@ -43,7 +43,7 @@ function along(points: THREE.Vector3[], t: number): THREE.Vector3 {
 }
 
 export function twigStrips(field: DensityField, twigs: number[][], options: TwigStripOptions): THREE.Mesh {
-  const { width = 0.16, lobe = 0.11, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
+  const { width = 0.16, lobe = 0.15, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
   let state = seed >>> 0;
   const random = () => { state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0; return state / 4294967296; };
   const centres: number[] = [], tangents: number[] = [], normals: number[] = [], sides: number[] = [];
@@ -160,24 +160,23 @@ void main() {
   float x = vU / spacing + side * 0.5 + vStrip * 7.0 + 0.45 * sin(vU / spacing * 1.7 + vStrip * 40.0 + side * 2.0);
   float index = floor(x), f = fract(x);
   float h = hash(index + side * 31.0 + vStrip * 17.0);
-  float reach = h < 0.15 ? 0.15 : 0.3 + 0.55 * hash(index * 1.3 + side * 7.0 + vStrip * 5.0);
-  // The leaf's outline across its length: 0 at its base and tip, round and full (a plump leaf, not a frond's
-  // pinna), leaning a little toward the tip.
-  float leaf = pow(sin(3.14159265 * pow(f, 0.8)), 0.45);
-  float ragged = 0.14 * (hash(floor(vU / 0.025) + side * 13.0 + vStrip * 91.0) - 0.5);
-  // A solid body most of the way out, the lobes only its rim.
-  float edge = 0.55 + reach * leaf + ragged;
+  // Every leaf the same size (a real shoot's are), a quarter of them missing, so the shoot is sparse.
+  float reach = h < 0.25 ? 0.0 : 0.75 + 0.08 * (hash(index * 1.3 + side * 7.0 + vStrip * 5.0) - 0.5);
+  // The leaf's outline across its length: 0 at its base and tip, a full oval leaning a little toward the tip.
+  float leaf = pow(sin(3.14159265 * pow(f, 0.8)), 0.55);
+  float ragged = 0.06 * (hash(floor(vU / 0.025) + side * 13.0 + vStrip * 91.0) - 0.5);
+  // A thin stem, the leaves standing off it with gaps between them.
+  float edge = 0.22 + reach * leaf + ragged;
   float d = abs(vSide);
   if (d > edge) discard;
   vec3 t, b;
   vec3 m = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(m.xy, m.xy)));
-  // The strip's own form: its normal turns toward each edge, so the edge nearer the light is lit.
-  vec3 form = normalize(normalize(vNormal) + vAcross * clamp(vSide, -1.0, 1.0) * 0.6);
-  vec3 n = normalize(form * z + (t * m.x + b * m.y) * mapStrength);
+  // Banded by the leaf map's normals over the foliage's outward normal there, as the core is: no shading of its own.
+  vec3 n = normalize(normalize(vNormal) * z + (t * m.x + b * m.y) * mapStrength);
   float light = msLeafLight(n, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * m.z);
-  gl_FragColor = vec4(msLeafPaint(paint, n, form, sun, vWorld, m.z, highlight), 1.0);
+  gl_FragColor = vec4(msLeafPaint(paint, light, m.z, highlight), 1.0);
   #include <colorspace_fragment>
 }`,
   });

@@ -137,7 +137,7 @@ void main() {
   vec3 n = normalize(normalize(vNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
   float light = msLeafLight(n, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
-  gl_FragColor = vec4(msLeafPaint(paint, n, vNormal, sun, vWorld, leaf.z, highlight), 1.0);
+  gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
   #include <colorspace_fragment>
 }`,
   });

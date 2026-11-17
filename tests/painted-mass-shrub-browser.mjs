@@ -161,7 +161,7 @@ try {
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: half-width meters at its widest, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
       strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.16),
-      stripLobe: Number(process.env.STRIP_LOBE ?? 0.11), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
+      stripLobe: Number(process.env.STRIP_LOBE ?? 0.15), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });

@@ -241,7 +241,7 @@ void main() {
     vec3 n = normalize(normalize(vEdgeNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
     float light = msLeafLight(n, sun, offset);
     vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
-    gl_FragColor = vec4(msLeafPaint(paint, n, vEdgeNormal, sun, vWorld, leaf.z, highlight), 1.0);
+    gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
   } else if (shaded > 0.5) {
     vec2 dome = texture2D(cardNormals, at).rg * 2.0 - 1.0;
     // A leaf's own tilt from its hue (a stable random per leaf), as the normal map's leaves have.
