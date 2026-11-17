@@ -271,9 +271,10 @@ float msLeafLight(vec3 n, vec3 sun, float offset) {
 // normal, so whole leaves light, where the leaf map tips them nearest the sun. Lighter leaves (the map's tone, its
 // diffuse) reach it a little sooner. amount 0 turns the band off.
 vec3 msLeafPaint(vec3 band, float light, float tone, float amount) {
-  float over = light + 0.04 * (tone - 0.5) - 0.9;
+  float over = light + 0.04 * (tone - 0.5) - 0.92;
   float w = max(fwidth(over), 1e-4);
-  return mix(band, vec3(0.50, 0.76, 0.13), smoothstep(-w, w, over) * step(0.001, amount));
+  // A soft lime, about halfway from the top band toward a neon one.
+  return mix(band, vec3(0.40, 0.64, 0.12), smoothstep(-w, w, over) * step(0.001, amount));
 }
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
