@@ -565,12 +565,14 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
 - **Prototype candidate:** the sprig shrub with its 12 mass-model clumps (`fixtures/sprig-shrub-clumps.tree.json`,
   clumps only at 0.92 of their size) as the base mesh, the 16-leaf brush map at a 0.6 m tile, fuzz cards 0.3 m at 14 per
   meter of edge, bark kept; the leaf normals tipped at strength 1.5 and the bands offset by -0.05 so the lit side spreads
-  over the upper bands (the reference renders predate this and use 1 and 0.1). Rebuilt and pictured by `tests/painted-mass-shrub-browser.mjs`; reference renders in
+  over the upper bands. Rebuilt and pictured by `tests/painted-mass-shrub-browser.mjs`; reference renders in
   `painted-mass/`. Known gaps: ambient occlusion's pass does not draw these shaders (off for now); about 9,600 fuzz
   anchors, most never on the outline (a coarser mesh for the fuzz would cut them); the sprigs' leaves are hidden.
 - **Second candidate:** the same shrub with its one canopy hull (the limbs' shrink-wrap, 512 triangles) as the base
   instead of its clumps (`fixtures/sprig-shrub-hull.tree.json`, the hull drawn whole at the near level), all else as the
-  first; about 1,100 fuzz anchors. Same script; reference renders `painted-mass/hull-candidate-*.png`.
+  first except its leaf normals at strength 1 and bands offset 0.1 (`STRENGTH=1 OFFSET=0.1`: the clump candidate's
+  stronger values darken this one); about 1,100 fuzz anchors. Same script; reference renders
+  `painted-mass/hull-candidate-*.png`.
 - **Performance fallback, if needed:** bake the plant's normals (not colours, so sun and palette stay live) from every
   angle around it, as a 360-degree strip, and slide it to match the view on one camera-facing card (an impostor). Exact
   only for round plants; an octahedral grid of baked views extends it to any shape and viewing height. Best as the far
