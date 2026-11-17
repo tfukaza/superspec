@@ -4,7 +4,11 @@
  * the stroke-painted leaf normal map (browser/renderer/leaf-normals.ts, 16-leaf brush, camera-facing) with leafy contour
  * fuzz (browser/renderer/contour-fuzz.ts) reading the same map; its bark is kept and its leaf cards hidden.
  *
- * Write the plant first (from crates/engine/src/treespec/fixtures/sprig-shrub-clumps.tree.json):
+ * Two candidates, by base mesh: `sprig-shrub-clumps.tree.json` (its 12 clumps) and `sprig-shrub-hull.tree.json` (its one
+ * canopy hull, the limbs' shrink-wrap, drawn whole at the near level). Either is the shrub's near `hull/lod0`, so this
+ * script draws whichever was written; LABEL names the pictures (default painted-mass).
+ *
+ * Write the plant first (e.g. from crates/engine/src/treespec/fixtures/sprig-shrub-clumps.tree.json):
  *   SHRUB_TREE=crates/engine/src/treespec/fixtures/sprig-shrub-clumps.tree.json \
  *   TREESPEC_OUTPUT=generated/verification/painted-mass \
  *   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_washroom_trees
@@ -91,7 +95,7 @@ try {
       : (() => { const a = Number(name) * Math.PI / 180 - 0.6; return { position: [cx + Math.cos(a) * r, cy + Math.sin(a) * r, cz + r * 0.2], target: [cx, cy, cz - 0.15] }; })();
     await page.evaluate(view => { const s = window.__scene; s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
     await waitForFrames(page, 4);
-    const file = resolve(out, `painted-mass-${name}.png`);
+    const file = resolve(out, `${process.env.LABEL ?? "painted-mass"}-${name}.png`);
     await writeFile(file, await page.locator("#viewport canvas").screenshot());
     console.log(`Wrote ${file}`);
   }
