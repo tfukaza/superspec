@@ -1,0 +1,20 @@
+{
+  "format": "treespec",
+  "version": 1,
+  "kind": "tree",
+  "id": "poplar",
+  "seed": 5,
+  "trunk": { "height": 7.2, "radius": 0.15, "tip": 0.15, "segments": 12, "wobble": 2 },
+  "levels": [
+    { "count": 34, "start": 0.12, "end": 0.98, "angle": [32, 14], "length": [0.3, 0.12], "radius": 0.45, "tip": 0.3, "segments": 6, "gravity": -18, "wobble": 5, "jitter": 0.6, "reach": 0.4 },
+    { "count": 6, "start": 0.25, "end": 1.0, "angle": [42, 24], "length": [0.45, 0.28], "radius": 0.55, "tip": 0.35, "segments": 4, "gravity": -10, "wobble": 6, "jitter": 0.7, "reach": 0.6 }
+  ],
+  "envelope": { "kind": "ellipsoid", "center": [0, 0, 4.6], "radii": [1.35, 1.35, 3.9] },
+  "leaves": { "level": 1, "spacing": 0.06, "start": 0.15, "size": [0.13, 0.17], "aspect": 0.55, "cards": 1, "spread": 0, "angle": 40, "lift": 0.3, "shape": "quad", "thin": 0.8 },
+  "mass": { "radius": 0.4, "dense": 21, "clump": 32, "cell": 0.3, "sprig": 8, "group": 0, "twig": 0.6, "tips": 1, "dab": 1.1, "blend": 0.8, "sparkles": 0, "layers": 1 },
+  "lods": [
+    { "radialSegments": 8, "ringStep": 1, "maxLevel": 2, "leafKeep": 1, "leafCards": 3, "distance": 0, "hull": "backing" },
+    { "radialSegments": 5, "ringStep": 2, "maxLevel": 1, "leafKeep": 0.45, "leafCards": 2, "distance": 22, "hull": "backing" },
+    { "radialSegments": 4, "ringStep": 4, "maxLevel": 0, "leafKeep": 0.15, "leafCards": 1, "distance": 45, "hull": "impostor" }
+  ]
+}

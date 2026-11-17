@@ -375,16 +375,23 @@ fn write_washroom_trees() {
     for (lod, distance) in shrub_definition.lods.iter_mut().zip([0., 8., 16.]) {
         lod.distance = distance;
     }
-    let mut tree_definition = scaled(
-        parse(
-            "broadleaf.tree.json",
-            include_str!("../src/treespec/fixtures/broadleaf.tree.json"),
-        ),
-        0.6,
-    );
-    for (lod, distance) in tree_definition.lods.iter_mut().zip([0., 10., 22.]) {
-        lod.distance = distance;
-    }
+    // TREE_TREE names another tree definition to place in the broadleaf's stead, at its own size and level distances.
+    let tree_definition = match std::env::var("TREE_TREE") {
+        Ok(path) => parse(&path, &std::fs::read_to_string(&path).unwrap()),
+        Err(_) => {
+            let mut definition = scaled(
+                parse(
+                    "broadleaf.tree.json",
+                    include_str!("../src/treespec/fixtures/broadleaf.tree.json"),
+                ),
+                0.6,
+            );
+            for (lod, distance) in definition.lods.iter_mut().zip([0., 10., 22.]) {
+                lod.distance = distance;
+            }
+            definition
+        }
+    };
     let mut all = vec![];
     let mut plants = vec![];
     for (definition, at) in [

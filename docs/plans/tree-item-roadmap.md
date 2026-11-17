@@ -577,6 +577,16 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
   angle around it, as a 360-degree strip, and slide it to match the view on one camera-facing card (an impostor). Exact
   only for round plants; an octahedral grid of baked views extends it to any shape and viewing height. Best as the far
   level of detail, since a flat card loses depth and parallax up close.
+- **Trees, first pass:** the clump candidate scaled up to trees. `fixtures/poplar.tree.json` is a columnar poplar about
+  9 m tall (34 upright limbs inside a narrow ellipsoid envelope; leaf spacing, clump radius and cell about five times
+  the shrub's), dense enough that its clumps join into one flame-shaped mass. `fixtures/birch.tree.json` is a sparser
+  birch (15 arching limbs with drooping twigs, clumps grouped per limb, `dense` 9), whose clumps stay apart with the
+  trunk and branches showing between them; its density threshold is sensitive (7 fills it in like a broadleaf, 10
+  leaves the lower limbs bare). The plant is written in the broadleaf's stead with `TREE_TREE=<absolute path>`, and
+  pictured with `PLANT=poplar|birch DIST=13 TILE=1.0 SIZE=0.6 DENSITY=5`; reference renders `painted-mass/tree-*.png`.
+  Known gaps besides the shrub's: the birch's bark is the default brown, not white; the loose sprig leaves (most of a
+  sparse tree's outline) are hidden; a flat clump face can show past the fuzz (the poplar's top from 90°); the birch's
+  fuzz needs about 21,000 anchors.
 
 ## Open decisions
 

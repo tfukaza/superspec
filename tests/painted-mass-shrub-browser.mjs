@@ -15,6 +15,9 @@
  * then run this (the real GPU wants BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist"). Pictures from four sides
  * and above go to OUT (default generated/verification/painted-mass). TILE, BRUSH, SIZE, DENSITY, REACH, DIST tune it.
  * Ambient occlusion is off: its pass does not draw the prototype's shaders.
+ *
+ * Trees: write one with TREE_TREE=<absolute path to poplar.tree.json or birch.tree.json> (it stands in the broadleaf's
+ * stead), then picture it with PLANT=poplar (or birch) DIST=13 TILE=1.0 SIZE=0.6 DENSITY=5.
  */
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -29,10 +32,12 @@ const document = resolve(process.env.TREES_DOCUMENT ?? `${out}/washroom-trees.js
 await mkdir(out, { recursive: true });
 
 // The washroom project holding the shrub alone (and the lawn it stands on), its canopy in the painted shrub recipe.
+// PLANT picks the plant by id (default sprig-shrub; a tree written through TREE_TREE goes by its own id).
+const plantId = process.env.PLANT ?? "sprig-shrub";
 const plants = loadTrees(document);
-const shrub = plants.plants.find(plant => plant.id === "sprig-shrub");
-if (!shrub) throw new Error(`${document} has no sprig-shrub; write it as the header says.`);
-const one = { ...plants, plants: [shrub], batches: plants.batches.filter(batch => batch.foliage?.patch === "sprig-shrub")
+const shrub = plants.plants.find(plant => plant.id === plantId);
+if (!shrub) throw new Error(`${document} has no ${plantId}; write it as the header says.`);
+const one = { ...plants, plants: [shrub], batches: plants.batches.filter(batch => batch.foliage?.patch === plantId)
   .map(batch => batch.foliage.material === "painted-canopy" ? { ...batch, foliage: { ...batch.foliage, material: "painted-shrub" } } : batch) };
 const { project } = buildProject(256, undefined, { trees: one });
 project.modules["painted-shrub.material.ts"] = readFileSync(resolve("tests/studio/washroom/materials/painted-shrub.material.ts"), "utf8");
