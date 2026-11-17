@@ -43,7 +43,7 @@ function generator(seed: number): () => number {
 }
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
-  const { level, floor = 0.06, spacing = 0.25, keep = 0.55, size = 0.55, inside = 1.12, seed = 3, sun, leafMap } = options;
+  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, sun, leafMap } = options;
   const random = generator(seed);
   const centres: number[] = [], normals: number[] = [], randoms: number[] = [], looks: number[] = [];
   const lo = field.origin, span = field.dims.map(d => (d - 1) * field.cell);
@@ -56,7 +56,10 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     if (share < floor || share > level * inside) continue;
     // How far from air to the core this point is, 0 to 1.
     const depth = Math.min(1, (share - floor) / (level - floor));
-    if (random() > keep * Math.pow(depth, 0.8)) continue;
+    // Kept on an eased ramp, so the cards thin out gradually toward the rim, where the twig strips take over, with no
+    // step where they stop.
+    const ramp = depth * depth * (3 - 2 * depth);
+    if (random() > keep * Math.pow(ramp, 1.3)) continue;
     const n = gradient(field, p).negate();
     if (n.lengthSq() < 1e-12) n.subVectors(p, middle);
     n.normalize();
@@ -65,7 +68,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     randoms.push(random());
     // Dense cards near the core, sparse toward the rim (blended at random between), and smaller as the field thins.
     const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
-    looks.push(sparse + 0.5 * (0.45 + 0.55 * depth));
+    looks.push(sparse + 0.5 * (0.65 + 0.35 * depth));
   }
   const quad = new THREE.PlaneGeometry(1, 1);
   const instanced = new THREE.InstancedBufferGeometry();

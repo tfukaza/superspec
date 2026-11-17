@@ -43,7 +43,7 @@ function along(points: THREE.Vector3[], t: number): THREE.Vector3 {
 }
 
 export function twigStrips(field: DensityField, twigs: number[][], options: TwigStripOptions): THREE.Mesh {
-  const { width = 0.16, lobe = 0.11, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
+  const { width = 0.11, lobe = 0.08, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
   let state = seed >>> 0;
   const random = () => { state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0; return state / 4294967296; };
   const centres: number[] = [], tangents: number[] = [], normals: number[] = [], sides: number[] = [];

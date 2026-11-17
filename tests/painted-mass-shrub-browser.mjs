@@ -161,12 +161,12 @@ try {
       cell: Number(process.env.FIELD_CELL ?? 0.2), level: Number(process.env.FIELD_LEVEL ?? 0.6),
       // The looser foliage below the core as cards (CARDS=0 leaves it out): CARD_SIZE meters at the core, CARD_KEEP of
       // the candidates kept there, CARD_SPACING meters between candidates.
-      cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.55),
-      spacing: Number(process.env.CARD_SPACING ?? 0.25), cardFloor: Number(process.env.CARD_FLOOR ?? 0.06),
+      cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.9),
+      spacing: Number(process.env.CARD_SPACING ?? 0.18), cardFloor: Number(process.env.CARD_FLOOR ?? 0.1),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
-      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.16),
-      stripLobe: Number(process.env.STRIP_LOBE ?? 0.11), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
+      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.11),
+      stripLobe: Number(process.env.STRIP_LOBE ?? 0.08), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
