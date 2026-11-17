@@ -423,9 +423,35 @@ fn write_washroom_trees() {
             generated.as_secs_f64() * 1000.,
             levels.len()
         );
+        // Every leaf cluster, clumped or not (the mass model only sorts them, so the plant without it has them all):
+        // `[x, y, z, size]` in the scene, the cluster's middle, for the painted trees' density field.
+        let all_leaves = tree::generate(
+            &tree::TreeDefinition {
+                mass: None,
+                ..definition.clone()
+            },
+            &|| false,
+        )
+        .unwrap()
+        .leaves;
+        let sites: Vec<f64> = all_leaves
+            .transforms
+            .iter()
+            .flat_map(|[_, along, _, anchor]| {
+                let size = along.iter().map(|v| v * v).sum::<f64>().sqrt();
+                [
+                    anchor[0] + 0.5 * along[0] + base[0],
+                    anchor[1] + 0.5 * along[1] + base[1],
+                    anchor[2] + 0.5 * along[2] + base[2],
+                    size,
+                ]
+            })
+            .map(|v| (v * 1000.).round() / 1000.)
+            .collect();
         plants.push(serde_json::json!({
             "id": plant.id, "base": base, "branches": plant.skeleton.len(), "leafClusters": plant.leaves.len(),
             "blobs": plant.canopy.blobs.len(), "generatedMs": generated.as_secs_f64() * 1000., "mass": plant.mass,
+            "sites": sites,
             "lods": plant.lods.iter().map(|lod| serde_json::json!({
                 "distance": lod.distance, "hull": lod.hull, "leafInstances": lod.leaf_instances, "triangles": lod.triangles,
             })).collect::<Vec<_>>(),

@@ -66,7 +66,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -94,16 +94,32 @@ try {
       leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
     const built = performance.now() - started;
     s.models.add(fuzz);
+    let field;
+    if (densityView) {
+      // VIEW=density: the leaf density field (leaf-density.ts) as dots in place of the painted surface and fuzz.
+      const f = window.__densityField(densityView.sites, densityView.radius);
+      s.models.children.at(-1).visible = false;
+      s.models.children.at(-2).visible = false;
+      s.models.add(window.__densityPoints(f, { floor: densityView.floor, bands: densityView.bands, size: densityView.size }));
+      const counts = [0, 0, 0, 0];
+      for (const v of f.values) if (v / f.full >= 0.05) counts[Math.min(3, Math.floor(v / f.full * 4))]++;
+      field = { dims: f.dims, max: f.max, full: f.full, quarters: counts };
+    }
     s.draw();
-    return { centre: centre.toArray(), anchors: fuzz.userData.contourFuzz.anchors, built };
+    return { centre: centre.toArray(), anchors: fuzz.userData.contourFuzz.anchors, built, field };
   }, { tile: Number(process.env.TILE ?? 0.6), brush: Number(process.env.BRUSH ?? 16), size: Number(process.env.SIZE ?? 0.3), density: Number(process.env.DENSITY ?? 14), reach: Number(process.env.REACH ?? 0.08),
     // COARSE: meters of the cells the fuzz's mesh is coarsened by (contour-fuzz.ts); 0 keeps the surface's edges.
     coarse: Number(process.env.COARSE ?? 0),
+    // VIEW=density: the plant's leaf density field instead of the painted surface (FIELD_RADIUS: kernel meters,
+    // FIELD_FLOOR: share of the densest below which cells are left out, FIELD_BANDS: colour steps, 0 smooth).
+    densityView: process.env.VIEW === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),
+      floor: Number(process.env.FIELD_FLOOR ?? 0.05), bands: Number(process.env.FIELD_BANDS ?? 0), size: Number(process.env.FIELD_DOT ?? 6) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
   if (info.error) throw new Error(info.error);
   console.log(`clumps centre ${info.centre.map(v => v.toFixed(2))}, ${info.anchors} fuzz anchors, built in ${info.built.toFixed(1)} ms`);
+  if (info.field) console.log(`density field ${info.field.dims.join("x")}, densest ${info.field.max.toFixed(1)}, full ${info.field.full.toFixed(1)}, cells by quarter of full ${info.field.quarters.join(" / ")}`);
   const [cx, cy, cz] = info.centre, r = Number(process.env.DIST ?? 3.6);
   if (process.env.TIME) {
     // Frame cost from the first view, per part: every draw synced by reading one pixel back, median of 40.
