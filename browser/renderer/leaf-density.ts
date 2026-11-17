@@ -73,6 +73,84 @@ export function sampleDensity(field: DensityField, p: THREE.Vector3): number {
   return sum;
 }
 
+/** Toward the denser side at `p`: the field's gradient by central differences, unnormalized. */
+function gradient(field: DensityField, p: THREE.Vector3): THREE.Vector3 {
+  const h = field.cell * 0.5, g = new THREE.Vector3();
+  for (let a = 0; a < 3; a++) {
+    const plus = p.clone(), minus = p.clone();
+    plus.setComponent(a, p.getComponent(a) + h);
+    minus.setComponent(a, p.getComponent(a) - h);
+    g.setComponent(a, sampleDensity(field, plus) - sampleDensity(field, minus));
+  }
+  return g;
+}
+
+// A cube's corners are numbered by their offsets (bit 0 x, bit 1 y, bit 2 z); six tetrahedra share its 0-7 diagonal.
+const TETRAHEDRA = [[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7], [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]];
+
+/**
+ * The surface where the field crosses `level` (a share of `full`): the part of the foliage dense enough to paint as
+ * one mass. Marching tetrahedra over the grid, vertices shared along the grid's edges, each triangle turned to face
+ * away from the denser side, and each vertex's normal the field's falling gradient there, so the surface is smooth
+ * however coarse the grid.
+ */
+export function densitySurface(field: DensityField, level: number): THREE.BufferGeometry {
+  const { origin, dims, cell, values } = field;
+  const threshold = level * field.full;
+  const at = (x: number, y: number, z: number) => x + dims[0] * (y + dims[1] * z);
+  const point = (i: number) => new THREE.Vector3(
+    origin.x + (i % dims[0]) * cell, origin.y + (Math.floor(i / dims[0]) % dims[1]) * cell, origin.z + Math.floor(i / (dims[0] * dims[1])) * cell);
+  const positions: number[] = [], normals: number[] = [], indices: number[] = [];
+  const shared = new Map<number, number>();
+  const cells = values.length;
+  // The vertex where the grid edge between corners i (inside) and o (outside) crosses the level.
+  const crossing = (i: number, o: number) => {
+    const key = Math.min(i, o) * cells + Math.max(i, o);
+    let v = shared.get(key);
+    if (v === undefined) {
+      const t = (values[i] - threshold) / (values[i] - values[o]);
+      const p = point(i).lerp(point(o), t);
+      const n = gradient(field, p).negate();
+      if (n.lengthSq() < 1e-12) n.set(0, 0, 1);
+      n.normalize();
+      v = positions.length / 3;
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+      shared.set(key, v);
+    }
+    return v;
+  };
+  const triangle = (a: number, b: number, c: number) => {
+    if (a === b || b === c || a === c) return;
+    const p = [a, b, c].map(k => new THREE.Vector3(positions[3 * k], positions[3 * k + 1], positions[3 * k + 2]));
+    const face = new THREE.Vector3().subVectors(p[1], p[0]).cross(new THREE.Vector3().subVectors(p[2], p[0]));
+    const out = new THREE.Vector3();
+    for (const k of [a, b, c]) out.add(new THREE.Vector3(normals[3 * k], normals[3 * k + 1], normals[3 * k + 2]));
+    if (face.dot(out) < 0) indices.push(a, c, b); else indices.push(a, b, c);
+  };
+  for (let z = 0; z < dims[2] - 1; z++) for (let y = 0; y < dims[1] - 1; y++) for (let x = 0; x < dims[0] - 1; x++) {
+    const corner = [0, 1, 2, 3, 4, 5, 6, 7].map(k => at(x + (k & 1), y + ((k >> 1) & 1), z + ((k >> 2) & 1)));
+    for (const tet of TETRAHEDRA) {
+      const ids = tet.map(k => corner[k]);
+      const inside = ids.filter(i => values[i] > threshold), outside = ids.filter(i => values[i] <= threshold);
+      if (inside.length === 0 || outside.length === 0) continue;
+      if (inside.length === 1) triangle(crossing(inside[0], outside[0]), crossing(inside[0], outside[1]), crossing(inside[0], outside[2]));
+      else if (inside.length === 3) triangle(crossing(inside[0], outside[0]), crossing(inside[1], outside[0]), crossing(inside[2], outside[0]));
+      else {
+        const [a, b] = inside, [c, d] = outside;
+        const q = [crossing(a, c), crossing(a, d), crossing(b, d), crossing(b, c)];
+        triangle(q[0], q[1], q[2]);
+        triangle(q[0], q[2], q[3]);
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(indices);
+  return geometry;
+}
+
 /**
  * Debug view: a dot per cell whose value is above `floor` of `full`, coloured from deep blue (sparse) through green
  * to yellow (dense) and sized by its value, so cores, gradients and gaps show from any side. `bands` > 0 snaps

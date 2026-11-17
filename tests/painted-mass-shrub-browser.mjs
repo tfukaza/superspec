@@ -66,7 +66,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -78,13 +78,22 @@ try {
       if (family !== "bark") { m.visible = false; m.userData.source = { visible: false }; }
     }
     if (!hull) return { error: "the shrub has no near hull (its clumps)" };
-    // The clumps' mesh in world space.
-    const geometry = new T.BufferGeometry();
-    geometry.setAttribute("position", hull.geometry.getAttribute("position").clone());
-    geometry.setAttribute("normal", hull.geometry.getAttribute("normal").clone());
-    if (hull.geometry.index) geometry.setIndex(hull.geometry.index.clone());
-    const placed = new T.Matrix4().fromArray(hull.instanceMatrix.array, 0).premultiply(hull.matrixWorld);
-    geometry.applyMatrix4(placed);
+    let geometry, surface;
+    if (densityBase) {
+      // BASE=density: the leaf density field's surface at a level (leaf-density.ts) in place of the clumps.
+      const started = performance.now();
+      const f = window.__densityField(densityBase.sites, densityBase.radius, densityBase.cell);
+      geometry = window.__densitySurface(f, densityBase.level);
+      surface = { triangles: geometry.index.count / 3, ms: performance.now() - started, full: f.full };
+    } else {
+      // The clumps' mesh in world space.
+      geometry = new T.BufferGeometry();
+      geometry.setAttribute("position", hull.geometry.getAttribute("position").clone());
+      geometry.setAttribute("normal", hull.geometry.getAttribute("normal").clone());
+      if (hull.geometry.index) geometry.setIndex(hull.geometry.index.clone());
+      const placed = new T.Matrix4().fromArray(hull.instanceMatrix.array, 0).premultiply(hull.matrixWorld);
+      geometry.applyMatrix4(placed);
+    }
     geometry.computeBoundingBox();
     const centre = geometry.boundingBox.getCenter(new T.Vector3());
     const sun = new T.Vector3(...JSON.parse(document.querySelector("#viewport").dataset.lighting).lights[0].direction);
@@ -106,7 +115,7 @@ try {
       field = { dims: f.dims, max: f.max, full: f.full, quarters: counts };
     }
     s.draw();
-    return { centre: centre.toArray(), anchors: fuzz.userData.contourFuzz.anchors, built, field };
+    return { centre: centre.toArray(), anchors: fuzz.userData.contourFuzz.anchors, built, field, surface };
   }, { tile: Number(process.env.TILE ?? 0.6), brush: Number(process.env.BRUSH ?? 16), size: Number(process.env.SIZE ?? 0.3), density: Number(process.env.DENSITY ?? 14), reach: Number(process.env.REACH ?? 0.08),
     // COARSE: meters of the cells the fuzz's mesh is coarsened by (contour-fuzz.ts); 0 keeps the surface's edges.
     coarse: Number(process.env.COARSE ?? 0),
@@ -114,11 +123,15 @@ try {
     // FIELD_FLOOR: share of the densest below which cells are left out, FIELD_BANDS: colour steps, 0 smooth).
     densityView: process.env.VIEW === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),
       floor: Number(process.env.FIELD_FLOOR ?? 0.05), bands: Number(process.env.FIELD_BANDS ?? 0), size: Number(process.env.FIELD_DOT ?? 6) } : null,
+    // BASE=density: the painted surface is the density field's surface at FIELD_LEVEL of full (FIELD_CELL: grid meters).
+    densityBase: process.env.BASE === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),
+      cell: Number(process.env.FIELD_CELL ?? 0.2), level: Number(process.env.FIELD_LEVEL ?? 0.6) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
   if (info.error) throw new Error(info.error);
   console.log(`clumps centre ${info.centre.map(v => v.toFixed(2))}, ${info.anchors} fuzz anchors, built in ${info.built.toFixed(1)} ms`);
+  if (info.surface) console.log(`density surface: ${info.surface.triangles} triangles, field full ${info.surface.full.toFixed(1)}, built in ${info.surface.ms.toFixed(1)} ms`);
   if (info.field) console.log(`density field ${info.field.dims.join("x")}, densest ${info.field.max.toFixed(1)}, full ${info.field.full.toFixed(1)}, cells by quarter of full ${info.field.quarters.join(" / ")}`);
   const [cx, cy, cz] = info.centre, r = Number(process.env.DIST ?? 3.6);
   if (process.env.TIME) {
