@@ -66,7 +66,7 @@ export function leafCardAtlas(grid = 4, size = 256, seed = 1, melt = 3): { width
  * off. Coverage keeps a texel-wide ramp at the cut for filtering. Tone and normals are the blur's coverage-weighted
  * averages; each texel keeps its own leaf's hue, and a texel the paint newly covers takes its nearest leaf's.
  */
-function melted(card: LeafCard, radius: number): { coverage: Float32Array; tone: Float32Array; hue: Float32Array; nx: Float32Array; ny: Float32Array } {
+export function melted(card: LeafCard, radius: number): { coverage: Float32Array; tone: Float32Array; hue: Float32Array; nx: Float32Array; ny: Float32Array } {
   const { size, data } = card, n = size * size;
   const cover = new Float32Array(n), tone = new Float32Array(n), nx = new Float32Array(n), ny = new Float32Array(n), hue = new Float32Array(n);
   for (let i = 0; i < n; i++) {
