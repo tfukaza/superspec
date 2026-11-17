@@ -583,10 +583,26 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
   birch (15 arching limbs with drooping twigs, clumps grouped per limb, `dense` 9), whose clumps stay apart with the
   trunk and branches showing between them; its density threshold is sensitive (7 fills it in like a broadleaf, 10
   leaves the lower limbs bare). The plant is written in the broadleaf's stead with `TREE_TREE=<absolute path>`, and
-  pictured with `PLANT=poplar|birch DIST=13 TILE=1.0 SIZE=0.6 DENSITY=5`; reference renders `painted-mass/tree-*.png`.
-  Known gaps besides the shrub's: the birch's bark is the default brown, not white; the loose sprig leaves (most of a
-  sparse tree's outline) are hidden; a flat clump face can show past the fuzz (the poplar's top from 90°); the birch's
-  fuzz needs about 21,000 anchors.
+  pictured with `PLANT=poplar|birch DIST=13 TILE=1.0 SIZE=0.6 DENSITY=5 COARSE=0.3`; reference renders
+  `painted-mass/tree-*.png`. Known gaps besides the shrub's: the birch's bark is the default brown, not white; the
+  loose sprig leaves (most of a sparse tree's outline) are hidden; a flat clump face can show past the fuzz (the
+  poplar's top from 90°).
+- **Cost (2026-11-17).** Measured with `TIME=1` (median of 40 draws, each synced by a one-pixel read back) and
+  `COPIES=25` (a grid of copies of the surface and fuzz); `VIEWPORT` sets the page size. On the development GPU, one tree
+  costs about 0.5 ms a frame and 25 birches about 1.2 ms before the changes below, most of it the fuzz; frame time was
+  not yet the limit, but the counts grew with the wrong things:
+  - The fuzz put at least one card on every edge, so its count followed the mesh's division, not its size: 27 small
+    birch clumps of 768 edges each made 20,780 cards whatever the density. The count per edge is now `density` × its
+    length with the fraction rounded at random (6,866), and `coarse` anchors the cards on a copy of the mesh merged per
+    cell of that many meters within each connected part (`coarsen` in `contour-fuzz.ts`): at 0.3 m, half a card, the
+    birch keeps its look with 1,422 cards (0.5 m leaves bald patches), and 25 birches draw 0.4 M triangles, not 1.4 M.
+    The shrub candidate (no `coarse`) drops from about 9,600 cards to 3,900, its fuzz a little thinner at the base.
+  - Every level drew each clump with the same 512 triangles and each sprig tube with a ring every 1.5 cm: the birch's
+    far level had 31,000 triangles, near as many as its near level's 32,000. Clumps now halve their divisions at each
+    further level (8, 4, 2 per octahedron edge) and sprigs keep every first, second or fourth ring to match: the
+    birch's levels are 32,372 / 6,546 / 5,516 triangles, and its plant document 10.0 MB, not 15.8 MB.
+  - Next, if needed: divide each clump by its size (the birch's near surface is still 27 × 512 triangles), and the
+    impostor fallback above for the far level.
 
 ## Open decisions
 

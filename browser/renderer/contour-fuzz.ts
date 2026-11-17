@@ -26,6 +26,63 @@ export interface ContourFuzzOptions {
   normals?: THREE.Texture;
   /** With a leaf map (leaf-normals.ts), the cards take their normals and tones from it, as the surface does. */
   leafMap?: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
+  /**
+   * Meters: anchor the cards on a coarsened copy of the mesh, its vertices merged per cell of this size within each
+   * connected part ({@link coarsen}). The fuzz needs edges about a card long, not the surface's fine ones, and its
+   * anchor count follows the edges' total length. 0 keeps the mesh's own edges.
+   */
+  coarse?: number;
+}
+
+/**
+ * The mesh simplified by vertex clustering: positions welded, split into connected parts (so separate clumps never
+ * merge), each part's vertices merged per cubic cell of `cell` meters into their mean, and the triangles that collapse
+ * dropped. Only positions are kept (the fuzz takes face normals from them).
+ */
+export function coarsen(geometry: THREE.BufferGeometry, cell: number): THREE.BufferGeometry {
+  const position = geometry.getAttribute("position");
+  const index = geometry.getIndex();
+  const count = index ? index.count : position.count;
+  const corner = (i: number) => (index ? index.getX(i) : i);
+  // Weld by position, then join the parts through the triangles.
+  const weld = new Map<string, number>(), welded: number[] = [], points: THREE.Vector3[] = [];
+  for (let v = 0; v < position.count; v++) {
+    const p = new THREE.Vector3().fromBufferAttribute(position, v);
+    const key = `${p.x.toFixed(5)},${p.y.toFixed(5)},${p.z.toFixed(5)}`;
+    let w = weld.get(key);
+    if (w === undefined) { w = points.length; weld.set(key, w); points.push(p); }
+    welded.push(w);
+  }
+  const parent = points.map((_, i) => i);
+  const root = (i: number): number => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+  for (let t = 0; t < count; t += 3) {
+    const a = root(welded[corner(t)]);
+    for (const k of [1, 2]) { const b = root(welded[corner(t + k)]); if (a !== b) parent[Math.max(a, b)] = Math.min(a, b); }
+  }
+  // One merged vertex per part and cell, at the mean of its members.
+  const merged = new Map<string, number>(), sums: THREE.Vector3[] = [], counts: number[] = [];
+  const target = points.map((p, i) => {
+    const key = `${root(i)}:${Math.floor(p.x / cell)},${Math.floor(p.y / cell)},${Math.floor(p.z / cell)}`;
+    let m = merged.get(key);
+    if (m === undefined) { m = sums.length; merged.set(key, m); sums.push(new THREE.Vector3()); counts.push(0); }
+    sums[m].add(p); counts[m]++;
+    return m;
+  });
+  const positions = new Float32Array(sums.length * 3);
+  sums.forEach((s, m) => s.divideScalar(counts[m]).toArray(positions, m * 3));
+  const triangles: number[] = [], seen = new Set<string>();
+  for (let t = 0; t < count; t += 3) {
+    const [a, b, c] = [0, 1, 2].map(k => target[welded[corner(t + k)]]);
+    if (a === b || b === c || a === c) continue;
+    const key = [a, b, c].sort((x, y) => x - y).join(",");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    triangles.push(a, b, c);
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  out.setIndex(triangles);
+  return out;
 }
 
 function generator(seed: number): () => number {
@@ -62,13 +119,17 @@ function edges(geometry: THREE.BufferGeometry): { a: THREE.Vector3; b: THREE.Vec
 }
 
 export function contourFuzz(geometry: THREE.BufferGeometry, cards: THREE.Texture, options: ContourFuzzOptions = {}): THREE.Mesh {
-  const { size = 0.3, density = 14, reach = 0.08, color = 0x3a3d3f, seed = 1, sun, normals, leafMap } = options;
+  const { size = 0.3, density = 14, reach = 0.08, color = 0x3a3d3f, seed = 1, sun, normals, leafMap, coarse = 0 } = options;
   const random = generator(seed);
   const anchors: number[] = [], first: number[] = [], second: number[] = [], randoms: number[] = [];
-  for (const edge of edges(geometry)) {
+  for (const edge of edges(coarse > 0 ? coarsen(geometry, coarse) : geometry)) {
     const n1 = edge.normals[0], n2 = edge.normals[1] ?? edge.normals[0].clone().negate();
     const length = edge.a.distanceTo(edge.b);
-    const count = Math.max(1, Math.round(length * density));
+    // `density` per meter on average, the fraction rounded at random: short edges get a card only sometimes, so the
+    // count follows the edges' total length rather than how finely the mesh is divided.
+    const share = length * density;
+    const count = Math.floor(share) + (random() < share - Math.floor(share) ? 1 : 0);
+    if (count === 0) continue;
     for (let k = 0; k < count; k++) {
       // Spread along the edge, a little jittered; the ends overlap the corners.
       const t = Math.min(Math.max((k + 0.5 + (random() - 0.5) * 0.8) / count, 0), 1);

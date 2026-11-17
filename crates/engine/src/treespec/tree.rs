@@ -1139,7 +1139,10 @@ pub fn generate(
                 let whole = field.as_ref().map_or(dab.normal, |f| f.shade(dab.centre));
                 batch.vector(
                     SHADE_NORMAL,
-                    unit_or(add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)), dab.normal),
+                    unit_or(
+                        add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)),
+                        dab.normal,
+                    ),
                 );
                 batch.scalar(THRESHOLD, random.next());
                 batch.scalar(RANDOM, random.next());
@@ -1150,21 +1153,32 @@ pub fn generate(
                 batch.scalar(DAB, 1.);
                 // Sparkles: a few small leaves just outside the dab, which a renderer shows only where the clump
                 // is in its brightest light (a painter's highlight flecks).
-                let shade = unit_or(add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)), dab.normal);
+                let shade = unit_or(
+                    add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)),
+                    dab.normal,
+                );
                 for _ in 0..if dab.layer == 0 { mass.sparkles } else { 0 } {
                     let side = perpendicular(dab.normal);
                     let up = cross(dab.normal, side);
                     let a = TAU * random.next();
                     let along = add(scale(side, cos(a)), scale(up, sin(a)));
                     let spot = add(
-                        add(dab.centre, scale(dab.normal, size * (0.3 + 0.25 * random.next()))),
+                        add(
+                            dab.centre,
+                            scale(dab.normal, size * (0.3 + 0.25 * random.next())),
+                        ),
                         // Mostly toward the dab's rim, where a clump's edge catches the light.
                         scale(along, size * (0.25 + 0.3 * random.next().sqrt())),
                     );
                     let leaf = leaves.size[1] * (1.1 + 0.6 * random.next());
                     let face = unit_or(reject(UP, along), perpendicular(along));
                     let anchor = sub(spot, scale(along, 0.5 * leaf));
-                    batch.transforms.push([scale(cross(along, face), leaf), scale(along, leaf), scale(face, leaf), anchor]);
+                    batch.transforms.push([
+                        scale(cross(along, face), leaf),
+                        scale(along, leaf),
+                        scale(face, leaf),
+                        anchor,
+                    ]);
                     batch.vector(ROOT, anchor);
                     batch.vector(PIVOT, [0.; 3]);
                     batch.vector(SHADE_NORMAL, shade);
@@ -1208,7 +1222,9 @@ pub fn generate(
             ];
             batch.vector(
                 OPENNESS,
-                std::array::from_fn(|a| signs[a] * ((open[a] * 255.).floor() + open[a + 3].min(0.999))),
+                std::array::from_fn(|a| {
+                    signs[a] * ((open[a] * 255.).floor() + open[a + 3].min(0.999))
+                }),
             );
         }
         for (value, was) in batch.scalars.get_mut(DAB).unwrap().iter_mut().zip(dabs) {
@@ -1286,37 +1302,55 @@ pub fn generate(
             leaf_widen,
             format!("leaves/lod{index}"),
         ));
-        let mass_mesh = model.as_ref().filter(|_| lod.hull != HullUse::None).map(|model| {
-            meshes.push(model.mesh(
-                format!("hull/lod{index}"),
-                key(
-                    "treespec-mass-v1",
-                    &(&leaf_placement_key, &definition.mass, IMPOSTOR_FREQUENCY, lod.radial_segments, lod.hull),
-                ),
-                IMPOSTOR_FREQUENCY,
-                lod.radial_segments.max(4),
-                // Behind dabs, a backing of the clumps alone, a little inside them.
-                (lod.hull == HullUse::Backing && definition.mass.as_ref().is_some_and(|m| m.dab > 0.)).then_some(DAB_BACKING_SHRINK),
-            ));
-            meshes.len() - 1
+        let mass_mesh = model
+            .as_ref()
+            .filter(|_| lod.hull != HullUse::None)
+            .map(|model| {
+                // Each clump halves its divisions at every further level (8, 4, then 2 per octahedron edge): a plant of
+                // many clumps would otherwise draw as many triangles far away as near.
+                let frequency = (IMPOSTOR_FREQUENCY >> index).max(2);
+                meshes.push(
+                    model.mesh(
+                        format!("hull/lod{index}"),
+                        key(
+                            "treespec-mass-v1",
+                            &(
+                                &leaf_placement_key,
+                                &definition.mass,
+                                frequency,
+                                lod.radial_segments,
+                                lod.hull,
+                            ),
+                        ),
+                        frequency,
+                        lod.radial_segments.max(4),
+                        // Behind dabs, a backing of the clumps alone, a little inside them.
+                        (lod.hull == HullUse::Backing
+                            && definition.mass.as_ref().is_some_and(|m| m.dab > 0.))
+                        .then_some(DAB_BACKING_SHRINK),
+                    ),
+                );
+                meshes.len() - 1
+            });
+        let hull_mesh = mass_mesh.or_else(|| {
+            field.as_ref().and_then(|field| {
+                let (frequency, shrink) = match lod.hull {
+                    HullUse::None => return None,
+                    HullUse::Backing => (BACKING_FREQUENCY, BACKING_SHRINK),
+                    HullUse::Impostor => (IMPOSTOR_FREQUENCY, 1.),
+                };
+                meshes.push(field.mesh(
+                    format!("hull/lod{index}"),
+                    key(
+                        "treespec-hull-v1",
+                        &(&leaf_placement_key, frequency, shrink.to_bits()),
+                    ),
+                    frequency,
+                    shrink,
+                ));
+                Some(meshes.len() - 1)
+            })
         });
-        let hull_mesh = mass_mesh.or_else(|| field.as_ref().and_then(|field| {
-            let (frequency, shrink) = match lod.hull {
-                HullUse::None => return None,
-                HullUse::Backing => (BACKING_FREQUENCY, BACKING_SHRINK),
-                HullUse::Impostor => (IMPOSTOR_FREQUENCY, 1.),
-            };
-            meshes.push(field.mesh(
-                format!("hull/lod{index}"),
-                key(
-                    "treespec-hull-v1",
-                    &(&leaf_placement_key, frequency, shrink.to_bits()),
-                ),
-                frequency,
-                shrink,
-            ));
-            Some(meshes.len() - 1)
-        }));
         let leaf_instances = if lod.hull == HullUse::Impostor && hull_mesh.is_some() {
             0
         } else {

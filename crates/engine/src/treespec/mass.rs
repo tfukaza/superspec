@@ -161,7 +161,12 @@ pub fn build(sites: &[Site], skeleton: &[Branch], mass: &Mass, leaf_size: f64) -
     let dense: Vec<bool> = (0..sites.len())
         .map(|i| {
             let twig = skeleton[sites[i].branch].length < mass.twig;
-            neighbours[i].len() >= if twig { mass.dense.div_ceil(2) } else { mass.dense }
+            neighbours[i].len()
+                >= if twig {
+                    mass.dense.div_ceil(2)
+                } else {
+                    mass.dense
+                }
         })
         .collect();
     // Each site's ancestor at the grouping level: clumps do not cross it.
@@ -170,7 +175,9 @@ pub fn build(sites: &[Site], skeleton: &[Branch], mass: &Mass, leaf_size: f64) -
         .map(|site| {
             let mut b = site.branch;
             while skeleton[b].level > mass.group {
-                b = skeleton[b].parent.expect("a branch above level 0 has a parent");
+                b = skeleton[b]
+                    .parent
+                    .expect("a branch above level 0 has a parent");
             }
             b
         })
@@ -298,7 +305,10 @@ pub fn openness(points: &[V3], occluders: &[V3], radius: f64) -> Vec<[f64; 6]> {
     }
     let mut cells = HashMap::<[i64; 3], Vec<usize>>::new();
     for (index, p) in occluders.iter().enumerate() {
-        cells.entry(p.map(|v| (v / radius).floor() as i64)).or_default().push(index);
+        cells
+            .entry(p.map(|v| (v / radius).floor() as i64))
+            .or_default()
+            .push(index);
     }
     let inverse = 1. / (radius * radius);
     let density = |p: V3| -> f64 {
@@ -321,7 +331,14 @@ pub fn openness(points: &[V3], occluders: &[V3], radius: f64) -> Vec<[f64; 6]> {
         }
         sum
     };
-    let axes: [V3; 6] = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [-1., 0., 0.], [0., -1., 0.], [0., 0., -1.]];
+    let axes: [V3; 6] = [
+        [1., 0., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        [-1., 0., 0.],
+        [0., -1., 0.],
+        [0., 0., -1.],
+    ];
     let step = radius;
     let outside = |p: V3| (0..3).any(|a| p[a] < low[a] - radius || p[a] > high[a] + radius);
     points
@@ -337,7 +354,13 @@ pub fn openness(points: &[V3], occluders: &[V3], radius: f64) -> Vec<[f64; 6]> {
                         axis
                     } else {
                         let a = TAU * (ray - 1) as f64 / 4.;
-                        unit_or(add(axis, scale(add(scale(side, cos(a)), scale(up, sin(a))), 0.7)), axis)
+                        unit_or(
+                            add(
+                                axis,
+                                scale(add(scale(side, cos(a)), scale(up, sin(a))), 0.7),
+                            ),
+                            axis,
+                        )
                     };
                     let mut depth = 0.;
                     let mut t = radius;
@@ -365,7 +388,11 @@ impl Model {
         for layer in 0..layers.max(1) {
             // Each deeper shell is 0.7 of the one outside it.
             let shrink = 0.7f64.powi(layer as i32);
-            dabs.extend(self.shell(spacing, shrink).into_iter().map(|d| Dab { layer, ..d }));
+            dabs.extend(
+                self.shell(spacing, shrink)
+                    .into_iter()
+                    .map(|d| Dab { layer, ..d }),
+            );
         }
         dabs
     }
@@ -447,10 +474,22 @@ impl Model {
     /// attributes: normals and `shadeNormal` are the surface's, `element` numbers the parts
     /// (clumps first, then sprigs), `heightRatio` runs from the lowest point to the highest.
     /// `backing`: only the clumps, each `shrink` of its size, to fill the gaps behind a plant's dabs.
-    pub fn mesh(&self, id: String, geometry_key: String, frequency: usize, radial: usize, backing: Option<f64>) -> FoliageMesh {
+    pub fn mesh(
+        &self,
+        id: String,
+        geometry_key: String,
+        frequency: usize,
+        radial: usize,
+        backing: Option<f64>,
+    ) -> FoliageMesh {
         let mut mesh = FoliageMesh::new(id, geometry_key, "canopy", false);
         for (index, clump) in self.clumps.iter().enumerate() {
-            let part = clump.mesh(String::new(), String::new(), frequency, backing.unwrap_or(1.));
+            let part = clump.mesh(
+                String::new(),
+                String::new(),
+                frequency,
+                backing.unwrap_or(1.),
+            );
             let first = mesh.positions.len() as u32;
             mesh.positions.extend(&part.positions);
             mesh.normals.extend(&part.normals);
@@ -464,14 +503,23 @@ impl Model {
             }
             mesh.indices.extend(part.indices.iter().map(|i| i + first));
         }
+        // Coarser clumps take coarser sprigs: every ring at the full frequency, every second at half, every fourth below.
+        let stride = (super::tree::IMPOSTOR_FREQUENCY / frequency.max(1)).max(1);
         for (index, sprig) in self.sprigs.iter().enumerate().filter(|_| backing.is_none()) {
             let element = (self.clumps.len() + index) as f64;
             let first = mesh.positions.len() as u32;
-            let last = sprig.points.len() - 1;
+            let full = sprig.points.len() - 1;
+            // The rings kept, always with the last (the point closes it).
+            let mut rings: Vec<usize> = (0..full).step_by(stride).collect();
+            rings.push(full);
+            let last = rings.len() - 1;
             let width = radial as u32;
-            for k in 0..=last {
+            for (n, &k) in rings.iter().enumerate() {
                 let along = unit_or(
-                    sub(sprig.points[(k + 1).min(last)], sprig.points[k.saturating_sub(1)]),
+                    sub(
+                        sprig.points[rings[(n + 1).min(last)]],
+                        sprig.points[rings[n.saturating_sub(1)]],
+                    ),
                     [0., 0., 1.],
                 );
                 let side = perpendicular(along);
@@ -479,11 +527,16 @@ impl Model {
                 for step in 0..radial {
                     let angle = TAU * step as f64 / radial as f64;
                     let out = add(scale(side, cos(angle)), scale(up, sin(angle)));
-                    mesh.positions.push(add(sprig.points[k], scale(out, sprig.radii[k])));
+                    mesh.positions
+                        .push(add(sprig.points[k], scale(out, sprig.radii[k])));
                     mesh.normals.push(out);
-                    mesh.uvs.push([step as f64 / radial as f64, k as f64 / last as f64]);
+                    mesh.uvs
+                        .push([step as f64 / radial as f64, k as f64 / full as f64]);
                     mesh.scalar(BEND_WEIGHT, sprig.bends[k]);
-                    mesh.scalar(RANDOM, unit_float(hash(0x5b12, &[index as i64, k as i64, step as i64])));
+                    mesh.scalar(
+                        RANDOM,
+                        unit_float(hash(0x5b12, &[index as i64, k as i64, step as i64])),
+                    );
                     mesh.scalar(ELEMENT, element);
                     mesh.vector(SHADE_NORMAL, out);
                     mesh.vector(PIVOT, [0.; 3]);
@@ -491,31 +544,41 @@ impl Model {
             }
             for k in 0..last as u32 {
                 for step in 0..width {
-                    let (a, b) = (first + k * width + step, first + k * width + (step + 1) % width);
+                    let (a, b) = (
+                        first + k * width + step,
+                        first + k * width + (step + 1) % width,
+                    );
                     let (c, d) = (a + width, b + width);
                     mesh.indices.extend([a, b, d, a, d, c]);
                 }
             }
             // The point: one vertex past the last ring, closing it.
-            let tip_along = unit_or(sub(sprig.points[last], sprig.points[last - 1]), [0., 0., 1.]);
+            let tip_along = unit_or(
+                sub(sprig.points[full], sprig.points[rings[last - 1]]),
+                [0., 0., 1.],
+            );
             let tip = mesh.positions.len() as u32;
-            mesh.positions.push(add(sprig.points[last], scale(tip_along, sprig.radii[last])));
+            mesh.positions
+                .push(add(sprig.points[full], scale(tip_along, sprig.radii[full])));
             mesh.normals.push(tip_along);
             mesh.uvs.push([0.5, 1.]);
-            mesh.scalar(BEND_WEIGHT, sprig.bends[last]);
+            mesh.scalar(BEND_WEIGHT, sprig.bends[full]);
             mesh.scalar(RANDOM, unit_float(hash(0x5b12, &[index as i64, -1])));
             mesh.scalar(ELEMENT, element);
             mesh.vector(SHADE_NORMAL, tip_along);
             mesh.vector(PIVOT, [0.; 3]);
             let ring = first + last as u32 * width;
             for step in 0..width {
-                mesh.indices.extend([ring + step, ring + (step + 1) % width, tip]);
+                mesh.indices
+                    .extend([ring + step, ring + (step + 1) % width, tip]);
             }
         }
         let (low, high) = mesh
             .positions
             .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| (l.min(p[2]), h.max(p[2])));
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| {
+                (l.min(p[2]), h.max(p[2]))
+            });
         let span = (high - low).max(1e-9);
         let heights: Vec<f64> = mesh.positions.iter().map(|p| (p[2] - low) / span).collect();
         mesh.scalars.insert(HEIGHT_RATIO.into(), heights);
