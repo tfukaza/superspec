@@ -4,6 +4,7 @@
 //! assembly. A caller supplies the ground and decides where plants go.
 pub mod batches;
 pub mod grass;
+pub mod hull;
 mod output;
 mod random;
 pub mod tree;

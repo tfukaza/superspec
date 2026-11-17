@@ -4,7 +4,11 @@ use std::collections::BTreeMap;
 use superspec_engine::treespec::{
     BEND_WEIGHT, CLUSTER, ELEMENT, HEIGHT_RATIO, LEVEL, PIVOT, ROOT, SHADE_NORMAL, THRESHOLD,
     VARIATION,
-    tree::{Envelope, GeneratedTree, TreeDefinition, generate, parse},
+    hull::CanopyField,
+    tree::{
+        BACKING_SHRINK, Envelope, GeneratedTree, HullUse, SHADOW_SHRINK, TreeDefinition, generate,
+        parse,
+    },
 };
 
 const SHRUB: &str = include_str!("../src/treespec/fixtures/shrub.tree.json");
@@ -291,6 +295,9 @@ fn leaves_sit_on_branches_and_shade_normals_point_out_of_the_canopy() {
             leaves.len()
         );
         let mut outward = 0;
+        let hull_centre = CanopyField::new(&tree.canopy.blobs, definition.leaves.size[1])
+            .unwrap()
+            .origin;
         for index in 0..leaves.len() {
             let transform = leaves.transforms[index];
             let root = leaves.vectors[ROOT][index];
@@ -328,7 +335,8 @@ fn leaves_sit_on_branches_and_shade_normals_point_out_of_the_canopy() {
             let shade = leaves.vectors[SHADE_NORMAL][index];
             assert!(close(norm(shade), 1., 1e-9));
             let centre: [f64; 3] = std::array::from_fn(|a| root[a] + 0.5 * transform[1][a]);
-            outward += (dot(shade, sub(centre, tree.canopy.center)) > 0.) as usize;
+            // Out of the canopy hull, whose rays leave from the limb balls' weighted centre.
+            outward += (dot(shade, sub(centre, hull_centre)) > 0.) as usize;
             for name in [THRESHOLD, VARIATION, BEND_WEIGHT] {
                 assert!((0. ..=1.).contains(&leaves.scalars[name][index]), "{name}");
             }
@@ -364,6 +372,151 @@ fn leaves_sit_on_branches_and_shade_normals_point_out_of_the_canopy() {
         for blob in &tree.canopy.blobs {
             assert!(tree.skeleton[blob.branch].level <= 1 && blob.radius.is_finite());
         }
+    }
+}
+
+/// Crossings of the ray from `p` along +X with the triangles of a mesh (Moller-Trumbore).
+fn crossings(mesh: &superspec_engine::treespec::FoliageMesh, p: [f64; 3]) -> usize {
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let direction = [1., 0.0001, 0.0002];
+    mesh.indices
+        .chunks_exact(3)
+        .filter(|t| {
+            let [a, b, c] = [0, 1, 2].map(|i| mesh.positions[t[i] as usize]);
+            let (e1, e2) = (sub(b, a), sub(c, a));
+            let h = cross(direction, e2);
+            let det = dot(e1, h);
+            if det.abs() < 1e-14 {
+                return false;
+            }
+            let s = sub(p, a);
+            let u = dot(s, h) / det;
+            let q = cross(s, e1);
+            let v = dot(direction, q) / det;
+            u >= 0. && v >= 0. && u + v <= 1. && dot(e2, q) / det > 0.
+        })
+        .count()
+}
+
+#[test]
+fn canopy_hulls_are_closed_wrap_the_leaves_and_give_their_shade_normals() {
+    for (definition, tree) in fixtures() {
+        let id = &definition.id;
+        let field = CanopyField::new(&tree.canopy.blobs, definition.leaves.size[1]).unwrap();
+        let hulls: Vec<_> = tree
+            .lods
+            .iter()
+            .filter_map(|lod| lod.hull_mesh.map(|m| (lod.hull, &tree.meshes[m])))
+            .collect();
+        let shadow = &tree.meshes[tree.shadow.expect("a plant with leaves has a shadow proxy")];
+        assert_eq!(hulls.len(), 3, "{id}");
+        for (_, mesh) in hulls.iter().copied().chain([(HullUse::None, shadow)]) {
+            mesh.validate().unwrap();
+            assert!(!mesh.double_sided);
+            // Closed and wound one way: every edge is met once in each direction.
+            let mut edges = BTreeMap::<(u32, u32), i32>::new();
+            for t in mesh.indices.chunks_exact(3) {
+                for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                    *edges.entry((a.min(b), a.max(b))).or_default() += if a < b { 1 } else { -1 };
+                }
+            }
+            assert!(
+                edges.values().all(|n| *n == 0),
+                "{id} {}: open or misturned",
+                mesh.id
+            );
+            // Normals point away from the hull's centre, as do the faces.
+            let outward = mesh
+                .normals
+                .iter()
+                .zip(&mesh.positions)
+                .filter(|(n, p)| dot(**n, sub(**p, field.origin)) > 0.)
+                .count();
+            assert!(
+                outward as f64 >= 0.95 * mesh.positions.len() as f64,
+                "{id} {}: {outward}",
+                mesh.id
+            );
+            let volume: f64 = mesh
+                .indices
+                .chunks_exact(3)
+                .map(|t| {
+                    let [a, b, c] =
+                        [0, 1, 2].map(|i| sub(mesh.positions[t[i] as usize], field.origin));
+                    dot(
+                        a,
+                        [
+                            b[1] * c[2] - b[2] * c[1],
+                            b[2] * c[0] - b[0] * c[2],
+                            b[0] * c[1] - b[1] * c[0],
+                        ],
+                    ) / 6.
+                })
+                .sum();
+            assert!(volume > 0., "{id} {}: volume {volume}", mesh.id);
+        }
+        let reach = |mesh: &superspec_engine::treespec::FoliageMesh| {
+            mesh.positions
+                .iter()
+                .map(|p| norm(sub(*p, field.origin)))
+                .fold(0., f64::max)
+        };
+        let impostor = hulls
+            .iter()
+            .find(|(use_, _)| *use_ == HullUse::Impostor)
+            .unwrap()
+            .1;
+        let backing = hulls
+            .iter()
+            .find(|(use_, _)| *use_ == HullUse::Backing)
+            .unwrap()
+            .1;
+        assert!(
+            reach(backing) <= BACKING_SHRINK * reach(impostor) * 1.05,
+            "{id}"
+        );
+        assert!(
+            reach(shadow) <= SHADOW_SHRINK * reach(impostor) * 1.05,
+            "{id}"
+        );
+        // The impostor holds most cluster centres (an odd number of crossings is inside).
+        let leaves = &tree.leaves;
+        let inside = (0..leaves.len())
+            .filter(|i| {
+                let t = leaves.transforms[*i];
+                let centre: [f64; 3] = std::array::from_fn(|a| t[3][a] + 0.5 * t[1][a]);
+                crossings(impostor, centre) % 2 == 1
+            })
+            .count();
+        assert!(
+            inside as f64 >= 0.85 * leaves.len() as f64,
+            "{id}: {inside} of {} clusters inside",
+            leaves.len()
+        );
+        // A cluster at the hull's surface shades as the hull does there.
+        for i in 0..leaves.len() {
+            let t = leaves.transforms[i];
+            let centre: [f64; 3] = std::array::from_fn(|a| t[3][a] + 0.5 * t[1][a]);
+            assert_eq!(leaves.vectors[SHADE_NORMAL][i], field.shade(centre));
+        }
+        // Bend weights are the leaves' (within their range); heights span the hull.
+        let bends = &impostor.scalars[BEND_WEIGHT];
+        let leaf_bends = &leaves.scalars[BEND_WEIGHT];
+        let (low, high) = leaf_bends
+            .iter()
+            .fold((f64::INFINITY, 0f64), |(l, h), w| (l.min(*w), h.max(*w)));
+        assert!(
+            bends.iter().all(|w| *w >= low - 1e-9 && *w <= high + 1e-9),
+            "{id}"
+        );
+        let heights = &impostor.scalars[HEIGHT_RATIO];
+        assert!(heights.iter().any(|h| *h == 0.) && heights.iter().any(|h| *h == 1.));
     }
 }
 
@@ -404,17 +557,24 @@ fn levels_of_detail_stay_in_their_budgets() {
         assert!(thresholds.windows(2).all(|pair| pair[0] <= pair[1]));
         for (index, lod) in tree.lods.iter().enumerate() {
             let source = &definition.lods[index];
-            assert_eq!(
-                lod.leaf_instances,
-                thresholds.iter().filter(|t| **t < source.leaf_keep).count()
-            );
-            let share = lod.leaf_instances as f64 / thresholds.len() as f64;
-            assert!(
-                (share - source.leaf_keep).abs() < 0.05,
-                "{id} level {index} keeps {share}"
-            );
+            assert_eq!(lod.hull, source.hull);
+            assert_eq!(lod.hull_mesh.is_some(), source.hull != HullUse::None);
+            if source.hull == HullUse::Impostor {
+                // The hull stands in for the leaves.
+                assert_eq!(lod.leaf_instances, 0, "{id} level {index}");
+            } else {
+                assert_eq!(
+                    lod.leaf_instances,
+                    thresholds.iter().filter(|t| **t < source.leaf_keep).count()
+                );
+                let share = lod.leaf_instances as f64 / thresholds.len() as f64;
+                assert!(
+                    (share - source.leaf_keep).abs() < 0.05,
+                    "{id} level {index} keeps {share}"
+                );
+            }
             assert!(close(lod.leaf_widen, (1. / source.leaf_keep).sqrt(), 1e-12));
-            let bark: usize = [Some(lod.trunk), lod.branches]
+            let bark: usize = [Some(lod.trunk), lod.branches, lod.hull_mesh]
                 .into_iter()
                 .flatten()
                 .map(|i| tree.meshes[i].triangles())
@@ -542,8 +702,17 @@ fn keys_follow_what_each_part_reads_and_output_is_deterministic() {
                 .map(|(part, _)| part.clone())
                 .collect::<Vec<_>>()
         };
-        // Leaf size moves leaves only.
-        assert_eq!(changed(&|d| d.leaves.size[1] += 0.01), ["leaf-placement"]);
+        // Leaf size moves leaves and the canopy hull made around them only.
+        assert_eq!(
+            changed(&|d| d.leaves.size[1] += 0.01),
+            [
+                "hull/lod0",
+                "hull/lod1",
+                "hull/lod2",
+                "leaf-placement",
+                "shadow"
+            ]
+        );
         // The second level's bark detail rebuilds that level's bark only.
         let rebuilt = changed(&|d| d.lods[1].radial_segments -= 1);
         assert!(
@@ -565,9 +734,9 @@ fn keys_follow_what_each_part_reads_and_output_is_deterministic() {
         );
     }
 }
-const GOLDEN_SHRUB: &str = "6ac2f347323cfc2a803db6b77036a6b9af0464de125387661a8132db4894b532";
-const GOLDEN_BROADLEAF: &str = "1a0a6d6bef72db8dc3badb3db3f27e1e814b42b63d629cc97637932a575c80df";
-const GOLDEN_CONIFER: &str = "8694d2b5dfffdcec614207c3ecd45248a731306e1972b7b279020653708dc1ef";
+const GOLDEN_SHRUB: &str = "9d4c616da1aed7b83b2accc7478a994ac1f0b90ed6b07feb6161129322117c82";
+const GOLDEN_BROADLEAF: &str = "798a75a222af624b9d47e06b11eb66e372e0708345b50ed46e8a7e818ed281ef";
+const GOLDEN_CONIFER: &str = "965e4c7e0a9794d0bc66fc8bf67cb89415d8d2d966bf6cbe204b97538112ca4b";
 
 #[test]
 fn budgets_cancellation_and_bad_input_are_reported() {

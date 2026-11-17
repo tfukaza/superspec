@@ -13,8 +13,8 @@
   "envelope": { "kind": "ellipsoid", "center": [0, 0, 4.4], "radii": [2.7, 2.7, 2.6] },
   "leaves": { "level": 2, "spacing": 0.15, "start": 0.25, "size": [0.24, 0.36], "aspect": 0.55, "cards": 4, "spread": 130, "angle": 55, "lift": 0.2, "shape": "leaf" },
   "lods": [
-    { "radialSegments": 10, "ringStep": 1, "maxLevel": 3, "leafKeep": 1, "leafCards": 4, "distance": 0 },
-    { "radialSegments": 6, "ringStep": 2, "maxLevel": 2, "leafKeep": 0.45, "leafCards": 2, "distance": 25 },
-    { "radialSegments": 4, "ringStep": 4, "maxLevel": 1, "leafKeep": 0.15, "leafCards": 1, "distance": 70 }
+    { "radialSegments": 10, "ringStep": 1, "maxLevel": 3, "leafKeep": 1, "leafCards": 4, "distance": 0, "hull": "backing" },
+    { "radialSegments": 6, "ringStep": 2, "maxLevel": 2, "leafKeep": 0.45, "leafCards": 2, "distance": 25, "hull": "backing" },
+    { "radialSegments": 4, "ringStep": 4, "maxLevel": 1, "leafKeep": 0.15, "leafCards": 1, "distance": 70, "hull": "impostor" }
   ]
 }

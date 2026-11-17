@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import type { FoliageLook } from "../model/packet.ts";
+import { DEFAULT_CANOPY, type FoliageLook } from "../model/packet.ts";
+import { canopyUniforms, treeMaterial, isPlant, SHADOW_PROXY_LAYER } from "./foliage-plants.ts";
 import { attributeName } from "./batch.ts";
 import { followPaintedFinishing, programSun, programTime, type MaterialShading } from "./shade.ts";
 import { sceneFieldUniforms } from "./scene-fields.ts";
@@ -24,6 +25,9 @@ import { sceneFieldUniforms } from "./scene-fields.ts";
  * Only the tip highlight is per pixel. The lit profile draws the same geometry and instances through the light loop,
  * with the recipe's base color as albedo.
  *
+ * Shrubs and trees (roadmap stage 7) are batches of the plant families `bark`, `leaves`, `hull` and `shadow`, drawn by
+ * foliage-plants.ts within the same patches, levels and shared uniforms; a plant is one patch of one tile.
+ *
  * Tiles: a level's instances are grouped by their `tile` attribute (consecutive per tile). Each frame the viewer culls
  * tiles against the view and picks a level per tile by its distance; the instances of the tiles each level draws are
  * packed to the front of its buffers (only when that choice changes), so a level is one draw call per pass.
@@ -40,13 +44,13 @@ const VERTEX = { pivot: "vec3(0.0)", heightRatio: "clamp(uv.y, 0.0, 1.0)", rando
 const INSTANCE = { groundNormal: "vec3(0.0, 0.0, 1.0)", threshold: "0.0", variation: "0.5", random: "0.0" } as const;
 
 /** Degrees to radians. */
-const RADIANS = Math.PI / 180;
+export const RADIANS = Math.PI / 180;
 
 /**
  * The shared GLSL of every family: gust noise, the turn about a root and the sun's cast shadow at a point, read in the
  * vertex stage from the light's shadow map (`sampler2DShadow`, as three.js binds a PCF map).
  */
-const FAMILY_FUNCTIONS = /* glsl */`
+export const FAMILY_FUNCTIONS = /* glsl */`
 vec3 msFoliageHash(vec2 lattice) {
   vec3 projections = vec3(dot(lattice, vec2(127.1, 311.7)), dot(lattice, vec2(269.5, 183.3)), dot(lattice, vec2(419.2, 371.9)));
   return fract(sin(projections) * 43758.5453);
@@ -77,7 +81,7 @@ float msFoliageCast(vec3 world, vec3 normal) {
 `;
 
 /** Uniform declarations every family reads, in the vertex stage and in the boundary's band pass. */
-const FAMILY_UNIFORMS = /* glsl */`
+export const FAMILY_UNIFORMS = /* glsl */`
 uniform float msFoliageTime;
 uniform vec3 msFoliageSun;
 uniform highp sampler2DShadow msFoliageShadow;
@@ -99,7 +103,7 @@ const SHADE_BAND = "float ms_shade_band(vec3 n, vec3 s, float threshold, float s
  * shadow folded in), and the render inputs it reads declared from what the stage has: `attributes` names the geometry's
  * attributes (none in a band pass), so a named input without one reads its fallback.
  */
-function programChunk(shader: MaterialShading["shader"], attributes: ReadonlySet<string>, declared: Set<string>): { declarations: string; inputs: string } {
+export function programChunk(shader: MaterialShading["shader"], attributes: ReadonlySet<string>, declared: Set<string>, derivatives = false): { declarations: string; inputs: string } {
   const lines: string[] = [];
   const inputs: string[] = [];
   for (const input of shader.renderInputs ?? []) {
@@ -132,11 +136,12 @@ float ms_shade_band_source(vec3 n, vec3 s, float threshold, float softness, floa
   if (derived.has("msInstanceRandom")) inputs.push("msInstanceRandom = instanceRandom;");
   inputs.push("ms_world = root; ms_object = root; ms_normal = ground; ms_uv = vec2(0.0, height); ms_surface = root.xy; ms_footprint = 0.0; ms_uv_footprint = 0.0;");
   if (/\bms_cast_shadow\b/.test(source)) inputs.push("ms_cast_shadow = msFoliageCast(root, ground);");
+  if (derivatives) return { declarations: `${lines.join("\n")}\n${source}\n`, inputs: inputs.join("\n    ") };
   return { declarations: `${lines.join("\n")}\n${NO_DERIVATIVES}${source}\n#undef fwidth\n#undef dFdx\n#undef dFdy\n`, inputs: inputs.join("\n    ") };
 }
 
 /** The shared uniforms of a program evaluated outside `programMaterial`: what describes a receiver, set to nothing. */
-function receiverUniforms(): Record<string, THREE.IUniform> {
+export function receiverUniforms(): Record<string, THREE.IUniform> {
   const features = new THREE.DataTexture(new Float32Array(12), 3, 1, THREE.RGBAFormat, THREE.FloatType);
   features.needsUpdate = true;
   return {
@@ -146,7 +151,7 @@ function receiverUniforms(): Record<string, THREE.IUniform> {
 }
 
 /** Uniforms of a program's scene fields (`sampleField`), shared with every other material that samples them. */
-function fieldUniforms(shader: MaterialShading["shader"]): Record<string, THREE.IUniform> {
+export function fieldUniforms(shader: MaterialShading["shader"]): Record<string, THREE.IUniform> {
   const uniforms: Record<string, THREE.IUniform> = {};
   for (const input of shader.renderInputs ?? []) {
     if (input.kind !== "field" || !input.name) continue;
@@ -208,6 +213,7 @@ function lookUniforms(look: FoliageLook, next: { distance: number; keep: number 
     msFoliageReject: { value: new THREE.Vector4(look.rejection.boundary, look.rejection.fill, Math.sin(look.rejection.grazing * RADIANS), look.rejection.grazingKeep) },
     msFoliageTip: { value: new THREE.Vector3(look.tip.lift, look.tip.start, look.tip.amount) },
     msFoliageHighlight: { value: new THREE.Color().setRGB(...look.tip.highlight, THREE.LinearSRGBColorSpace) },
+    ...(look.family === "grass" ? {} : canopyUniforms(look.canopy ?? DEFAULT_CANOPY)),
   };
 }
 
@@ -360,6 +366,8 @@ varying float vFoliageVariation;`;
  */
 function makeMaterial(look: FoliageLook, profile: FoliageProfile, program: FoliageProgram | undefined, attributes: ReadonlySet<string>,
   shared: Record<string, THREE.IUniform>, level: Record<string, THREE.IUniform>): THREE.Material {
+  // A plant's parts have families of their own (foliage-plants.ts).
+  if (isPlant(look)) return treeMaterial(look, profile, program, attributes, shared, level);
   const material: THREE.Material = profile === "painted" ? new THREE.MeshBasicMaterial({ color: 0xffffff }) : new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
   if (profile === "painted") followPaintedFinishing(material);
   material.side = THREE.FrontSide;
@@ -412,7 +420,7 @@ interface LevelMesh {
 }
 
 /** One field of foliage: its levels, its tiles' bounds and the level each tile draws. */
-interface Patch { id: string; levels: LevelMesh[]; tiles: Map<number, THREE.Box3>; far: number; chosen: Map<number, number>; signature: string }
+interface Patch { id: string; levels: LevelMesh[]; tiles: Map<number, THREE.Box3>; far: number; chosen: Map<number, number>; signature: string; origin?: THREE.Vector3 }
 
 /** The stated look with what the page overrides. */
 function drawnProfile(look: FoliageLook, override: FoliageProfile | null): FoliageProfile { return override ?? look.profile; }
@@ -439,8 +447,11 @@ export class FoliageView {
   constructor(private readonly renderer: THREE.WebGLRenderer, override: string | null) {
     this.override = override === "lit" || override === "painted" ? override : null;
     this.boundary = new FoliageBoundary(renderer, this.shadow);
-    this.shared = { msFoliageTime: programTime, msFoliageSun: programSun, ...this.shadow.uniforms, ...this.boundary.uniforms };
+    this.shared = { msFoliageTime: programTime, msFoliageSun: programSun, msFoliageSunLight: this.sunLight, ...this.shadow.uniforms, ...this.boundary.uniforms };
   }
+
+  /** The sun's irradiance (color times intensity), for the plant families' additions to the light loop. */
+  private readonly sunLight = { value: new THREE.Color(1, 1, 1) };
 
   /** The profile the page draws every patch with, or null for each batch's own. */
   get profileOverride(): FoliageProfile | null { return this.override; }
@@ -456,8 +467,12 @@ export class FoliageView {
     mesh.userData.foliage = look;
     // The level's own uniforms, made once: every material the mesh gets shares them, and the patch sets their range.
     mesh.userData.foliageLevel = lookUniforms(look, { distance: look.far, keep: 0 });
-    mesh.castShadow = false;
-    mesh.receiveShadow = drawnProfile(look, this.override) === "lit";
+    // A plant casts its shadow from its bark and its canopy's proxy, which only the sun's shadow camera draws; leaves and
+    // the hull cast none (the proxy stands for them) and fold the cast shadow into their band.
+    mesh.userData.foliageCasts = look.family === "bark" || look.family === "shadow";
+    mesh.castShadow = mesh.userData.foliageCasts;
+    mesh.receiveShadow = look.family !== "shadow" && drawnProfile(look, this.override) === "lit";
+    if (look.family === "shadow") mesh.layers.set(SHADOW_PROXY_LAYER);
     (mesh.material as THREE.Material).dispose();
     mesh.material = makeMaterial(look, drawnProfile(look, this.override), undefined, attributes, this.shared, mesh.userData.foliageLevel);
   }
@@ -478,6 +493,7 @@ export class FoliageView {
     const made: THREE.Material[] = [];
     for (const patch of this.patches) for (const level of patch.levels) {
       const mesh = level.mesh, look = mesh.userData.foliage as FoliageLook;
+      if (look.family === "shadow") continue;
       (mesh.material as THREE.Material).dispose();
       mesh.material = makeMaterial(look, drawnProfile(look, profile), mesh.userData.foliageProgram as FoliageProgram | undefined,
         new Set(Object.keys(mesh.geometry.attributes)), this.shared, level.level);
@@ -499,6 +515,11 @@ export class FoliageView {
     if (models !== this.group) this.collect(models);
     if (!this.patches.length) return false;
     this.shadow.update(sun, casting);
+    if (sun) {
+      this.sunLight.value.copy(sun.color).multiplyScalar(sun.intensity);
+      // Plants' shadow proxies are drawn by the sun's shadow camera alone.
+      sun.shadow.camera.layers.enable(SHADOW_PROXY_LAYER);
+    }
     this.matrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
     this.frustum.setFromProjectionMatrix(this.matrix);
     const eye = camera.getWorldPosition(new THREE.Vector3());
@@ -530,10 +551,12 @@ export class FoliageView {
    * (the shadow map is made during a frame, so this follows one). Returns whether it did, so the caller draws again.
    */
   afterFrame(ground: { positions: THREE.Texture; normals: THREE.Texture; rect: THREE.Vector4; width: number; height: number } | null): boolean {
-    if (!this.patches.length) return false;
-    const programs = this.patches.flatMap(patch => patch.levels.map(level => level.mesh.userData.foliageProgram as FoliageProgram | undefined)).filter(Boolean) as FoliageProgram[];
+    // The boundary field is grass's: plants have none.
+    const grass = this.patches.filter(patch => patch.levels.some(level => level.look.family === "grass"));
+    if (!grass.length) return false;
+    const programs = grass.flatMap(patch => patch.levels.map(level => level.mesh.userData.foliageProgram as FoliageProgram | undefined)).filter(Boolean) as FoliageProgram[];
     const program = programs[0];
-    const look = this.patches[0].levels[0].look;
+    const look = grass[0].levels[0].look;
     const sun = programSun.value;
     const values = program ? Object.values(program.uniforms).map(uniform => {
       const value = uniform.value as { toArray?: () => number[] } | number | boolean;
@@ -556,17 +579,25 @@ export class FoliageView {
     return {
       profile: this.override ?? "batch",
       patches: this.patches.map(patch => {
-        const byLevel = new Map<number, { level: number; meshes: number; instances: number; drawn: number; blades: number; bladesDrawn: number; vertices: number; verticesDrawn: number }>();
+        type Entry = { level: number; meshes: number; instances: number; drawn: number; blades: number; bladesDrawn: number; vertices: number; verticesDrawn: number; families?: Record<string, { instances: number; drawn: number; triangles: number }> };
+        const byLevel = new Map<number, Entry>();
+        const plant = patch.levels.some(level => isPlant(level.look));
         for (const level of patch.levels) {
-          const entry = byLevel.get(level.look.level) ?? { level: level.look.level, meshes: 0, instances: 0, drawn: 0, blades: 0, bladesDrawn: 0, vertices: 0, verticesDrawn: 0 };
+          const entry: Entry = byLevel.get(level.look.level) ?? { level: level.look.level, meshes: 0, instances: 0, drawn: 0, blades: 0, bladesDrawn: 0, vertices: 0, verticesDrawn: 0 };
           const total = level.source[0] ? level.source[0].values.length / level.source[0].size : 0;
           entry.meshes += level.drawn ? 1 : 0;
           entry.instances += total; entry.drawn += level.drawn;
           entry.blades += total * level.blades; entry.bladesDrawn += level.drawn * level.blades;
           entry.vertices += total * level.vertices; entry.verticesDrawn += level.drawn * level.vertices;
+          // A plant's levels say what each family holds and draws.
+          if (plant) {
+            const families = entry.families ??= {};
+            const triangles = (level.mesh.geometry.index?.count ?? 0) / 3;
+            families[level.look.family] = { instances: total, drawn: level.drawn, triangles: level.drawn * triangles };
+          }
           byLevel.set(level.look.level, entry);
         }
-        return { id: patch.id, tiles: patch.tiles.size, tilesDrawn: [...patch.chosen.values()].filter(level => level >= 0).length, far: patch.far, levels: [...byLevel.values()].sort((a, b) => a.level - b.level) };
+        return { id: patch.id, kind: plant ? "plant" : "grass", tiles: patch.tiles.size, tilesDrawn: [...patch.chosen.values()].filter(level => level >= 0).length, far: patch.far, levels: [...byLevel.values()].sort((a, b) => a.level - b.level) };
       }),
       boundary: { ...this.stats, ...this.boundary.describe() },
     };
@@ -584,6 +615,7 @@ export class FoliageView {
     const matrix = new THREE.Matrix4(), root = new THREE.Vector3(), ground = new THREE.Vector3(), view = new THREE.Vector3();
     for (const patch of this.patches) for (const level of patch.levels) {
       const mesh = level.mesh, look = level.look, profile = drawnProfile(look, this.override);
+      if (isPlant(look)) continue;
       const geometry = mesh.geometry;
       const pivots = geometry.getAttribute(attributeName("vertex", "pivot")), ranks = geometry.getAttribute(attributeName("vertex", "random"));
       const element = geometry.getAttribute(attributeName("vertex", "element"));
@@ -649,17 +681,28 @@ export class FoliageView {
       // A clump stands on its origin: twice its bounding radius around the origin holds it however it is turned.
       const radius = 2 * (geometry.boundingSphere?.radius ?? 0.5);
       const matrix = new THREE.Matrix4(), origin = new THREE.Vector3();
+      // A plant's part is bounded by its mesh where each instance puts it (a dab grows by its size; sway is small).
+      if (isPlant(look) && !geometry.boundingBox) geometry.computeBoundingBox();
+      const part = new THREE.Box3();
       for (let instance = 0; instance < count; instance++) {
         const index = tile ? Math.round(tile.getX(instance)) : 0;
         const range = tiles.get(index);
         if (range) range.count++;
         else tiles.set(index, { start: instance, count: 1 });
         matrix.fromArray(mesh.instanceMatrix.array, instance * 16);
-        origin.setFromMatrixPosition(matrix);
-        const scale = matrix.getMaxScaleOnAxis();
         const box = patch.tiles.get(index) ?? new THREE.Box3();
-        box.expandByPoint(origin.clone().addScalar(-radius * scale)).expandByPoint(origin.clone().addScalar(radius * scale));
+        if (isPlant(look)) box.union(part.copy(geometry.boundingBox!).applyMatrix4(matrix).expandByScalar(0.5 * matrix.getMaxScaleOnAxis()));
+        else {
+          origin.setFromMatrixPosition(matrix);
+          const scale = matrix.getMaxScaleOnAxis();
+          box.expandByPoint(origin.clone().addScalar(-radius * scale)).expandByPoint(origin.clone().addScalar(radius * scale));
+        }
         patch.tiles.set(index, box);
+      }
+      // The plant sways about its base: where its bark stands.
+      if (look.family === "bark" && count) {
+        matrix.fromArray(mesh.instanceMatrix.array, 0);
+        patch.origin = new THREE.Vector3().setFromMatrixPosition(matrix);
       }
       const element = geometry.getAttribute(attributeName("vertex", "element"));
       let blades = 1;
@@ -671,12 +714,19 @@ export class FoliageView {
     for (const patch of this.patches) {
       // Each level thins toward the next level's share, and the last toward nothing at far. The values change in place:
       // compiled programs hold these uniform objects.
+      // A plant's families thin toward the next level of the same family; one the next level does not draw (leaves at
+      // an impostor) is not thinned toward it, the level switches at once.
       const starts = [...new Map(patch.levels.map(level => [level.look.level, { distance: level.look.distance, keep: level.look.keep }])).entries()].sort((a, b) => a[0] - b[0]);
       for (const level of patch.levels) {
         const at = starts.findIndex(([index]) => index === level.look.level);
-        const next = starts[at + 1]?.[1] ?? { distance: patch.far, keep: 0 };
+        let next = starts[at + 1]?.[1] ?? { distance: patch.far, keep: 0 };
+        if (isPlant(level.look) && starts[at + 1]) {
+          const following = patch.levels.find(other => other.look.level === starts[at + 1][0] && other.look.family === level.look.family);
+          next = { distance: next.distance, keep: following ? following.look.keep : level.look.keep };
+        }
         (level.level.msFoliageLevel.value as THREE.Vector4).set(level.look.distance, level.look.keep, next.distance, next.keep);
         level.level.msFoliageFar.value = patch.far;
+        if (patch.origin && level.level.msFoliageOrigin) (level.level.msFoliageOrigin.value as THREE.Vector3).copy(patch.origin);
       }
     }
     this.invalidate();
@@ -686,7 +736,8 @@ export class FoliageView {
   private pack(level: LevelMesh, chosen: Map<number, number>): void {
     let drawn = 0;
     for (const [tile, range] of level.tiles) {
-      if (chosen.get(tile) !== level.look.level) continue;
+      // A shadow proxy draws at every level of its plant.
+      if (level.look.family === "shadow" ? (chosen.get(tile) ?? -1) < 0 : chosen.get(tile) !== level.look.level) continue;
       for (const { attribute, values, size } of level.source) (attribute.array as Float32Array).set(values.subarray(range.start * size, (range.start + range.count) * size), drawn * size);
       drawn += range.count;
     }

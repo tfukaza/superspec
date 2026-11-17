@@ -11,7 +11,7 @@ fixtures (a sink, valves, taps) are left out on purpose: they are a job for Item
 | `geometry.mjs` | Mesh helpers (boxes, bars, tubes, ducts, tori) and a GLB writer. |
 | `model.mjs` | The scene: 11 meshes, one per material receiver, in meters with Z up, and the bolts: one instanced batch of a twelfth mesh, the bolt template. |
 | `build.mjs` | Writes `generated/washroom/washroom.glb` and `washroom.studio.json`, a version 2 project. |
-| `materials/` | The recipes the examples lack: bench wood, and the painted slab, lawn and grass of the stage 5 and 6 tests. |
+| `materials/` | The recipes the examples lack: bench wood, and the painted slab, lawn, grass, bark and canopy of the stage 5 to 7 tests. |
 | `../../material-washroom-browser.mjs` | Opens the project in the built Material Studio and times it. |
 
 ## Materials
@@ -46,6 +46,18 @@ blade's root. Without `grass` the model and project are byte for byte what they 
 measures and pictures it: on an RTX 5060 Ti at 256 px without ambient occlusion (2026-11-16) the grass added 0.26 to
 0.32 ms (painted) and 0.48 ms (lit) of GPU time to a frame seen from close by, 8 draw calls, and a sun move cost 0.06 ms of GPU
 time for its boundary field with nothing scattered again (details in docs/plans/tree-item-roadmap.md, phase 4).
+
+## Shrub and tree
+
+`buildProject(resolution, density, { trees: true })`, or `TREES=1` for `build.mjs`, adds two plants standing on the lawn
+(and with them the lawn and its grass): the TreeSpec shrub fixture and its broadleaf fixture at 0.6 of its size, from
+`generated/verification/treespec/washroom-trees.json` (`write_washroom_trees` beside `write_washroom_lawn`;
+`TREES_DOCUMENT` names another). They change no mesh of the model: each plant is 9 instanced batches of the plant
+families (bark, leaves and canopy hull per level of detail, one shadow proxy), whose bark names
+`materials/painted-bark.material.ts` and whose leaves and hulls name `materials/painted-canopy.material.ts`, materials
+assigned to no mesh. Without `trees` the model and project are byte for byte what they were (and the model with trees is
+the model with grass). `tests/tree-washroom-browser.mjs` measures and pictures both profiles under
+`generated/verification/trees/` (numbers in docs/plans/tree-item-roadmap.md, phase 5).
 
 ## Instanced batch
 

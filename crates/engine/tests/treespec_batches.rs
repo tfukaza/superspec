@@ -232,6 +232,211 @@ fn a_grass_patch_and_a_shrub_become_valid_batches_that_place_what_was_generated(
     assert!(batches::placement(&mirrored).is_err());
 }
 
+#[test]
+fn a_plant_becomes_a_batch_per_part_and_level_with_its_family() {
+    use superspec_types::batch::FoliageFamily;
+    let plant = shrub();
+    let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+        "family": "leaves", "patch": "ignored", "far": 60, "material": "canopy", "canopy": {},
+    }))
+    .unwrap();
+    let offset = [3., -1., 0.5];
+    let all = batches::tree_levels(&plant, offset, &look).unwrap();
+    let family = |batch: &FoliageBatch| batch.batch.foliage.as_ref().unwrap().family;
+    for (level, lod) in plant.lods.iter().enumerate() {
+        let of_level: Vec<_> = all
+            .iter()
+            .filter(|b| {
+                b.batch.foliage.as_ref().unwrap().level as usize == level
+                    && family(b) != FoliageFamily::Shadow
+            })
+            .collect();
+        // Bark: the trunk and branches together, one instance at the plant's place.
+        let bark = of_level
+            .iter()
+            .find(|b| family(b) == FoliageFamily::Bark)
+            .unwrap();
+        let parts = [Some(lod.trunk), lod.branches];
+        let triangles: usize = parts
+            .iter()
+            .flatten()
+            .map(|i| plant.meshes[*i].triangles())
+            .sum();
+        assert_eq!(bark.mesh.indices.len() / 3, triangles);
+        assert_eq!(bark.batch.placements.len(), 1);
+        assert_eq!(bark.batch.placements[0].translation, offset);
+        assert_eq!(
+            bark.batch.vertex_scalars["bendWeight"].len(),
+            bark.mesh.positions.len()
+        );
+        let leaves = of_level.iter().find(|b| family(b) == FoliageFamily::Leaves);
+        let hull = of_level.iter().find(|b| family(b) == FoliageFamily::Hull);
+        match lod.hull {
+            tree::HullUse::Impostor => assert!(leaves.is_none() && hull.is_some(), "level {level}"),
+            tree::HullUse::Backing => assert!(leaves.is_some() && hull.is_some(), "level {level}"),
+            tree::HullUse::None => assert!(leaves.is_some() && hull.is_none(), "level {level}"),
+        }
+        if let Some(leaves) = leaves {
+            assert_eq!(leaves.batch.placements.len(), lod.leaf_instances);
+            assert_eq!(leaves.batch.foliage.as_ref().unwrap().keep, lod.leaf_keep);
+            assert_eq!(
+                leaves.batch.vectors["shadeNormal"].len(),
+                lod.leaf_instances
+            );
+        }
+        for batch in &of_level {
+            let foliage = batch.batch.foliage.as_ref().unwrap();
+            assert_eq!(
+                (foliage.patch.as_str(), foliage.distance),
+                ("shrub", lod.distance)
+            );
+            assert_eq!(foliage.canopy, Some(Default::default()));
+        }
+    }
+    assert_eq!(
+        all.iter()
+            .filter(|b| family(b) == FoliageFamily::Shadow)
+            .count(),
+        1
+    );
+    let mut scene = Scene::empty(1, "test");
+    for FoliageBatch { batch, mesh } in &all {
+        scene.add_batch(batch, mesh).unwrap();
+    }
+    superspec_model::batches::check(&scene).unwrap();
+    let document = serde_json::json!({ "batches": batches::project_document(&all) });
+    let mut again = Scene::empty(1, "test");
+    superspec_model::batches::add_project(&mut again, &document).unwrap();
+    assert_eq!(again.manifest.batches.len(), all.len());
+    assert_eq!(again.manifest.batches[0].foliage, all[0].batch.foliage);
+}
+
+/// The lawn's height at a point of the plan (see `lawn_ground`).
+fn lawn_height(x: f64, y: f64) -> f64 {
+    let dx = (SLAB[0][0] - x).max(x - SLAB[1][0]).max(0.);
+    let dy = (SLAB[0][1] - y).max(y - SLAB[1][1]).max(0.);
+    let away = ((dx * dx + dy * dy).sqrt() / 1.2).min(1.);
+    let roll =
+        0.6 * (1.1 * x + 0.3).sin() * (0.9 * y - 0.5).cos() + 0.4 * (0.6 * x - 0.8 * y + 1.).sin();
+    -0.03 + 0.25 * roll * away * away * (3. - 2. * away)
+}
+
+/// A plant definition `factor` times as large: every length, the envelope and the level distances.
+fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefinition {
+    definition.trunk.height *= factor;
+    definition.trunk.radius *= factor;
+    match &mut definition.envelope {
+        Some(tree::Envelope::Ellipsoid { center, radii }) => {
+            *center = center.map(|v| v * factor);
+            *radii = radii.map(|v| v * factor);
+        }
+        Some(tree::Envelope::Cone { base, top, radius }) => {
+            *base *= factor;
+            *top *= factor;
+            *radius *= factor;
+        }
+        None => {}
+    }
+    definition.leaves.spacing *= factor;
+    definition.leaves.size = definition.leaves.size.map(|v| v * factor);
+    definition
+}
+
+/// Writes the washroom's plants (roadmap stage 7, `washroom-trees.json` in `TREESPEC_OUTPUT`,
+/// default `generated/verification/treespec`): the shrub fixture and the broadleaf fixture at
+/// 0.6 of its size, standing on the lawn of `write_washroom_lawn`, every level of each as
+/// batches with their foliage looks (bark colored by `painted-bark`, leaves and hull by
+/// `painted-canopy`). `tests/studio/washroom/build.mjs` adds them when asked for trees (`TREES=1`).
+#[test]
+#[ignore = "writes the washroom plants for the browser tree test"]
+fn write_washroom_trees() {
+    let out = std::env::var_os("TREESPEC_OUTPUT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../generated/verification/treespec"),
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+        "family": "leaves", "patch": "plant", "far": 60, "material": "painted-canopy",
+        "wind": { "azimuth": 30, "angle": 2.5, "scale": 6, "speed": 0.8, "bias": 0.7, "flutter": 9 },
+        "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 },
+        "canopy": {},
+    }))
+    .unwrap();
+    let parse = |name: &str, text: &str| tree::parse(name, text).unwrap();
+    // The washroom is seen from a few meters: levels step at 8 and 16 m (shrub) and 10 and 22 m (tree).
+    let mut shrub_definition = parse(
+        "shrub.tree.json",
+        include_str!("../src/treespec/fixtures/shrub.tree.json"),
+    );
+    for (lod, distance) in shrub_definition.lods.iter_mut().zip([0., 8., 16.]) {
+        lod.distance = distance;
+    }
+    let mut tree_definition = scaled(
+        parse(
+            "broadleaf.tree.json",
+            include_str!("../src/treespec/fixtures/broadleaf.tree.json"),
+        ),
+        0.6,
+    );
+    for (lod, distance) in tree_definition.lods.iter_mut().zip([0., 10., 22.]) {
+        lod.distance = distance;
+    }
+    let mut all = vec![];
+    let mut plants = vec![];
+    for (definition, at) in [
+        (shrub_definition, [3.7, -1.1]),
+        (tree_definition, [4.4, -4.1]),
+    ] {
+        let started = std::time::Instant::now();
+        let plant = tree::generate(&definition, &|| false).unwrap();
+        let generated = started.elapsed();
+        let base = [at[0], at[1], lawn_height(at[0], at[1]) - 0.02];
+        let mut levels = batches::tree_levels(&plant, base, &look).unwrap();
+        for level in &mut levels {
+            let foliage = level.batch.foliage.as_mut().unwrap();
+            if foliage.family == superspec_types::batch::FoliageFamily::Bark {
+                foliage.material = Some("painted-bark".into());
+            }
+        }
+        println!(
+            "{}: {} branches, {} leaf clusters, {} blobs, levels {:?} triangles, generated in {:.1} ms; {} batches",
+            plant.id,
+            plant.skeleton.len(),
+            plant.leaves.len(),
+            plant.canopy.blobs.len(),
+            plant
+                .lods
+                .iter()
+                .map(|lod| lod.triangles)
+                .collect::<Vec<_>>(),
+            generated.as_secs_f64() * 1000.,
+            levels.len()
+        );
+        plants.push(serde_json::json!({
+            "id": plant.id, "base": base, "branches": plant.skeleton.len(), "leafClusters": plant.leaves.len(),
+            "blobs": plant.canopy.blobs.len(), "generatedMs": generated.as_secs_f64() * 1000.,
+            "lods": plant.lods.iter().map(|lod| serde_json::json!({
+                "distance": lod.distance, "hull": lod.hull, "leafInstances": lod.leaf_instances, "triangles": lod.triangles,
+            })).collect::<Vec<_>>(),
+        }));
+        all.extend(levels);
+    }
+    let mut scene = Scene::empty(1, "test");
+    for FoliageBatch { batch, mesh } in &all {
+        scene.add_batch(batch, mesh).unwrap();
+    }
+    superspec_model::batches::check(&scene).unwrap();
+    let document =
+        serde_json::json!({ "plants": plants, "batches": batches::project_document(&all) });
+    let text = serde_json::to_vec(&document).unwrap();
+    std::fs::write(out.join("washroom-trees.json"), &text).unwrap();
+    println!(
+        "washroom-trees.json: {} batches, {} bytes",
+        all.len(),
+        text.len()
+    );
+}
+
 /// Writes the foliage of the washroom picture (the strip of ground with grass and the shrub
 /// that `treespec_verification` writes as flattened GLBs) as a project's `batches`:
 /// `washroom-foliage.batches.json` in `TREESPEC_OUTPUT` (default
@@ -374,14 +579,7 @@ const SLAB: [[f64; 2]; 2] = [[-0.55, -2.45], [2.45, 0.4]];
 /// left out. It sits 3 cm below the slab's top at the slab and rolls by up to 25 cm a meter away.
 fn lawn_ground() -> GroundMesh {
     let (low, cell, columns, rows) = ([-0.55, -5.45], 0.15, 46usize, 39usize);
-    let height = |x: f64, y: f64| {
-        let dx = (SLAB[0][0] - x).max(x - SLAB[1][0]).max(0.);
-        let dy = (SLAB[0][1] - y).max(y - SLAB[1][1]).max(0.);
-        let away = ((dx * dx + dy * dy).sqrt() / 1.2).min(1.);
-        let roll = 0.6 * (1.1 * x + 0.3).sin() * (0.9 * y - 0.5).cos()
-            + 0.4 * (0.6 * x - 0.8 * y + 1.).sin();
-        -0.03 + 0.25 * roll * away * away * (3. - 2. * away)
-    };
+    let height = lawn_height;
     let mut ground = GroundMesh {
         positions: vec![],
         indices: vec![],

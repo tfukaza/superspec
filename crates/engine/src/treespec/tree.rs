@@ -183,7 +183,35 @@ pub struct TreeLodDefinition {
     pub leaf_cards: usize,
     #[serde(default)]
     pub distance: f64,
+    /// What the level draws of the canopy hull ([`HullUse`]).
+    #[serde(default)]
+    pub hull: HullUse,
 }
+
+/// How a level of detail uses the metaball canopy hull (`hull.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HullUse {
+    /// Leaves only.
+    #[default]
+    None,
+    /// Leaves over a shell of the hull drawn at `BACKING_SHRINK` of its size, which fills the
+    /// gaps thinned leaves leave.
+    Backing,
+    /// The hull in place of the leaves: the far level, an impostor of the canopy.
+    Impostor,
+}
+
+/// A backing shell's size as a share of the hull's (from the hull's centre).
+pub const BACKING_SHRINK: f64 = 0.86;
+/// The shadow proxy's size as a share of the hull's: inside the backing shell, so the shell and the
+/// leaves at the hull's surface on the sunny side are not shaded by it (nor striped by depth
+/// acne where the two surfaces nearly meet).
+pub const SHADOW_SHRINK: f64 = 0.78;
+/// Divisions of an octahedron edge: a backing shell, an impostor and the shadow proxy.
+pub const BACKING_FREQUENCY: usize = 6;
+pub const IMPOSTOR_FREQUENCY: usize = 8;
+pub const SHADOW_FREQUENCY: usize = 5;
 
 /// One limb of the skeleton: a centre line with a radius at every point.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -254,7 +282,12 @@ pub struct Blob {
     /// The limb (a branch of level 1, or a trunk) whose leaves it encloses.
     pub branch: usize,
     pub center: V3,
+    /// The farthest cluster centre from `center`.
     pub radius: f64,
+    /// The root mean square distance of the cluster centres from `center`.
+    pub spread: f64,
+    /// The mean `bendWeight` of its clusters.
+    pub bend: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -270,8 +303,11 @@ pub struct TreeLod {
     pub trunk: usize,
     pub branches: Option<usize>,
     pub leaf: usize,
-    /// The first `leaf_instances` of `GeneratedTree::leaves` are drawn.
+    /// The first `leaf_instances` of `GeneratedTree::leaves` are drawn (none for an impostor).
     pub leaf_instances: usize,
+    pub hull: HullUse,
+    /// The hull mesh the level draws, a shell or the impostor; `None` without one.
+    pub hull_mesh: Option<usize>,
     pub triangles: usize,
     pub vertices: usize,
 }
@@ -291,6 +327,8 @@ pub struct GeneratedTree {
     pub leaves: InstanceBatch,
     pub features: Vec<Feature>,
     pub canopy: Canopy,
+    /// The canopy's shadow proxy: the hull, coarse and a little shrunk (`shadow` in `meshes`).
+    pub shadow: Option<usize>,
     pub bounds: Bounds,
 }
 impl GeneratedTree {
@@ -858,7 +896,7 @@ pub fn generate(
         }
     }
 
-    // Shade normals point out of the canopy, tipped out of each limb's own clump.
+    // Shade normals point out of the metaball canopy hull made from one ball per limb.
     let mut extent = EMPTY_BOUNDS;
     centres.iter().for_each(|c| grow(&mut extent, *c));
     let mut canopy = Canopy {
@@ -866,48 +904,60 @@ pub fn generate(
         radii: [1.; 3],
         blobs: vec![],
     };
+    let mut field = None;
     if !centres.is_empty() {
         canopy.center = scale(add(extent[0], extent[1]), 0.5);
         canopy.radii = scale(sub(extent[1], extent[0]), 0.5).map(|r| r.max(1e-3));
-        let mut sums = std::collections::BTreeMap::<usize, (V3, f64)>::new();
-        for (limb, centre) in limbs.iter().zip(&centres) {
-            let entry = sums.entry(*limb).or_insert(([0.; 3], 0.));
+        let bends = batch.scalars[BEND_WEIGHT].clone();
+        let mut sums = std::collections::BTreeMap::<usize, (V3, f64, f64)>::new();
+        for ((limb, centre), bend) in limbs.iter().zip(&centres).zip(&bends) {
+            let entry = sums.entry(*limb).or_insert(([0.; 3], 0., 0.));
             entry.0 = add(entry.0, *centre);
             entry.1 += 1.;
+            entry.2 += bend;
         }
-        for (limb, (sum, count)) in &sums {
+        for (limb, (sum, count, bend)) in &sums {
             let center = scale(*sum, 1. / count);
-            let radius = limbs
-                .iter()
-                .zip(&centres)
-                .filter(|(l, _)| *l == limb)
-                .map(|(_, c)| length(sub(*c, center)))
-                .fold(0., f64::max);
+            let (mut radius, mut squares) = (0f64, 0.);
+            for (_, c) in limbs.iter().zip(&centres).filter(|(l, _)| *l == limb) {
+                let d = sub(*c, center);
+                radius = radius.max(length(d));
+                squares += dot(d, d);
+            }
             canopy.blobs.push(Blob {
                 branch: *limb,
                 center,
                 radius,
+                spread: (squares / count).sqrt(),
+                bend: bend / count,
             });
         }
-        for (limb, centre) in limbs.iter().zip(&centres) {
-            let from = sub(*centre, canopy.center);
-            let outward = unit_or(
-                std::array::from_fn(|a| from[a] / (canopy.radii[a] * canopy.radii[a])),
-                UP,
-            );
-            let (sum, count) = sums[limb];
-            let clump = unit_or(sub(*centre, scale(sum, 1. / count)), outward);
-            batch.vector(
-                SHADE_NORMAL,
-                unit_or(add(scale(outward, 0.7), scale(clump, 0.3)), outward),
-            );
+        let hull = super::hull::CanopyField::new(&canopy.blobs, leaves.size[1])
+            .expect("a canopy with clusters has balls");
+        for centre in &centres {
+            batch.vector(SHADE_NORMAL, hull.shade(*centre));
         }
+        field = Some(hull);
     }
     let thresholds = &batch.scalars.get(THRESHOLD).cloned().unwrap_or_default();
     let mut order: Vec<usize> = (0..batch.len()).collect();
     order.sort_by(|a, b| thresholds[*a].total_cmp(&thresholds[*b]).then(a.cmp(b)));
     batch.reorder(&order);
 
+    // What the leaves' placement reads, and with it the canopy hull.
+    let leaf_placement_key = key(
+        "treespec-leaf-placement-v1",
+        &(
+            &skeleton_key,
+            definition.seed,
+            leaves.level,
+            leaves.spacing,
+            leaves.start,
+            leaves.size,
+            leaves.angle,
+            leaves.lift,
+        ),
+    );
     let mut meshes = Vec::new();
     let mut lods = Vec::new();
     for (index, lod) in definition.lods.iter().enumerate() {
@@ -951,8 +1001,29 @@ pub fn generate(
             leaf_widen,
             format!("leaves/lod{index}"),
         ));
-        let leaf_instances = thresholds_below(&batch, lod.leaf_keep);
-        let parts = [Some(trunk), branches];
+        let hull_mesh = field.as_ref().and_then(|field| {
+            let (frequency, shrink) = match lod.hull {
+                HullUse::None => return None,
+                HullUse::Backing => (BACKING_FREQUENCY, BACKING_SHRINK),
+                HullUse::Impostor => (IMPOSTOR_FREQUENCY, 1.),
+            };
+            meshes.push(field.mesh(
+                format!("hull/lod{index}"),
+                key(
+                    "treespec-hull-v1",
+                    &(&leaf_placement_key, frequency, shrink.to_bits()),
+                ),
+                frequency,
+                shrink,
+            ));
+            Some(meshes.len() - 1)
+        });
+        let leaf_instances = if lod.hull == HullUse::Impostor && hull_mesh.is_some() {
+            0
+        } else {
+            thresholds_below(&batch, lod.leaf_keep)
+        };
+        let parts = [Some(trunk), branches, hull_mesh];
         let count = |measure: &dyn Fn(&FoliageMesh) -> usize| {
             parts
                 .iter()
@@ -972,10 +1043,28 @@ pub fn generate(
             branches,
             leaf,
             leaf_instances,
+            hull: lod.hull,
+            hull_mesh,
             triangles: count(&|mesh| mesh.triangles()),
             vertices: count(&|mesh| mesh.positions.len()),
         });
     }
+    let shadow = field.as_ref().map(|field| {
+        meshes.push(field.mesh(
+            "shadow".into(),
+            key(
+                "treespec-hull-v1",
+                &(
+                    &leaf_placement_key,
+                    SHADOW_FREQUENCY,
+                    SHADOW_SHRINK.to_bits(),
+                ),
+            ),
+            SHADOW_FREQUENCY,
+            SHADOW_SHRINK,
+        ));
+        meshes.len() - 1
+    });
     if lods[0].vertices > definition.limits.max_vertices {
         return Err(fail(
             source,
@@ -1043,22 +1132,7 @@ pub fn generate(
             .iter()
             .map(|mesh| (mesh.id.clone(), mesh.geometry_key.clone())),
     );
-    part_keys.push((
-        "leaf-placement".into(),
-        key(
-            "treespec-leaf-placement-v1",
-            &(
-                &skeleton_key,
-                definition.seed,
-                leaves.level,
-                leaves.spacing,
-                leaves.start,
-                leaves.size,
-                leaves.angle,
-                leaves.lift,
-            ),
-        ),
-    ));
+    part_keys.push(("leaf-placement".into(), leaf_placement_key));
     check_cancelled(source, cancelled)?;
     Ok(GeneratedTree {
         id: definition.id.clone(),
@@ -1070,6 +1144,7 @@ pub fn generate(
         leaves: batch,
         features,
         canopy,
+        shadow,
         bounds,
     })
 }

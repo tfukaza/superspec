@@ -357,6 +357,121 @@ pub fn tree(
     Ok(batches)
 }
 
+/// Two meshes as one (the trunk and the branches of a level, which draw together), each named
+/// attribute end to end; a name only one of them has reads 0 on the other.
+fn merged(first: &FoliageMesh, second: &FoliageMesh, id: String) -> FoliageMesh {
+    let mut mesh = first.clone();
+    mesh.id = id;
+    let offset = first.positions.len() as u32;
+    let (a, b) = (first.positions.len(), second.positions.len());
+    mesh.positions.extend(&second.positions);
+    mesh.normals.extend(&second.normals);
+    mesh.uvs.extend(&second.uvs);
+    mesh.indices
+        .extend(second.indices.iter().map(|index| index + offset));
+    for name in first.scalars.keys().chain(second.scalars.keys()) {
+        let mut values = first.scalars.get(name).cloned().unwrap_or(vec![0.; a]);
+        values.extend(second.scalars.get(name).cloned().unwrap_or(vec![0.; b]));
+        mesh.scalars.insert(name.clone(), values);
+    }
+    for name in first.vectors.keys().chain(second.vectors.keys()) {
+        let mut values = first.vectors.get(name).cloned().unwrap_or(vec![[0.; 3]; a]);
+        values.extend(
+            second
+                .vectors
+                .get(name)
+                .cloned()
+                .unwrap_or(vec![[0.; 3]; b]),
+        );
+        mesh.vectors.insert(name.clone(), values);
+    }
+    mesh
+}
+
+/// Every level of a plant as batches with foliage looks (roadmap stage 7), each carrying `look`
+/// with the family of its part, the level's `level`, `distance` and `keep`, and the plant's
+/// identity as its `patch`:
+///
+/// - `<plant>/bark/lod<n>`: the trunk and branches of the level as one mesh, one instance
+///   (family `bark`);
+/// - `<plant>/leaves/lod<n>`: its leaf clusters (`leaves`, `keep` the level's `leafKeep`), unless
+///   the level is an impostor;
+/// - `<plant>/hull/lod<n>`: its hull shell or impostor (`hull`), when it has one;
+/// - `<plant>/shadow`: the shadow proxy (`shadow`, level 0), drawn at every level.
+pub fn tree_levels(
+    tree: &GeneratedTree,
+    offset: V3,
+    look: &superspec_model::batches::Foliage,
+) -> Result<Vec<FoliageBatch>, String> {
+    use superspec_types::batch::FoliageFamily;
+    let mut all = vec![];
+    let one = |id: String, mesh: &FoliageMesh| {
+        let mut converted = batch(id, &tree.id, mesh, None);
+        converted.batch.placements.push(Placement {
+            translation: offset,
+            ..Default::default()
+        });
+        converted
+    };
+    let with = |mut converted: FoliageBatch, family: FoliageFamily, level: usize, keep: f64| {
+        converted.batch.foliage = Some(superspec_model::batches::Foliage {
+            family,
+            patch: tree.id.clone(),
+            level: level as u32,
+            distance: tree.lods[level].distance,
+            keep,
+            ..look.clone()
+        });
+        converted
+    };
+    for (level, lod) in tree.lods.iter().enumerate() {
+        let trunk = &tree.meshes[lod.trunk];
+        let bark = match lod.branches {
+            Some(branches) => merged(trunk, &tree.meshes[branches], format!("bark/lod{level}")),
+            None => trunk.clone(),
+        };
+        all.push(with(
+            one(format!("{}/bark/lod{level}", tree.id), &bark),
+            FoliageFamily::Bark,
+            level,
+            1.,
+        ));
+        if lod.leaf_instances > 0 {
+            let mut leaves = batch(
+                format!("{}/leaves/lod{level}", tree.id),
+                &tree.id,
+                &tree.meshes[lod.leaf],
+                None,
+            );
+            extend(
+                &mut leaves.batch,
+                &tree.leaves,
+                lod.leaf_instances,
+                offset,
+                None,
+            )?;
+            all.push(with(leaves, FoliageFamily::Leaves, level, lod.leaf_keep));
+        }
+        if let Some(hull) = lod.hull_mesh {
+            all.push(with(
+                one(format!("{}/hull/lod{level}", tree.id), &tree.meshes[hull]),
+                FoliageFamily::Hull,
+                level,
+                1.,
+            ));
+        }
+    }
+    if let Some(shadow) = tree.shadow {
+        all.push(with(
+            one(format!("{}/shadow", tree.id), &tree.meshes[shadow]),
+            FoliageFamily::Shadow,
+            0,
+            1.,
+        ));
+    }
+    Ok(all)
+}
+
 /// The batches as a project document's `batches` list (`superspec_model::batches::of_project`),
 /// their meshes inline. Numbers are written in single precision, as they are delivered.
 pub fn project_document(batches: &[FoliageBatch]) -> Value {

@@ -191,6 +191,12 @@ Painted grass, then shrubs and trees, as in the roadmap's phases 4 and 5.
   boundary-distance field, per-tile levels, and a lawn with grass added to the washroom. See
   [tree-item-roadmap.md](tree-item-roadmap.md#phase-4-painted-grass-prototype-roadmap-stage-6-2026-11-16) for what
   exists, the measurements and frame-time budget, and the assumptions.
+- Stage 7, shrubs and trees: **prototype done 2026-11-16, unreviewed**: metaball canopy hulls (shade normals, a backing
+  shell, the far level as an impostor, the shadow proxy), the plant shader families (bark, camera-facing leaf dabs with
+  a cutout edge and highlight leaves, hull, shadow proxy) with sway and flutter, painted and lit profiles, and a shrub
+  and a tree on the washroom lawn (`TREES=1`). See
+  [tree-item-roadmap.md](tree-item-roadmap.md#phase-5-shrubs-and-trees-prototype-roadmap-stage-7-2026-11-16). The
+  half-resolution stroke layer is not built.
 
 ### Later
 

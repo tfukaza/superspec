@@ -177,17 +177,71 @@ pub struct Foliage {
     pub rejection: FoliageRejection,
     #[serde(default)]
     pub tip: FoliageTip,
+    /// The parameters of the plant families (`bark`, `leaves`, `hull`, `shadow`); absent for grass,
+    /// and read with its defaults where a plant batch has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canopy: Option<FoliageCanopy>,
 }
 
 fn one() -> f64 {
     1.
 }
 
-/// The shader family. Grass is the only one: ribbons that lean and sway about their roots.
+/// The shader family (roadmap phases 4 and 5). Every level of one plant is a `patch` of its own:
+///
+/// - `grass`: ribbons that lean and sway about their roots;
+/// - `bark`: a plant's trunk and branches, swaying about the plant's base by their `bendWeight`;
+/// - `leaves`: leaf clusters drawn as camera-facing paint dabs with a cutout edge, swaying with
+///   their branch and fluttering by the card's own `bendWeight`;
+/// - `hull`: the metaball canopy hull, a shell behind thinned leaves or the far level in their
+///   place, its silhouette broken into dabs;
+/// - `shadow`: the canopy's shadow proxy, drawn only into the sun's shadow map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum FoliageFamily {
     Grass,
+    Bark,
+    Leaves,
+    Hull,
+    Shadow,
+}
+
+/// The parameters of a plant's families: how leaves face the camera and are cut out, which are
+/// highlight leaves, and what the lit profile adds to the light loop. Wind reads `Foliage::wind`:
+/// `angle` is the plant's sway at the tips (by `bendWeight`) and `flutter` each leaf card's own.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageCanopy {
+    /// 0 to 1: how far leaf clusters turn from their grown orientation to face the camera.
+    pub facing: f64,
+    /// Size of a dab as a multiple of its cluster, 0.25 to 4.
+    pub dab: f64,
+    /// Cutout threshold of a dab's coverage, 0 to 1 (as MaterialSpec's `alphaCutout`).
+    pub cutout: f64,
+    /// Share of leaf clusters drawn as highlight leaves where the band is lit, 0 to 1.
+    pub highlights: f64,
+    /// Linear RGB of highlight leaves, 0 to 1.
+    pub highlight: [f64; 3],
+    /// Lit profile: light through the leaves from behind, 0 to 1.
+    pub translucency: f64,
+    /// Lit profile: share of leaf clusters with a glossy glint, 0 to 1.
+    pub glint: f64,
+    /// Lit profile: two-sided diffuse, how far light wraps past the terminator, 0 to 1.
+    pub wrap: f64,
+}
+impl Default for FoliageCanopy {
+    fn default() -> Self {
+        Self {
+            facing: 0.8,
+            dab: 1.25,
+            cutout: 0.4,
+            highlights: 0.18,
+            highlight: [0.62, 0.74, 0.3],
+            translucency: 0.45,
+            glint: 0.2,
+            wrap: 0.5,
+        }
+    }
 }
 
 /// The look over the same geometry and instances: `painted` (unlit, the program's paint, blades
@@ -349,6 +403,23 @@ impl Foliage {
         }
         within(self.tip.amount, 0., 1., "tip amount")?;
         within(self.tip.start, 0., 1., "tip start")?;
+        if let Some(canopy) = &self.canopy {
+            if self.family == FoliageFamily::Grass {
+                return Err(
+                    "Foliage canopy parameters belong to plant families, not grass.".into(),
+                );
+            }
+            within(canopy.facing, 0., 1., "canopy facing")?;
+            within(canopy.dab, 0.25, 4., "canopy dab")?;
+            within(canopy.cutout, 0., 1., "canopy cutout")?;
+            within(canopy.highlights, 0., 1., "canopy highlights")?;
+            for channel in canopy.highlight {
+                within(channel, 0., 1., "canopy highlight")?;
+            }
+            within(canopy.translucency, 0., 1., "canopy translucency")?;
+            within(canopy.glint, 0., 1., "canopy glint")?;
+            within(canopy.wrap, 0., 1., "canopy wrap")?;
+        }
         Ok(())
     }
 }
@@ -373,8 +444,38 @@ mod tests {
             wind: FoliageWind::default(),
             rejection: FoliageRejection::default(),
             tip: FoliageTip::default(),
+            canopy: None,
         };
         parsed.validate().unwrap();
+        let plant = Foliage {
+            family: FoliageFamily::Leaves,
+            canopy: Some(FoliageCanopy::default()),
+            ..parsed.clone()
+        };
+        plant.validate().unwrap();
+        for broken in [
+            Foliage {
+                canopy: Some(FoliageCanopy {
+                    dab: 0.,
+                    ..FoliageCanopy::default()
+                }),
+                ..plant.clone()
+            },
+            Foliage {
+                canopy: Some(FoliageCanopy {
+                    highlight: [0., 2., 0.],
+                    ..FoliageCanopy::default()
+                }),
+                ..plant.clone()
+            },
+            // Grass has no canopy.
+            Foliage {
+                canopy: Some(FoliageCanopy::default()),
+                ..parsed.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
         for broken in [
             Foliage {
                 far: 0.,

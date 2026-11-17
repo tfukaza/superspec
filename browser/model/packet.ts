@@ -38,19 +38,32 @@ export interface SceneBatch {
  * material of the producing project whose painted program colors the instances. Angles are degrees, lengths meters.
  */
 export interface FoliageLook {
-  family: "grass"; patch: string; level: number; distance: number; keep: number; far: number;
+  family: FoliageFamily; patch: string; level: number; distance: number; keep: number; far: number;
   material?: string; profile: "painted" | "lit";
   bend: { angle: number; randomness: number };
   wind: { azimuth: number; angle: number; scale: number; speed: number; bias: number; flutter: number };
   rejection: { boundary: number; fill: number; grazing: number; grazingKeep: number };
   tip: { lift: number; highlight: [number, number, number]; amount: number; start: number };
+  /** The plant families' parameters (`superspec_types::batch::FoliageCanopy`); absent for grass. */
+  canopy?: FoliageCanopy;
 }
+/** Grass, or a plant's part: bark, leaf clusters, the canopy hull and its shadow proxy (roadmap stage 7). */
+export type FoliageFamily = "grass" | "bark" | "leaves" | "hull" | "shadow";
+export interface FoliageCanopy {
+  facing: number; dab: number; cutout: number; highlights: number; highlight: [number, number, number];
+  translucency: number; glint: number; wrap: number;
+}
+/** What a plant batch without `canopy` is drawn with (the record's defaults). */
+export const DEFAULT_CANOPY: FoliageCanopy = { facing: 0.8, dab: 1.25, cutout: 0.4, highlights: 0.18, highlight: [0.62, 0.74, 0.3], translucency: 0.45, glint: 0.2, wrap: 0.5 };
 /** Whether a delivered foliage look is one this viewer can draw: the stated family with every parameter finite. */
 export function validFoliage(look: unknown): look is FoliageLook {
   const value = look as FoliageLook;
   const numbers = (record: unknown, names: string[]) => typeof record === "object" && record !== null
     && names.every(name => Number.isFinite((record as Record<string, unknown>)[name]));
-  return typeof value === "object" && value !== null && value.family === "grass" && typeof value.patch === "string" && value.patch.length > 0
+  const canopy = value?.canopy;
+  if (canopy !== undefined && !(numbers(canopy, ["facing", "dab", "cutout", "highlights", "translucency", "glint", "wrap"])
+    && Array.isArray(canopy.highlight) && canopy.highlight.length === 3 && canopy.highlight.every(Number.isFinite))) return false;
+  return typeof value === "object" && value !== null && ["grass", "bark", "leaves", "hull", "shadow"].includes(value.family) && typeof value.patch === "string" && value.patch.length > 0
     && Number.isInteger(value.level) && value.level >= 0 && numbers(value, ["distance", "keep", "far"]) && value.keep > 0 && value.far > value.distance
     && (value.material === undefined || typeof value.material === "string") && ["painted", "lit"].includes(value.profile)
     && numbers(value.bend, ["angle", "randomness"]) && numbers(value.wind, ["azimuth", "angle", "scale", "speed", "bias", "flutter"]) && value.wind.scale > 0

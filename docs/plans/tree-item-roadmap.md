@@ -307,6 +307,7 @@ Branch skeletons, metaball canopy hulls, camera-facing paint dabs and highlight
 leaves with cutout alpha, level-of-detail steps and a shadow proxy. The lit
 profile adds two-sided diffuse, glints and translucency. An optional
 half-resolution stroke layer covers the Blender study's blurred blades.
+Prototype (stage 7): [below](#phase-5-shrubs-and-trees-prototype-roadmap-stage-7-2026-11-16).
 
 ### Phases 4 and 5: geometry prototype (2026-11-16)
 
@@ -345,7 +346,7 @@ What exists, against the lists above:
   not welded. Not started: metaball canopy hulls (only the per-limb balls are reported),
   camera-facing dabs, the shadow proxy, the lit profile and the stroke layer. The far
   level of a tree is thinned cards, which reads poorly up close; a hull or impostor
-  should replace it.
+  should replace it. (All but the stroke layer done since: phase 5 prototype below.)
 
 Needed next from other stages: the portable instanced batch and `InstancedMesh` branch
 (phase 2), named vertex and instance inputs and `sampleField` (1D), the painted shading
@@ -449,6 +450,104 @@ Assumptions made without review:
   tests). The lit profile lights blades by the clump's shade normals; the lawn under it stays painted.
 - **Measurement:** blades kept are counted on the CPU by repeating the vertex stage's tests against the boundary field
   read back (`RustScene.foliageState`); the GPU reports nothing about what it rejected.
+
+### Phase 5: shrubs and trees prototype (roadmap stage 7, 2026-11-16)
+
+Status: prototype, implemented and checked; unreviewed. The half-resolution stroke layer is not built.
+
+What exists:
+
+- **Metaball canopy hulls** (`treespec/hull.rs`). A field of Wyvill kernels, one per limb ball plus a core ball at the
+  balls' volume-weighted centre, whose level 1/8 is the surface; hull vertices are found by marching inward along the
+  directions of a divided octahedron from that centre (a shrink wrap), normals are the field's gradient and `bendWeight`
+  follows the limbs nearby. Used three ways: the leaves' canopy shade normals (the hull normal where the ray from the
+  centre through a cluster leaves the hull, 75%, tipped by the local gradient, 25%); each level's `hull`
+  (`TreeLodDefinition::hull`: `none`, `backing`, a shell at 0.86 of the hull behind the leaves that fills the gaps of
+  thinned leaves, or `impostor`, the hull in place of the leaves); and the shadow proxy (`GeneratedTree::shadow`, the hull
+  at 0.78). The fixtures step backing, backing, impostor, so the far level is the hull, not thinned cards.
+- **Plant families** (`superspec_types::batch::FoliageFamily` `bark`, `leaves`, `hull`, `shadow`, with the optional
+  `FoliageCanopy` parameters; `treespec::batches::tree_levels` gives every level of a plant as batches of them;
+  `browser/renderer/foliage-plants.ts` draws them). Leaves are camera-facing paint dabs: each cluster turns toward the
+  camera about its centre (`facing`), is scaled (`dab`) and rolled by its random value, and is cut out where a
+  brush-edged coverage falls below `cutout`; its paint is the recipe evaluated once per cluster in the vertex stage at
+  its centre with the canopy shade normal, the cast shadow folded into the band, and a share of the clusters on the lit
+  side of the band are highlight leaves. Bark and hull evaluate the recipe per pixel; the hull's silhouette is broken
+  into dabs by a world-anchored noise. Wind: the whole plant leans about its base by a gust there, each point by its
+  `bendWeight` (so clusters move with their branches and joints do not tear), and cards flutter about their cluster.
+- **Levels and shadow proxy.** A plant is one patch with one tile: it draws the level its distance has reached, each
+  family thinning toward the next level of the same family (leaves switch to the impostor at once). The shadow proxy is
+  drawn only by the sun's shadow camera (layer 7) at every level; bark casts too; leaves and hulls cast nothing. The
+  style of shadows stays global (`shadow-style.ts`); plants read the same shadow map.
+- **Profiles.** Painted: unlit, the recipe's paint with `shadeBand` on the canopy shade normals as the grass and lawn do
+  on theirs. Lit: the light loop with the shade normal tipped toward the card, plus two-sided diffuse (`wrap`), light
+  through the leaves from behind (`translucency`) and glossy clusters (`glint`).
+- **Washroom.** `buildProject(..., { trees: true })` (`TREES=1`) adds the shrub fixture and the broadleaf fixture at 0.6
+  of its size on the lawn (with the lawn and grass), from `washroom-trees.json` (`write_washroom_trees`), colored by
+  `painted-bark` and `painted-canopy`. Without it the washroom GLB and project are byte-identical to `HEAD` (checked with
+  and without `GRASS` and `PAINTED`), and the GLB with trees is the GLB with grass.
+
+Checks (2026-11-16, RTX 5060 Ti through ANGLE D3D11, 1440 by 1000 page, 256 px textures, ambient occlusion off;
+`tests/tree-washroom-browser.mjs`, report and pictures in `generated/verification/trees/`; ranges over the last three
+runs):
+
+- Plants: shrub 155 branches, 608 leaf clusters, 30 limb balls, levels 14,622 / 3,292 / 557 triangles, generated in
+  3.5 to 3.9 ms; broadleaf at 0.6: 433 branches, 1,698 clusters, 12 balls, 61,746 / 10,798 / 780 triangles, 6.8 to
+  7.5 ms. 18 batches, a 13.2 MB document. The Wasm build delivered every plant, level and family with the native
+  document's instances.
+- Steady frame, GPU time median with the plants / without them: framed (the Studio's framing: the tree at level 1, the
+  shrub an impostor) painted 0.11 / 0.10 to 0.11 ms, lit 0.12 to 0.13 / 0.11 to 0.14 ms (within noise), 22 / 17 draw
+  calls; close (both at level 0: 2,306 leaf clusters, about 111,000 plant triangles) painted 1.12 to 1.39 / 0.47 to
+  0.53 ms, lit 1.24 to 1.36 / 0.46 to 0.50 ms, 27 / 21 draw calls; far (both impostors) painted 0.07 to 0.09 / 0.07 ms,
+  lit 0.07 to 0.09 / 0.06 to 0.07 ms, 17 / 13 draw calls. The steady frames do not redraw the shadow map, so the
+  proxies and bark add shadow-pass calls only when the light or scene changes. Wind in the time-driven mode: the same
+  GPU time within noise.
+- Cold compile against steady: switching every foliage batch (grass and plants) to a profile not drawn yet compiled in
+  100 to 113 ms (painted) and 150 to 168 ms (lit); loading the project to a baked scene took 3.3 to 3.6 s.
+- Moving the sun (62, 47, 33, 20 degrees) at the close view: 1.2 to 2.2 ms of page time for `setLighting`, the frame that
+  redraws the shadow map with the proxies, a second frame and `gl.finish`; no instance or attribute buffer of a plant
+  was rewritten, the input and draft revisions and the scene bake were unchanged, and each picture differs
+  (`washroom-trees-painted-sun-*.png`: the canopy's band follows the sun).
+- Frame-time budget for this scene on this GPU: plants at most 1.0 ms (painted and lit) of GPU time added at the close
+  view and 0.05 ms at the far view, at most 8 added draw calls in a steady frame (plus 2 per plant in a shadow pass), a
+  sun move at most 3 ms of page time with no re-scatter or rebake, and at most 250 ms to compile a profile of all the
+  foliage cold.
+- `treespec_tree` (11 tests, a new one for hulls: closed and consistently wound, normals outward, positive volume,
+  the impostor holding at least 85% of cluster centres by ray crossings, shells and proxy smaller than the impostor,
+  shade normals the field's), `treespec_batches` (a plant's batches per part and level, admitted and round-tripped by
+  the portable record), `superspec-types` (canopy ranges), `npm run check:architecture`, `bench_fingerprint` identities
+  unchanged (`ce6e3a55...`, `b6b04aec...`), `tests/grass-washroom-browser.mjs` (the stage 6 numbers: 2,224 blades kept
+  at the close view, 21 draw calls), `tsc --noEmit`.
+
+Assumptions made without review:
+
+- **Hull shape.** One ball per limb (level-1 branch or trunk), its surface at 1.25 times its clusters' spread plus half a
+  leaf cluster; a shrink wrap from one centre fills pockets the centre cannot see. Divisions 6 (shell, 288 triangles),
+  8 (impostor, 512) and 5 (proxy, 200); shell at 0.86 and proxy at 0.78 of the hull, the proxy inside the shell so the
+  shell and the sunny leaves are not shaded by it. All constants, not definition fields.
+- **Shade normals changed.** Leaves' `shadeNormal` now come from the hull (they were 70% the canopy ellipsoid's outward
+  direction and 30% the limb's), so the plant fixtures' digests changed; the new digests have not been reproduced on a
+  wasm32 build (the hull uses only basic operations and `sqrt`). An impostor level has `leaf_instances` 0.
+- **Families and parameters.** Plant parts are new `FoliageFamily` values beside `grass`, with one optional
+  `canopy` record (refused on grass); defaults facing 0.8, dab 1.25, cutout 0.4, highlights 0.18, translucency 0.45,
+  glint 0.2, wrap 0.5. The washroom's look uses wind angle 2.5 degrees and flutter 9 degrees.
+- **Cutout is the family's.** A dab's coverage is a fixed brush-edged blob over the card's coordinates compared with
+  `canopy.cutout`; the recipe's own `alphaCutout` is not read (that would evaluate the recipe per pixel of every dab).
+- **Where paint is evaluated.** Leaves once per cluster (a flat dab); bark and hull per pixel. The cast shadow a plant
+  reads is taken 12 cm off its surface along the shade normal, against stripes where the proxy nearly meets the shell
+  at a low sun.
+- **Wind is rigid per plant.** A lean of the whole plant about its bark's placement by `bendWeight`, the gust sampled at
+  the base; no per-branch oscillation. Shadows do not sway (the shadow pass draws bark and proxy without the families).
+- **Lit additions outside the light loop.** Wrap and translucency are added to the direct diffuse with the sun's
+  irradiance and the families' nine-tap cast shadow; glints lower the roughness of a share of the clusters; lit leaves
+  and bark also receive three.js's shadow map.
+- **Levels.** A plant's level is chosen by the distance to the bounds of all its parts; leaves switch to the impostor
+  without a cross-fade; a plant whose bounds leave the view draws nothing, its proxy included, so its shadow goes too.
+- **Washroom plants.** Trees imply the lawn and grass. The broadleaf is scaled to 0.6 in the test (every length and the
+  envelope); level distances shortened to 8 and 16 m (shrub) and 10 and 22 m (tree), `far` 60 m; bases 2 cm below the
+  lawn. The bark and canopy recipes' colors and band parameters were chosen by eye, not matched to the reference.
+- **Measurement.** As stage 6: timer queries per frame, the plants' meshes hidden for the frame without them, ambient
+  occlusion off; the GPU time of the sun move's shadow-map frame was not isolated. The native CLI's GLB extras for plant
+  looks were not inspected (the exporter writes the `Foliage` record as it writes grass's).
 
 ## Open decisions
 

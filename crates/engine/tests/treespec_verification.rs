@@ -297,7 +297,21 @@ fn tree_parts(tree: &GeneratedTree, level: usize, offset: V3, palette: [V3; 2]) 
             )
         });
     }
-    vec![bark, leaves]
+    let mut parts = vec![bark, leaves];
+    // The canopy hull: a shell behind the leaves, or the far level in their place.
+    if let Some(hull) = lod.hull_mesh {
+        let mut shell = Part::new(&format!("{}-hull-lod{level}", tree.id), false);
+        let mesh = &tree.meshes[hull];
+        shell.add(mesh, &place, &|vertex, _| {
+            let tone = light(mesh.normals[vertex], 0.5);
+            (
+                mesh.normals[vertex],
+                mix(palette[0], palette[1], 0.5).map(|v| v * tone),
+            )
+        });
+        parts.push(shell);
+    }
+    parts
 }
 
 fn palette(id: &str) -> [V3; 2] {

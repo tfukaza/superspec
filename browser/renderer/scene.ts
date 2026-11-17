@@ -236,8 +236,12 @@ export class RustScene {
    */
   setLighting(record: Lighting, stated?: unknown): void {
     this.lights.set(record, stated);
-    // Foliage casts no shadow: its blades take the ground's shade at their roots (foliage.ts).
-    for (const mesh of this.models.children) { mesh.receiveShadow = this.shadows; mesh.castShadow = this.shadows && !mesh.userData.decal && !mesh.userData.foliage; }
+    // Grass casts no shadow: its blades take the ground's shade at their roots (foliage.ts). A plant casts from its bark
+    // and its canopy's shadow proxy (foliage-plants.ts).
+    for (const mesh of this.models.children) {
+      mesh.receiveShadow = this.shadows;
+      mesh.castShadow = this.shadows && !mesh.userData.decal && (!mesh.userData.foliage || mesh.userData.foliageCasts === true);
+    }
     this.foliage.invalidate();
     this.fitShadows();
     this.stateLighting();
@@ -652,7 +656,8 @@ export class RustScene {
         // A foliage batch takes its look's recipe (a project material, often assigned to no mesh) into its shader families.
         const foliage = mesh.userData.foliage as SceneBatch["foliage"];
         if (foliage) {
-          const entry = foliage.material ? prepared.get(foliage.material) : undefined;
+          // A plant's shadow proxy draws only depth into the sun's shadow map: it has no program.
+          const entry = foliage.material && foliage.family !== "shadow" ? prepared.get(foliage.material) : undefined;
           if (entry) made.push({ mesh, material: this.foliage.withProgram(mesh as THREE.InstancedMesh, { shading: entry.material, uniforms: entry.uniforms }) as THREE.MeshStandardMaterial, shaded: foliage.material! });
           continue;
         }

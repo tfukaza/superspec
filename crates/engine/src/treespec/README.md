@@ -100,14 +100,28 @@ starts inside its parent and the two overlap. Trunks and branches are separate m
 
 Leaves are one `InstanceBatch` over a cluster mesh of `leaves.cards` cards that grow
 along +Y from the origin, with +Z as their face. `shape` is `quad` (for a cutout
-texture) or `leaf` (a pointed outline that reads without one). The instance
-`shadeNormal` blends the canopy's outward direction (70%) with the direction out of the
-cluster's own limb (30%). `canopy` reports the leaf volume and one ball per limb; no
-hull mesh or shadow proxy is built from them yet.
+texture) or `leaf` (a pointed outline that reads without one). `canopy` reports the leaf
+volume and one ball per limb (its centre, the farthest and the root mean square distance
+of its clusters, and their mean `bendWeight`).
+
+The metaball canopy hull (`hull.rs`, roadmap stage 7) is made from those balls: a sum of
+Wyvill kernels, one per limb ball (reaching `sqrt(2)` times 1.25 the ball's spread plus
+half a leaf cluster) and a core ball at the balls' volume-weighted centre, whose level 1/8
+is the surface. A hull vertex is found by marching inward from outside along a direction
+from that centre, so the mesh is the outermost surface seen from it (a shrink wrap of an
+octahedron divided per edge). Normals are the field's gradient; `bendWeight` follows the
+nearby balls. The instance `shadeNormal` of a leaf cluster is the hull's normal where the
+ray from the centre through the cluster leaves the hull (75%) tipped by the field's own
+direction at the cluster (25%), so leaves shade as the hull does.
 
 A level of detail has its own trunk, branch and leaf-cluster meshes (`radialSegments`,
 `ringStep`, `maxLevel`, `leafCards`) and draws the first `leaf_instances` leaf clusters,
-widened by `1 / sqrt(leafKeep)`.
+widened by `1 / sqrt(leafKeep)`. Its `hull` says what it draws of the hull: `none`,
+`backing` (a shell at 0.86 of the hull's size, 288 triangles, behind the leaves, which
+fills the gaps thinned leaves leave) or `impostor` (the hull in place of the leaves, 512
+triangles). The fixtures step `backing`, `backing`, `impostor`: the far level is the
+hull, not thinned cards. Every plant with leaves also has a shadow proxy (`shadow`, the
+hull at 0.78 of its size, inside the backing shell, 200 triangles), which is what the canopy casts.
 
 `features` holds one `base` ring per stem where it meets the ground, in the shape of an
 ItemSpec feature, for weathering layers.
@@ -116,7 +130,8 @@ ItemSpec feature, for weathering layers.
 
 Each mesh has a `geometry_key`, and results list `part_keys`: for grass
 `clump-<variant>/lod<level>` and `placement`; for a plant `skeleton`, `trunk/lod<n>`,
-`branches/lod<n>`, `leaves/lod<n>` and `leaf-placement`. A key hashes only what its part
+`branches/lod<n>`, `leaves/lod<n>`, `hull/lod<n>`, `shadow` and `leaf-placement` (the
+hull reads what the leaves' placement reads). A key hashes only what its part
 reads, so a mask change touches `placement` alone and a leaf size change touches
 `leaf-placement` alone.
 
@@ -124,7 +139,9 @@ The same definition gives the same bytes on native and wasm32 targets. The gener
 use integer hashing, IEEE basic operations, `sqrt` and the shared deterministic
 `sin`/`cos` from `superspec_geometry::math`; they call no platform math library. The
 tests pin a digest of each fixture, and the same digests were reproduced by a
-wasm32-unknown-unknown build run in Node.
+wasm32-unknown-unknown build run in Node before stage 7; the plant digests changed with
+the canopy hull (shade normals, hull meshes) and the new ones have not been reproduced on
+wasm32 yet (the hull uses only basic operations and `sqrt`).
 
 `limits.maxVertices` (default 400000) and `limits.maxInstances` (default 200000) are
 checked with `TREE_BUDGET` errors that name the count. Hard caps: 2000000 vertices,
@@ -160,3 +177,20 @@ The first writes `washroom-lawn.json` (the lawn's ground and the meadow grown on
 level with its foliage look); `tests/studio/washroom/build.mjs` adds both to the washroom
 when asked for grass. The second measures and pictures both profiles under
 `generated/verification/grass/`.
+
+Shrubs and trees (roadmap stage 7) are batches of the plant families: `batches::tree_levels`
+gives every level of a plant as `<plant>/bark/lod<n>` (trunk and branches as one mesh, family
+`bark`), `<plant>/leaves/lod<n>` (`leaves`, keep the level's `leafKeep`; none at an
+impostor), `<plant>/hull/lod<n>` (`hull`) and one `<plant>/shadow` (`shadow`), each with the
+level's `distance` and the plant as its `patch`. `browser/renderer/foliage-plants.ts` draws
+them. The washroom's plants:
+
+```bash
+cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_washroom_lawn write_washroom_trees
+BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist" node tests/tree-washroom-browser.mjs
+```
+
+The first also writes `washroom-trees.json` (the shrub fixture and the broadleaf fixture at
+0.6 of its size, on the lawn, every level and the shadow proxies); `build.mjs` adds them when
+asked for trees (`TREES=1`). The second measures and pictures both profiles under
+`generated/verification/trees/`.
