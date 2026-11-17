@@ -622,6 +622,22 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     shaded as the core with its normal turned toward each edge. With the cards kept to mid density and above
     (`CARD_FLOOR=0.35`), the rim is strips: 237 on the poplar (7,584 triangles), 102 on the birch. Alone they still
     lean toward fern fronds.
+  - Checkpoint `painted-trees-checkpoint` (2026-11-17), the settings of the reference look:
+    `BASE=density STRIPS=1 TILE=1.0 SIZE=0.6 DENSITY=5 COARSE=0.3 BLUR=0.006 REPAINT=1`, `FIELD_LEVEL` 0.6 (poplar)
+    or 0.85 (birch), cards and strips at their defaults. Since the strips first went in:
+    - twig strips sag toward their tips (`STRIP_DROOP` 0.3) and carry real leaves: pointed ovals 0.11 m long, 0.08 m
+      apart, alternating, angled 50° toward the tip, fewer where the foliage is thin; their leaves and stem are joined
+      by a smooth union whose radius (up to 7.5 cm) follows the density, so an offshoot is one mass where it leaves
+      the clump and parts into single leaves toward its tip (blur and re-threshold in closed form). A strip narrows as
+      it turns end-on; its random is rounded before hashing (interpolation is not bit-exact, and the hash made white
+      pinholes of the difference).
+    - highlights are a seventh band (`msLeafPaint`), a soft lime reached by a leaf's own light from the leaf map.
+    - density cards ramp out smoothly (kept on an eased ramp from the core's level to a tenth of full, 0.9 kept every
+      0.18 m), so the core thins into the strips with no step; the birch wants fewer (`CARD_KEEP` about 0.5).
+    - `?leafrepaint=1` (with `?leafblur=<m>`) blurs the painted parts' coverage and colours and cuts them again: the
+      coverage at a half (0.8 to fill a gap, so bark in front stays), the colour snapped flat to its nearest band.
+      0.006 m reads as gouache up close and fades at a distance (it is meters at the plant).
+    - Known gaps: the bark does not droop with the strips; the round density cards still read as round.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
