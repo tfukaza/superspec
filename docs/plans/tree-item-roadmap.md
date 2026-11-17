@@ -549,6 +549,29 @@ Assumptions made without review:
   occlusion off; the GPU time of the sun move's shadow-map frame was not isolated. The native CLI's GLB extras for plant
   looks were not inspected (the exporter writes the `Foliage` record as it writes grass's).
 
+### Exploring: painted masses with a leaf normal map
+
+A second approach to the painted canopy, after the leaf-card mass model (kept at checkpoint `63373e7`): a plant's form
+is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy billboards along its silhouette.
+
+- **Leaf normal map** (`browser/renderer/leaf-normals.ts`): a tile painted as a digital painter paints with a leaf-clump
+  brush: strokes start on a jittered grid and stamp small clumps of leaves (4 to 7, or 16 smaller) at even spacing; each
+  leaf one flat normal near its clump's. Laid in a camera-facing plane anchored at the plant, so leaves are never
+  foreshortened; two copies blended by coverage hide the repeat. The base mesh's face normals bulge toward the mean of
+  the adjacent faces at each edge (`domeGeometry`), and the result is banded against the sun.
+- **Contour fuzz** (`browser/renderer/contour-fuzz.ts`): anchors fixed along every mesh edge show a camera-facing leaf
+  card while the edge is on the silhouette, straddling it; the cards read the same leaf map at their world position, so
+  the leaves run on from the surface into the outline.
+- **Prototype candidate:** the sprig shrub with its 12 mass-model clumps (`fixtures/sprig-shrub-clumps.tree.json`,
+  clumps only at 0.92 of their size) as the base mesh, the 16-leaf brush map at a 0.6 m tile, fuzz cards 0.3 m at 14 per
+  meter of edge, bark kept. Rebuilt and pictured by `tests/painted-mass-shrub-browser.mjs`; reference renders in
+  `painted-mass/`. Known gaps: ambient occlusion's pass does not draw these shaders (off for now); about 9,600 fuzz
+  anchors, most never on the outline (a coarser mesh for the fuzz would cut them); the sprigs' leaves are hidden.
+- **Performance fallback, if needed:** bake the plant's normals (not colours, so sun and palette stay live) from every
+  angle around it, as a 360-degree strip, and slide it to match the view on one camera-facing card (an impostor). Exact
+  only for round plants; an octahedral grid of baked views extends it to any shape and viewing height. Best as the far
+  level of detail, since a flat card loses depth and parallax up close.
+
 ## Open decisions
 
 1. Whether live programs travel in the packet for every scene or only for

@@ -60,7 +60,7 @@ const PLANT = (() => {
 })();
 let cardTextures: { cards: THREE.DataTexture; normals: THREE.DataTexture } | undefined;
 /** The leaf-card atlas the dabs draw (leaf-cards.ts) and its normals, made once. */
-function leafCardTextures(): { cards: THREE.DataTexture; normals: THREE.DataTexture } {
+export function leafCardTextures(): { cards: THREE.DataTexture; normals: THREE.DataTexture } {
   if (cardTextures) return cardTextures;
   const atlas = leafCardAtlas(4, 256, 1, PLANT.melt);
   const texture = (data: Uint8Array) => {

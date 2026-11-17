@@ -1,0 +1,19 @@
+{
+  "format": "treespec",
+  "version": 1,
+  "kind": "tree",
+  "id": "sprig-shrub",
+  "seed": 23,
+  "trunk": { "count": 9, "spread": 38, "height": 0.7, "radius": 0.015, "tip": 0.3, "segments": 6, "wobble": 6 },
+  "levels": [
+    { "count": 5, "start": 0.3, "end": 0.95, "angle": [45, 25], "length": [0.5, 0.3], "radius": 0.6, "tip": 0.35, "segments": 4, "gravity": -25, "wobble": 6, "jitter": 0.6, "reach": 0.5 },
+    { "count": 4, "start": 0.35, "end": 1.0, "angle": [40, 20], "length": [0.45, 0.25], "radius": 0.6, "tip": 0.3, "segments": 4, "gravity": -12, "wobble": 4, "jitter": 0.7, "reach": 0.8 }
+  ],
+  "leaves": { "level": 1, "spacing": 0.012, "start": 0.12, "size": [0.026, 0.034], "aspect": 0.55, "cards": 1, "spread": 0, "angle": 40, "lift": 0.2, "shape": "quad", "thin": 0.8 },
+  "mass": { "radius": 0.08, "dense": 21, "clump": 32, "cell": 0.06, "sprig": 8, "group": 0, "twig": 0.12, "tips": 1, "dab": 0.22, "blend": 0.8, "sparkles": 0, "layers": 1 },
+  "lods": [
+    { "radialSegments": 5, "ringStep": 1, "maxLevel": 2, "leafKeep": 1, "leafCards": 3, "distance": 0, "hull": "backing" },
+    { "radialSegments": 4, "ringStep": 2, "maxLevel": 1, "leafKeep": 0.45, "leafCards": 2, "distance": 10, "hull": "backing" },
+    { "radialSegments": 3, "ringStep": 6, "maxLevel": 0, "leafKeep": 0.15, "leafCards": 1, "distance": 30, "hull": "impostor" }
+  ]
+}

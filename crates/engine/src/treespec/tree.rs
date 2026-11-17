@@ -281,7 +281,7 @@ pub enum HullUse {
 /// A backing shell's size as a share of the hull's (from the hull's centre).
 pub const BACKING_SHRINK: f64 = 0.86;
 /// The clumps' backing behind a mass model's dabs, deeper inside so it never shows past them.
-pub const DAB_BACKING_SHRINK: f64 = 0.72;
+pub const DAB_BACKING_SHRINK: f64 = 0.92;
 /// The shadow proxy's size as a share of the hull's: inside the backing shell, so the shell and the
 /// leaves at the hull's surface on the sunny side are not shaded by it (nor striped by depth
 /// acne where the two surfaces nearly meet).

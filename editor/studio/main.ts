@@ -2,6 +2,9 @@ import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_B
 import "./style.css";
 import * as THREE from "three";
 import { RustScene } from "../../browser/renderer/scene.ts";
+import { contourFuzz } from "../../browser/renderer/contour-fuzz.ts";
+import { domeGeometry, leafNormalMaterial, leafNormalTexture, smoothGeometry } from "../../browser/renderer/leaf-normals.ts";
+import { leafCardTextures } from "../../browser/renderer/foliage-plants.ts";
 import { projectLighting, statesAmbientOcclusion, storedLighting, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
 import { LightingPanel } from "./lighting.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
@@ -133,7 +136,8 @@ class Studio {
     this.project = initialProject(kind); this.module = this.project.entry;
     this.scene = new RustScene(element("viewport"), (mesh, instance) => this.selection(mesh, instance));
     // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
-    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE });
+    // Also the contour fuzz prototype and the leaf-card atlas, for previews that build test shapes in the scene.
+    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: leafCardTextures, __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture });
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
       // A shaded scene takes a parameter as a uniform: nothing to wait for.
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
