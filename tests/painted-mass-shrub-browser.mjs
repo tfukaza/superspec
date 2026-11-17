@@ -114,7 +114,7 @@ try {
       // The looser foliage below the core: cards through the field (density-cards.ts), shaded as the core is.
       const started = performance.now();
       const cards = window.__densityCards(f, window.__leafCards().cards, { level: densityBase.level, size: densityBase.cardSize,
-        keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, sun,
+        keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, facing: densityBase.cardFacing, sun,
         leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
       s.models.add(cards);
@@ -163,6 +163,8 @@ try {
       // the candidates kept there, CARD_SPACING meters between candidates.
       cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.9),
       spacing: Number(process.env.CARD_SPACING ?? 0.18), cardFloor: Number(process.env.CARD_FLOOR ?? 0.1),
+      // CARD_FACING: 1 the cards always face the camera, 0 they keep their own orientation in the world, between a blend.
+      cardFacing: Number(process.env.CARD_FACING ?? 1),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
       strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.11),

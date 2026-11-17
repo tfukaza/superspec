@@ -26,6 +26,11 @@ export interface DensityCardOptions {
   size?: number;
   /** Above `level` by this share, candidates are inside the core and dropped (a little over 1 lets cards straddle it). */
   inside?: number;
+  /**
+   * How much a card turns to face the camera: 1 always facing it (a billboard), 0 fixed in the world at its own
+   * orientation (a game tree's card: it keeps its place as the view turns and goes thin edge-on), between a blend.
+   */
+  facing?: number;
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
@@ -43,9 +48,10 @@ function generator(seed: number): () => number {
 }
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
-  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, sun, leafMap } = options;
+  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 1, sun, leafMap } = options;
   const random = generator(seed);
   const centres: number[] = [], normals: number[] = [], randoms: number[] = [], looks: number[] = [];
+  const planes: number[] = [], axes: number[] = [];
   const lo = field.origin, span = field.dims.map(d => (d - 1) * field.cell);
   const steps = span.map(s => Math.floor(s / spacing));
   const p = new THREE.Vector3();
@@ -65,6 +71,14 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     n.normalize();
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
+    // The card's own orientation in the world, as a game tree's cards have: its plane faces out of the foliage with a
+    // random tilt, its up roughly against gravity, turned a little at random about its normal.
+    const plane = n.clone().add(new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(1.4)).normalize();
+    const up = new THREE.Vector3(0, 0, 1).projectOnPlane(plane);
+    if (up.lengthSq() < 1e-6) up.set(1, 0, 0).projectOnPlane(plane);
+    up.normalize().applyAxisAngle(plane, (random() - 0.5) * 1.4);
+    planes.push(plane.x, plane.y, plane.z);
+    axes.push(up.x, up.y, up.z);
     randoms.push(random());
     // Dense cards near the core, sparse toward the rim (blended at random between), and smaller as the field thins.
     const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
@@ -80,10 +94,12 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
   instanced.setAttribute("aRandom", new THREE.InstancedBufferAttribute(new Float32Array(randoms), 1));
   // Whole part: 1 for a sparse card; fraction: half its scale.
   instanced.setAttribute("aLook", new THREE.InstancedBufferAttribute(new Float32Array(looks), 1));
+  instanced.setAttribute("aPlane", new THREE.InstancedBufferAttribute(new Float32Array(planes), 3));
+  instanced.setAttribute("aAxis", new THREE.InstancedBufferAttribute(new Float32Array(axes), 3));
   instanced.instanceCount = randoms.length;
   const material = new THREE.ShaderMaterial({
     uniforms: {
-      cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() },
+      cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() }, facing: { value: facing },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
@@ -92,17 +108,31 @@ attribute vec3 aCentre;
 attribute vec3 aNormal;
 attribute float aRandom;
 attribute float aLook;
+attribute vec3 aPlane;
+attribute vec3 aAxis;
 uniform float size;
+uniform float facing;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
 varying vec3 vNormal;
 varying vec3 vWorld;
+varying vec3 vCard;
 void main() {
   vec3 centre = (modelMatrix * vec4(aCentre, 1.0)).xyz;
   vec3 view = normalize(cameraPosition - centre);
-  vec3 side = normalize(cross(vec3(0.0, 0.0, 1.0), view) + vec3(1e-5, 0.0, 0.0)), up = cross(view, side);
-  float roll = 6.2831853 * fract(aRandom * 7.0);
+  // The camera's axes and the card's own, blended by facing. The card's are turned (a half turn in its plane, or a
+  // mirror) to agree with the camera's as nearly as they can, so the blend never passes through zero.
+  vec3 sideC = normalize(cross(vec3(0.0, 0.0, 1.0), view) + vec3(1e-5, 0.0, 0.0)), upC = cross(view, sideC);
+  vec3 plane = normalize(mat3(modelMatrix) * aPlane), upW = normalize(mat3(modelMatrix) * aAxis);
+  vec3 sideW = cross(upW, plane);
+  if (dot(sideW, sideC) < 0.0) sideW = -sideW;
+  if (dot(upW, upC) < 0.0) upW = -upW;
+  vec3 side = normalize(mix(sideW, sideC, facing)), up = normalize(mix(upW, upC, facing));
+  // The card's own normal, turned toward the viewer, for its shading.
+  vCard = dot(plane, view) < 0.0 ? -plane : plane;
+  // Rolled at random only as far as it faces the camera: a world card's turn is in its own up.
+  float roll = 6.2831853 * fract(aRandom * 7.0) * facing;
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
   vSparse = floor(aLook);
   float s = size * 2.0 * fract(aLook) * (0.85 + 0.3 * fract(aRandom * 13.7));
@@ -122,11 +152,13 @@ uniform vec3 mapOrigin;
 uniform float mapStrength;
 uniform float offset;
 uniform float highlight;
+uniform float facing;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
 varying vec3 vNormal;
 varying vec3 vWorld;
+varying vec3 vCard;
 ${BAND_GLSL}
 void main() {
   // One of the atlas's 16 dense cards (rows 0 to 3) or 16 sparse ones (rows 4 to 7).
@@ -137,7 +169,10 @@ void main() {
   vec3 t, b;
   vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
-  vec3 n = normalize(normalize(vNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
+  // The foliage's outward normal, tipped toward the card's own as far as it keeps its own orientation, so cards at
+  // different angles take different light, as a game tree's do.
+  vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
+  vec3 n = normalize(base * z + (t * leaf.x + b * leaf.y) * mapStrength);
   float light = msLeafLight(n, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
   gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
