@@ -79,11 +79,15 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   // Side twigs, alternating sides up the main stem, each shorter higher up, angled out and curving back up.
   const count = twigs[0] + Math.floor(random() * (twigs[1] + 1));
   let side = random() < 0.5 ? -1 : 1;
+  // Lopsided: one side's twigs reach farther than the other's, so a card is an open, uneven spray, not a symmetric
+  // spike.
+  const longSide = random() < 0.5 ? -1 : 1;
   for (let k = 0; k < count; k++) {
-    const t = 0.18 + 0.6 * (k + between(0.2, 0.8)) / count;
+    // From low on the stem, so the spray fans out from near its base.
+    const t = 0.1 + 0.6 * (k + between(0.2, 0.8)) / count;
     const base = at(main, t);
-    const out = side * between(0.85, 1.25);
-    const length = mainLength * between(0.48, 0.66) * (1 - 0.35 * t);
+    const out = side * between(0.95, 1.4);
+    const length = mainLength * between(0.55, 0.75) * (side === longSide ? 1.15 : 0.8) * (1 - 0.3 * t);
     // Back toward the main direction, then over with the droop.
     stems.push({ points: grow(base.x, base.y, base.heading + out, length, -out * 0.45 - side * droop * 0.6), side });
     side = -side;
