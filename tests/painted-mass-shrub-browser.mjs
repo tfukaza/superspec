@@ -158,7 +158,7 @@ try {
       // the candidates kept there, CARD_SPACING meters between candidates.
       cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.55),
       spacing: Number(process.env.CARD_SPACING ?? 0.25), cardFloor: Number(process.env.CARD_FLOOR ?? 0.06),
-      // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: half-width meters at its widest, STRIP_LOBE: meters
+      // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
       strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.16),
       stripLobe: Number(process.env.STRIP_LOBE ?? 0.15), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,

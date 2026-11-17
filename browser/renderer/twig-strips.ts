@@ -14,11 +14,11 @@ import { type DensityField, gradient, sampleDensity } from "./leaf-density.ts";
  * (one edge toward the light more than the other, as a painter models a sprig), then by the leaf map, then banded.
  */
 export interface TwigStripOptions {
-  /** Half the strip's width at its widest, meters, where the foliage is as dense as the core. */
+  /** A leaf's length, meters: every leaf on a strip is this size, smaller only toward the shoot's tip. */
   width?: number;
-  /** Meters between a side's lobes (about a leaf's length). */
+  /** Meters between a side's leaves. */
   lobe?: number;
-  /** The core's level (share of the field's `full`): a strip is as wide as `width` there, narrower below. */
+  /** The core's level (share of the field's `full`): below it, the thinner the foliage the more leaves are missing. */
   level: number;
   /** Samples along each strip. */
   samples?: number;
@@ -66,9 +66,6 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
       const tangent = along(points, Math.min(1, u + 0.02)).sub(along(points, Math.max(0, u - 0.02))).normalize();
       // Thin where the foliage is thin: half as wide in empty air as at the core's level.
       const share = Math.min(1, sampleDensity(field, p) / field.full / level);
-      // Full-bodied: wide early, holding its width, then rounding off to the tip.
-      const profile = u < 0.2 ? 0.7 + 0.3 * u / 0.2 : Math.sqrt(Math.max(0, 1 - Math.pow((u - 0.2) / 0.8, 3)));
-      const w = width * profile * (0.5 + 0.5 * share);
       const n = gradient(field, p).negate();
       if (n.lengthSq() < 1e-12) n.subVectors(p, middle);
       n.normalize();
@@ -77,9 +74,10 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
         tangents.push(tangent.x, tangent.y, tangent.z);
         normals.push(n.x, n.y, n.z);
         sides.push(side);
-        // u in meters along the strip, so lobes keep their size on any strip.
+        // u in meters along the strip, so leaves keep their size on any strip.
         us.push(u * length);
-        widths.push(w);
+        // x: the strip's length (for where its tip is); y: how dense the foliage is there, 0 to 1 of the core's.
+        widths.push(length, share);
         strips.push(id);
       }
       if (k < samples) {
@@ -94,13 +92,13 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute("aSide", new THREE.Float32BufferAttribute(sides, 1));
   geometry.setAttribute("aU", new THREE.Float32BufferAttribute(us, 1));
-  geometry.setAttribute("aWidth", new THREE.Float32BufferAttribute(widths, 1));
+  geometry.setAttribute("aShoot", new THREE.Float32BufferAttribute(widths, 2));
   geometry.setAttribute("aStrip", new THREE.Float32BufferAttribute(strips, 1));
   geometry.setIndex(indices);
   const material = new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     uniforms: {
-      sun: { value: sun.clone().normalize() }, lobe: { value: lobe },
+      sun: { value: sun.clone().normalize() }, lobe: { value: lobe }, leafLength: { value: width },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
@@ -108,9 +106,12 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
 attribute vec3 aTangent;
 attribute float aSide;
 attribute float aU;
-attribute float aWidth;
+attribute vec2 aShoot;
 attribute float aStrip;
+uniform float leafLength;
 varying float vSide;
+varying float vNarrow;
+varying vec2 vShoot;
 varying float vU;
 varying float vStrip;
 varying vec3 vNormal;
@@ -122,10 +123,20 @@ void main() {
   vec3 view = normalize(cameraPosition - centre);
   // Across the strip in the picture: the branch seen side-on gives the full width, end-on a point.
   vec3 across = cross(tangent, view);
-  across = length(across) > 1e-4 ? normalize(across) : vec3(1.0, 0.0, 0.0);
-  // The lobes stand past the strip's middle width by up to its half again; the fragment cuts them back.
-  vec3 world = centre + across * aSide * aWidth * 1.5;
-  vSide = aSide * 1.5;
+  // How side-on the shoot is seen (1 broadside, 0 end-on). Seen end-on its length shortens on screen while a full
+  // width would stay, and the leaves would pile into a stack of round tiers; there too the strip's sideways direction
+  // turns over between neighbouring samples and twists the quads between them, leaving pinholes. So the strip
+  // narrows as it turns end-on, to nothing straight along the view, as a sprig seen from its tip does.
+  float sideOn = length(across);
+  float narrow = smoothstep(0.2, 0.65, sideOn);
+  across = sideOn > 1e-4 ? across / sideOn : vec3(1.0, 0.0, 0.0);
+  // A band just wide enough for a leaf standing off the stem at its angle; the fragment cuts the leaves out of it.
+  float reach = leafLength * 0.95 * narrow;
+  vec3 world = centre + across * aSide * reach;
+  // Meters from the stem, signed by side.
+  vSide = aSide * reach;
+  vNarrow = narrow;
+  vShoot = aShoot;
   vU = aU;
   vStrip = aStrip;
   vNormal = normalize(mat3(modelMatrix) * normal);
@@ -142,7 +153,10 @@ uniform vec3 mapOrigin;
 uniform float mapStrength;
 uniform float offset;
 uniform float highlight;
+uniform float leafLength;
 varying float vSide;
+varying float vNarrow;
+varying vec2 vShoot;
 varying float vU;
 varying float vStrip;
 varying vec3 vNormal;
@@ -151,24 +165,36 @@ varying vec3 vWorld;
 ${BAND_GLSL}
 float hash(float x) { return fract(sin(x * 91.17 + 3.1) * 43758.5453); }
 void main() {
-  // Lobes: a leaf every lobe meters on each side, the two sides half a leaf apart (alternate leaves), each its own
-  // length, a pointed oval from its stem outward.
-  // Not a comb: the spacing drifts along the strip, the two sides' leaves differ in size, some leaves are missing,
-  // and the edge is ragged at a finer scale, as a loose stroke's would be.
+  // Leaves: one every lobe meters on each side, the two sides half a step apart (alternate leaves). Each is a pointed
+  // oval of one size (leafLength long, two fifths as wide) standing off the stem about 50 degrees toward the tip, its
+  // place and angle a little jittered; smaller only toward the shoot's tip, as a real shoot's are. Some are missing,
+  // more where the foliage is thin, so a shoot at the rim is sparse. A leaf reaches past its own step along the
+  // shoot, so each pixel tests the leaves of its step and the two before.
   float side = vSide < 0.0 ? 0.0 : 1.0;
-  float spacing = lobe * (side > 0.5 ? 1.0 : 1.3);
-  float x = vU / spacing + side * 0.5 + vStrip * 7.0 + 0.45 * sin(vU / spacing * 1.7 + vStrip * 40.0 + side * 2.0);
-  float index = floor(x), f = fract(x);
-  float h = hash(index + side * 31.0 + vStrip * 17.0);
-  // Every leaf the same size (a real shoot's are), a quarter of them missing, so the shoot is sparse.
-  float reach = h < 0.25 ? 0.0 : 0.75 + 0.08 * (hash(index * 1.3 + side * 7.0 + vStrip * 5.0) - 0.5);
-  // The leaf's outline across its length: 0 at its base and tip, a full oval leaning a little toward the tip.
-  float leaf = pow(sin(3.14159265 * pow(f, 0.8)), 0.55);
-  float ragged = 0.06 * (hash(floor(vU / 0.025) + side * 13.0 + vStrip * 91.0) - 0.5);
-  // A thin stem, the leaves standing off it with gaps between them.
-  float edge = 0.22 + reach * leaf + ragged;
-  float d = abs(vSide);
-  if (d > edge) discard;
+  // The strip's random, rounded: interpolation does not carry a value the same at every vertex through bit for bit,
+  // and the hash below magnifies the difference, so unrounded it picked leaves per pixel (white pinholes).
+  float strip = floor(vStrip * 4096.0 + 0.5) / 4096.0;
+  // Across in leaf space: end-on, the band narrows on screen, and the leaves with it.
+  float s = abs(vSide) / max(vNarrow, 1e-3);
+  float shift = side * 0.5 + strip * 7.0;
+  float first = floor(vU / lobe - shift);
+  bool inside = false;
+  // The next step's leaf too: its jittered base can fall just behind this pixel.
+  for (int j = 0; j < 4; j++) {
+    float index = first + 1.0 - float(j);
+    float h = hash(index + side * 31.0 + strip * 17.0);
+    if (h < 0.2 + 0.4 * (1.0 - clamp(vShoot.y, 0.0, 1.0))) continue;
+    float u0 = (index + shift + 0.3 * (hash(index * 2.7 + side * 3.0 + strip * 11.0) - 0.5)) * lobe;
+    float at = u0 / max(vShoot.x, 1e-3);
+    if (at < 0.0 || at > 1.0) continue;
+    float size = leafLength * clamp(1.0 - pow(max(at - 0.55, 0.0) / 0.45, 2.0), 0.35, 1.0);
+    float angle = 0.87 + 0.35 * (hash(index * 5.3 + side * 9.0 + strip * 3.0) - 0.5);
+    float dx = vU - u0;
+    float along = dx * cos(angle) + s * sin(angle), off = -dx * sin(angle) + s * cos(angle);
+    if (along <= 0.0 || along >= size) continue;
+    if (abs(off) < 0.21 * size * pow(sin(3.14159265 * along / size), 0.75)) { inside = true; break; }
+  }
+  if (!inside) discard;
   vec3 t, b;
   vec3 m = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(m.xy, m.xy)));
