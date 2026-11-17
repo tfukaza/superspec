@@ -57,7 +57,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -79,13 +79,16 @@ try {
     geometry.computeBoundingBox();
     const centre = geometry.boundingBox.getCenter(new T.Vector3());
     const sun = new T.Vector3(...JSON.parse(document.querySelector("#viewport").dataset.lighting).lights[0].direction);
-    s.models.add(new T.Mesh(window.__smoothGeometry(geometry), window.__leafNormalMaterial(sun, tile, 1, 0.35, true, centre, brush)));
+    s.models.add(new T.Mesh(window.__smoothGeometry(geometry), window.__leafNormalMaterial(sun, tile, strength, 0.35, true, centre, brush, offset)));
     const fuzz = window.__contourFuzz(geometry, window.__leafCards().cards, { size, density, reach, sun, normals: window.__leafCards().normals,
-      leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength: 1 } });
+      leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
     s.models.add(fuzz);
     s.draw();
     return { centre: centre.toArray(), anchors: fuzz.userData.contourFuzz.anchors };
-  }, { tile: Number(process.env.TILE ?? 0.6), brush: Number(process.env.BRUSH ?? 16), size: Number(process.env.SIZE ?? 0.3), density: Number(process.env.DENSITY ?? 14), reach: Number(process.env.REACH ?? 0.08) });
+  }, { tile: Number(process.env.TILE ?? 0.6), brush: Number(process.env.BRUSH ?? 16), size: Number(process.env.SIZE ?? 0.3), density: Number(process.env.DENSITY ?? 14), reach: Number(process.env.REACH ?? 0.08),
+    // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
+    // OFFSET shifts every band's threshold).
+    strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
   if (info.error) throw new Error(info.error);
   console.log(`clumps centre ${info.centre.map(v => v.toFixed(2))}, ${info.anchors} fuzz anchors`);
   const [cx, cy, cz] = info.centre, r = Number(process.env.DIST ?? 3.6);

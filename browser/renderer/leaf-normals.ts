@@ -330,11 +330,11 @@ export function smoothGeometry(source: THREE.BufferGeometry): THREE.BufferGeomet
  * varied as the washroom concrete varies its images: irregular cells, each sampled at its own turn and offset (its
  * normals turned with it), so no repeat shows. Banded against `sun`.
  */
-export function leafNormalMaterial(sun: THREE.Vector3, tile = 0.6, strength = 1, band = 0.35, screen = false, origin = new THREE.Vector3(), clumpLeaves = 0): THREE.ShaderMaterial {
+export function leafNormalMaterial(sun: THREE.Vector3, tile = 0.6, strength = 1, band = 0.35, screen = false, origin = new THREE.Vector3(), clumpLeaves = 0, offset = 0.1): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: {
       normalsMap: { value: leafNormalTexture(clumpLeaves) }, sun: { value: sun.clone().normalize() }, tile: { value: tile },
-      strength: { value: strength }, offset: { value: 0.1 }, band: { value: band },
+      strength: { value: strength }, offset: { value: offset }, band: { value: band },
       screen: { value: screen ? 1 : 0 }, origin: { value: origin.clone() },
     },
     vertexShader: /* glsl */`

@@ -564,7 +564,8 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
   the leaves run on from the surface into the outline.
 - **Prototype candidate:** the sprig shrub with its 12 mass-model clumps (`fixtures/sprig-shrub-clumps.tree.json`,
   clumps only at 0.92 of their size) as the base mesh, the 16-leaf brush map at a 0.6 m tile, fuzz cards 0.3 m at 14 per
-  meter of edge, bark kept. Rebuilt and pictured by `tests/painted-mass-shrub-browser.mjs`; reference renders in
+  meter of edge, bark kept; the leaf normals tipped at strength 1.5 and the bands offset by -0.05 so the lit side spreads
+  over the upper bands (the reference renders predate this and use 1 and 0.1). Rebuilt and pictured by `tests/painted-mass-shrub-browser.mjs`; reference renders in
   `painted-mass/`. Known gaps: ambient occlusion's pass does not draw these shaders (off for now); about 9,600 fuzz
   anchors, most never on the outline (a coarser mesh for the fuzz would cut them); the sprigs' leaves are hidden.
 - **Second candidate:** the same shrub with its one canopy hull (the limbs' shrink-wrap, 512 triangles) as the base

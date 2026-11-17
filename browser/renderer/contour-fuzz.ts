@@ -25,7 +25,7 @@ export interface ContourFuzzOptions {
   sun?: THREE.Vector3;
   normals?: THREE.Texture;
   /** With a leaf map (leaf-normals.ts), the cards take their normals and tones from it, as the surface does. */
-  leafMap?: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number };
+  leafMap?: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
 }
 
 function generator(seed: number): () => number {
@@ -93,7 +93,7 @@ export function contourFuzz(geometry: THREE.BufferGeometry, cards: THREE.Texture
     uniforms: {
       cards: { value: cards }, size: { value: size }, reach: { value: reach }, color: { value: new THREE.Color(color) },
       cardNormals: { value: normals ?? cards }, sun: { value: (sun ?? new THREE.Vector3(0, 0, 1)).clone().normalize() },
-      shaded: { value: sun && (normals || leafMap) ? 1 : 0 }, offset: { value: 0.1 },
+      shaded: { value: sun && (normals || leafMap) ? 1 : 0 }, offset: { value: leafMap?.offset ?? 0.1 },
       useMap: { value: leafMap ? 1 : 0 }, leafMap: { value: leafMap?.texture ?? cards }, mapTile: { value: leafMap?.tile ?? 1 },
       mapOrigin: { value: leafMap?.origin.clone() ?? new THREE.Vector3() }, mapStrength: { value: leafMap?.strength ?? 1 },
     },
