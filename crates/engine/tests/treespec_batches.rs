@@ -364,10 +364,14 @@ fn write_washroom_trees() {
     .unwrap();
     let parse = |name: &str, text: &str| tree::parse(name, text).unwrap();
     // The washroom is seen from a few meters: levels step at 8 and 16 m (shrub) and 10 and 22 m (tree).
-    let mut shrub_definition = parse(
-        "shrub.tree.json",
-        include_str!("../src/treespec/fixtures/shrub.tree.json"),
-    );
+    // SHRUB_TREE names another shrub definition to place, for trying one out on the washroom lawn.
+    let mut shrub_definition = match std::env::var("SHRUB_TREE") {
+        Ok(path) => parse(&path, &std::fs::read_to_string(&path).unwrap()),
+        Err(_) => parse(
+            "shrub.tree.json",
+            include_str!("../src/treespec/fixtures/shrub.tree.json"),
+        ),
+    };
     for (lod, distance) in shrub_definition.lods.iter_mut().zip([0., 8., 16.]) {
         lod.distance = distance;
     }
@@ -414,7 +418,7 @@ fn write_washroom_trees() {
         );
         plants.push(serde_json::json!({
             "id": plant.id, "base": base, "branches": plant.skeleton.len(), "leafClusters": plant.leaves.len(),
-            "blobs": plant.canopy.blobs.len(), "generatedMs": generated.as_secs_f64() * 1000.,
+            "blobs": plant.canopy.blobs.len(), "generatedMs": generated.as_secs_f64() * 1000., "mass": plant.mass,
             "lods": plant.lods.iter().map(|lod| serde_json::json!({
                 "distance": lod.distance, "hull": lod.hull, "leafInstances": lod.leaf_instances, "triangles": lod.triangles,
             })).collect::<Vec<_>>(),

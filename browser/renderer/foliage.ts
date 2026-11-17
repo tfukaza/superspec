@@ -89,6 +89,8 @@ uniform mat4 msFoliageShadowMatrix;
 // x: 1 when the sun casts shadows, y: depth bias, z: normal bias (m), w: one texel of the map.
 uniform vec4 msFoliageShadowParams;
 float msFoliageBand = 1.0;
+// Added to every shade band's threshold: the plant families' canopy jag (foliage-plants.ts), 0 elsewhere.
+float msFoliageJag = 0.0;
 `;
 
 /** Neutralizes screen derivatives where there are none (the vertex stage, a band pass of one value per texel). */
@@ -122,7 +124,7 @@ export function programChunk(shader: MaterialShading["shader"], attributes: Read
   if (source.includes(SHADE_BAND)) {
     source = source.replace(SHADE_BAND, `float ms_shade_band_source(vec3 n, vec3 s, float threshold, float softness, float range);
 float ms_shade_band(vec3 n, vec3 s, float threshold, float softness, float range) {
-  float band = ms_shade_band_source(n, s, threshold, softness, range);
+  float band = ms_shade_band_source(n, s, threshold + msFoliageJag, softness, range);
   msFoliageBand = min(msFoliageBand, band);
   return band;
 }
@@ -463,10 +465,21 @@ export class FoliageView {
    */
   prepare(mesh: THREE.InstancedMesh, look: FoliageLook): void {
     const geometry = mesh.geometry;
+    // A plant's middle and size are one value for the whole plant: read once into a uniform (foliage-plants.ts) and
+    // dropped from the geometry, which has no attribute slots to spare.
+    // A mass-model plant (its leaves carry `dab`): its middle and size from where its leaf instances stand.
+    if (look.family === "leaves" && geometry.getAttribute(attributeName("instance", "openness")) && mesh.count > 0) {
+      const box = new THREE.Box3(), m = new THREE.Matrix4(), p = new THREE.Vector3();
+      for (let i = 0; i < mesh.count; i++) { m.fromArray(mesh.instanceMatrix.array, i * 16); box.expandByPoint(p.setFromMatrixPosition(m)); }
+      const centre = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
+      mesh.userData.plantMass = new THREE.Vector4(centre.x, centre.y, centre.z, 0.5 * Math.max(size.x, size.y, size.z));
+    }
     const attributes = new Set(Object.keys(geometry.attributes));
     mesh.userData.foliage = look;
     // The level's own uniforms, made once: every material the mesh gets shares them, and the patch sets their range.
     mesh.userData.foliageLevel = lookUniforms(look, { distance: look.far, keep: 0 });
+    // xyz: the plant's middle, w: its size (0: not shaded as one mass).
+    mesh.userData.foliageLevel.msFoliagePlantMass = { value: mesh.userData.plantMass ?? new THREE.Vector4() };
     // A plant casts its shadow from its bark and its canopy's proxy, which only the sun's shadow camera draws; leaves and
     // the hull cast none (the proxy stands for them) and fold the cast shadow into their band.
     mesh.userData.foliageCasts = look.family === "bark" || look.family === "shadow";
@@ -717,7 +730,10 @@ export class FoliageView {
       // A plant's families thin toward the next level of the same family; one the next level does not draw (leaves at
       // an impostor) is not thinned toward it, the level switches at once.
       const starts = [...new Map(patch.levels.map(level => [level.look.level, { distance: level.look.distance, keep: level.look.keep }])).entries()].sort((a, b) => a[0] - b[0]);
+      // A plant's mass (its middle and size, from its leaves) reaches every part, so its hull knows it backs dabs.
+      const mass = patch.levels.map(level => level.level.msFoliagePlantMass?.value as THREE.Vector4 | undefined).find(v => v && v.w > 0);
       for (const level of patch.levels) {
+        if (mass && level.level.msFoliagePlantMass) (level.level.msFoliagePlantMass.value as THREE.Vector4).copy(mass);
         const at = starts.findIndex(([index]) => index === level.look.level);
         let next = starts[at + 1]?.[1] ?? { distance: patch.far, keep: 0 };
         if (isPlant(level.look) && starts[at + 1]) {

@@ -10,6 +10,12 @@ use serde::{Deserialize, Serialize};
 use superspec_geometry::math::{V3, add, cos, cross, dot, length, lerp, scale, sin, sub};
 
 pub const MAX_BRANCHES: usize = 20_000;
+/// Per leaf instance: 1 for a paint dab on a clump (`mass.rs`), 0 for a leaf cluster. Only a
+/// plant with a `mass` definition carries it.
+pub const DAB: &str = "dab";
+/// Per leaf instance of a plant with a `mass` definition: how open it is through the plant's leaves toward ±x, ±y and
+/// ±z, packed per axis as `floor(255 · toward +axis) + toward -axis`, negated for a dab.
+pub const OPENNESS: &str = "openness";
 const UP: V3 = [0., 0., 1.];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -29,6 +35,10 @@ pub struct TreeDefinition {
     #[serde(default)]
     pub envelope: Option<Envelope>,
     pub leaves: Leaves,
+    /// Divides the leaves into clumps and sprigs (`mass.rs`), whose surfaces then stand in for
+    /// the canopy hull wherever a level draws one. Without it, the hull is one shrink wrap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass: Option<super::mass::Mass>,
     pub lods: Vec<TreeLodDefinition>,
     #[serde(default)]
     pub limits: Limits,
@@ -97,6 +107,14 @@ pub struct Level {
     /// 1 lays the starting direction into the horizontal plane; 0 leaves it.
     #[serde(default)]
     pub flatten: f64,
+    /// Uneven lengths: most branches fall short of `length` and a few reach far past it, as the
+    /// leading shoots of a shrub do. A branch's length is scaled by `1 - reach / 2 + 2.5 reach r³`
+    /// for a uniform `r`; 0 keeps every length as `length` says.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reach: f64,
+}
+fn is_zero(value: &f64) -> bool {
+    *value == 0.
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -167,6 +185,64 @@ pub struct Leaves {
     #[serde(default)]
     pub lift: f64,
     pub shape: LeafShape,
+    /// Clusters thin out toward a branch's tip, so a shoot ends in a point while every leaf
+    /// keeps its size, as on a real plant: a cluster at the fraction `t` of its branch grows
+    /// with probability `1 - thin t²`; the one at the tip always does. 0 keeps every cluster.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub thin: f64,
+    /// How a cluster's shade normal is made ([`LeafShade`]); without it, from the canopy hull.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shade: Option<LeafShade>,
+}
+
+/// Clump and sprig shading: a cluster's shade normal points where the leaves around it thin
+/// out, at each of a few radii, blended with the canopy hull's normal. At a clump's radius it
+/// points out of the clump; at a sprig's radius it points off the shoot (and out at its tip),
+/// so a shoot that leaves the mass is lit on its sunny side and shaded under it, as a painter
+/// would mark it, instead of taking the hull's normal where it happens to pass.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LeafShade {
+    /// Weight of the canopy hull's normal: the plant's large form.
+    pub hull: f64,
+    /// `[radius in meters, weight]`: the falling gradient of the clusters' density at that radius.
+    pub scales: Vec<[f64; 2]>,
+}
+
+/// The direction in which the clusters around `at` thin out, at `radius` (a sum of
+/// `(1 - s)²` kernels, `s` the squared distance over the radius squared), or zero where no
+/// other cluster is near. `cells` buckets cluster indices by `floor(p / radius)`.
+fn density_normal(
+    at: V3,
+    centres: &[V3],
+    cells: &std::collections::HashMap<[i64; 3], Vec<usize>>,
+    radius: f64,
+) -> V3 {
+    let cell = at.map(|v| (v / radius).floor() as i64);
+    let inverse = 1. / (radius * radius);
+    let mut out = [0.; 3];
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                let Some(list) = cells.get(&[cell[0] + dx, cell[1] + dy, cell[2] + dz]) else {
+                    continue;
+                };
+                for &other in list {
+                    let d = sub(at, centres[other]);
+                    let s = dot(d, d) * inverse;
+                    if s < 1. && s > 0. {
+                        let k = 1. - s;
+                        out = add(out, scale(d, k * k));
+                    }
+                }
+            }
+        }
+    }
+    if dot(out, out) > 1e-20 {
+        unit_or(out, UP)
+    } else {
+        [0.; 3]
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -204,6 +280,8 @@ pub enum HullUse {
 
 /// A backing shell's size as a share of the hull's (from the hull's centre).
 pub const BACKING_SHRINK: f64 = 0.86;
+/// The clumps' backing behind a mass model's dabs, deeper inside so it never shows past them.
+pub const DAB_BACKING_SHRINK: f64 = 0.72;
 /// The shadow proxy's size as a share of the hull's: inside the backing shell, so the shell and the
 /// leaves at the hull's surface on the sunny side are not shaded by it (nor striped by depth
 /// acne where the two surfaces nearly meet).
@@ -330,6 +408,9 @@ pub struct GeneratedTree {
     /// The canopy's shadow proxy: the hull, coarse and a little shrunk (`shadow` in `meshes`).
     pub shadow: Option<usize>,
     pub bounds: Bounds,
+    /// With a `mass` definition: how many clumps and sprigs its leaves made.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mass: Option<[usize; 2]>,
 }
 impl GeneratedTree {
     pub fn digest(&self) -> String {
@@ -411,6 +492,7 @@ impl TreeDefinition {
             within(s, &p("twist"), level.twist, 0., 360.)?;
             within(s, &p("jitter"), level.jitter, 0., 1.)?;
             within(s, &p("flatten"), level.flatten, 0., 1.)?;
+            within(s, &p("reach"), level.reach, 0., 1.)?;
         }
         match &self.envelope {
             Some(Envelope::Ellipsoid { center, radii }) => {
@@ -436,6 +518,29 @@ impl TreeDefinition {
         within(s, "/leaves/spread", leaves.spread, 0., 360.)?;
         within(s, "/leaves/angle", leaves.angle, 0., 170.)?;
         within(s, "/leaves/lift", leaves.lift, 0., 1.)?;
+        within(s, "/leaves/thin", leaves.thin, 0., 1.)?;
+        if let Some(shade) = &leaves.shade {
+            within(s, "/leaves/shade/hull", shade.hull, 0., 10.)?;
+            count(s, "/leaves/shade/scales", shade.scales.len(), 0, 4)?;
+            for [radius, weight] in &shade.scales {
+                within(s, "/leaves/shade/scales", *radius, 0.01, 10.)?;
+                within(s, "/leaves/shade/scales", *weight, 0., 10.)?;
+            }
+        }
+        if let Some(mass) = &self.mass {
+            within(s, "/mass/radius", mass.radius, 0.005, 10.)?;
+            count(s, "/mass/dense", mass.dense, 1, 1000)?;
+            count(s, "/mass/clump", mass.clump, 1, 100_000)?;
+            within(s, "/mass/cell", mass.cell, 0.005, 10.)?;
+            count(s, "/mass/sprig", mass.sprig, 1, 1000)?;
+            count(s, "/mass/group", mass.group, 0, self.levels.len())?;
+            within(s, "/mass/twig", mass.twig, 0., 100.)?;
+            within(s, "/mass/tips", mass.tips, 0., 1.)?;
+            within(s, "/mass/dab", mass.dab, 0., 10.)?;
+            within(s, "/mass/blend", mass.blend, 0., 1.)?;
+            count(s, "/mass/sparkles", mass.sparkles, 0, 24)?;
+            count(s, "/mass/layers", mass.layers, 1, 4)?;
+        }
         count(s, "/lods", self.lods.len(), 1, 8)?;
         for (index, lod) in self.lods.iter().enumerate() {
             let p = |field: &str| format!("/lods/{index}/{field}");
@@ -541,9 +646,18 @@ impl TreeDefinition {
                         add(direction, scale(UP, -dot(direction, UP) * level.flatten)),
                         direction,
                     );
-                    let intended = branches[parent].length
+                    let mut intended = branches[parent].length
                         * (level.length[0] + (level.length[1] - level.length[0]) * share)
                         * (0.85 + 0.3 * random.next());
+                    if level.reach > 0. {
+                        // Its own stream, so a level without reach grows as it did.
+                        let r = Stream::new(
+                            self.seed,
+                            &[13, depth as i64, parent as i64, index as i64],
+                        )
+                        .next();
+                        intended *= 1. - 0.5 * level.reach + 2.5 * level.reach * r * r * r;
+                    }
                     if self.envelope.as_ref().is_some_and(|e| !e.contains(start)) {
                         continue;
                     }
@@ -834,6 +948,7 @@ pub fn generate(
     let mut batch = InstanceBatch::new("leaves".into(), 0);
     let mut limbs = Vec::<usize>::new();
     let mut centres = Vec::<V3>::new();
+    let mut sites = Vec::<super::mass::Site>::new();
     for branch in skeleton.iter().filter(|b| b.level >= leaves.level) {
         check_cancelled(source, cancelled)?;
         let mut limb = branch.id;
@@ -859,6 +974,16 @@ pub fn generate(
                 )
             };
             direction = unit_or(add(direction, scale(UP, leaves.lift)), direction);
+            // Thinning draws from its own stream, so a definition without it places as it did.
+            if leaves.thin > 0.
+                && !tip
+                && Stream::new(definition.seed, &[14, branch.id as i64, index]).next()
+                    < leaves.thin * t * t
+            {
+                distance += leaves.spacing;
+                index += 1;
+                continue;
+            }
             let size = random.between(leaves.size);
             let face = unit_or(reject(UP, direction), perpendicular(direction));
             if batch.len() >= definition.limits.max_instances {
@@ -888,6 +1013,12 @@ pub fn generate(
             batch.scalar(LEVEL, branch.level as f64);
             limbs.push(limb);
             centres.push(add(anchor, scale(direction, 0.5 * size)));
+            sites.push(super::mass::Site {
+                branch: branch.id,
+                t,
+                centre: centres[centres.len() - 1],
+                size,
+            });
             if tip {
                 break;
             }
@@ -934,10 +1065,155 @@ pub fn generate(
         }
         let hull = super::hull::CanopyField::new(&canopy.blobs, leaves.size[1])
             .expect("a canopy with clusters has balls");
-        for centre in &centres {
-            batch.vector(SHADE_NORMAL, hull.shade(*centre));
+        match &leaves.shade {
+            None => {
+                for centre in &centres {
+                    batch.vector(SHADE_NORMAL, hull.shade(*centre));
+                }
+            }
+            Some(shade) => {
+                let grids: Vec<_> = shade
+                    .scales
+                    .iter()
+                    .map(|[radius, _]| {
+                        let mut cells = std::collections::HashMap::<[i64; 3], Vec<usize>>::new();
+                        for (index, c) in centres.iter().enumerate() {
+                            cells
+                                .entry(c.map(|v| (v / radius).floor() as i64))
+                                .or_default()
+                                .push(index);
+                        }
+                        cells
+                    })
+                    .collect();
+                for centre in &centres {
+                    let mut normal = scale(hull.shade(*centre), shade.hull);
+                    for ([radius, weight], cells) in shade.scales.iter().zip(&grids) {
+                        normal = add(
+                            normal,
+                            scale(density_normal(*centre, &centres, cells, *radius), *weight),
+                        );
+                    }
+                    batch.vector(SHADE_NORMAL, unit_or(normal, hull.shade(*centre)));
+                }
+            }
         }
         field = Some(hull);
+    }
+    // The clumps and sprigs (`mass.rs`), read before the clusters are reordered (the sites
+    // follow the batch). Only clusters the model keeps as leaves stay; each clump's surface is
+    // covered with paint dabs instead, instances flagged `dab` that face the camera like the
+    // leaves and take the clump's normal as their shade normal.
+    let model = definition
+        .mass
+        .as_ref()
+        .filter(|_| !sites.is_empty())
+        .map(|mass| super::mass::build(&sites, &skeleton, mass, leaves.size[1]));
+    if let (Some(model), Some(mass)) = (&model, &definition.mass) {
+        let kept: Vec<usize> = (0..batch.len()).filter(|i| model.leaf[*i]).collect();
+        batch.reorder(&kept);
+        let leaf_count = batch.len();
+        for _ in 0..leaf_count {
+            batch.scalar(DAB, 0.);
+        }
+        if mass.dab > 0. {
+            for (index, dab) in model.dabs(0.6 * mass.dab, mass.layers).iter().enumerate() {
+                let mut random = Stream::new(definition.seed, &[15, index as i64]);
+                let size = mass.dab * (0.8 + 0.4 * random.next());
+                // The card grows along its +Y from the anchor; its middle stands a little out of
+                // the surface, so the dabs lie over the clump's own surface drawn behind them.
+                let direction = dab.normal;
+                let centre = add(dab.centre, scale(dab.normal, 0.2 * size));
+                let anchor = sub(centre, scale(direction, 0.5 * size));
+                let face = unit_or(reject(UP, direction), perpendicular(direction));
+                batch.transforms.push([
+                    scale(cross(direction, face), size),
+                    scale(direction, size),
+                    scale(face, size),
+                    anchor,
+                ]);
+                batch.vector(ROOT, anchor);
+                batch.vector(PIVOT, [0.; 3]);
+                // The dab's shade normal: its clump's, blended with the whole plant's simulated hull there, so
+                // neighbouring clumps step through the bands together rather than each in its own way.
+                let whole = field.as_ref().map_or(dab.normal, |f| f.shade(dab.centre));
+                batch.vector(
+                    SHADE_NORMAL,
+                    unit_or(add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)), dab.normal),
+                );
+                batch.scalar(THRESHOLD, random.next());
+                batch.scalar(RANDOM, random.next());
+                batch.scalar(VARIATION, random.next());
+                batch.scalar(BEND_WEIGHT, dab.bend);
+                batch.scalar(CLUSTER, -1. - dab.clump as f64);
+                batch.scalar(LEVEL, 0.);
+                batch.scalar(DAB, 1.);
+                // Sparkles: a few small leaves just outside the dab, which a renderer shows only where the clump
+                // is in its brightest light (a painter's highlight flecks).
+                let shade = unit_or(add(scale(dab.normal, 1. - mass.blend), scale(whole, mass.blend)), dab.normal);
+                for _ in 0..if dab.layer == 0 { mass.sparkles } else { 0 } {
+                    let side = perpendicular(dab.normal);
+                    let up = cross(dab.normal, side);
+                    let a = TAU * random.next();
+                    let along = add(scale(side, cos(a)), scale(up, sin(a)));
+                    let spot = add(
+                        add(dab.centre, scale(dab.normal, size * (0.3 + 0.25 * random.next()))),
+                        // Mostly toward the dab's rim, where a clump's edge catches the light.
+                        scale(along, size * (0.25 + 0.3 * random.next().sqrt())),
+                    );
+                    let leaf = leaves.size[1] * (1.1 + 0.6 * random.next());
+                    let face = unit_or(reject(UP, along), perpendicular(along));
+                    let anchor = sub(spot, scale(along, 0.5 * leaf));
+                    batch.transforms.push([scale(cross(along, face), leaf), scale(along, leaf), scale(face, leaf), anchor]);
+                    batch.vector(ROOT, anchor);
+                    batch.vector(PIVOT, [0.; 3]);
+                    batch.vector(SHADE_NORMAL, shade);
+                    batch.scalar(THRESHOLD, random.next());
+                    batch.scalar(RANDOM, random.next());
+                    batch.scalar(VARIATION, random.next());
+                    batch.scalar(BEND_WEIGHT, dab.bend);
+                    batch.scalar(CLUSTER, -1. - dab.clump as f64);
+                    batch.scalar(LEVEL, 0.);
+                    batch.scalar(DAB, 2.);
+                }
+            }
+        }
+        // How open each instance is toward ±x, ±y, ±z through the plant's own leaves (`mass::openness`), packed in one
+        // vector: per axis, floor(255 · open toward +axis) + open toward -axis (below 1).
+        // Negative for a dab, so a renderer short of attribute slots can read `dab` from its sign.
+        let dabs = batch.scalars[DAB].clone();
+        // Measured for leaves and dabs only; a sparkle takes the dab it was placed beside (it follows it).
+        let measured: Vec<usize> = (0..dabs.len()).filter(|i| dabs[*i] < 1.5).collect();
+        let middles: Vec<V3> = measured
+            .iter()
+            .map(|i| add(batch.transforms[*i][3], scale(batch.transforms[*i][1], 0.5)))
+            .collect();
+        let found = super::mass::openness(&middles, &centres, 1.25 * mass.radius);
+        let mut opens = Vec::with_capacity(dabs.len());
+        let mut next = 0;
+        for (i, dab) in dabs.iter().enumerate() {
+            if *dab < 1.5 {
+                opens.push(found[next]);
+                next += 1;
+            } else {
+                opens.push(opens.get(i.wrapping_sub(1)).copied().unwrap_or([1.; 6]));
+            }
+        }
+        // A sparkle (DAB 2) is negative in y instead; DAB itself then marks it as no dab.
+        for (open, dab) in opens.iter().zip(&dabs) {
+            let signs = [
+                if (0.5..1.5).contains(dab) { -1. } else { 1. },
+                if *dab > 1.5 { -1. } else { 1. },
+                1.,
+            ];
+            batch.vector(
+                OPENNESS,
+                std::array::from_fn(|a| signs[a] * ((open[a] * 255.).floor() + open[a + 3].min(0.999))),
+            );
+        }
+        for (value, was) in batch.scalars.get_mut(DAB).unwrap().iter_mut().zip(dabs) {
+            *value = if was > 1.5 { 0. } else { was };
+        }
     }
     let thresholds = &batch.scalars.get(THRESHOLD).cloned().unwrap_or_default();
     let mut order: Vec<usize> = (0..batch.len()).collect();
@@ -945,7 +1221,7 @@ pub fn generate(
     batch.reorder(&order);
 
     // What the leaves' placement reads, and with it the canopy hull.
-    let leaf_placement_key = key(
+    let mut leaf_placement_key = key(
         "treespec-leaf-placement-v1",
         &(
             &skeleton_key,
@@ -958,6 +1234,15 @@ pub fn generate(
             leaves.lift,
         ),
     );
+    if leaves.thin > 0. {
+        leaf_placement_key = key("treespec-leaf-thin-v1", &(&leaf_placement_key, leaves.thin));
+    }
+    if let Some(shade) = &leaves.shade {
+        leaf_placement_key = key("treespec-leaf-shade-v1", &(&leaf_placement_key, shade));
+    }
+    if let Some(mass) = &definition.mass {
+        leaf_placement_key = key("treespec-leaf-mass-v1", &(&leaf_placement_key, mass));
+    }
     let mut meshes = Vec::new();
     let mut lods = Vec::new();
     for (index, lod) in definition.lods.iter().enumerate() {
@@ -1001,7 +1286,21 @@ pub fn generate(
             leaf_widen,
             format!("leaves/lod{index}"),
         ));
-        let hull_mesh = field.as_ref().and_then(|field| {
+        let mass_mesh = model.as_ref().filter(|_| lod.hull != HullUse::None).map(|model| {
+            meshes.push(model.mesh(
+                format!("hull/lod{index}"),
+                key(
+                    "treespec-mass-v1",
+                    &(&leaf_placement_key, &definition.mass, IMPOSTOR_FREQUENCY, lod.radial_segments, lod.hull),
+                ),
+                IMPOSTOR_FREQUENCY,
+                lod.radial_segments.max(4),
+                // Behind dabs, a backing of the clumps alone, a little inside them.
+                (lod.hull == HullUse::Backing && definition.mass.as_ref().is_some_and(|m| m.dab > 0.)).then_some(DAB_BACKING_SHRINK),
+            ));
+            meshes.len() - 1
+        });
+        let hull_mesh = mass_mesh.or_else(|| field.as_ref().and_then(|field| {
             let (frequency, shrink) = match lod.hull {
                 HullUse::None => return None,
                 HullUse::Backing => (BACKING_FREQUENCY, BACKING_SHRINK),
@@ -1017,7 +1316,7 @@ pub fn generate(
                 shrink,
             ));
             Some(meshes.len() - 1)
-        });
+        }));
         let leaf_instances = if lod.hull == HullUse::Impostor && hull_mesh.is_some() {
             0
         } else {
@@ -1146,6 +1445,7 @@ pub fn generate(
         canopy,
         shadow,
         bounds,
+        mass: model.map(|m| [m.clumps.len(), m.sprigs.len()]),
     })
 }
 

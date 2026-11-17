@@ -5,6 +5,7 @@
 pub mod batches;
 pub mod grass;
 pub mod hull;
+pub mod mass;
 mod output;
 mod random;
 pub mod tree;

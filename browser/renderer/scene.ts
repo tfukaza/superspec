@@ -18,6 +18,9 @@ import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 import { ItemOverlays, type HandleChange, type OverlayItem } from "./item-overlays.ts";
 import { FoliageView, type FoliageProfile } from "./foliage.ts";
+import { STROKES, STROKE_BANDS, leafBrushTexture } from "./foliage-plants.ts";
+import { STROKE_LAYER, StrokeEdges } from "./stroke-edges.ts";
+import { BLUR_LAYER, FoliageBlur } from "./foliage-blur.ts";
 
 /** Builds a translucent inspection surface from Rust-owned navigation polygons. */
 function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
@@ -135,6 +138,18 @@ export class RustScene {
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
   /** Foliage batches drawn by their shader families (foliage.ts); `?foliage=lit|painted` overrides each batch's profile. */
   private readonly foliage = new FoliageView(this.renderer, new URLSearchParams(location.search).get("foliage"));
+  /** A plant's leaves blurred among themselves (`?leafblur=<meters>`, foliage-blur.ts). */
+  readonly foliageBlur = (() => {
+    const query = new URLSearchParams(location.search);
+    const meters = Number(query.get("leafblur"));
+    return meters > 0 ? new FoliageBlur(this.renderer, meters, Number(query.get("leafblurmix") ?? 0.6)) : null;
+  })();
+  /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
+  readonly strokeEdges = STROKES ? (() => {
+    const query = new URLSearchParams(location.search);
+    const number = (name: string, fallback: number) => { const v = Number(query.get(name)); return query.has(name) && Number.isFinite(v) ? v : fallback; };
+    return new StrokeEdges(this.renderer, leafBrushTexture(), { band: number("strokeband", 0.05), amount: number("strokeamount", 0.9), tile: number("stroketile", 0.7), bite: number("strokebite", 0.3), bands: STROKE_BANDS });
+  })() : null;
   private foliageReported = "";
   private readonly scene = new THREE.Scene();
   private readonly environment: THREE.WebGLRenderTarget;
@@ -181,8 +196,30 @@ export class RustScene {
     const foliage = this.foliage.update(this.models, this.camera, this.lights.sun, this.shadows);
     // Draw calls and triangles of the whole frame: the shadow pass, the scene and any passes after it.
     this.renderer.info.reset();
+    // Stroke edges: the canopy masses leave the scene's own pass and are painted over it with leafy edges.
+    let strokeAnchor: THREE.Vector3 | null = null;
+    if (this.strokeEdges) {
+      for (const mesh of this.models.children) {
+        if (mesh.userData.foliage?.family !== "hull") continue;
+        mesh.layers.set(STROKE_LAYER);
+        const origin = ((mesh as THREE.Mesh).material as THREE.Material).userData?.foliageUniforms?.msFoliageOrigin?.value as THREE.Vector3 | undefined;
+        if (mesh.visible && origin && !strokeAnchor) strokeAnchor = origin.clone();
+      }
+    }
+    // Foliage blur: a plant's leaves leave the scene's own pass and are drawn over it with their colours blended.
+    let blurAnchor: THREE.Vector3 | null = null;
+    if (this.foliageBlur) {
+      for (const mesh of this.models.children) {
+        if (mesh.userData.foliage?.family !== "leaves") continue;
+        mesh.layers.set(BLUR_LAYER);
+        const origin = ((mesh as THREE.Mesh).material as THREE.Material).userData?.foliageUniforms?.msFoliageOrigin?.value as THREE.Vector3 | undefined;
+        if (mesh.visible && origin && !blurAnchor) blurAnchor = origin.clone();
+      }
+    }
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);
+    if (this.foliageBlur) this.foliageBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, blurAnchor);
+    if (this.strokeEdges) this.strokeEdges.render(this.scene, this.camera as THREE.PerspectiveCamera, strokeAnchor, this.strokeEdges.options.tile);
     this.frameStats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
     if (!foliage) { if (this.foliageReported) { delete this.host.dataset.foliage; this.foliageReported = ""; } return; }
     // The boundary field follows the sun, its shadow map (made during the frame) and the ground: when it was made again,
