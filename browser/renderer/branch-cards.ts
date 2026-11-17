@@ -116,7 +116,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   const longSide = random() < 0.5 ? -1 : 1;
   for (let k = 0; k < count; k++) {
     // From low on the stem, so the spray fans out from near its base.
-    const t = 0.1 + 0.6 * (k + between(0.2, 0.8)) / count;
+    const t = 0.12 + 0.6 * (k + between(0.2, 0.8)) / count;
     const base = at(main, t);
     const out = side * between(0.95, 1.4);
     const length = mainLength * between(reach[0], reach[1]) * (side === longSide ? 1 + 0.43 * lopsided : 1 - 0.57 * lopsided) * (1 - 0.3 * t);
@@ -138,7 +138,9 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   for (const stem of stems) {
     // Thick enough to outlast the melt (a blur of a few texels cut again at a half takes anything thinner).
     const thick = (stem.side === 0 ? 0.017 : Math.abs(stem.side) === 1 ? 0.013 : 0.011) * s;
-    for (let k = 0; k + 1 < stem.points.length; k++) {
+    // No bare root: the main stem is drawn only from where its leaves and twigs begin, so the card has no stalk.
+    const from = stem.side === 0 ? Math.floor(0.1 * (stem.points.length - 1)) : 0;
+    for (let k = from; k + 1 < stem.points.length; k++) {
       const [ax, ay] = stem.points[k], [bx, by] = stem.points[k + 1];
       const taper = 1 - 0.6 * k / stem.points.length;
       line(data, size, ax, ay, bx, by, thick * taper, 0.35);
@@ -149,7 +151,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   for (const stem of stems) {
     let length = 0;
     for (let k = 1; k < stem.points.length; k++) length += Math.hypot(stem.points[k][0] - stem.points[k - 1][0], stem.points[k][1] - stem.points[k - 1][1]);
-    const start = stem.side === 0 ? 0.22 : 0.08;
+    const start = stem.side === 0 ? 0.1 : 0.08;
     let flip = random() < 0.5 ? -1 : 1;
     for (let d = start * length; d < length - 0.4 * gap; d += gap * between(0.85, 1.15)) {
       flip = -flip;
