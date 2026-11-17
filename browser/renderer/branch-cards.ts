@@ -13,7 +13,29 @@
  * a = 0 where empty, else the leaf's hue shift in (0, 1]. Card space: +x right, +y up, the base at the bottom middle.
  * Deterministic and pure, so it runs in Node.
  */
-import { type LeafCard } from "./leaf-cards.ts";
+import { type LeafCard, melted } from "./leaf-cards.ts";
+
+/**
+ * An atlas of `grid` × `grid` branch cards (the dense spray, each its own seed), melted. Texel layout (RGBA, bytes):
+ * r, g = the leaf's normal x and y in the card's plane (0.5 flat), b = its tone, a = coverage. Row 0 is the card's
+ * bottom, where its stem starts.
+ */
+export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}): { width: number; height: number; data: Uint8Array } {
+  const width = grid * size, height = grid * size, data = new Uint8Array(width * height * 4);
+  for (let cell = 0; cell < grid * grid; cell++) {
+    const painted = melted(branchCard({ ...options, size, seed: seed * 97 + cell }), melt);
+    const ox = (cell % grid) * size, oy = Math.floor(cell / grid) * size;
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const i = y * size + x, o = ((oy + y) * width + ox + x) * 4;
+      if (painted.coverage[i] <= 0) continue;
+      data[o] = Math.round((painted.nx[i] * 0.5 + 0.5) * 255);
+      data[o + 1] = Math.round((painted.ny[i] * 0.5 + 0.5) * 255);
+      data[o + 2] = Math.round(Math.min(1, painted.tone[i]) * 255);
+      data[o + 3] = Math.round(painted.coverage[i] * 255);
+    }
+  }
+  return { width, height, data };
+}
 
 export interface BranchCardOptions {
   size?: number;

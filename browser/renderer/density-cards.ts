@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { BAND_GLSL } from "./leaf-normals.ts";
 import { type DensityField, gradient, sampleDensity } from "./leaf-density.ts";
+import { branchCardAtlas } from "./branch-cards.ts";
 
 /**
  * Density cards (prototype): leaf cards through the foliage below the painted core (leaf-density.ts), so the plant
@@ -31,9 +32,30 @@ export interface DensityCardOptions {
    * orientation (a game tree's card: it keeps its place as the view turns and goes thin edge-on), between a blend.
    */
   facing?: number;
+  /**
+   * Hybrid: with a branch card atlas (branch-cards.ts), the sparser cards are branchlets instead of round sparse
+   * clumps, rooted at their point and reaching out of the foliage (drooping a little), `branchSize` meters long, a
+   * `branchKeep` share of them kept (being bigger, fewer are needed), and shaded by their own leaves' normals.
+   */
+  branches?: THREE.Texture;
+  branchSize?: number;
+  branchKeep?: number;
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
+}
+
+let branchTexture: THREE.DataTexture | undefined;
+/** The branch card atlas (branch-cards.ts) as a texture, made once: 16 dense sprays, mipmapped. */
+export function branchCardTexture(): THREE.DataTexture {
+  if (branchTexture) return branchTexture;
+  const atlas = branchCardAtlas(4, 256, 1, 2);
+  branchTexture = new THREE.DataTexture(atlas.data, atlas.width, atlas.height, THREE.RGBAFormat, THREE.UnsignedByteType);
+  branchTexture.magFilter = THREE.LinearFilter;
+  branchTexture.minFilter = THREE.LinearMipmapLinearFilter;
+  branchTexture.generateMipmaps = true;
+  branchTexture.needsUpdate = true;
+  return branchTexture;
 }
 
 function generator(seed: number): () => number {
@@ -48,7 +70,8 @@ function generator(seed: number): () => number {
 }
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
-  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 1, sun, leafMap } = options;
+  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 1, sun, leafMap,
+    branches, branchSize = 1.2, branchKeep = 0.45 } = options;
   const random = generator(seed);
   const centres: number[] = [], normals: number[] = [], randoms: number[] = [], looks: number[] = [];
   const planes: number[] = [], axes: number[] = [];
@@ -69,19 +92,31 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const n = gradient(field, p).negate();
     if (n.lengthSq() < 1e-12) n.subVectors(p, middle);
     n.normalize();
+    // Dense cards near the core, sparse toward the rim (blended at random between), and smaller as the field thins.
+    const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
+    // A branch card is bigger, so fewer of them.
+    if (sparse && branches && random() > branchKeep) continue;
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
-    // The card's own orientation in the world, as a game tree's cards have: its plane faces out of the foliage with a
-    // random tilt, its up roughly against gravity, turned a little at random about its normal.
-    const plane = n.clone().add(new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(1.4)).normalize();
-    const up = new THREE.Vector3(0, 0, 1).projectOnPlane(plane);
-    if (up.lengthSq() < 1e-6) up.set(1, 0, 0).projectOnPlane(plane);
-    up.normalize().applyAxisAngle(plane, (random() - 0.5) * 1.4);
+    let plane: THREE.Vector3, up: THREE.Vector3;
+    if (sparse && branches) {
+      // A branchlet lies along the way out of the foliage, sagging a little: its up is that way, and its plane holds
+      // it, turned about it at random but mostly lying flat (its normal toward the sky), as a spray carries its leaves.
+      up = n.clone().addScaledVector(new THREE.Vector3(0, 0, 1), -0.35).normalize();
+      plane = new THREE.Vector3(random() - 0.5, random() - 0.5, 0.9 + random() - 0.5).projectOnPlane(up);
+      if (plane.lengthSq() < 1e-6) plane.set(1, 0, 0).projectOnPlane(up);
+      plane.normalize();
+    } else {
+      // The card's own orientation in the world, as a game tree's cards have: its plane faces out of the foliage with
+      // a random tilt, its up roughly against gravity, turned a little at random about its normal.
+      plane = n.clone().add(new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(1.4)).normalize();
+      up = new THREE.Vector3(0, 0, 1).projectOnPlane(plane);
+      if (up.lengthSq() < 1e-6) up.set(1, 0, 0).projectOnPlane(plane);
+      up.normalize().applyAxisAngle(plane, (random() - 0.5) * 1.4);
+    }
     planes.push(plane.x, plane.y, plane.z);
     axes.push(up.x, up.y, up.z);
     randoms.push(random());
-    // Dense cards near the core, sparse toward the rim (blended at random between), and smaller as the field thins.
-    const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
     looks.push(sparse + 0.5 * (0.65 + 0.35 * depth));
   }
   const quad = new THREE.PlaneGeometry(1, 1);
@@ -100,6 +135,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
   const material = new THREE.ShaderMaterial({
     uniforms: {
       cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() }, facing: { value: facing },
+      branches: { value: branches ?? cards }, hybrid: { value: branches ? 1 : 0 }, branchSize: { value: branchSize },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
@@ -112,31 +148,46 @@ attribute vec3 aPlane;
 attribute vec3 aAxis;
 uniform float size;
 uniform float facing;
+uniform float hybrid;
+uniform float branchSize;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
 varying vec3 vNormal;
 varying vec3 vWorld;
 varying vec3 vCard;
+varying vec3 vSideAxis;
+varying vec3 vUpAxis;
 void main() {
   vec3 centre = (modelMatrix * vec4(aCentre, 1.0)).xyz;
   vec3 view = normalize(cameraPosition - centre);
-  // The camera's axes and the card's own, blended by facing. The card's are turned (a half turn in its plane, or a
-  // mirror) to agree with the camera's as nearly as they can, so the blend never passes through zero.
-  vec3 sideC = normalize(cross(vec3(0.0, 0.0, 1.0), view) + vec3(1e-5, 0.0, 0.0)), upC = cross(view, sideC);
+  vSparse = floor(aLook);
+  // A branch card (the hybrid's sparse cards) keeps its up the way out of the foliage, also as it faces the camera.
+  bool branch = hybrid > 0.5 && vSparse > 0.5;
   vec3 plane = normalize(mat3(modelMatrix) * aPlane), upW = normalize(mat3(modelMatrix) * aAxis);
+  // The camera's axes and the card's own, blended by facing. The card's are turned (a half turn in its plane, or a
+  // mirror) to agree with the camera's as nearly as they can, so the blend never passes through zero. A branch card's
+  // camera up is its own up laid into the picture, and it is never turned over: its stem stays at its root.
+  vec3 sideC = normalize(cross(vec3(0.0, 0.0, 1.0), view) + vec3(1e-5, 0.0, 0.0)), upC = cross(view, sideC);
+  if (branch) {
+    vec3 laid = upW - view * dot(upW, view);
+    if (length(laid) > 1e-3) { upC = normalize(laid); sideC = normalize(cross(upC, view)); }
+  }
   vec3 sideW = cross(upW, plane);
   if (dot(sideW, sideC) < 0.0) sideW = -sideW;
-  if (dot(upW, upC) < 0.0) upW = -upW;
+  if (!branch && dot(upW, upC) < 0.0) upW = -upW;
   vec3 side = normalize(mix(sideW, sideC, facing)), up = normalize(mix(upW, upC, facing));
   // The card's own normal, turned toward the viewer, for its shading.
   vCard = dot(plane, view) < 0.0 ? -plane : plane;
-  // Rolled at random only as far as it faces the camera: a world card's turn is in its own up.
-  float roll = 6.2831853 * fract(aRandom * 7.0) * facing;
+  // Rolled at random only as far as it faces the camera: a world card's turn is in its own up. A branch card only
+  // sways a little about its root.
+  float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * facing;
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
-  vSparse = floor(aLook);
-  float s = size * 2.0 * fract(aLook) * (0.85 + 0.3 * fract(aRandom * 13.7));
-  vec3 world = centre + (side * corner.x + up * corner.y) * s;
+  float s = (branch ? branchSize * (0.6 + 0.4 * fract(aLook) * 2.0) : size * 2.0 * fract(aLook)) * (0.85 + 0.3 * fract(aRandom * 13.7));
+  // A branch card stands on its root (the bottom of the card, a little inside), the others on their middle.
+  vec3 world = centre + (side * corner.x + up * (corner.y + (branch ? 0.42 : 0.0))) * s;
+  vSideAxis = side;
+  vUpAxis = up;
   vUv = uv;
   vRandom = aRandom;
   vNormal = normalize(mat3(modelMatrix) * aNormal);
@@ -153,14 +204,37 @@ uniform float mapStrength;
 uniform float offset;
 uniform float highlight;
 uniform float facing;
+uniform sampler2D branches;
+uniform float hybrid;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
 varying vec3 vNormal;
 varying vec3 vWorld;
 varying vec3 vCard;
+varying vec3 vSideAxis;
+varying vec3 vUpAxis;
 ${BAND_GLSL}
 void main() {
+  // The foliage's outward normal, tipped toward the card's own as far as it keeps its own orientation, so cards at
+  // different angles take different light, as a game tree's do.
+  vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
+  if (hybrid > 0.5 && vSparse > 0.5) {
+    // A branch card: one of 16 branchlets (4 by 4), its stem at the card's bottom. Shaded by its own leaves' normals
+    // in the card's axes, and their tones, so the bands fall on its leaves wherever it turns.
+    float cell = floor(fract(vRandom * 31.7) * 16.0);
+    vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / 4.0;
+    vec4 branch = texture2D(branches, at);
+    if (branch.a < 0.5) discard;
+    vec2 own = branch.rg * 2.0 - 1.0;
+    float z = sqrt(max(0.0, 1.0 - dot(own, own)));
+    vec3 n = normalize(base * z + (normalize(vSideAxis) * own.x + normalize(vUpAxis) * own.y) * 1.1);
+    float light = msLeafLight(n, sun, offset);
+    vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * branch.b);
+    gl_FragColor = vec4(msLeafPaint(paint, light, branch.b, highlight), 1.0);
+    #include <colorspace_fragment>
+    return;
+  }
   // One of the atlas's 16 dense cards (rows 0 to 3) or 16 sparse ones (rows 4 to 7).
   float cell = floor(fract(vRandom * 31.7) * 16.0) + 16.0 * vSparse;
   vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.02 + clamp(vUv, 0.0, 1.0) * 0.96) / vec2(4.0, 8.0);
@@ -169,9 +243,6 @@ void main() {
   vec3 t, b;
   vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
-  // The foliage's outward normal, tipped toward the card's own as far as it keeps its own orientation, so cards at
-  // different angles take different light, as a game tree's do.
-  vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
   vec3 n = normalize(base * z + (t * leaf.x + b * leaf.y) * mapStrength);
   float light = msLeafLight(n, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
