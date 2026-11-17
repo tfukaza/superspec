@@ -66,7 +66,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide, highlight }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -126,7 +126,9 @@ try {
       s.models.add(strips);
       surface.strips = strips.userData.twigStrips;
     }
-    // HIDE: painted parts left out of the pictures, by name (surface, fuzz, cards), comma separated.
+    // HIGHLIGHT: how strongly sun-facing leaves take the highlight colour (leaf-normals.ts msLeafPaint), 0 none.
+    for (const m of s.models.children) if (m.name.startsWith("painted/") && m.material.uniforms?.highlight) m.material.uniforms.highlight.value = highlight;
+    // HIDE: painted parts left out of the pictures, by name (surface, fuzz, cards, strips), comma separated.
     for (const m of s.models.children) if (hide.includes(m.name.replace("painted/", "")) && m.name.startsWith("painted/")) m.visible = false;
     let field;
     if (densityView) {
@@ -144,6 +146,7 @@ try {
     // COARSE: meters of the cells the fuzz's mesh is coarsened by (contour-fuzz.ts); 0 keeps the surface's edges.
     coarse: Number(process.env.COARSE ?? 0),
     hide: (process.env.HIDE ?? "").split(",").filter(Boolean),
+    highlight: Number(process.env.HIGHLIGHT ?? 1),
     // VIEW=density: the plant's leaf density field instead of the painted surface (FIELD_RADIUS: kernel meters,
     // FIELD_FLOOR: share of the densest below which cells are left out, FIELD_BANDS: colour steps, 0 smooth).
     densityView: process.env.VIEW === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),
@@ -157,8 +160,8 @@ try {
       spacing: Number(process.env.CARD_SPACING ?? 0.25), cardFloor: Number(process.env.CARD_FLOOR ?? 0.06),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: half-width meters at its widest, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
-      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.2),
-      stripLobe: Number(process.env.STRIP_LOBE ?? 0.12), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
+      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.16),
+      stripLobe: Number(process.env.STRIP_LOBE ?? 0.11), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });

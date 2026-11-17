@@ -161,6 +161,7 @@ export function contourFuzz(geometry: THREE.BufferGeometry, cards: THREE.Texture
       shaded: { value: sun && (normals || leafMap) ? 1 : 0 }, offset: { value: leafMap?.offset ?? 0.1 },
       useMap: { value: leafMap ? 1 : 0 }, leafMap: { value: leafMap?.texture ?? cards }, mapTile: { value: leafMap?.tile ?? 1 },
       mapOrigin: { value: leafMap?.origin.clone() ?? new THREE.Vector3() }, mapStrength: { value: leafMap?.strength ?? 1 },
+      highlight: { value: 1 },
     },
     vertexShader: /* glsl */`
 attribute vec3 aAnchor;
@@ -224,6 +225,7 @@ uniform sampler2D leafMap;
 uniform float mapTile;
 uniform vec3 mapOrigin;
 uniform float mapStrength;
+uniform float highlight;
 ${BAND_GLSL}
 void main() {
   // One of the atlas's 16 dense cards (rows 0 to 3): solid in the middle, leafy at the rim.
@@ -238,7 +240,8 @@ void main() {
     float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
     vec3 n = normalize(normalize(vEdgeNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
     float light = msLeafLight(n, sun, offset);
-    gl_FragColor = vec4(msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z), 1.0);
+    vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
+    gl_FragColor = vec4(msLeafPaint(paint, n, vEdgeNormal, sun, vWorld, leaf.z, highlight), 1.0);
   } else if (shaded > 0.5) {
     vec2 dome = texture2D(cardNormals, at).rg * 2.0 - 1.0;
     // A leaf's own tilt from its hue (a stable random per leaf), as the normal map's leaves have.

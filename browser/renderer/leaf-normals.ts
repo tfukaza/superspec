@@ -266,6 +266,22 @@ float msLeafLight(vec3 n, vec3 sun, float offset) {
   float sky = 0.42 * (0.5 + 0.5 * n.z);
   return max(direct, sky);
 }
+// Highlights, as a painted metal takes its sheen from its normal map and a mask rather than from geometry: on the side
+// of the plant facing the sun (its form's normal, macro), a leaf whose own normal (leaf, one per leaf from the map)
+// turns toward the sun's reflection to the eye is painted in the highlight colour, a lime above the top band. Lighter
+// leaves (the map's tone, its diffuse) catch it sooner, so whole leaves light, in patches, with hard painted edges.
+vec3 msLeafPaint(vec3 band, vec3 leaf, vec3 macro, vec3 sun, vec3 world, float tone, float amount) {
+  vec3 view = normalize(cameraPosition - world);
+  vec3 h = normalize(sun + view);
+  vec3 form = normalize(macro);
+  float facing = smoothstep(0.25, 0.7, dot(form, sun));
+  // How much further this leaf turns to the reflection than the form around it does: single leaves, not the whole
+  // patch of form that faces it.
+  float glint = dot(leaf, h) - dot(form, h) + 0.3 * (tone - 0.5) - 0.07;
+  float w = max(fwidth(glint), 1e-4);
+  float mask = facing * smoothstep(-w, w, glint) * amount;
+  return mix(band, vec3(0.50, 0.76, 0.13), mask);
+}
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
   float x = clamp(t, 0.0, 0.999) * 6.0;
@@ -346,7 +362,7 @@ export function leafNormalMaterial(sun: THREE.Vector3, tile = 0.6, strength = 1,
     uniforms: {
       normalsMap: { value: leafNormalTexture(clumpLeaves) }, sun: { value: sun.clone().normalize() }, tile: { value: tile },
       strength: { value: strength }, offset: { value: offset }, band: { value: band },
-      screen: { value: screen ? 1 : 0 }, origin: { value: origin.clone() },
+      screen: { value: screen ? 1 : 0 }, origin: { value: origin.clone() }, highlight: { value: 1 },
     },
     vertexShader: /* glsl */`
 attribute vec3 aFace;
@@ -378,6 +394,7 @@ uniform float offset;
 uniform float band;
 uniform float screen;
 uniform vec3 origin;
+uniform float highlight;
 varying vec3 vWorld;
 varying vec3 vFace;
 varying vec3 vBary;
@@ -437,7 +454,8 @@ void main() {
   // The leaf's normal tips the bulging surface normal along the map's own axes.
   vec3 shaded = normalize(n * m.z + (t * m.x + b * m.y) * strength);
   float light = msLeafLight(shaded, sun, offset);
-  gl_FragColor = vec4(msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.b), 1.0);
+  vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.b);
+  gl_FragColor = vec4(msLeafPaint(paint, shaded, n, sun, vWorld, leaf.b, highlight), 1.0);
   #include <colorspace_fragment>
 }`,
   });

@@ -82,7 +82,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     uniforms: {
       cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
-      mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 },
+      mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
     vertexShader: /* glsl */`
 attribute vec3 aCentre;
@@ -118,6 +118,7 @@ uniform float mapTile;
 uniform vec3 mapOrigin;
 uniform float mapStrength;
 uniform float offset;
+uniform float highlight;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
@@ -135,7 +136,8 @@ void main() {
   float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
   vec3 n = normalize(normalize(vNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
   float light = msLeafLight(n, sun, offset);
-  gl_FragColor = vec4(msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z), 1.0);
+  vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
+  gl_FragColor = vec4(msLeafPaint(paint, n, vNormal, sun, vWorld, leaf.z, highlight), 1.0);
   #include <colorspace_fragment>
 }`,
   });
