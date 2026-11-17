@@ -40,6 +40,11 @@ export interface DensityCardOptions {
   branches?: THREE.Texture;
   branchSize?: number;
   branchKeep?: number;
+  /**
+   * The plant's leafy twigs (flat `[x, y, z, ...]` per twig, from its base toward its tip): a branchlet points the way
+   * its nearest twig grows there, so the sprays follow the branches they hang from.
+   */
+  twigs?: number[][];
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
@@ -71,7 +76,32 @@ function generator(seed: number): () => number {
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 1, sun, leafMap,
-    branches, branchSize = 1.2, branchKeep = 0.45 } = options;
+    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [] } = options;
+  // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
+  const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
+  const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
+  for (const flat of twigs) {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i + 2 < flat.length; i += 3) pts.push(new THREE.Vector3(flat[i], flat[i + 1], flat[i + 2]));
+    for (let i = 0; i < pts.length; i++) {
+      const d = pts[Math.min(i + 1, pts.length - 1)].clone().sub(pts[Math.max(i - 1, 0)]);
+      if (d.lengthSq() < 1e-10) continue;
+      const k = key(pts[i].x, pts[i].y, pts[i].z);
+      if (!twigPoints.has(k)) twigPoints.set(k, []);
+      twigPoints.get(k)!.push({ p: pts[i], d: d.normalize() });
+    }
+  }
+  const nearestTwig = (q: THREE.Vector3): THREE.Vector3 | null => {
+    let best: THREE.Vector3 | null = null, bestD = Infinity;
+    const cx = Math.floor(q.x / twigCell), cy = Math.floor(q.y / twigCell), cz = Math.floor(q.z / twigCell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+      for (const t of twigPoints.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
+        const d = t.p.distanceToSquared(q);
+        if (d < bestD) { bestD = d; best = t.d; }
+      }
+    }
+    return best;
+  };
   const random = generator(seed);
   const centres: number[] = [], normals: number[] = [], randoms: number[] = [], looks: number[] = [];
   const planes: number[] = [], axes: number[] = [];
@@ -102,14 +132,18 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     if (sparse && branches) {
       // A branchlet lies along the way out of the foliage, sagging a little: its up is that way, and its plane holds
       // it, turned about it at random but mostly lying flat (its normal toward the sky), as a spray carries its leaves.
-      // Out from the trunk as well as out of the foliage, and pulled down, so a spray at the crown (where the foliage's
-      // outward is straight up) arches over and out instead of standing up.
+      // A spray grows on with its twig: it points the way the nearest twig grows (or, with none near, out from the
+      // trunk and out of the foliage), a little outward still, and sags under its leaves.
       const radial = new THREE.Vector3(p.x - middle.x, p.y - middle.y, 0);
       if (radial.lengthSq() > 1e-8) radial.normalize();
-      up = n.clone().addScaledVector(radial, 0.6).addScaledVector(new THREE.Vector3(0, 0, 1), -0.6).normalize();
-      plane = new THREE.Vector3(random() - 0.5, random() - 0.5, 0.9 + random() - 0.5).projectOnPlane(up);
-      if (plane.lengthSq() < 1e-6) plane.set(1, 0, 0).projectOnPlane(up);
-      plane.normalize();
+      const twig = nearestTwig(p);
+      up = (twig ? twig.clone().addScaledVector(n, 0.35) : n.clone().addScaledVector(radial, 0.6))
+        .addScaledVector(new THREE.Vector3(0, 0, 1), -0.45 - 0.2 * random()).normalize();
+      // Its leaves face the sky, as a spray holds them to the light: the card's plane is the one through its direction
+      // whose normal is nearest up, rolled a little at random about its direction.
+      plane = new THREE.Vector3(0, 0, 1).projectOnPlane(up);
+      if (plane.lengthSq() < 1e-6) plane.copy(radial.lengthSq() > 0 ? radial : new THREE.Vector3(1, 0, 0)).projectOnPlane(up);
+      plane.normalize().applyAxisAngle(up, (random() - 0.5) * 0.9);
     } else {
       // The card's own orientation in the world, as a game tree's cards have: its plane faces out of the foliage with
       // a random tilt, its up roughly against gravity, turned a little at random about its normal.

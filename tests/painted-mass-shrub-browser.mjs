@@ -115,7 +115,7 @@ try {
       const started = performance.now();
       const cards = window.__densityCards(f, window.__leafCards().cards, { level: densityBase.level, size: densityBase.cardSize,
         keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, facing: densityBase.cardFacing, sun,
-        ...(densityBase.branches ? { branches: window.__branchCardTexture(), branchSize: densityBase.branchSize, branchKeep: densityBase.branchKeep } : {}),
+        ...(densityBase.branches ? { branches: window.__branchCardTexture(), branchSize: densityBase.branchSize, branchKeep: densityBase.branchKeep, twigs: densityBase.twigs } : {}),
         leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
       s.models.add(cards);
@@ -168,7 +168,7 @@ try {
       cardFacing: Number(process.env.CARD_FACING ?? 1),
       // BRANCHES=1: the hybrid, the sparser cards branchlets (branch-cards.ts) BRANCH_SIZE meters long, BRANCH_KEEP of
       // them kept.
-      branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 1.2), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.45),
+      branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 0.75), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.9),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
       strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.11),

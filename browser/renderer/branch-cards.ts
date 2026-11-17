@@ -56,6 +56,8 @@ export interface BranchCardOptions {
   lopsided?: number;
   /** Twig length as a share of the main stem's (the spray's breadth). */
   reach?: [number, number];
+  /** Angle of the side twigs off the main stem, radians (lower: a narrower spray). */
+  spread?: [number, number];
   /** Short twiglets off each side twig: the fewest, and how many more at random. */
   twiglets?: [number, number];
 }
@@ -98,7 +100,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
   // Small leaves, close together, on three orders of stem (main, side twigs, and short twiglets off those), so a card
   // carries many leaves.
   const { size = 256, seed = 1, leaf = 0.08, step = 0.032, twigs = [3, 1], missing = 0.05, width = 0.42, droop = 0.25,
-    lopsided = 0.35, reach = [0.55, 0.75], twiglets = [1, 1] } = options;
+    lopsided = 0.2, reach = [0.38, 0.52], twiglets = [1, 1], spread = [0.5, 0.8] } = options;
   const random = generator(seed * 6007 + 29);
   const between = (a: number, b: number) => a + (b - a) * random();
   const data = new Float32Array(size * size * 4);
@@ -118,7 +120,7 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
     // From low on the stem, so the spray fans out from near its base.
     const t = 0.12 + 0.6 * (k + between(0.2, 0.8)) / count;
     const base = at(main, t);
-    const out = side * between(0.95, 1.4);
+    const out = side * between(spread[0], spread[1]);
     const length = mainLength * between(reach[0], reach[1]) * (side === longSide ? 1 + 0.43 * lopsided : 1 - 0.57 * lopsided) * (1 - 0.3 * t);
     // Back toward the main direction, then over with the droop.
     const twig = grow(base.x, base.y, base.heading + out, length, -out * 0.45 - side * droop * 0.6);
