@@ -22,6 +22,8 @@ export interface TwigStripOptions {
   level: number;
   /** Samples along each strip. */
   samples?: number;
+  /** Sag under the leaves' weight: the tip drops this share of the strip's length, the drop growing as the square. */
+  droop?: number;
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
@@ -41,7 +43,7 @@ function along(points: THREE.Vector3[], t: number): THREE.Vector3 {
 }
 
 export function twigStrips(field: DensityField, twigs: number[][], options: TwigStripOptions): THREE.Mesh {
-  const { width = 0.13, lobe = 0.09, level, samples = 16, seed = 5, sun, leafMap } = options;
+  const { width = 0.2, lobe = 0.12, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
   let state = seed >>> 0;
   const random = () => { state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0; return state / 4294967296; };
   const centres: number[] = [], tangents: number[] = [], normals: number[] = [], sides: number[] = [];
@@ -55,6 +57,8 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
     let length = 0;
     for (let i = 1; i < points.length; i++) length += points[i].distanceTo(points[i - 1]);
     if (length < 0.05) continue;
+    // The leaves' weight bends the shoot down toward its tip.
+    points.forEach((p, i) => { p.z -= droop * length * (i / (points.length - 1)) ** 2; });
     const first = centres.length / 3;
     for (let k = 0; k <= samples; k++) {
       const u = k / samples;
@@ -62,7 +66,8 @@ export function twigStrips(field: DensityField, twigs: number[][], options: Twig
       const tangent = along(points, Math.min(1, u + 0.02)).sub(along(points, Math.max(0, u - 0.02))).normalize();
       // Thin where the foliage is thin: half as wide in empty air as at the core's level.
       const share = Math.min(1, sampleDensity(field, p) / field.full / level);
-      const profile = u < 0.3 ? 0.55 + 0.45 * u / 0.3 : 1 - Math.pow((u - 0.3) / 0.7, 1.5);
+      // Full-bodied: wide early, holding its width, then rounding off to the tip.
+      const profile = u < 0.2 ? 0.7 + 0.3 * u / 0.2 : Math.sqrt(Math.max(0, 1 - Math.pow((u - 0.2) / 0.8, 3)));
       const w = width * profile * (0.5 + 0.5 * share);
       const n = gradient(field, p).negate();
       if (n.lengthSq() < 1e-12) n.subVectors(p, middle);
@@ -154,12 +159,13 @@ void main() {
   float x = vU / spacing + side * 0.5 + vStrip * 7.0 + 0.45 * sin(vU / spacing * 1.7 + vStrip * 40.0 + side * 2.0);
   float index = floor(x), f = fract(x);
   float h = hash(index + side * 31.0 + vStrip * 17.0);
-  float reach = h < 0.2 ? 0.1 : 0.45 + 1.0 * hash(index * 1.3 + side * 7.0 + vStrip * 5.0);
-  // The leaf's outline across its length: 0 at its base and tip, widest a little past its middle, leaning toward
-  // the tip (the leaves point along the shoot).
-  float leaf = pow(sin(3.14159265 * pow(f, 0.65)), 0.7);
-  float ragged = 0.18 * (hash(floor(vU / 0.025) + side * 13.0 + vStrip * 91.0) - 0.5);
-  float edge = 0.45 + reach * leaf + ragged;
+  float reach = h < 0.15 ? 0.15 : 0.3 + 0.55 * hash(index * 1.3 + side * 7.0 + vStrip * 5.0);
+  // The leaf's outline across its length: 0 at its base and tip, round and full (a plump leaf, not a frond's
+  // pinna), leaning a little toward the tip.
+  float leaf = pow(sin(3.14159265 * pow(f, 0.8)), 0.45);
+  float ragged = 0.14 * (hash(floor(vU / 0.025) + side * 13.0 + vStrip * 91.0) - 0.5);
+  // A solid body most of the way out, the lobes only its rim.
+  float edge = 0.65 + reach * leaf + ragged;
   float d = abs(vSide);
   if (d > edge) discard;
   vec3 t, b;

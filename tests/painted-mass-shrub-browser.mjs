@@ -121,7 +121,7 @@ try {
     if (densityBase?.strips) {
       // Every leafy twig as one strip along it (twig-strips.ts).
       const strips = window.__twigStrips(f, densityBase.twigs, { level: densityBase.level, width: densityBase.stripWidth, lobe: densityBase.stripLobe,
-        sun, leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
+        droop: densityBase.stripDroop, sun, leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       strips.name = "painted/strips";
       s.models.add(strips);
       surface.strips = strips.userData.twigStrips;
@@ -156,9 +156,9 @@ try {
       cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.55),
       spacing: Number(process.env.CARD_SPACING ?? 0.25), cardFloor: Number(process.env.CARD_FLOOR ?? 0.06),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: half-width meters at its widest, STRIP_LOBE: meters
-      // between a side's leaves).
-      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.13),
-      stripLobe: Number(process.env.STRIP_LOBE ?? 0.09) } : null,
+      // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
+      strips: process.env.STRIPS === "1", twigs: shrub.twigs, stripWidth: Number(process.env.STRIP_WIDTH ?? 0.2),
+      stripLobe: Number(process.env.STRIP_LOBE ?? 0.12), stripDroop: Number(process.env.STRIP_DROOP ?? 0.3) } : null,
     // The lit side spread over the upper bands rather than clipped into the top one (STRENGTH tips the leaves' normals,
     // OFFSET shifts every band's threshold).
     strength: Number(process.env.STRENGTH ?? 1.5), offset: Number(process.env.OFFSET ?? -0.05) });
