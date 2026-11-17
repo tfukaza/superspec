@@ -102,7 +102,11 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     if (sparse && branches) {
       // A branchlet lies along the way out of the foliage, sagging a little: its up is that way, and its plane holds
       // it, turned about it at random but mostly lying flat (its normal toward the sky), as a spray carries its leaves.
-      up = n.clone().addScaledVector(new THREE.Vector3(0, 0, 1), -0.35).normalize();
+      // Out from the trunk as well as out of the foliage, and pulled down, so a spray at the crown (where the foliage's
+      // outward is straight up) arches over and out instead of standing up.
+      const radial = new THREE.Vector3(p.x - middle.x, p.y - middle.y, 0);
+      if (radial.lengthSq() > 1e-8) radial.normalize();
+      up = n.clone().addScaledVector(radial, 0.6).addScaledVector(new THREE.Vector3(0, 0, 1), -0.6).normalize();
       plane = new THREE.Vector3(random() - 0.5, random() - 0.5, 0.9 + random() - 0.5).projectOnPlane(up);
       if (plane.lengthSq() < 1e-6) plane.set(1, 0, 0).projectOnPlane(up);
       plane.normalize();

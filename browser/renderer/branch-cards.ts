@@ -56,6 +56,8 @@ export interface BranchCardOptions {
   lopsided?: number;
   /** Twig length as a share of the main stem's (the spray's breadth). */
   reach?: [number, number];
+  /** Short twiglets off each side twig: the fewest, and how many more at random. */
+  twiglets?: [number, number];
 }
 
 function generator(seed: number): () => number {
@@ -93,8 +95,10 @@ function at(points: [number, number][], t: number): { x: number; y: number; head
 
 export function branchCard(options: BranchCardOptions = {}): LeafCard {
   // The defaults are the dense, bushy spray (many short twigs fanning from a short stem into a full crown).
-  const { size = 256, seed = 1, leaf = 0.12, step = 0.05, twigs = [3, 1], missing = 0.05, width = 0.42, droop = 0.25,
-    lopsided = 0.35, reach = [0.55, 0.75] } = options;
+  // Small leaves, close together, on three orders of stem (main, side twigs, and short twiglets off those), so a card
+  // carries many leaves.
+  const { size = 256, seed = 1, leaf = 0.08, step = 0.032, twigs = [3, 1], missing = 0.05, width = 0.42, droop = 0.25,
+    lopsided = 0.35, reach = [0.55, 0.75], twiglets = [1, 1] } = options;
   const random = generator(seed * 6007 + 29);
   const between = (a: number, b: number) => a + (b - a) * random();
   const data = new Float32Array(size * size * 4);
@@ -117,13 +121,23 @@ export function branchCard(options: BranchCardOptions = {}): LeafCard {
     const out = side * between(0.95, 1.4);
     const length = mainLength * between(reach[0], reach[1]) * (side === longSide ? 1 + 0.43 * lopsided : 1 - 0.57 * lopsided) * (1 - 0.3 * t);
     // Back toward the main direction, then over with the droop.
-    stems.push({ points: grow(base.x, base.y, base.heading + out, length, -out * 0.45 - side * droop * 0.6), side });
+    const twig = grow(base.x, base.y, base.heading + out, length, -out * 0.45 - side * droop * 0.6);
+    stems.push({ points: twig, side });
+    // Twiglets: short stems off the twig, alternating, angled out from it.
+    const few = twiglets[0] + Math.floor(random() * (twiglets[1] + 1));
+    let turn = random() < 0.5 ? -1 : 1;
+    for (let j = 0; j < few; j++) {
+      const p = at(twig, 0.3 + 0.45 * (j + between(0.2, 0.8)) / few);
+      const angle = turn * between(0.7, 1.05);
+      stems.push({ points: grow(p.x, p.y, p.heading + angle, length * between(0.35, 0.5), -angle * 0.4, 8), side: 2 * side });
+      turn = -turn;
+    }
     side = -side;
   }
   // Stems first, thin and darker; the leaves lie over them.
   for (const stem of stems) {
     // Thick enough to outlast the melt (a blur of a few texels cut again at a half takes anything thinner).
-    const thick = (stem.side === 0 ? 0.017 : 0.013) * s;
+    const thick = (stem.side === 0 ? 0.017 : Math.abs(stem.side) === 1 ? 0.013 : 0.011) * s;
     for (let k = 0; k + 1 < stem.points.length; k++) {
       const [ax, ay] = stem.points[k], [bx, by] = stem.points[k + 1];
       const taper = 1 - 0.6 * k / stem.points.length;
