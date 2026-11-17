@@ -43,7 +43,7 @@ function along(points: THREE.Vector3[], t: number): THREE.Vector3 {
 }
 
 export function twigStrips(field: DensityField, twigs: number[][], options: TwigStripOptions): THREE.Mesh {
-  const { width = 0.16, lobe = 0.15, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
+  const { width = 0.16, lobe = 0.11, level, samples = 16, droop = 0.3, seed = 5, sun, leafMap } = options;
   let state = seed >>> 0;
   const random = () => { state = (Math.imul(state ^ (state >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) >>> 0; return state / 4294967296; };
   const centres: number[] = [], tangents: number[] = [], normals: number[] = [], sides: number[] = [];
@@ -183,7 +183,7 @@ void main() {
   for (int j = 0; j < 4; j++) {
     float index = first + 1.0 - float(j);
     float h = hash(index + side * 31.0 + strip * 17.0);
-    if (h < 0.2 + 0.4 * (1.0 - clamp(vShoot.y, 0.0, 1.0))) continue;
+    if (h < 0.1 + 0.3 * (1.0 - clamp(vShoot.y, 0.0, 1.0))) continue;
     float u0 = (index + shift + 0.3 * (hash(index * 2.7 + side * 3.0 + strip * 11.0) - 0.5)) * lobe;
     float at = u0 / max(vShoot.x, 1e-3);
     if (at < 0.0 || at > 1.0) continue;

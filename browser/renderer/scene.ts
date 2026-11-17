@@ -142,7 +142,7 @@ export class RustScene {
   readonly foliageBlur = (() => {
     const query = new URLSearchParams(location.search);
     const meters = Number(query.get("leafblur"));
-    return meters > 0 ? new FoliageBlur(this.renderer, meters, Number(query.get("leafblurmix") ?? 0.6)) : null;
+    return meters > 0 ? new FoliageBlur(this.renderer, meters, Number(query.get("leafblurmix") ?? 0.6), query.get("leafrepaint") === "1") : null;
   })();
   /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
   readonly strokeEdges = STROKES ? (() => {
@@ -210,9 +210,11 @@ export class RustScene {
     let blurAnchor: THREE.Vector3 | null = null;
     if (this.foliageBlur) {
       for (const mesh of this.models.children) {
-        if (mesh.userData.foliage?.family !== "leaves") continue;
+        // A plant's leaves, or a part that asks for the blur (the painted-mass prototype's, with its own anchor).
+        const asks = mesh.userData.blurAnchor as THREE.Vector3 | undefined;
+        if (mesh.userData.foliage?.family !== "leaves" && !asks) continue;
         mesh.layers.set(BLUR_LAYER);
-        const origin = ((mesh as THREE.Mesh).material as THREE.Material).userData?.foliageUniforms?.msFoliageOrigin?.value as THREE.Vector3 | undefined;
+        const origin = asks ?? ((mesh as THREE.Mesh).material as THREE.Material).userData?.foliageUniforms?.msFoliageOrigin?.value as THREE.Vector3 | undefined;
         if (mesh.visible && origin && !blurAnchor) blurAnchor = origin.clone();
       }
     }
