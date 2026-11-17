@@ -123,7 +123,11 @@ export function contourFuzz(geometry: THREE.BufferGeometry, cards: THREE.Texture
   const random = generator(seed);
   const anchors: number[] = [], first: number[] = [], second: number[] = [], randoms: number[] = [];
   for (const edge of edges(coarse > 0 ? coarsen(geometry, coarse) : geometry)) {
-    const n1 = edge.normals[0], n2 = edge.normals[1] ?? edge.normals[0].clone().negate();
+    // An edge with one face is a hole the coarsening tore, inside the surface rather than on its outline: no card.
+    // (Taking the missing face as the first turned over made the card always shown, and its light normal, their sum,
+    // zero: a flat card in the darkest band.)
+    if (edge.normals.length < 2) continue;
+    const n1 = edge.normals[0], n2 = edge.normals[1];
     const length = edge.a.distanceTo(edge.b);
     // `density` per meter on average, the fraction rounded at random: short edges get a card only sometimes, so the
     // count follows the edges' total length rather than how finely the mesh is divided.
@@ -195,7 +199,8 @@ void main() {
   vUv = uv;
   vRandom = aRandom;
   // The card's light comes from its edge (the two faces' mean normal), tipped by the card's own dome in its axes.
-  vEdgeNormal = normalize(n1 + n2);
+  // Two faces folded flat against each other have no mean: their outward direction across the edge stands in.
+  vEdgeNormal = length(n1 + n2) > 1e-3 ? normalize(n1 + n2) : out_;
   vSide = side * cos(roll) + up * sin(roll);
   vUp = -side * sin(roll) + up * cos(roll);
   vWorld = world;
@@ -232,7 +237,7 @@ void main() {
     vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
     float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
     vec3 n = normalize(normalize(vEdgeNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
-    float light = dot(n, sun) * 0.5 + 0.5 + offset;
+    float light = msLeafLight(n, sun, offset);
     gl_FragColor = vec4(msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z), 1.0);
   } else if (shaded > 0.5) {
     vec2 dome = texture2D(cardNormals, at).rg * 2.0 - 1.0;

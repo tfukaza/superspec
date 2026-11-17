@@ -74,7 +74,7 @@ export function sampleDensity(field: DensityField, p: THREE.Vector3): number {
 }
 
 /** Toward the denser side at `p`: the field's gradient by central differences, unnormalized. */
-function gradient(field: DensityField, p: THREE.Vector3): THREE.Vector3 {
+export function gradient(field: DensityField, p: THREE.Vector3): THREE.Vector3 {
   const h = field.cell * 0.5, g = new THREE.Vector3();
   for (let a = 0; a < 3; a++) {
     const plus = p.clone(), minus = p.clone();

@@ -255,6 +255,17 @@ vec3 msLeafMap(sampler2D map, vec3 world, vec3 origin, float tile, out vec3 t, o
   }
   return vec3(normalXY, tone);
 }
+// Where a normal falls in the bands: by its angle from the sun, not the cosine of it, so a leaf tipped a given angle
+// moves the same way through the bands anywhere on the plant. The cosine flattens toward its ends: on the shaded side
+// every leaf of a card would fall in the bottom band, and the card read as one flat dark disc.
+// The shaded side takes the sky's fill as a floor, as a painter lifts it: a leaf tipped up toward the sky steps up to
+// the second or third band, one turned down stays in the first, so leaves facing away from the sun still band leaf by
+// leaf rather than merge into one dark patch.
+float msLeafLight(vec3 n, vec3 sun, float offset) {
+  float direct = 1.0 - acos(clamp(dot(n, sun), -1.0, 1.0)) / 3.14159265 + offset;
+  float sky = 0.42 * (0.5 + 0.5 * n.z);
+  return max(direct, sky);
+}
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
   float x = clamp(t, 0.0, 0.999) * 6.0;
@@ -425,7 +436,7 @@ void main() {
   vec4 leaf = vec4(0.0, 0.0, tone, 1.0);
   // The leaf's normal tips the bulging surface normal along the map's own axes.
   vec3 shaded = normalize(n * m.z + (t * m.x + b * m.y) * strength);
-  float light = dot(shaded, sun) * 0.5 + 0.5 + offset;
+  float light = msLeafLight(shaded, sun, offset);
   gl_FragColor = vec4(msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.b), 1.0);
   #include <colorspace_fragment>
 }`,

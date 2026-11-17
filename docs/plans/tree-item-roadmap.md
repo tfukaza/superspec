@@ -603,6 +603,21 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     birch's levels are 32,372 / 6,546 / 5,516 triangles, and its plant document 10.0 MB, not 15.8 MB.
   - Next, if needed: divide each clump by its size (the birch's near surface is still 27 × 512 triangles), and the
     impostor fallback above for the far level.
+- **Foliage by density (2026-11-17).** The clumps made trees read as separate lumps; foliage is now drawn from one
+  continuous leaf density field (`browser/renderer/leaf-density.ts`): every leaf cluster (the washroom plants carry
+  them all as `sites`) adds a `(1 - d²/r²)²` kernel of 0.5 m to a 0.2 m grid, "full" its 95th percentile.
+  - `VIEW=density` shows the field as dots. `BASE=density` paints its surface at `FIELD_LEVEL` of full (marching
+    tetrahedra, normals from its gradient) in place of the clumps: 0.6 for the poplar (its dense column), 0.85 for the
+    birch (a mass per limb, the trunk showing between).
+  - Below that level, `density-cards.ts` scatters leaf cards through the field (`CARD_SIZE`, `CARD_KEEP`,
+    `CARD_SPACING`): kept by density, dense atlas cards near the core and sparse, smaller ones further out, each shaded
+    by the field's outward normal and the leaf map, so light runs on from the core: 254 cards on the poplar, 644 on
+    the birch.
+  - Bands are cut by a normal's angle from the sun, not its cosine, and the shaded side takes the sky as a floor (up to
+    the third band for a leaf facing up): every leaf map shader shares it (`msLeafLight`), the shrub candidate included.
+  - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
+    face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
+    get no card.
 
 ## Open decisions
 
