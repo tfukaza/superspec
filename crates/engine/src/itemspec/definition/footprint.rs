@@ -205,6 +205,12 @@ pub(super) fn locals(name: &str, edges: &[Edge], index: usize) -> Vec<(String, f
         }
     }
     let flag = |b: bool| f64::from(u8::from(b));
+    // Distance along the cut outline from point 0 to this wall's start, so a pattern measured from it
+    // runs on round every corner without a seam.
+    let perimeter: f64 = edges[..index]
+        .iter()
+        .map(|edge| edge.length + edge.chamfer_length * f64::from(u8::from(edge.cut > 0.)))
+        .sum();
     [
         ("x", edge.start[0]),
         ("y", edge.start[1]),
@@ -220,6 +226,8 @@ pub(super) fn locals(name: &str, edges: &[Edge], index: usize) -> Vec<(String, f
         ("cdx", edge.chamfer_direction[0]),
         ("cdy", edge.chamfer_direction[1]),
         ("clength", edge.chamfer_length),
+        ("perimeter", perimeter),
+        ("cperimeter", perimeter + edge.length),
         ("min_x", bounds[0]),
         ("min_y", bounds[1]),
         ("max_x", bounds[2]),

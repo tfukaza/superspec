@@ -97,7 +97,7 @@ export function buildMaterials({ weathering = true } = {}) {
  */
 const anchoredConcrete = "kowloon-concrete-anchored.material.ts";
 /** The weathering layer recipes the Kowloon items name, and the base they go over. */
-export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-runoff.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts"];
+export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-runoff.material.ts", "kowloon-grime-streaks.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts"];
 function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
@@ -148,7 +148,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     for (const name of kowloonLayerModules) modules[name] ??= example(name);
     mappings["render-paint"] = "anchored";
     // The signs' own slots stay plain, as the shipped catalog materials: the glyph atlas and the board.
-    for (const name of ["lettering.png", "signboard.png"]) assets[`superspec-material:${name}`] = readFileSync(resolve(here, "../../../assets/materials", name));
+    for (const name of ["lettering.png", "signboard.png", "grime-streaks.png"]) assets[`superspec-material:${name}`] = readFileSync(resolve(here, "../../../assets/materials", name));
     materials.push(...facadeMaterials());
     scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots });
   }

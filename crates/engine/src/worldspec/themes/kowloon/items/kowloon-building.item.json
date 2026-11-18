@@ -36,7 +36,7 @@
       "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
       "when": "e_length >= 0.3",
       "generator": {"kind": "item", "entry": "kowloon-facade-side.item.json",
-        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"expr": "e_length"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
+        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"expr": "e_length"}, "u0": {"expr": "e_perimeter"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + e"},
                        "frame": {"parameter": "frame"},
                        "groundShops": {"choose": [false, true], "by": "e_street * (e_length >= 2.5)"},
@@ -64,7 +64,7 @@
       "repeat": [{"name": "c", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
       "when": "(c_cut > 0) * (c_clength >= 0.3)",
       "generator": {"kind": "item", "entry": "kowloon-facade-side.item.json",
-        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"expr": "c_clength"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
+        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"expr": "c_clength"}, "u0": {"expr": "c_cperimeter"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + 100 + c"},
                        "edge": 0.2, "windows": false, "groundShops": false, "downpipe": false, "riser": false}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_cdx", "c_cdy"]}

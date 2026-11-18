@@ -3,6 +3,7 @@
   "version": 2,
   "id": "kowloon-ground-floor",
   "parameters": {
+    "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
     "paint": {"type": "color", "default": "#e6d6b0"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 2, "max": 40, "unit": "m"},
@@ -27,6 +28,7 @@
         "width": {"parameter": "width"},
         "height": {"parameter": "height"},
         "thickness": {"parameter": "thickness"},
+        "patternAnchor": ["-u0", 0],
         "openings": [
           {"id": "shop", "repeat": {"name": "i", "count": {"derived": "shops"}},
            "width": "pitch - 0.3", "height": "height - 0.5",
@@ -60,8 +62,8 @@
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
       {"entry": "kowloon-ground-stain.material.ts", "parameters": {"dampness": 0.6}, "seed": 2},
       {"entry": "kowloon-moss.material.ts", "parameters": {"dampness": 0.5}, "seed": 4},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 1}, "seed": 3, "follow": {"source": "top"}},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.9, "flow": 0.9, "longest": 1.4}, "seed": 7, "follow": {"source": "drip"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85}, "seed": 3, "follow": {"source": "top"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85, "streakLength": 1.4, "shift": 2.7}, "seed": 7, "follow": {"source": "drip"}}
     ]
   }
 }

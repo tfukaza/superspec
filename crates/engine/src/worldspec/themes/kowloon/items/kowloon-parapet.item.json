@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-parapet",
   "parameters": {
+    "z0": {"type": "number", "default": 0, "min": 0, "max": 200, "unit": "m"},
+    "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
     "paint": {"type": "color", "default": "#e6d6b0"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.3, "max": 40, "unit": "m"},
@@ -14,7 +16,8 @@
   "parts": [
     {
       "id": "parapet",
-      "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": {"parameter": "height"}, "thickness": {"parameter": "thickness"}},
+      "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": {"parameter": "height"}, "thickness": {"parameter": "thickness"},
+        "patternAnchor": ["-u0", "-z0"]},
       "slots": {"front": "wall", "back": "wall", "edge": "wall"}
     },
     {
@@ -36,7 +39,7 @@
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 1}, "seed": 3, "follow": {"source": "top"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85}, "seed": 3, "follow": {"source": "top"}}
     ]
   }
 }

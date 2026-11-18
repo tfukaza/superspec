@@ -203,7 +203,7 @@ fn a_side_stacks_a_ground_floor_upper_floors_and_a_parapet() {
         .map(|l| l.entry.as_str())
         .collect();
     for entry in [
-        "kowloon-runoff.material.ts",
+        "kowloon-grime-streaks.material.ts",
         "kowloon-ground-stain.material.ts",
         "kowloon-moss.material.ts",
     ] {
@@ -509,4 +509,53 @@ fn a_steel_balcony_has_rails_where_a_parapet_is_solid() {
     };
     assert!(rails("steel").contains("metal"), "{:?}", rails("steel"));
     assert!(!rails("parapet").contains("metal"));
+}
+
+#[test]
+fn wall_patterns_run_on_round_the_corners() {
+    // Each side's walls are measured from its distance along the cut footprint, so the concrete
+    // and paint continue round every corner: at a side's start its pattern reads that distance.
+    let building = generate("kowloon-building.item.json", &[]);
+    let anchor = |part: &str| {
+        building
+            .geometry
+            .anchors
+            .iter()
+            .find(|a| a.part == part)
+            .unwrap()
+            .clone()
+    };
+    let along = |part: &str| {
+        let a = anchor(part);
+        let start = translation(&building, part);
+        (0..3)
+            .map(|i| (start[i] - a.origin[i]) * a.u[i])
+            .sum::<f64>()
+    };
+    let cut = 0.24f64;
+    let corner = cut * 2f64.sqrt();
+    assert!(along("side-0").abs() < 1e-9);
+    assert!(
+        (along("corner-0") - (9.8 - cut)).abs() < 1e-9,
+        "{}",
+        along("corner-0")
+    );
+    assert!(
+        (along("side-1") - (9.8 - cut + corner)).abs() < 1e-9,
+        "{}",
+        along("side-1")
+    );
+    assert!(
+        (along("side-2") - (9.8 - cut + corner + 7. - cut)).abs() < 1e-9,
+        "{}",
+        along("side-2")
+    );
+    // Upright, from the ground: every side's v is +z and its origin on the ground.
+    for part in ["side-0", "side-1", "side-2", "side-3", "corner-0"] {
+        let a = anchor(part);
+        assert!(
+            (a.v[2] - 1.).abs() < 1e-9 && a.origin[2].abs() < 1e-9,
+            "{part}: {a:?}"
+        );
+    }
 }

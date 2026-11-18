@@ -160,6 +160,20 @@ grime: floors under their top edge, sills and air conditioners' drips, on both t
 ground floors under their top and awnings; parapets under their coping. Identical layers from a side's storeys merge,
 so a side stays within the 8 layers a slot composes.
 
+**A generic, cached grime.** `kowloon-grime-streaks` is the layer the items use now: grime streaking from whatever
+edge it follows (`source`: an authored or generated polyline, so the edge's endpoints are the feature's), with a
+colour, strength, longest streak, repeat and shift. The streaks are one cached tile, `grime-streaks.png`
+(`tools/grime/streak-pattern.mjs` bakes the wall condition's runoff into it once: 4 m along the edge, wrapping, by
+2.8 m down; preview `itemspec/grime-streaks-tile.png`). Per texel the layer only maps into edge space: the distance
+to the edge becomes a drop along the surface's downhill direction (gravity projected onto it) and the position along
+the edge is moved back up that line, so the same tile is skewed on a sloping edge, stretched for a shorter run and
+repeated along any edge, at the cost of two feature queries and one image read. `kowloon-runoff` (the procedural
+port) stays as the reference it was baked from.
+
+**Corners.** Each side's walls (`u0`) are measured from the side's distance along the cut footprint
+(`<edge>_perimeter`, `_cperimeter`), and a sub-item part takes its sub-item's first part's pattern anchor, so the
+concrete and paint run on round every corner and up every storey instead of restarting on each side.
+
 The earlier grey blobs were not grime at all. At production resolution most of the building's 518 receivers did
 not fit the preview's 512 MiB of baked maps and stayed on the per-pixel look, which shows a layered slot's base alone:
 no paint, no grime. `?bakememory=<MiB>` (64 to 8192) raises the allowance; the building takes about 5.1 GiB at

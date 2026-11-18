@@ -3,6 +3,7 @@
   "version": 2,
   "id": "kowloon-floor",
   "parameters": {
+    "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
     "paint": {"type": "color", "default": "#e6d6b0"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.3, "max": 40, "unit": "m"},
@@ -47,7 +48,7 @@
         "width": {"parameter": "width"},
         "height": {"parameter": "height"},
         "thickness": {"parameter": "thickness"},
-        "patternAnchor": [0, "-z0"],
+        "patternAnchor": ["-u0", "-z0"],
         "openings": [
           {"id": "window", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)",
            "width": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)", "height": {"parameter": "windowHeight"},
@@ -129,13 +130,13 @@
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 1}, "seed": 3, "follow": {"source": "top"}},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 0.8, "longest": 1.6}, "seed": 5, "follow": {"source": "sill"}},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.9, "flow": 0.9, "longest": 1.4}, "seed": 7, "follow": {"source": "drip"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85}, "seed": 3, "follow": {"source": "top"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.7, "streakLength": 1.6, "shift": 1.3}, "seed": 5, "follow": {"source": "sill"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85, "streakLength": 1.4, "shift": 2.7}, "seed": 7, "follow": {"source": "drip"}}
     ],
     "tile": [
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 0.8, "longest": 1.6}, "seed": 5, "follow": {"source": "sill"}},
-      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.9, "flow": 0.9, "longest": 1.4}, "seed": 7, "follow": {"source": "drip"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.7, "streakLength": 1.6, "shift": 1.3}, "seed": 5, "follow": {"source": "sill"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85, "streakLength": 1.4, "shift": 2.7}, "seed": 7, "follow": {"source": "drip"}}
     ]
   }
 }

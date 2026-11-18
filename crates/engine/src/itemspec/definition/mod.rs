@@ -472,6 +472,23 @@ pub fn prepare_in(
 }
 
 impl PreparedItem {
+    /// The pattern anchor of the item's first part, in the item's coordinates (after its
+    /// transform), found from the prepared shapes without building any mesh.
+    pub(super) fn first_anchor(&self) -> Option<PatternAnchor> {
+        let Shape::Parts(parts) = &self.shape else {
+            return None;
+        };
+        let part = parts.first()?;
+        let (_, local) = part.features();
+        let matrix = Matrix(self.definition.transform).then(part.placement());
+        Some(PatternAnchor {
+            part: local.part,
+            origin: matrix.point(local.origin),
+            u: matrix.direction(local.u),
+            v: matrix.direction(local.v),
+            normal: matrix.direction(local.normal),
+        })
+    }
     pub fn build(&self, cancelled: &dyn Fn() -> bool) -> Result<GeneratedItem, ItemDiagnostic> {
         Ok(self.construct(None, cancelled)?.0)
     }

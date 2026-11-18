@@ -917,10 +917,22 @@ impl PreparedPart {
         Ok(surfaces.into_meshes(&self.id, &self.slots))
     }
 
-    fn features(&self) -> (Vec<Feature>, PatternAnchor) {
+    /// Where the part sits in its item: part coordinates to item definition coordinates.
+    pub(super) fn placement(&self) -> Matrix {
+        self.placement
+    }
+    /// The part's own features and pattern anchor, in part coordinates. A sub-item part's
+    /// anchor is its sub-item's first part's, so a pattern measured from it continues across the
+    /// parts that place their sub-items at matching offsets (a building's storeys and sides).
+    pub(super) fn features(&self) -> (Vec<Feature>, PatternAnchor) {
         match &self.shape {
             PartShape::Panel(panel) => panel.features(&self.id),
             PartShape::Route(route) => route.features(&self.id),
+            PartShape::Item { prepared, .. } if prepared.0.first_anchor().is_some() => {
+                let mut anchor = prepared.0.first_anchor().unwrap();
+                anchor.part = self.id.clone();
+                (vec![], anchor)
+            }
             // Straight generators and boxes report an anchor at their origin and no features.
             _ => (
                 vec![],
