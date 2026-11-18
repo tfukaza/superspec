@@ -35,7 +35,7 @@ const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label
 const shadeTint = param.vec3({ default: vec3(0.5, 0.66, 0.68), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
 const softness = param.scalar({ default: 1.5, range: [0, 8], label: "Edge softness (pixels)" });
-const range = param.scalar({ default: 0.02, range: [0, 1], label: "Gradient range" });
+const range = param.scalar({ default: 0.3, range: [0, 1], label: "Gradient range" });
 
 // The concrete's study coordinates: two meters per unit, squashed a little, so patches are not round.
 const studyUv = div(world.xy, 2);

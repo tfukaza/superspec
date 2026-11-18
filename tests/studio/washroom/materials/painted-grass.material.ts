@@ -8,7 +8,7 @@ import { defineMaterial, param, vec3, mix, mul, add, shadeBand, sunDirection, sa
 const shadeTint = param.vec3({ default: vec3(0.5, 0.66, 0.68), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
 const softness = param.scalar({ default: 1.5, range: [0, 8], label: "Edge softness (pixels)" });
-const range = param.scalar({ default: 0.02, range: [0, 1], label: "Gradient range" });
+const range = param.scalar({ default: 0.3, range: [0, 1], label: "Gradient range" });
 const blade = param.vec3({ default: vec3(0.24, 0.48, 0.06), range: [0, 1], label: "Lit blade albedo" });
 
 const edge = edgeBreak({ size: 0.35, amount: 0.05 });
