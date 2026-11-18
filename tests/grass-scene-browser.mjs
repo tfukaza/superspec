@@ -125,7 +125,8 @@ try {
     if (relief && lawn) {
       let shadow;
       s.models.traverse(o => { const u = o.material?.userData?.foliageUniforms; if (!shadow && u?.msFoliageShadow) shadow = { msFoliageShadow: u.msFoliageShadow, msFoliageShadowMatrix: u.msFoliageShadowMatrix, msFoliageShadowParams: u.msFoliageShadowParams }; });
-      const mesh = window.__grassRelief(lawn, relief, { ...(reliefOptions ? JSON.parse(reliefOptions) : {}), shadow });
+      // RELIEF=1: the normal map, the chosen method.
+      const mesh = window.__grassRelief(lawn, relief === "1" ? "normal" : relief, { ...(reliefOptions ? JSON.parse(reliefOptions) : {}), shadow });
       s.models.add(mesh);
       lawn.visible = false;
       reliefInfo = mesh.userData.grassRelief;

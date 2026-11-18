@@ -669,6 +669,17 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     a hill steep to the south, a near-vertical bank), pictured by `tests/grass-scene-browser.mjs` with `PILLAR=1`
     (a concrete pillar and a 22 cm ball), `SUN=60,62`, `VIEW_SCALE=1.9`. Reference renders `painted-mass/grass-*.png`.
     Known: with the shade threshold at 0.76, cast shadows only show with the sun above about 50 degrees.
+  - **Exploring after the grass milestone: grass as relief (2026-11-17).** Painted stroke stamps on the ground (combed,
+    then scattered) were rejected. Soft clump mounds (`grass-clumps.ts`: traced ellipsoids on sorted, blended cards)
+    showed the direction, and `?clumpblur=<pixels>` (a soft mode of `foliage-blur.ts`) blurs such parts' colours among
+    themselves while keeping their soft coverage, so lit and shaded borders run together. `grass-relief.ts` then draws
+    the lawn from one height function of grass clumps in 3D (jittered blobs about 28 cm, outlines warped by fractal
+    noise, irregular blade ridges, gathered into mounds by a smooth low-frequency noise, measured along the surface so
+    slopes and banks match the flat). Three methods were compared on the hill site (`RELIEF=`, `TIME=1`, whole-frame
+    medians, plain lawn about 0.9 ms): a procedural normal map, 1.3 to 1.9 ms; displacement of the lawn divided tenfold
+    per edge, 4 to 5 ms (non-indexed, about 3 M vertex runs); parallax occlusion mapping, 2.5 to 3.5 ms with the
+    earlier flat noise. **The normal map was chosen** (`RELIEF=1 CLUMP_BLUR=2`): nearly the look at the lawn's cost.
+    Known: the colour still comes from `ground.color`, a top-down field, so it stretches on steep banks.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
