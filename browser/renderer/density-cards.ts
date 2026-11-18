@@ -55,6 +55,14 @@ export interface DensityCardOptions {
    * sprays); lower keeps the dense foliage's light and shade in broad masses from its overall form.
    */
   denseDetail?: number;
+  /**
+   * A smoother field (the same sites, a wider kernel) by which a card's tier is chosen, so the tiers spread over a
+   * wider band than the painted core's own falloff; without it, the field itself.
+   */
+  tierField?: DensityField;
+  /** Sprays' length against the family's, and how far (a share of their length) their roots sink into the foliage. */
+  sprayScale?: number;
+  tuck?: number;
   /** With the family: the denser cards are round family cards (true) or the original lobed clump cards (false). */
   roundFamily?: boolean;
   /** With the family: the round cards' size against a spray's of the same kind, and the share of them kept. */
@@ -91,7 +99,8 @@ function generator(seed: number): () => number {
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
-    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1 } = options;
+    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1,
+    tierField, sprayScale = 0.75, tuck = 0.3 } = options;
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
@@ -145,7 +154,9 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     let tier: number;
     if (branches) {
       const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
-      const wDense = smooth(0.5, 0.95, depth), wSpray = 1 - smooth(0.05, 0.5, depth);
+      // The tier's depth, from the smoother field when there is one.
+      const td = tierField ? Math.min(1, Math.max(0, (sampleDensity(tierField, p) / tierField.full - floor) / (level - floor))) : depth;
+      const wDense = smooth(0.5, 0.95, td), wSpray = 1 - smooth(0.05, 0.5, td);
       const wMid = Math.max(0, 1 - wDense - wSpray), r = random() * (wDense + wMid + wSpray);
       tier = r < wDense ? 0 : r < wDense + wMid ? 1 : 2;
     } else tier = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 2 : 0;
@@ -164,7 +175,8 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     // A round card fills its circle, so it is drawn smaller than a spray and fewer are kept, or they bury the branches
     // and sprays; an open one a little larger, its leaves farther apart.
     if (family && !twig && random() > roundKeep) continue;
-    kinds.push(kind, family ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize * (tier === 1 ? 1.15 : 1)) : 0);
+    const length = branchSize * BRANCH_FAMILY[size3].scale * (twig ? sprayScale : roundSize * (tier === 1 ? 1.15 : 1));
+    kinds.push(kind, family ? length : 0);
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
     let plane: THREE.Vector3, up: THREE.Vector3;
@@ -176,7 +188,10 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
       const radial = new THREE.Vector3(p.x - middle.x, p.y - middle.y, 0);
       if (radial.lengthSq() > 1e-8) radial.normalize();
       up = (twig ? twig.d.clone().addScaledVector(n, 0.35) : n.clone().addScaledVector(radial, 0.6))
-        .addScaledVector(new THREE.Vector3(0, 0, 1), -0.45 - 0.2 * random()).normalize();
+        .addScaledVector(new THREE.Vector3(0, 0, 1), -0.7 - 0.2 * random()).normalize();
+      // Tucked in: the root sinks back into the foliage, so the spray reaches out of the mass rather than standing off it.
+      const back = up.clone().multiplyScalar(-tuck * length);
+      for (let a = 0; a < 3; a++) centres[centres.length - 3 + a] += back.getComponent(a);
       // Its leaves face the sky, as a spray holds them to the light: the card's plane is the one through its direction
       // whose normal is nearest up, rolled a little at random about its direction.
       plane = new THREE.Vector3(0, 0, 1).projectOnPlane(up);
@@ -201,19 +216,21 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const count = Math.floor(flat.length / 3);
     if (count < 3) continue;
     const point = (i: number) => new THREE.Vector3(flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]);
-    const root = point(Math.round((count - 1) * 0.75)), tip = point(count - 1);
+    const root = point(Math.round((count - 1) * 0.6)), tip = point(count - 1);
     const along = tip.clone().sub(point(count - 2));
     if (along.lengthSq() < 1e-10 || tip.distanceTo(point(0)) < 0.3) continue;
     along.normalize();
     const n = gradient(field, root).negate();
     if (n.lengthSq() < 1e-12) n.subVectors(root, middle);
     n.normalize();
-    const up = along.clone().addScaledVector(n, 0.25).addScaledVector(new THREE.Vector3(0, 0, 1), -0.35 - 0.2 * random()).normalize();
+    const up = along.clone().addScaledVector(n, 0.25).addScaledVector(new THREE.Vector3(0, 0, 1), -0.6 - 0.2 * random()).normalize();
     const plane = new THREE.Vector3(0, 0, 1).projectOnPlane(up);
     if (plane.lengthSq() < 1e-6) plane.set(1, 0, 0).projectOnPlane(up);
     plane.normalize().applyAxisAngle(up, (random() - 0.5) * 0.9);
     const size3 = random() < 0.6 ? 1 : 0;
-    kinds.push(size3, branchSize * BRANCH_FAMILY[size3].scale);
+    const length = branchSize * BRANCH_FAMILY[size3].scale * sprayScale;
+    kinds.push(size3, length);
+    root.addScaledVector(up, -tuck * length);
     centres.push(root.x, root.y, root.z);
     normals.push(n.x, n.y, n.z);
     planes.push(plane.x, plane.y, plane.z);

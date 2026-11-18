@@ -117,7 +117,8 @@ try {
         keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, facing: densityBase.cardFacing, sun,
         ...(densityBase.branches ? { branches: window.__branchCardTexture(), branchSize: densityBase.branchSize, branchKeep: densityBase.branchKeep, twigs: densityBase.twigs,
           roundSize: densityBase.roundSize, roundKeep: densityBase.roundKeep, denseFacing: densityBase.denseFacing, denseDetail: densityBase.denseDetail,
-          roundFamily: densityBase.roundFamily } : {}),
+          roundFamily: densityBase.roundFamily, sprayScale: densityBase.sprayScale, tuck: densityBase.tuck,
+          tierField: densityBase.tierSpread > 0 ? window.__densityField(densityBase.sites, densityBase.radius * densityBase.tierSpread, densityBase.cell) : undefined } : {}),
         leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
       s.models.add(cards);
@@ -167,7 +168,7 @@ try {
       cards: process.env.CARDS !== "0", cardSize: Number(process.env.CARD_SIZE ?? 0.55), keep: Number(process.env.CARD_KEEP ?? 0.9),
       spacing: Number(process.env.CARD_SPACING ?? 0.18), cardFloor: Number(process.env.CARD_FLOOR ?? 0.1),
       // CARD_FACING: 1 the cards always face the camera, 0 they keep their own orientation in the world, between a blend.
-      cardFacing: Number(process.env.CARD_FACING ?? 0.5),
+      cardFacing: Number(process.env.CARD_FACING ?? 0.75),
       // BRANCHES=1: the hybrid, the sparser cards branchlets (branch-cards.ts) BRANCH_SIZE meters long, BRANCH_KEEP of
       // them kept.
       // ROUND_SIZE, ROUND_KEEP: the round stemless cards' size against a spray's, and the share kept.
@@ -176,6 +177,9 @@ try {
       // original lobed clump cards there instead of the round family cards.
       // DENSE_DETAIL: how strongly the denser cards' leaf tilts and the leaf map move leaves across the bands.
       denseDetail: Number(process.env.DENSE_DETAIL ?? 1),
+      // TIER_SPREAD: the card tiers are chosen on a field smoothed this many times wider (0: the field itself);
+      // SPRAY_SCALE: the sprays' length; TUCK: how far their roots sink into the foliage, a share of their length.
+      tierSpread: Number(process.env.TIER_SPREAD ?? 1.6), sprayScale: Number(process.env.SPRAY_SCALE ?? 0.75), tuck: Number(process.env.TUCK ?? 0.3),
       denseFacing: Number(process.env.DENSE_FACING ?? 1), roundFamily: process.env.DENSE !== "old",
       branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 0.75), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.9),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
