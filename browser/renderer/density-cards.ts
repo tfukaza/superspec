@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { BAND_GLSL } from "./leaf-normals.ts";
 import { type DensityField, gradient, sampleDensity } from "./leaf-density.ts";
-import { branchCardAtlas } from "./branch-cards.ts";
+import { BRANCH_FAMILY, branchFamilyAtlas } from "./branch-cards.ts";
 
 /**
  * Density cards (prototype): leaf cards through the foliage below the painted core (leaf-density.ts), so the plant
@@ -54,7 +54,7 @@ let branchTexture: THREE.DataTexture | undefined;
 /** The branch card atlas (branch-cards.ts) as a texture, made once: 16 dense sprays, mipmapped. */
 export function branchCardTexture(): THREE.DataTexture {
   if (branchTexture) return branchTexture;
-  const atlas = branchCardAtlas(4, 256, 1, 2);
+  const atlas = branchFamilyAtlas(256, 2);
   branchTexture = new THREE.DataTexture(atlas.data, atlas.width, atlas.height, THREE.RGBAFormat, THREE.UnsignedByteType);
   branchTexture.magFilter = THREE.LinearFilter;
   branchTexture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -91,17 +91,19 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
       twigPoints.get(k)!.push({ p: pts[i], d: d.normalize() });
     }
   }
-  const nearestTwig = (q: THREE.Vector3): THREE.Vector3 | null => {
-    let best: THREE.Vector3 | null = null, bestD = Infinity;
+  // The nearest twig point within 0.6 m: where on it, and the way it grows there.
+  const nearestTwig = (q: THREE.Vector3): { p: THREE.Vector3; d: THREE.Vector3 } | null => {
+    let best: { p: THREE.Vector3; d: THREE.Vector3 } | null = null, bestD = 0.36;
     const cx = Math.floor(q.x / twigCell), cy = Math.floor(q.y / twigCell), cz = Math.floor(q.z / twigCell);
     for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
       for (const t of twigPoints.get(`${cx + dx},${cy + dy},${cz + dz}`) ?? []) {
         const d = t.p.distanceToSquared(q);
-        if (d < bestD) { bestD = d; best = t.d; }
+        if (d < bestD) { bestD = d; best = t; }
       }
     }
     return best;
   };
+  const kinds: number[] = [];
   const random = generator(seed);
   const centres: number[] = [], normals: number[] = [], randoms: number[] = [], looks: number[] = [];
   const planes: number[] = [], axes: number[] = [];
@@ -126,6 +128,13 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
     // A branch card is bigger, so fewer of them.
     if (sparse && branches && random() > branchKeep) continue;
+    // A branch card grows from a twig: its root on the nearest one (none near: no card), so none floats in the air.
+    const twig = sparse && branches ? nearestTwig(p) : null;
+    if (sparse && branches && !twig) continue;
+    if (twig) p.copy(twig.p);
+    // Its size by the density: large in the fuller foliage, medium, small sprigs at the faint rim (blended at random).
+    const kind = !twig ? 1 : Math.min(2, Math.max(0, Math.floor(depth * 3 + (random() - 0.5) * 0.9)));
+    kinds.push(kind, twig ? branchSize * BRANCH_FAMILY[kind].scale : 0);
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
     let plane: THREE.Vector3, up: THREE.Vector3;
@@ -136,8 +145,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
       // trunk and out of the foliage), a little outward still, and sags under its leaves.
       const radial = new THREE.Vector3(p.x - middle.x, p.y - middle.y, 0);
       if (radial.lengthSq() > 1e-8) radial.normalize();
-      const twig = nearestTwig(p);
-      up = (twig ? twig.clone().addScaledVector(n, 0.35) : n.clone().addScaledVector(radial, 0.6))
+      up = (twig ? twig.d.clone().addScaledVector(n, 0.35) : n.clone().addScaledVector(radial, 0.6))
         .addScaledVector(new THREE.Vector3(0, 0, 1), -0.45 - 0.2 * random()).normalize();
       // Its leaves face the sky, as a spray holds them to the light: the card's plane is the one through its direction
       // whose normal is nearest up, rolled a little at random about its direction.
@@ -169,6 +177,8 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
   instanced.setAttribute("aLook", new THREE.InstancedBufferAttribute(new Float32Array(looks), 1));
   instanced.setAttribute("aPlane", new THREE.InstancedBufferAttribute(new Float32Array(planes), 3));
   instanced.setAttribute("aAxis", new THREE.InstancedBufferAttribute(new Float32Array(axes), 3));
+  // A branch card's kind (0 small, 1 medium, 2 large) and its length in meters.
+  instanced.setAttribute("aKind", new THREE.InstancedBufferAttribute(new Float32Array(kinds), 2));
   instanced.instanceCount = randoms.length;
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -184,6 +194,8 @@ attribute float aRandom;
 attribute float aLook;
 attribute vec3 aPlane;
 attribute vec3 aAxis;
+attribute vec2 aKind;
+varying float vKind;
 uniform float size;
 uniform float facing;
 uniform float hybrid;
@@ -221,9 +233,11 @@ void main() {
   // sways a little about its root.
   float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * facing;
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
-  float s = (branch ? branchSize * (0.6 + 0.4 * fract(aLook) * 2.0) : size * 2.0 * fract(aLook)) * (0.85 + 0.3 * fract(aRandom * 13.7));
-  // A branch card stands on its root (the bottom of the card, a little inside), the others on their middle.
-  vec3 world = centre + (side * corner.x + up * (corner.y + (branch ? 0.42 : 0.0))) * s;
+  float s = (branch ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
+  vKind = aKind.x;
+  // A branch card stands on its root (the bottom of the card, where its stem starts) on the twig; the others on their
+  // middle.
+  vec3 world = centre + (side * corner.x + up * (corner.y + (branch ? 0.47 : 0.0))) * s;
   vSideAxis = side;
   vUpAxis = up;
   vUv = uv;
@@ -244,6 +258,7 @@ uniform float highlight;
 uniform float facing;
 uniform sampler2D branches;
 uniform float hybrid;
+varying float vKind;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
@@ -258,9 +273,12 @@ void main() {
   // different angles take different light, as a game tree's do.
   vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
   if (hybrid > 0.5 && vSparse > 0.5) {
-    // A branch card: one of 16 branchlets (4 by 4), its stem at the card's bottom. Shaded by its own leaves' normals
-    // in the card's axes, and their tones, so the bands fall on its leaves wherever it turns.
-    float cell = floor(fract(vRandom * 31.7) * 16.0);
+    // A branch card: one of its kind's branchlets in the family atlas (row 0 small, rows 1 and 2 medium, row 3 large),
+    // its stem at the card's bottom. Shaded by its own leaves' normals in the card's axes, and their tones, so the
+    // bands fall on its leaves wherever it turns.
+    float k = floor(vKind + 0.5);
+    float pick = fract(vRandom * 31.7);
+    float cell = k < 0.5 ? floor(pick * 4.0) : k < 1.5 ? 4.0 + floor(pick * 8.0) : 12.0 + floor(pick * 4.0);
     vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / 4.0;
     vec4 branch = texture2D(branches, at);
     if (branch.a < 0.5) discard;

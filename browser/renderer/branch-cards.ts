@@ -20,10 +20,30 @@ import { type LeafCard, melted } from "./leaf-cards.ts";
  * r, g = the leaf's normal x and y in the card's plane (0.5 flat), b = its tone, a = coverage. Row 0 is the card's
  * bottom, where its stem starts.
  */
-export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}): { width: number; height: number; data: Uint8Array } {
+/**
+ * The family (tests/branch-family-preview.mts): one spray in three sizes, its leaves one size in the world, so a
+ * bigger card carries more. `scale` is its side against the medium card's.
+ */
+export const BRANCH_FAMILY: { scale: number; options: BranchCardOptions }[] = [
+  { scale: 176 / 256, options: { twigs: [1, 1], twiglets: [0, 1], missing: 0.04 } },
+  { scale: 1, options: { twigs: [2, 2], twiglets: [1, 1], missing: 0.08 } },
+  { scale: 368 / 256, options: { twigs: [4, 1], twiglets: [2, 1], missing: 0.03 } },
+];
+
+/** The family's atlas, 4 × 4: row 0 small cards, rows 1 and 2 medium, row 3 large, each with gradual density. */
+export function branchFamilyAtlas(size = 256, melt = 2, fade = 0.35): { width: number; height: number; data: Uint8Array } {
+  const rows = [0, 1, 1, 2];
+  return branchCardAtlas(4, size, 1, melt, {}, cell => {
+    const kind = BRANCH_FAMILY[rows[Math.floor(cell / 4)]];
+    // Leaves and stems as on the medium card at the kind's scale.
+    return { ...kind.options, leaf: 0.08 / kind.scale, step: 0.06 / kind.scale, stemRef: size / kind.scale, fade, seed: 11 + cell };
+  });
+}
+
+export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}, per?: (cell: number) => BranchCardOptions): { width: number; height: number; data: Uint8Array } {
   const width = grid * size, height = grid * size, data = new Uint8Array(width * height * 4);
   for (let cell = 0; cell < grid * grid; cell++) {
-    const painted = melted(branchCard({ ...options, size, seed: seed * 97 + cell }), melt);
+    const painted = melted(branchCard({ ...options, seed: seed * 97 + cell, ...(per ? per(cell) : {}), size }), melt);
     const ox = (cell % grid) * size, oy = Math.floor(cell / grid) * size;
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       const i = y * size + x, o = ((oy + y) * width + ox + x) * 4;
