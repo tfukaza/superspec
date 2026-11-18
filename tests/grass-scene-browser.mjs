@@ -60,7 +60,7 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass, clumps, relief, reliefOptions }) => {
+  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass, clumps, relief, reliefOptions, tufts }) => {
     let lightingInfo = null;
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
@@ -130,12 +130,18 @@ try {
       s.models.add(mesh);
       lawn.visible = false;
       reliefInfo = mesh.userData.grassRelief;
+      // TUFTS=1|<json>: pre-blurred grass tuft billboards over the relief (grass-tufts.ts).
+      if (tufts) {
+        const tuftMesh = window.__grassTufts(lawn, mesh, tufts === "1" ? {} : JSON.parse(tufts));
+        s.models.add(tuftMesh);
+        reliefInfo = { ...reliefInfo, tufts: tuftMesh.userData.grassTufts };
+      }
     }
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
     return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo, clumps: clumpInfo, relief: reliefInfo };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1", clumps: process.env.CLUMPS ?? "", relief: process.env.RELIEF ?? "", reliefOptions: process.env.RELIEF_OPTIONS ?? "" });
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1", clumps: process.env.CLUMPS ?? "", relief: process.env.RELIEF ?? "", reliefOptions: process.env.RELIEF_OPTIONS ?? "", tufts: process.env.TUFTS ?? "" });
   if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
   if (info.relief) console.log(`relief ${JSON.stringify(info.relief)}`);
   if (info.clumps) console.log(`clumps ${JSON.stringify(info.clumps)}`);

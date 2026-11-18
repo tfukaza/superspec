@@ -173,7 +173,7 @@ vec3 reliefNormal(vec3 p, vec3 n) {
 }
 `;
 
-const PAINT_GLSL = /* glsl */`
+export const PAINT_GLSL = /* glsl */`
 uniform vec3 msSunDirection;
 uniform highp sampler2D groundColor;
 uniform vec4 groundRect;

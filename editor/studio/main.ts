@@ -8,6 +8,7 @@ import { branchCardTexture, densityCards } from "../../browser/renderer/density-
 import { twigStrips } from "../../browser/renderer/twig-strips.ts";
 import { grassClumps } from "../../browser/renderer/grass-clumps.ts";
 import { grassRelief } from "../../browser/renderer/grass-relief.ts";
+import { grassTufts } from "../../browser/renderer/grass-tufts.ts";
 import { domeGeometry, leafNormalMaterial, leafNormalTexture, smoothGeometry } from "../../browser/renderer/leaf-normals.ts";
 import { leafCardTextures } from "../../browser/renderer/foliage-plants.ts";
 import { projectLighting, statesAmbientOcclusion, storedLighting, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
@@ -142,7 +143,7 @@ class Studio {
     this.scene = new RustScene(element("viewport"), (mesh, instance) => this.selection(mesh, instance));
     // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
     // Also the contour fuzz prototype and the leaf-card atlas, for previews that build test shapes in the scene.
-    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: leafCardTextures, __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief });
+    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: leafCardTextures, __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief, __grassTufts: grassTufts });
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
       // A shaded scene takes a parameter as a uniform: nothing to wait for.
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
