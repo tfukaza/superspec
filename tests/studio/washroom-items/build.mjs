@@ -116,7 +116,7 @@ function facadeMaterials() {
  * bolts of the brackets and the vent, which are the GLB washroom's instanced batch without its two flange rings (the
  * pipe item makes its own flange bolts).
  */
-export function buildProject(resolution = 512, texelDensity = 128, { weathering = true, batches = true, anchored = false, walls, facade: withFacade = false, lane = null } = {}) {
+export function buildProject(resolution = 512, texelDensity = 128, { weathering = true, batches = true, anchored = false, walls, facade: withFacade = false, lane = null, room = true, grass = true } = {}) {
   const example = name => readFileSync(resolve(examples, name), "utf8");
   const modules = Object.fromEntries(["kowloon-noise.material.ts", concrete, steel, "tiled-courtyard.material.ts"].map(name => [name, example(name)]));
   modules["wood.material.ts"] = readFileSync(resolve(here, "../washroom/materials/wood.material.ts"), "utf8");
@@ -137,7 +137,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
   if (walls) Object.assign(materials.find(material => material.id === "concrete-walls"), { entry: walls, parameters: {} });
   // `anchored`: the walls' concrete is measured from each part's pattern anchor, so a resize does not move it.
   const mappings = anchored ? { "concrete-walls": "anchored" } : {};
-  const scene = models.map(({ id, definition, transform, slots }) => ({ id, kind: "item", entry: `items/${definition.id}.item.json`, parameters: {}, transform, slots }));
+  // `room: false` leaves out the washroom's items and bolts (the concrete material demo), so only what `facade` and `lane` add is left.
+  const scene = (room ? models : []).map(({ id, definition, transform, slots }) => ({ id, kind: "item", entry: `items/${definition.id}.item.json`, parameters: {}, transform, slots }));
   // `facade`: the Kowloon building side across the lane (true), or the whole building ("building"): composed items whose
   // sides and riser are sub-items and whose fixtures are native Kowloon generators. Their definitions are modules under
   // their own file names, as their entries name them.
@@ -152,7 +153,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots });
   }
   let batchList;
-  if (batches) {
+  if (batches && room) {
     // The bolt template is the GLB washroom's own mesh, alone in a model; it is baked once as flat steel.
     assets["bolt.glb"] = writeGlb(buildMeshes().filter(mesh => mesh.name === "bolt"));
     scene.push({ id: "bolt", kind: "glb", name: "bolt.glb" });
@@ -166,15 +167,18 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     for (const name of [...lawnMaterials, ...treeMaterials].map(material => material.entry)) {
       modules[name] = readFileSync(resolve(here, "../washroom/materials", name), "utf8");
     }
-    assets["lane.glb"] = writeGlb([lawnGround(new Mesh("lawn", [0.3, 0.48, 0.14]), lane.ground)]);
-    scene.push({ id: "lane", kind: "glb", name: "lane.glb" });
+    // `grass: false` leaves out the grass patch and its ground, keeping the trees and the paving.
+    if (grass) {
+      assets["lane.glb"] = writeGlb([lawnGround(new Mesh("lawn", [0.3, 0.48, 0.14]), lane.ground)]);
+      scene.push({ id: "lane", kind: "glb", name: "lane.glb" });
+    }
     const paving = { format: "itemspec", version: 2, id: "lane-paving",
       parts: [{ id: "paving", generator: { kind: "box", size: [13, 15, 0.2] }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
     modules["items/lane-paving.item.json"] = JSON.stringify(paving, null, 2) + "\n";
     scene.push({ id: "paving", kind: "item", entry: "items/lane-paving.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-13.6, -9.5, -0.2]], slots: { concrete: "concrete-slab" } });
-    materials.push(...lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0") })),
+    materials.push(...(grass ? lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0") })) : []),
       ...treeMaterials.map(material => ({ ...material, seed: 7 })));
-    batchList = [...(batchList ?? []), ...lane.batches];
+    batchList = [...(batchList ?? []), ...lane.batches.filter(batch => grass || batch.objectId !== "lane")];
   }
   const project = {
     schemaVersion: 2, kind: "material", entry: concrete, modules, parameters: {}, seed: 7, resolution,

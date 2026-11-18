@@ -21,8 +21,9 @@ const choice = process.env.MODEL ?? "side";
 // LANE=1 adds the paved lane with its grass patch and trees (write it first:
 //   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants).
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
-const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 256), { facade: choice === "side" ? true : choice, lane });
+const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 256), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
+// Only the building (and the lane's paving and trees) is drawn; ROOM=1 brings back the washroom items and the grass patch.
 // BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
 // reference picture's plan); keys starting with "/" are comments.
 const overrides = process.env.BUILDING_PARAMETERS?.endsWith(".json") ? await readFile(resolve(process.env.BUILDING_PARAMETERS), "utf8") : process.env.BUILDING_PARAMETERS;
@@ -106,8 +107,6 @@ try {
     const views = {
       reference: { position: [(x0 + front) / 2 + distance * Math.cos(elevation) * Math.cos(azimuth), cy + distance * Math.cos(elevation) * Math.sin(azimuth), 7.4 + distance * Math.sin(elevation)],
         target: [(x0 + front) / 2, cy, 7.4], fov: 26, bare: true },
-      // From the room, over the low wall, up at the side across the lane.
-      room: { position: [2.4, -0.9, 1.5], target: [front, cy + 0.5, 3.2] },
       // Square on, from the lane.
       front: { position: [front + 30, cy, cz], target: [front, cy, cz] },
       // At an angle from down the lane, to see the fixtures and riser stand off the wall.
