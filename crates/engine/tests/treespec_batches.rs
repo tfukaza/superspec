@@ -692,6 +692,9 @@ fn write_washroom_lawn() {
     definition.blade.taper = 0.42;
     // And fewer of them: wider blades hold the cover with about a quarter fewer clumps.
     definition.density = 105.;
+    // Uneven heights: blades from 10 to 46 cm, and each clump scaled from 0.6 to 1.4.
+    definition.blade.height = [0.10, 0.46];
+    definition.scale = [0.6, 1.4];
     let mut far = definition.lods[2];
     far.keep = 0.1;
     far.blades = 0.5;
@@ -757,8 +760,8 @@ fn write_washroom_lawn() {
         accent.density = 85.;
         accent.clump.blades = [1, 3];
         accent.clump.radius = 0.03;
-        accent.blade.height = [0.12, 0.72];
-        accent.blade.width = accent.blade.width.map(|w| w * 1.1);
+        accent.blade.height = [0.10, 0.66];
+        accent.blade.width = accent.blade.width.map(|w| w * 1.8);
         accent.clumping.scale = 0.7;
         accent.clumping.strength = 0.6;
         accent.lods.truncate(3);
@@ -772,17 +775,17 @@ fn write_washroom_lawn() {
         )
         .unwrap();
         // Painted as the lawn's grass (its roots the ground beneath them); each blade's tip fades to one of the study's
-        // four tip colors (teal, sun-yellow, green, mid green) from 35 % of its height to 70 %, on the lit side.
+        // four tip colors from 35 % of its height to 70 %, on the lit side: the sun-yellow highlight, and three greens near the lawn's own (a blue-green, a green, a yellow-green), so the off-hue strokes follow the grass around them.
         let mut accent_look = look.clone();
         accent_look.far = 22.;
         accent_look.tip.lift = 1.;
         accent_look.tip.amount = 1.;
         accent_look.tip.start = 0.35;
         accent_look.tip.palette = Some([
-            [0.0382, 0.1559, 0.1248],
+            [0.13, 0.40, 0.22],
             [0.807, 1.0, 0.0467],
-            [0.0075, 0.3613, 0.0395],
-            [0.1329, 0.3712, 0.0467],
+            [0.16, 0.50, 0.08],
+            [0.30, 0.56, 0.08],
         ]);
         let mut accent_levels =
             batches::grass_levels(&accent_patch, [0., 0., 0.02], &accent_look, None).unwrap();
