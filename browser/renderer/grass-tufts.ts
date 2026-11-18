@@ -233,7 +233,9 @@ void main() {
   // Tall blades grow mostly on the lighter patches of the ground's colour (a tenth on the darkest).
   if (tuftData.z > 15.5 && tuftData.z < 19.5) {
     float lightness = dot(texture(groundColor, clamp((root.xy - groundRect.xy) / (groundRect.zw - groundRect.xy), 0.0, 1.0)).rgb, vec3(0.2126, 0.7152, 0.0722));
-    keep *= mix(0.1, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness));
+    // and only where lit (shade band and cast shadow): a blade reads as it catches the sun, as a glint.
+    float sun = min(band, reliefCast(root, rn));
+    keep *= mix(0.1, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness)) * mix(0.1, 1.0, smoothstep(0.3, 0.8, sun));
   }
   if (!close && rank > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // Grass grows mostly upward: the tuft stands between the relief's normal and straight up, turned to face the camera.
@@ -288,7 +290,9 @@ void main() {
   } else if (vKind < 1.5) {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
-    c = mix(vColor * mix(0.95, 1.05, t.r), bright * 1.2, smoothstep(0.15, 0.85, t.g));
+    // Toward the tip it gleams: brighter with the light it catches, toward a pale sunlit yellow-green.
+    vec3 glint = bright * (1.05 + 0.75 * vLit) + vec3(0.07, 0.08, 0.02) * vLit;
+    c = mix(vColor * mix(0.95, 1.05, t.r), glint, smoothstep(0.15, 0.9, t.g));
     a = smoothstep(0.3, 0.6, t.a);
   } else {
     // Clusters: short grass in the sun, bright and brighter where lit; soft edged like the chubby tufts.
@@ -374,7 +378,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     }
     return best;
   };
-  const tallCandidates = Math.round(total * (options.tallDensity ?? 1600));
+  const tallCandidates = Math.round(total * (options.tallDensity ?? 700));
   for (let k = 0; k < tallCandidates; k++) {
     const { at, up } = point();
     // A thin sprinkling between patches too.
