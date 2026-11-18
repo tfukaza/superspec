@@ -71,7 +71,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 6;
  * stroke its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 2.0): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 3.5): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -124,7 +124,7 @@ export function tuftAtlas(seed = 11, blur = 2.0): THREE.DataTexture {
   // The clusters (row 5) are tiny on screen, so they take a much wider blur to read as soft.
   const kernel = (sigma: number) => { const reach = Math.ceil(sigma * 3), weights: number[] = []; for (let k = -reach; k <= reach; k++) weights.push(Math.exp(-0.5 * k * k / (sigma * sigma))); return { reach, weights }; };
   // The tall thin blades (row 4) take only a slight blur.
-  const kernels = [kernel(blur), kernel(blur * 3), kernel(blur * 0.4)];
+  const kernels = [kernel(blur), kernel(6), kernel(0.8)];
   const pass = (source: Float32Array, horizontal: boolean): Float32Array => {
     const out = new Float32Array(source.length);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -315,7 +315,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     dataList.push(tall, tall * aspect, cell, next());
   };
   // Chubby tufts and clusters, scattered evenly.
-  const scattered = Math.max(1, Math.round(total * (options.density ?? 150)));
+  const scattered = Math.max(1, Math.round(total * (options.density ?? 400)));
   for (let k = 0; k < scattered; k++) {
     const { at, up } = point();
     if (next() < clusterShare) add(at, up, 0.04 + 0.04 * next(), 1.6 + 0.8 * next(), 20 + Math.floor(next() * 4));
@@ -363,11 +363,12 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
   geometry.instanceCount = picked.length;
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true, depthWrite: false,
-    defines: { ...shared.defines, ...(options.everywhere ?? true ? { TUFT_EVERYWHERE: "" } : {}) },
+    // The chubby tufts gather where the picture changes (over a base share); the tall blades are kept everywhere.
+    defines: { ...shared.defines, ...(detail || (options.everywhere ?? false) ? { TUFT_EVERYWHERE: "" } : {}) },
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
-      tuftKeep: { value: new THREE.Vector3(options.base ?? 0.25, options.far ?? 30, 0.37) },
+      tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
       tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.4, options.hue ?? 1.0) },
       tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [1.75, 1.62, 0.72])) },
     },
