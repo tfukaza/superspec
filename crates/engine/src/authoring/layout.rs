@@ -52,6 +52,16 @@ pub struct ReceiverLayout {
     pub surface: Vec<f64>,
 }
 
+/// A scene project prepared for the field bakes of its meshes
+/// ([`Session::prepare_project_fields`]).
+pub struct ProjectFields {
+    /// The project with its item models resolved.
+    project: Project,
+    scene: superspec_model::Scene,
+    /// Object-to-world transforms of imported and placed receivers.
+    transforms: BTreeMap<String, [f64; 16]>,
+}
+
 /// One chart's entry of [`ReceiverLayout::surface`].
 fn chart_surface(atlas: &Atlas, chart: &super::receiver::Chart) -> [f64; 10] {
     let at = |x: usize, y: usize| {
@@ -236,6 +246,23 @@ impl Session {
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<FieldBake, Vec<Diagnostic>> {
+        let prepared = self.prepare_project_fields(project, revision, assets, cancelled)?;
+        self.bake_prepared_fields(&prepared, mesh, names, revision, assets, cancelled)
+    }
+
+    /// What every field bake of a scene project shares, whichever mesh it is for: the project
+    /// with its item models resolved and the composed scene. A host that asks for the fields of
+    /// several meshes prepares the project once and bakes each mesh from it
+    /// ([`Session::bake_prepared_fields`]) instead of placing every item and composing every
+    /// model again per mesh. It describes the project and the assets as they were when it was
+    /// made.
+    pub fn prepare_project_fields(
+        &mut self,
+        project: &Project,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectFields, Vec<Diagnostic>> {
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         if project.schema_version != 2 || project.kind != "material" {
             return Err(fail(
@@ -244,8 +271,37 @@ impl Session {
         }
         self.begin_authoring(revision, &project.entry)?;
         // Item models bind their slots' meshes to materials (`Session::resolve_items`).
-        let resolved = self.resolve_items(project, assets, cancelled)?;
-        let project = resolved.as_ref().map_or(project, |items| &items.project);
+        let project = match self.resolve_items(project, assets, cancelled)? {
+            Some(items) => items.project,
+            None => project.clone(),
+        };
+        let (model, transforms) = self.compose_models(&project, revision, assets, cancelled)?;
+        let scene = model
+            .scene_cancellable(revision as u32, cancelled)
+            .map_err(&fail)?;
+        Ok(ProjectFields {
+            project,
+            scene,
+            transforms,
+        })
+    }
+
+    /// [`Session::bake_project_fields`] for one mesh of a prepared project.
+    pub fn bake_prepared_fields(
+        &mut self,
+        prepared: &ProjectFields,
+        mesh: &str,
+        names: &[String],
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<FieldBake, Vec<Diagnostic>> {
+        let ProjectFields {
+            project,
+            scene,
+            transforms,
+        } = prepared;
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         let assignment = project
             .materials
             .iter()
@@ -257,18 +313,14 @@ impl Session {
                 assignment.id, assignment.entry
             ))
         })?;
-        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
-        let scene = model
-            .scene_cancellable(revision as u32, cancelled)
-            .map_err(&fail)?;
         let ids = BTreeSet::from([mesh.to_owned()]);
-        let mut found = receivers(&scene, &ids, &transforms);
+        let mut found = receivers(scene, &ids, transforms);
         let Some(mut receiver) = found.pop() else {
             return Err(fail(format!(
                 "Mesh {mesh} is not a visible mesh of the project's models."
             )));
         };
-        receiver.contacts = contacts(&scene, &receiver);
+        receiver.contacts = contacts(scene, &receiver);
         let request = material_request(project, assignment, source, vec![receiver]);
         // The names by the stack's material they are fields of: 0 the slot's own, k its k-th layer.
         let mut groups: BTreeMap<usize, Vec<(usize, String)>> = BTreeMap::new();

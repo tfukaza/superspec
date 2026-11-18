@@ -226,13 +226,19 @@ async function handle(message: AuthoringMessage): Promise<void> {
       const encodedProject = occlusion?.encoded ?? JSON.stringify(request.project);
       const projectFields: NonNullable<AuthoringResult["projectFields"]> = [];
       const transfer: ArrayBufferLike[] = [];
-      for (const { mesh, names } of request.meshes) {
-        const reply = JSON.parse(active.bake_project_fields(encodedProject, requestId, mesh, JSON.stringify(names)));
-        if (!reply.success) { projectFields.push({ mesh, error: (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n") }); continue; }
-        const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
-        transfer.push(...fields.map(field => field.buffer));
-        projectFields.push({ mesh, width: reply.width, height: reply.height, fields, ...(occlusion?.keys.has(mesh) ? { planes: occlusion.keys.get(mesh) } : {}) });
-      }
+      // The project is parsed, its items placed and its models composed once for all the meshes. A project that cannot
+      // be prepared fails every mesh with the reason, as a bake of each would.
+      const messages = (reply: { diagnostics?: { message: string }[] }) => (reply.diagnostics ?? []).map(finding => finding.message).join("\n");
+      const opened = JSON.parse(active.open_project_fields(encodedProject, requestId));
+      try {
+        for (const { mesh, names } of request.meshes) {
+          const reply = opened.success ? JSON.parse(active.bake_open_project_fields(requestId, mesh, JSON.stringify(names))) : opened;
+          if (!reply.success) { projectFields.push({ mesh, error: messages(reply) }); continue; }
+          const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
+          transfer.push(...fields.map(field => field.buffer));
+          projectFields.push({ mesh, width: reply.width, height: reply.height, fields, ...(occlusion?.keys.has(mesh) ? { planes: occlusion.keys.get(mesh) } : {}) });
+        }
+      } finally { active.close_project_fields(); }
       self.postMessage({ requestId, projectFields, ...(occlusion?.report ? { occlusion: occlusion.report } : {}) }, { transfer: transfer as Transferable[] });
       return;
     }

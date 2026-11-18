@@ -134,19 +134,46 @@ fn bench_building_project() {
             }
         }
         let fields: usize = requests.iter().map(|(_, names)| names.len()).sum();
+        // Each way in a session of its own, so neither finds what the other baked.
+        let mut alone = Session::default();
         let started = Instant::now();
         let mut texels = 0;
+        let mut one_by_one = Vec::new();
         for (mesh, names) in &requests {
-            let baked = session
-                .bake_project_fields(project, mesh, names, revision, &asset, &|| false)
+            let baked = alone
+                .bake_project_fields(project, mesh, names, 1, &asset, &|| false)
                 .unwrap_or_else(|errors| panic!("{mesh}: {errors:?}"));
             texels += baked.width * baked.height * baked.fields.len();
+            one_by_one.push(baked);
         }
-        let one_by_one = started.elapsed().as_secs_f64() * 1e3;
         println!(
-            "fields, a call per mesh: {} meshes, {fields} fields, {:.1} M field texels in {one_by_one:.0} ms",
+            "fields, the project prepared per mesh: {} meshes, {fields} fields, {:.1} M field texels in {:.0} ms",
             requests.len(),
-            texels as f64 / 1e6
+            texels as f64 / 1e6,
+            started.elapsed().as_secs_f64() * 1e3
+        );
+        let mut shared = Session::default();
+        let started = Instant::now();
+        let prepared = shared
+            .prepare_project_fields(project, 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{errors:?}"));
+        let preparing = started.elapsed().as_secs_f64() * 1e3;
+        for ((mesh, names), expected) in requests.iter().zip(&one_by_one) {
+            let baked = shared
+                .bake_prepared_fields(&prepared, mesh, names, 1, &asset, &|| false)
+                .unwrap_or_else(|errors| panic!("{mesh}: {errors:?}"));
+            assert_eq!(
+                (baked.width, baked.height),
+                (expected.width, expected.height)
+            );
+            let same = baked.fields.iter().zip(&expected.fields).all(|(a, b)| {
+                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+            });
+            assert!(same, "{mesh}: a prepared project bakes other fields");
+        }
+        println!(
+            "fields, the project prepared once: {:.0} ms (preparing {preparing:.0} ms); every texel equal",
+            started.elapsed().as_secs_f64() * 1e3
         );
     }
 }
