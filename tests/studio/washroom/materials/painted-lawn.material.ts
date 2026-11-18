@@ -12,23 +12,23 @@ import { fracture, contour, pigment, fractal } from "./kowloon-noise.material";
 // yellow-green, or cooler, toward blue-green, subtly, on top of the fine patches below, so a large meadow drifts in hue
 // the way a real one does rather than repeating one mottle.
 const meadowScale = param.scalar({ default: 9, range: [1, 100], unit: "m", label: "Meadow hue scale" });
-const meadowAmount = param.scalar({ default: 0.35, range: [0, 1], label: "Meadow hue amount" });
+const meadowAmount = param.scalar({ default: 0.22, range: [0, 1], label: "Meadow hue amount" });
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-const lime = param.vec3({ default: vec3(0.40, 0.72, 0.03), range: [0, 1], label: "Green A (lime)" });
-const emerald = param.vec3({ default: vec3(0.22, 0.56, 0.03), range: [0, 1], label: "Green B (emerald)" });
-const sun = param.vec3({ default: vec3(0.52, 0.78, 0.04), range: [0, 1], label: "Sun-yellow patches" });
-const deep = param.vec3({ default: vec3(0.10, 0.40, 0.06), range: [0, 1], label: "Deep teal patches" });
-const darknessA = param.scalar({ default: 0.12, range: [0, 0.8], label: "Green A darkness" });
-const darknessB = param.scalar({ default: 0.14, range: [0, 0.8], label: "Green B darkness" });
+const lime = param.vec3({ default: vec3(0.33, 0.58, 0.10), range: [0, 1], label: "Green A (lime)" });
+const emerald = param.vec3({ default: vec3(0.24, 0.50, 0.09), range: [0, 1], label: "Green B (emerald)" });
+const sun = param.vec3({ default: vec3(0.40, 0.62, 0.11), range: [0, 1], label: "Sun-yellow patches" });
+const deep = param.vec3({ default: vec3(0.17, 0.42, 0.11), range: [0, 1], label: "Deep teal patches" });
+const darknessA = param.scalar({ default: 0.08, range: [0, 0.8], label: "Green A darkness" });
+const darknessB = param.scalar({ default: 0.09, range: [0, 0.8], label: "Green B darkness" });
 const blendScale = param.scalar({ default: 4.6, range: [0.2, 16], label: "Blend frequency" });
 const jaggedness = param.scalar({ default: 0.9, range: [0, 2], label: "Edge jaggedness" });
 const sunAmount = param.scalar({ default: 0.3, range: [0, 1], label: "Sun-yellow amount" });
 const deepAmount = param.scalar({ default: 0.3, range: [0, 1], label: "Deep teal amount" });
-const hueAmount = param.scalar({ default: 0.12, range: [0, 0.5], label: "Hue variation" });
+const hueAmount = param.scalar({ default: 0.08, range: [0, 0.5], label: "Hue variation" });
 const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label: "Hue direction" });
-const shadeTint = param.vec3({ default: vec3(0.12, 0.38, 1.0), range: [0, 1], label: "Shade tint" });
+const shadeTint = param.vec3({ default: vec3(0.26, 0.50, 0.9), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
 const softness = param.scalar({ default: 1.5, range: [0, 8], label: "Edge softness (pixels)" });
 const range = param.scalar({ default: 0.02, range: [0, 1], label: "Gradient range" });
