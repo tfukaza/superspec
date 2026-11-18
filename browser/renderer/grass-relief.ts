@@ -96,20 +96,25 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
     vec3 c = base + vec3(float(x), float(y), float(z));
     vec3 r = reliefHash3(c);
     float size = 0.6 + 0.45 * reliefHash(c + 3.7);
-    vec3 d = (q - (c + 0.1 + 0.8 * r)) / size;
+    // Distance along the surface only: every blob within a cell above or below the surface shows at its full width,
+    // its height fading with that distance (to nothing at one cell, the search's reach), so clumps pack tightly.
+    vec3 off = q - (c + 0.1 + 0.8 * r);
+    float along = dot(off, n);
+    vec3 d = (off - n * along) / size;
     float d2 = dot(d, d);
-    if (d2 >= 1.0) continue;
+    if (d2 >= 1.0 || abs(along) >= 1.0) continue;
+    float slab = 1.0 - smoothstep(0.35, 1.0, abs(along));
     // Height in proportion to the clump's width, so every clump keeps one shape.
     // A cushion: a softly flattened top, rounded shoulders and a foot that eases out to the ground (zero slope at the
     // rim), so two clumps that meet form a rounded crevice, not a V.
-    float dome = smoothstep(0.0, 1.0, (1.0 - d2) * reliefDome.x) * size;
+    float dome = pow(1.0 - d2, reliefDome.x) * size;
     float angle = atan(dot(d, t2), dot(d, t1));
     // Irregular blade ridges: noise read around a circle about the clump's centre (so it closes on itself), drifting
     // outward, so blades are uneven in width and spacing rather than a regular star.
     float ring = reliefShape.z / 6.2831853;
     float ridges = reliefNoise(vec3(cos(angle) * ring, sin(angle) * ring, sqrt(d2) * 1.5 + r.z * 40.0));
     ridges = smoothstep(0.25, 0.85, ridges);
-    float crown = dome * (1.0 - reliefShape.w * sqrt(d2) * (1.0 - ridges));
+    float crown = dome * slab * (1.0 - reliefShape.w * sqrt(d2) * (1.0 - ridges));
     float w = pow(max(crown, 0.0), sharp);
     weight += w;
     toned += w * r.x;
@@ -309,13 +314,13 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? (options.pattern === "fracture" ? 0.12 : 0.2), options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? (options.pattern === "fracture" ? 0.12 : 0.22), options.cell ?? 0.35, options.blades ?? 14, options.ridge ?? 0) },
       reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
       reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? 1.0, options.smallPatch ?? 0.35, options.edge ?? 0.12, options.jaggedness ?? 0.9) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
-      reliefDome: { value: new THREE.Vector2(options.dome ?? 1.0, options.blend ?? 0.35) },
+      reliefDome: { value: new THREE.Vector2(options.dome ?? 0.5, options.blend ?? 0.08) },
       ...(options.shadow ?? {}),
     },
   });
