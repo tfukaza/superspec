@@ -18,12 +18,12 @@ const meadowAmount = param.scalar({ default: 0.3, range: [0, 1], label: "Meadow 
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-// Five bands, darkest first, each about 10 % lighter than the last and turning from a deep olive green to a soft yellow-green.
-const band0 = param.vec3({ default: vec3(0.22, 0.37, 0.04), range: [0, 1], label: "Band 1 (deepest)" });
-const band1 = param.vec3({ default: vec3(0.26, 0.44, 0.055), range: [0, 1], label: "Band 2" });
+// Five bands, darkest first (a deep blue-green) to the lightest (a saturated, near-neon yellow-lime) and turning from a deep olive green to a soft yellow-green.
+const band0 = param.vec3({ default: vec3(0.14, 0.3, 0.1), range: [0, 1], label: "Band 1 (deepest)" });
+const band1 = param.vec3({ default: vec3(0.2, 0.39, 0.09), range: [0, 1], label: "Band 2" });
 const band2 = param.vec3({ default: vec3(0.29, 0.505, 0.075), range: [0, 1], label: "Band 3" });
-const band3 = param.vec3({ default: vec3(0.32, 0.565, 0.105), range: [0, 1], label: "Band 4" });
-const band4 = param.vec3({ default: vec3(0.36, 0.61, 0.1), range: [0, 1], label: "Band 5 (lightest)" });
+const band3 = param.vec3({ default: vec3(0.34, 0.6, 0.06), range: [0, 1], label: "Band 4" });
+const band4 = param.vec3({ default: vec3(0.42, 0.7, 0.03), range: [0, 1], label: "Band 5 (lightest)" });
 const bandScale = param.scalar({ default: 3.2, range: [0.2, 16], label: "Band frequency" });
 const bandSoftness = param.scalar({ default: 0.07, range: [0.005, 0.2], label: "Band softness" });
 const breakup = param.scalar({ default: 0.35, range: [0, 1], label: "Band breakup" });
