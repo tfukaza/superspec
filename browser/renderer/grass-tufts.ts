@@ -35,6 +35,8 @@ export interface GrassTuftOptions {
   closeDensity?: number;
   /** The least a tuft's painted normal faces the camera (its paint follows the slope it is seen against). */
   face?: number;
+  /** Tall tips: the share only a little lighter than the ground, and the range (times the ground) of the rest. */
+  tip?: [number, number, number];
   /** The tall blades' tip colour (linear RGB), a bright lime, brighter where lit. */
   lime?: [number, number, number];
   /** Tall blades: the ground lightness (luma) below which they thin to a tenth, and above which all are kept. */
@@ -278,6 +280,7 @@ varying float vKind;
 varying float vHue;
 uniform vec3 tuftLime; // the tall blades' tip colour, a bright lime
 varying float vGround;
+uniform vec3 tuftTip; // tall tips: share only a little lighter (x), the rest from y to z times the ground
 uniform vec2 tuftVary; // chubby tufts: x brightness range (share), y hue shift (0 to 1)
 uniform vec2 tuftDetail; // x: brightness of the thin tufts, y: their hue variation
 uniform vec3 tuftSpark;
@@ -301,8 +304,11 @@ void main() {
     // cool blue-green) up the blade; crisp edged.
     // Toward the tip it gleams: brighter with the light it catches, toward a pale sunlit yellow-green.
     // On dark ground the blade stays dark; on light ground its tip gleams neon lime, brighter where lit.
-    // The ground's own colour up the blade, its tip a little lighter where lit.
-    c = vColor * mix(0.94, 1.06, t.r) * (1.0 + 0.25 * vLit * smoothstep(0.4, 1.0, t.g));
+    // The ground's own colour at the base, lighter up the blade: most tips a little (1.1 to 1.35 times), some much more
+    // (1.7 to 2.3 times), each tuft its own; more where lit.
+    float pick = fract(vHue * 7.13 + 0.3);
+    float lift = pick < tuftTip.x ? mix(1.1, 1.35, pick / tuftTip.x) : mix(tuftTip.y, tuftTip.z, (pick - tuftTip.x) / (1.0 - tuftTip.x));
+    c = vColor * mix(0.94, 1.06, t.r) * mix(1.0, (lift - 1.0) * (0.7 + 0.3 * vLit) + 1.0, smoothstep(0.25, 1.0, t.g));
     a = smoothstep(0.3, 0.6, t.a);
   } else {
     // Clusters: short grass in the sun, bright and brighter where lit; soft edged like the chubby tufts.
@@ -427,6 +433,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0, 0])) },
       tuftLight: { value: new THREE.Vector2(...(options.light ?? [0.33, 0.45])) },
       tuftLime: { value: new THREE.Vector3(...(options.lime ?? [0.42, 1.0, 0.02])) },
+      tuftTip: { value: new THREE.Vector3(...(options.tip ?? [0.7, 1.7, 2.3])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
