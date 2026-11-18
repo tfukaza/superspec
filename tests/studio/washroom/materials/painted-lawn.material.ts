@@ -19,8 +19,8 @@ const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label:
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
 // Five bands, darkest first (an olive green) to the lightest (a saturated, near-neon yellow-lime) and turning from a deep olive green to a soft yellow-green.
-const band0 = param.vec3({ default: vec3(0.21, 0.37, 0.05), range: [0, 1], label: "Band 1 (deepest)" });
-const band1 = param.vec3({ default: vec3(0.25, 0.44, 0.06), range: [0, 1], label: "Band 2" });
+const band0 = param.vec3({ default: vec3(0.23, 0.43, 0.05), range: [0, 1], label: "Band 1 (deepest)" });
+const band1 = param.vec3({ default: vec3(0.26, 0.47, 0.06), range: [0, 1], label: "Band 2" });
 const band2 = param.vec3({ default: vec3(0.29, 0.505, 0.075), range: [0, 1], label: "Band 3" });
 const band3 = param.vec3({ default: vec3(0.34, 0.6, 0.06), range: [0, 1], label: "Band 4" });
 const band4 = param.vec3({ default: vec3(0.42, 0.7, 0.03), range: [0, 1], label: "Band 5 (lightest)" });
