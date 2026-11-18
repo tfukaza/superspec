@@ -33,6 +33,8 @@ export interface GrassTuftOptions {
   aspect?: [number, number];
   /** Close level: extra chubby tufts a square meter, drawn only near the camera (full to near[0] m, gone at near[1]). */
   closeDensity?: number;
+  /** The least a tuft's painted normal faces the camera (its paint follows the slope it is seen against). */
+  face?: number;
   near?: [number, number];
   /** Share of the scattered tufts that are tiny-stroke clusters (the rest are short chubby tufts). */
   clusterShare?: number;
@@ -172,6 +174,7 @@ attribute vec4 tuftData;
 uniform float lift;
 uniform vec3 tuftKeep; // x: base share, y: far (m), z: mirror seed
 uniform vec2 tuftNear; // close tufts: full to x (m), gone at y
+uniform float tuftFace; // the least a tuft's painted normal faces the camera
 varying float vKind;
 varying float vHue;
 varying vec2 vUv;
@@ -236,8 +239,13 @@ void main() {
   vUv = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + uv) / vec2(4.0, 6.0);
   vKind = cell < 15.5 ? 0.0 : cell < 19.5 ? 1.0 : 2.0;
   vHue = fract(rank * 53.7 + 0.21);
-  vColor = reliefPaint(root, rn, h, tone);
-  vLit = min(band, reliefCast(root, rn));
+  // Painted as seen: a tuft rooted on ground turned away from the view (the far side of a crest, the outline of a clump)
+  // takes its normal turned toward the camera until it faces it a little, so the fuzz over an outline matches the slope it
+  // is seen against, not the hidden side it grows on. Tufts on ground facing the view keep their own normal.
+  float facing = dot(rn, v);
+  vec3 pn = facing < tuftFace ? normalize(rn + v * (tuftFace - facing)) : rn;
+  vColor = reliefPaint(root, pn, h, tone);
+  vLit = min(smoothstep(-shadeBand.y, shadeBand.y, dot(pn, normalize(msSunDirection)) - shadeBand.x), reliefCast(root, pn));
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
 }`;
 
@@ -384,6 +392,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
+      tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
       tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.4, options.hue ?? 1.0) },
