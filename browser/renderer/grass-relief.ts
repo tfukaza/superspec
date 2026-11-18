@@ -33,6 +33,13 @@ export interface GrassReliefOptions {
   moundWeight?: number;
   fine?: number;
   /** Dome profile exponent (0.5 a round cushion, 2 a soft hump) and the blend where clumps meet. */
+  /** The pattern: the concrete's fracture noise (default) or dome clumps on a 3D grid. */
+  pattern?: "fracture" | "domes";
+  /** Fracture pattern: patch scales (m), cushion edge width (of the noise's range) and jaggedness. */
+  bigPatch?: number;
+  smallPatch?: number;
+  edge?: number;
+  jaggedness?: number;
   dome?: number;
   /** Tone per clump (share) and the crowns' lighter, warmer lift (share). */
   tone?: number;
@@ -54,6 +61,7 @@ export interface GrassReliefOptions {
 export const RELIEF_GLSL = /* glsl */`
 uniform vec4 reliefShape; // x: height (m), y: cell (m), z: blades, w: ridge
 uniform vec4 reliefMore;  // x: warp (m), y: mound frequency (1/m), z: mound weight, w: fine roughness
+uniform vec4 reliefPatch; // fracture pattern: x big patch scale (m), y small patch scale (m), z cushion edge width, w jaggedness
 uniform vec2 reliefDome;  // x: dome profile exponent (0.5 round cushion, 2 soft hump), y: blend where clumps meet
 float reliefHash(vec3 c) { return fract(sin(dot(c, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 vec3 reliefHash3(vec3 c) {
@@ -107,6 +115,35 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
 // The relief at a surface point p with ground normal n, 0 to height. Clumps (their outlines warped by fractal noise,
 // so they are ragged lobes, not round pebbles) are gathered into mounds by a smooth low-frequency noise: in a mound they
 // stand full and run together, between mounds they are low and sparse; fine fractal roughness goes over all.
+#ifdef RELIEF_FRACTURE
+// The concrete's fracture (kowloon-noise.material.ts) in 3D: three rotated octaves of value noise (gain 0.28), the point
+// warped by two more fractals, and fine erosion added only near the mid contour, so patches are coherent inside and
+// ragged at their edges.
+vec3 reliefTurn(vec3 p) { return mat3(0.8, 0.6, 0.0, -0.48, 0.64, 0.6, 0.36, -0.48, 0.8) * p * 2.03 + vec3(13.7, 9.2, 5.1); }
+float reliefConcrete(vec3 p) {
+  vec3 b = reliefTurn(p), c = reliefTurn(b);
+  return (reliefNoise(p) * 0.5 + reliefNoise(b) * 0.14 + reliefNoise(c) * 0.0392) / 0.6792;
+}
+float reliefFracture(vec3 p, float jag) {
+  vec3 warp = vec3(reliefConcrete(p * 2.3 + vec3(7.1, 31.8, 3.3)), reliefConcrete(p * 2.3 + vec3(53.2, 9.4, 17.9)), reliefConcrete(p * 2.3 + vec3(21.4, 44.6, 8.8))) - 0.5;
+  float broad = reliefConcrete(p + warp * 0.18 * jag);
+  float detail = (reliefNoise(p * 13.0) - 0.5) * 0.2 + (reliefNoise(p * 31.0 + 17.3) - 0.5) * 0.11 + (reliefNoise(p * 73.0 + 39.1) - 0.5) * 0.06;
+  return broad + detail * jag * (1.0 - smoothstep(0.045, 0.18, abs(broad - 0.5)));
+}
+// Patches of the fracture at two scales, each rising as a soft cushion from its eroded edge; the larger carries the
+// smaller on top. The patch's own fracture value tones it.
+float reliefHeight(vec3 p, vec3 n) {
+  float big = reliefFracture(p / reliefPatch.x, reliefPatch.w);
+  float small = reliefFracture(p / reliefPatch.y + vec3(31.7, 5.9, 12.2), reliefPatch.w);
+  float w = reliefPatch.z;
+  float a = smoothstep(0.5 - w, 0.5 + w, big), b = smoothstep(0.5 - w, 0.5 + w, small);
+  // Rounded shoulders: the cushion's top eases off as well as its foot.
+  a = sqrt(a) * a * (3.0 - 2.0 * a); b = sqrt(b) * b * (3.0 - 2.0 * b);
+  reliefTone = clamp(0.5 + (big - 0.5) * 1.5 + (small - 0.5) * 0.8, 0.0, 1.0);
+  float h = 0.6 * a + 0.4 * b * mix(0.6, 1.0, a) + reliefMore.w * (reliefFractal(p * 12.0) - 0.5);
+  return reliefShape.x * clamp(h, 0.0, 1.0);
+}
+#else
 float reliefHeight(vec3 p, vec3 n) {
   vec3 warp = vec3(reliefFractal(p * 3.5), reliefFractal(p * 3.5 + 5.2), reliefFractal(p * 3.5 + 9.7)) - 0.5;
   float clumps = reliefClumps(p + warp * reliefMore.x, n, reliefShape.y);
@@ -114,6 +151,7 @@ float reliefHeight(vec3 p, vec3 n) {
   float h = clumps * mix(0.3, 1.0, mound) + reliefMore.z * mound * 0.6 + reliefMore.w * (reliefFractal(p * 12.0) - 0.5);
   return reliefShape.x * clamp(h / (1.0 + 0.6 * reliefMore.z), 0.0, 1.0);
 }
+#endif
 // The ground normal tipped by the relief's slope along the surface at p.
 vec3 reliefNormal(vec3 p, vec3 n) {
   vec3 t1, t2;
@@ -262,13 +300,15 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
   const field = sceneFieldUniforms("ground.color");
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: fragment(mode, options.steps ?? 32),
+    defines: (options.pattern ?? "fracture") === "fracture" ? { RELIEF_FRACTURE: "" } : {},
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? 0.25, options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? (options.pattern === "domes" ? 0.25 : 0.12), options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
       reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
+      reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? 1.0, options.smallPatch ?? 0.35, options.edge ?? 0.12, options.jaggedness ?? 0.9) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
       reliefDome: { value: new THREE.Vector2(options.dome ?? 0.6, options.blend ?? 0.2) },
       ...(options.shadow ?? {}),
