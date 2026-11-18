@@ -16,11 +16,11 @@ const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: 
 
 // Five bands, darkest first (an olive green) to the lightest (a saturated, near-neon yellow-lime): the middle three mix as
 // the base, the outer two are the occasional patches.
-const band0 = param.vec3({ default: vec3(0.23, 0.43, 0.05), range: [0, 1], label: "Band 1 (deepest)" });
-const band1 = param.vec3({ default: vec3(0.26, 0.47, 0.06), range: [0, 1], label: "Band 2" });
-const band2 = param.vec3({ default: vec3(0.29, 0.505, 0.075), range: [0, 1], label: "Band 3" });
-const band3 = param.vec3({ default: vec3(0.34, 0.6, 0.06), range: [0, 1], label: "Band 4" });
-const band4 = param.vec3({ default: vec3(0.42, 0.7, 0.03), range: [0, 1], label: "Band 5 (lightest)" });
+const band0 = param.vec3({ default: vec3(0.09, 0.27, 0.11), range: [0, 1], label: "Band 1 (deepest)" });
+const band1 = param.vec3({ default: vec3(0.13, 0.36, 0.1), range: [0, 1], label: "Band 2" });
+const band2 = param.vec3({ default: vec3(0.2, 0.46, 0.09), range: [0, 1], label: "Band 3" });
+const band3 = param.vec3({ default: vec3(0.29, 0.56, 0.08), range: [0, 1], label: "Band 4" });
+const band4 = param.vec3({ default: vec3(0.4, 0.66, 0.08), range: [0, 1], label: "Band 5 (lightest)" });
 const hueScale = param.scalar({ default: 1.6, range: [0.1, 10], label: "Hue mix frequency" });
 const warpAmount = param.scalar({ default: 0.6, range: [0, 2], label: "Warp" });
 const patchScale = param.scalar({ default: 0.9, range: [0.1, 6], label: "Patch frequency" });
