@@ -32,8 +32,8 @@ export interface GrassReliefOptions {
   moundScale?: number;
   moundWeight?: number;
   fine?: number;
-  /** Dome profile exponent (0.5 a round cushion, 2 a soft hump) and the blend where clumps meet. */
-  /** The pattern: the concrete's fracture noise (default) or dome clumps on a 3D grid. */
+  /** Cushion fullness (above 1 the top flattens; its foot always eases out) and the blend where clumps meet (of a clump's size). */
+  /** The pattern: cushion clumps on a 3D grid (default) or the concrete's fracture noise. */
   pattern?: "fracture" | "domes";
   /** Fracture pattern: patch scales (m), cushion edge width (of the noise's range) and jaggedness. */
   bigPatch?: number;
@@ -82,13 +82,16 @@ void reliefFrame(vec3 n, out vec3 t1, out vec3 t2) {
 }
 // Clumps as blobs in space on a jittered 3D grid: where the surface passes through one, a dome rises, so the pattern
 // is the same on a slope, a bank or flat ground. Blades ridge each crown unevenly, fanning out from its centre along the surface.
-// The random of the clump that won at the last reliefClumps point, for a tone per clump.
+// The tone of the clumps at the last reliefClumps point (their randoms, blended as their heights are).
 float reliefTone = 0.5;
 float reliefClumps(vec3 p, vec3 n, float cell) {
   vec3 q = p / cell, base = floor(q);
   vec3 t1, t2;
   reliefFrame(n, t1, t2);
-  float best = 0.0;
+  // Clumps join by a p-norm of their heights (higher p, a sharper join): smooth everywhere, so the crevice between two
+  // clumps is rounded and no seam shows at a clump's rim; tones blend with the same weights.
+  float sharp = 1.0 / max(reliefDome.y, 0.05), weight = 0.0, toned = 0.0;
+  reliefTone = 0.5;
   for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
     vec3 c = base + vec3(float(x), float(y), float(z));
     vec3 r = reliefHash3(c);
@@ -97,7 +100,9 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
     float d2 = dot(d, d);
     if (d2 >= 1.0) continue;
     // Height in proportion to the clump's width, so every clump keeps one shape.
-    float dome = pow(1.0 - d2, reliefDome.x) * size;
+    // A cushion: a softly flattened top, rounded shoulders and a foot that eases out to the ground (zero slope at the
+    // rim), so two clumps that meet form a rounded crevice, not a V.
+    float dome = smoothstep(0.0, 1.0, (1.0 - d2) * reliefDome.x) * size;
     float angle = atan(dot(d, t2), dot(d, t1));
     // Irregular blade ridges: noise read around a circle about the clump's centre (so it closes on itself), drifting
     // outward, so blades are uneven in width and spacing rather than a regular star.
@@ -105,12 +110,12 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
     float ridges = reliefNoise(vec3(cos(angle) * ring, sin(angle) * ring, sqrt(d2) * 1.5 + r.z * 40.0));
     ridges = smoothstep(0.25, 0.85, ridges);
     float crown = dome * (1.0 - reliefShape.w * sqrt(d2) * (1.0 - ridges));
-    float k = reliefDome.y;
-    float h = clamp(0.5 + 0.5 * (crown - best) / k, 0.0, 1.0);
-    if (h > 0.5) reliefTone = r.x;
-    best = mix(best, crown, h) + k * h * (1.0 - h);
+    float w = pow(max(crown, 0.0), sharp);
+    weight += w;
+    toned += w * r.x;
   }
-  return best;
+  if (weight > 1e-8) reliefTone = toned / weight;
+  return pow(weight, 1.0 / sharp);
 }
 // The relief at a surface point p with ground normal n, 0 to height. Clumps (their outlines warped by fractal noise,
 // so they are ragged lobes, not round pebbles) are gathered into mounds by a smooth low-frequency noise: in a mound they
@@ -300,17 +305,17 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
   const field = sceneFieldUniforms("ground.color");
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: fragment(mode, options.steps ?? 32),
-    defines: (options.pattern ?? "fracture") === "fracture" ? { RELIEF_FRACTURE: "" } : {},
+    defines: options.pattern === "fracture" ? { RELIEF_FRACTURE: "" } : {},
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? (options.pattern === "domes" ? 0.25 : 0.12), options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? (options.pattern === "fracture" ? 0.12 : 0.2), options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
       reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
       reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? 1.0, options.smallPatch ?? 0.35, options.edge ?? 0.12, options.jaggedness ?? 0.9) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
-      reliefDome: { value: new THREE.Vector2(options.dome ?? 0.6, options.blend ?? 0.2) },
+      reliefDome: { value: new THREE.Vector2(options.dome ?? 1.0, options.blend ?? 0.35) },
       ...(options.shadow ?? {}),
     },
   });
