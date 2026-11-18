@@ -144,6 +144,15 @@ export class RustScene {
     const meters = Number(query.get("leafblur"));
     return meters > 0 ? new FoliageBlur(this.renderer, meters, Number(query.get("leafblurmix") ?? 0.6), query.get("leafrepaint") === "1") : null;
   })();
+  /**
+   * Far grass as quick dabs (`?grassblur=<pixels>`, foliage-blur.ts soften): the grass levels from `?grassblurfrom=`
+   * (default 3) on, their few broad strokes blurred together and cut again, a painter's jabs for a far field.
+   */
+  readonly grassBlur = (() => {
+    const query = new URLSearchParams(location.search);
+    const pixels = Number(query.get("grassblur"));
+    return pixels > 0 ? { blur: new FoliageBlur(this.renderer, 0, 1, true, { layer: 10, pixels, soften: true }), from: Number(query.get("grassblurfrom") ?? 3) } : null;
+  })();
   /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
   readonly strokeEdges = STROKES ? (() => {
     const query = new URLSearchParams(location.search);
@@ -218,8 +227,15 @@ export class RustScene {
         if (mesh.visible && origin && !blurAnchor) blurAnchor = origin.clone();
       }
     }
+    if (this.grassBlur) {
+      for (const mesh of this.models.children) {
+        const look = mesh.userData.foliage;
+        if (look?.family === "grass" && look.level >= this.grassBlur.from) mesh.layers.set(10);
+      }
+    }
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);
+    if (this.grassBlur) this.grassBlur.blur.render(this.scene, this.camera as THREE.PerspectiveCamera, this.controls.target);
     if (this.foliageBlur) this.foliageBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, blurAnchor);
     if (this.strokeEdges) this.strokeEdges.render(this.scene, this.camera as THREE.PerspectiveCamera, strokeAnchor, this.strokeEdges.options.tile);
     this.frameStats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };

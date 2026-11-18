@@ -39,7 +39,14 @@ export class FoliageBlur {
    * in front of the leaves is not painted over. Those shaders do not tone-map,
    * so neither does this composite.
    */
-  constructor(private readonly renderer: THREE.WebGLRenderer, readonly meters: number, strength = 0.6, readonly repaint = false) {
+  /**
+   * `options.layer`: the layer its meshes are drawn on (default BLUR_LAYER), so two blurs can run in one frame.
+   * `options.pixels`: the radius in screen pixels instead of meters at the plant. `options.soften` (far grass): the
+   * coverage is blurred and cut again at a half as in `repaint`, so a few broad strokes run together into dabs, but the
+   * colours are only blurred among themselves, not snapped to bands, and finished as painted materials are.
+   */
+  constructor(private readonly renderer: THREE.WebGLRenderer, readonly meters: number, strength = 0.6, readonly repaint = false,
+    readonly options: { layer?: number; pixels?: number; soften?: boolean } = {}) {
     this.quad.frustumCulled = false;
     this.blur = new THREE.ShaderMaterial({
       uniforms: { source: { value: null }, direction: { value: new THREE.Vector2(1, 0) }, radius: { value: 4 }, first: { value: 1 } },
@@ -69,13 +76,15 @@ void main() {
 }`,
     });
     this.composite = new THREE.ShaderMaterial({
-      uniforms: { original: { value: null }, blurred: { value: null }, strength: { value: strength }, repaint: { value: repaint ? 1 : 0 } },
+      uniforms: { original: { value: null }, blurred: { value: null }, strength: { value: strength }, repaint: { value: repaint ? 1 : 0 },
+        soften: { value: options.soften ? 1 : 0 } },
       vertexShader: QUAD_VERTEX, depthTest: false, depthWrite: false,
       fragmentShader: /* glsl */`
 uniform sampler2D original;
 uniform sampler2D blurred;
 uniform float strength;
 uniform float repaint;
+uniform float soften;
 // The paint bands of leaf-normals.ts (BAND_GLSL) and its highlight (msLeafPaint), linear, darkest first.
 const vec3 BANDS[8] = vec3[8](vec3(0.0232, 0.1022, 0.0844), vec3(0.0331, 0.1441, 0.0823), vec3(0.0452, 0.1779, 0.0782),
   vec3(0.0844, 0.2384, 0.0802), vec3(0.15, 0.3277, 0.0844), vec3(0.2747, 0.4793, 0.1022), vec3(0.40, 0.64, 0.12),
@@ -85,6 +94,14 @@ void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
   vec4 here = texelFetch(original, at, 0);
   vec4 soft = texelFetch(blurred, at, 0);
+  if (soften > 0.5) {
+    // Coverage blurred and cut again (strokes run together, specks drop); the colours blurred among the strokes.
+    if (soft.a < 0.5) discard;
+    gl_FragColor = vec4(soft.rgb / soft.a, 1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    return;
+  }
   if (repaint > 0.5) {
     // Re-threshold the blurred coverage at a half where there were leaves (specks and thin tips drop), but fill a gap
     // only where it is nearly closed (0.8), so a twig or the bark in front of the leaves stays. Then snap the blurred
@@ -110,7 +127,7 @@ void main() {
 }`,
     });
     // The leaves' colours are the painted materials' before finishing; the composite finishes them as they would be.
-    if (repaint) this.composite.toneMapped = false;
+    if (repaint && !options.soften) this.composite.toneMapped = false;
     else followPaintedFinishing(this.composite);
   }
 
@@ -159,13 +176,13 @@ void main() {
       renderer.render(scene, camera);
       colorBuffer.setLocked(false);
       colorBuffer.setMask(true);
-      camera.layers.set(BLUR_LAYER);
+      camera.layers.set(this.options.layer ?? BLUR_LAYER);
       renderer.render(scene, camera);
       camera.layers.mask = layers;
       // The radius in pixels at the plant.
       const distance = anchor.distanceTo(camera.position);
       const pixelsPerMeter = this.size.y / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * Math.max(distance, 1e-3));
-      const radius = Math.min(Math.max(this.meters * pixelsPerMeter, 0.5), 16);
+      const radius = this.options.pixels ? this.options.pixels : Math.min(Math.max(this.meters * pixelsPerMeter, 0.5), 16);
       this.blur.uniforms.radius.value = radius;
       this.last = { radius, pixelsPerMeter, distance };
       this.blur.uniforms.source.value = target.texture;

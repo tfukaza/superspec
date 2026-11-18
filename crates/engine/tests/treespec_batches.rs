@@ -684,9 +684,29 @@ fn write_washroom_lawn() {
     std::fs::create_dir_all(&out).unwrap();
     let ground = lawn_ground();
     let mut definition = meadow();
-    // The washroom is seen from a few meters: its levels step at 7 and 14 m and stop at 22 m.
-    for (lod, distance) in definition.lods.iter_mut().zip([0., 7., 14.]) {
+    // The washroom is seen from a few meters: its levels step at 7 and 14 m. Two far levels follow for a large
+    // field, a painter's quick strokes: at 22 m half of each clump's blades, 2.2 times as wide, and at 30 m a third,
+    // 3.5 times as wide, each keeping fewer clumps; the grass stops at 40 m.
+    let mut far = definition.lods[2];
+    far.keep = 0.1;
+    far.blades = 0.5;
+    far.chubby = 2.2;
+    let mut farther = far;
+    farther.keep = 0.05;
+    farther.blades = 0.34;
+    farther.chubby = 3.5;
+    definition.lods.extend([far, farther]);
+    for (lod, distance) in definition.lods.iter_mut().zip([0., 7., 14., 22., 30.]) {
         lod.distance = distance;
+    }
+    // LAWN_LEVEL=k writes level k alone, from 0 m, to picture it up close.
+    if let Some(level) = std::env::var("LAWN_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        let mut only = definition.lods[level];
+        only.distance = 0.;
+        definition.lods = vec![only];
     }
     let started = std::time::Instant::now();
     let patch = grass::generate(
@@ -707,7 +727,7 @@ fn write_washroom_lawn() {
         serde_json::json!({ "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 } })
     };
     let mut fields = serde_json::json!({
-        "family": "grass", "patch": "lawn", "far": 22, "material": "painted-grass",
+        "family": "grass", "patch": "lawn", "far": 40, "material": "painted-grass",
     });
     fields
         .as_object_mut()

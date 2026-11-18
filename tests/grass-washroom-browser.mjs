@@ -113,7 +113,7 @@ try {
     // The Wasm build delivered every clump TreeSpec grew (native), each level the share its keep says.
     const delivered = loaded.described.patches[0].levels;
     assert.equal(delivered[0].instances, lawn.stats.instances, "level 0 holds every clump");
-    assert.deepEqual(delivered.map(level => level.instances), [0, 1, 2].map(level => grassBatches.filter(batch => batch.foliage.level === level).reduce((sum, batch) => sum + batch.instances.length, 0)));
+    assert.deepEqual(delivered.map(level => level.instances), delivered.map((_, level) => grassBatches.filter(batch => batch.foliage.level === level).reduce((sum, batch) => sum + batch.instances.length, 0)));
     const shot = async name => {
       await waitForFrames(page, 4);
       await writeFile(resolve(out, `washroom-grass-${name}${suffix}.png`), await page.locator("#viewport").screenshot());

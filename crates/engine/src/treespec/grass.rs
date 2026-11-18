@@ -113,6 +113,20 @@ pub struct GrassLodDefinition {
     /// Suggested distance at which the level starts, meters.
     #[serde(default)]
     pub distance: f64,
+    /// Share of each clump's blades the level draws (the first of them), so a far level draws a few strokes where a
+    /// near one draws a tuft. 1 keeps every blade.
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub blades: f64,
+    /// A further width factor for the level's blades, beyond the thinning's widening: far levels draw fewer, fatter
+    /// blades, quick strokes of a broad brush. 1 keeps the width.
+    #[serde(default = "full", skip_serializing_if = "is_full")]
+    pub chubby: f64,
+}
+fn full() -> f64 {
+    1.
+}
+fn is_full(value: &f64) -> bool {
+    *value == 1.
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -287,6 +301,8 @@ impl GrassDefinition {
             }
             within(s, &format!("{pointer}/keep"), lod.keep, 0.01, 1.)?;
             within(s, &format!("{pointer}/distance"), lod.distance, 0., 1e6)?;
+            within(s, &format!("{pointer}/blades"), lod.blades, 0.01, 1.)?;
+            within(s, &format!("{pointer}/chubby"), lod.chubby, 0.1, 10.)?;
             if index > 0 {
                 let before = self.lods[index - 1];
                 if lod.segments > before.segments
@@ -312,27 +328,45 @@ impl GrassDefinition {
         let mut lods = Vec::new();
         for (level, lod) in self.lods.iter().enumerate() {
             // Thinned levels widen their survivors to hold the cover.
-            let widen = (1. / lod.keep).sqrt().min(3.);
+            let widen = (1. / lod.keep).sqrt().min(3.) * lod.chubby;
             let mut indices = Vec::new();
             for variant in 0..self.clump.variants {
-                let geometry_key = key(
-                    "treespec-grass-clump-v1",
-                    &(
-                        self.seed,
-                        &self.blade,
-                        &self.clump,
-                        variant,
-                        lod.segments,
-                        widen,
-                    ),
-                );
+                // The key of a full level is as it was; a level that drops blades keys its share too.
+                let geometry_key = if lod.blades == 1. {
+                    key(
+                        "treespec-grass-clump-v1",
+                        &(
+                            self.seed,
+                            &self.blade,
+                            &self.clump,
+                            variant,
+                            lod.segments,
+                            widen,
+                        ),
+                    )
+                } else {
+                    key(
+                        "treespec-grass-clump-v2",
+                        &(
+                            self.seed,
+                            &self.blade,
+                            &self.clump,
+                            variant,
+                            lod.segments,
+                            widen,
+                            lod.blades,
+                        ),
+                    )
+                };
                 let mut mesh = FoliageMesh::new(
                     format!("clump-{variant}/lod{level}"),
                     geometry_key,
                     "blade",
                     true,
                 );
-                for blade in self.blades(variant) {
+                let blades = self.blades(variant);
+                let kept = ((blades.len() as f64 * lod.blades).ceil() as usize).max(1);
+                for blade in blades.into_iter().take(kept) {
                     blade.draw(&mut mesh, lod.segments, widen, self.blade.taper);
                 }
                 indices.push(meshes.len());

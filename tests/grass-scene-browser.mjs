@@ -34,7 +34,10 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 const browser = await launchBrowser();
 try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
-  const profile = process.env.PROFILE === "lit" ? "&foliage=lit" : "";
+  // GRASS_BLUR=<pixels>: the far grass levels (from GRASS_BLUR_FROM, default 3) blurred into dabs (scene.ts grassBlur).
+  // A lawn written with LAWN_LEVEL=k (LAWN names its document) has that level alone, as level 0: GRASS_BLUR_FROM=0.
+  const profile = (process.env.PROFILE === "lit" ? "&foliage=lit" : "")
+    + (process.env.GRASS_BLUR ? `&grassblur=${process.env.GRASS_BLUR}&grassblurfrom=${process.env.GRASS_BLUR_FROM ?? 3}` : "");
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off${profile}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "grass.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
