@@ -96,10 +96,10 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
 // so they are ragged lobes, not round pebbles) are gathered into mounds by a smooth low-frequency noise: in a mound they
 // stand full and run together, between mounds they are low and sparse; fine fractal roughness goes over all.
 float reliefHeight(vec3 p, vec3 n) {
-  vec3 warp = vec3(reliefFractal(p * 7.0), reliefFractal(p * 7.0 + 5.2), reliefFractal(p * 7.0 + 9.7)) - 0.5;
+  vec3 warp = vec3(reliefFractal(p * 3.5), reliefFractal(p * 3.5 + 5.2), reliefFractal(p * 3.5 + 9.7)) - 0.5;
   float clumps = reliefClumps(p + warp * reliefMore.x, n, reliefShape.y);
   float mound = smoothstep(0.3, 0.72, reliefNoise(p * reliefMore.y + 11.3) * 0.7 + reliefFractal(p * reliefMore.y * 2.6 + 4.1) * 0.3);
-  float h = clumps * mix(0.3, 1.0, mound) + reliefMore.z * mound * 0.6 + reliefMore.w * (reliefFractal(p * 22.0) - 0.5);
+  float h = clumps * mix(0.3, 1.0, mound) + reliefMore.z * mound * 0.6 + reliefMore.w * (reliefFractal(p * 12.0) - 0.5);
   return reliefShape.x * clamp(h / (1.0 + 0.6 * reliefMore.z), 0.0, 1.0);
 }
 // The ground normal tipped by the relief's slope along the surface at p.
@@ -247,8 +247,8 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? 0.1, options.cell ?? 0.28, options.blades ?? 14, options.ridge ?? 0.18) },
-      reliefMore: { value: new THREE.Vector4(options.warp ?? 0.12, options.moundScale ?? 1.3, options.moundWeight ?? 0.8, options.fine ?? 0.1) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? 0.11, options.cell ?? 0.45, options.blades ?? 14, options.ridge ?? 0.08) },
+      reliefMore: { value: new THREE.Vector4(options.warp ?? 0.16, options.moundScale ?? 0.9, options.moundWeight ?? 0.8, options.fine ?? 0.03) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.3, options.cavity ?? 0.25) },
       ...(options.shadow ?? {}),
