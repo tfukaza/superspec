@@ -33,8 +33,10 @@ export interface GrassTuftOptions {
   aspect?: [number, number];
   /** Shares of tall thin accents and of tiny-stroke clusters (the rest are short chubby tufts). */
   shares?: [number, number];
-  /** Colour factors of the tall accents (lighter, warmer) and of the clusters where lit (short grass in the sun). */
-  tallTint?: [number, number, number];
+  /** The thin tufts' brightness over the ground's paint and their hue variation (0 none, 1 full). */
+  brightness?: number;
+  hue?: number;
+  /** Colour factor of the clusters where lit (short grass in the sun). */
   sparkle?: [number, number, number];
   /** Tufts fade out from 60 % of this distance (m) and are gone at it. */
   far?: number;
@@ -64,7 +66,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 6;
  * stroke its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 0.4): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 2.0): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -112,12 +114,14 @@ export function tuftAtlas(seed = 11, blur = 0.4): THREE.DataTexture {
   // Pre-blurred: a separable Gaussian over premultiplied values, within each cell.
   const pre = [0, 1, 2].map(() => new Float32Array(width * height));
   for (let i = 0; i < cover.length; i++) { pre[0][i] = tone[i] * cover[i]; pre[1][i] = along[i] * cover[i]; pre[2][i] = cover[i]; }
+  // Only the chubby tufts (rows 0 to 3) are blurred; the thin ones keep crisp edges.
   const reach = Math.ceil(blur * 3), weights: number[] = [];
   for (let k = -reach; k <= reach; k++) weights.push(Math.exp(-0.5 * k * k / (blur * blur)));
   const pass = (source: Float32Array, horizontal: boolean): Float32Array => {
     const out = new Float32Array(source.length);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const cx = Math.floor(x / CELL) * CELL, cy = Math.floor(y / CELL) * CELL;
+      if (cy >= 4 * CELL || blur <= 0) { out[y * width + x] = source[y * width + x]; continue; }
       let sum = 0, total = 0;
       for (let k = -reach; k <= reach; k++) {
         const sx = horizontal ? x + k : x, sy = horizontal ? y : y + k;
@@ -156,6 +160,7 @@ attribute vec4 tuftData;
 uniform float lift;
 uniform vec3 tuftKeep; // x: base share, y: far (m), z: mirror seed
 varying float vKind;
+varying float vHue;
 varying vec2 vUv;
 varying vec3 vColor;
 varying float vLit;
@@ -209,6 +214,7 @@ void main() {
   float cell = tuftData.z;
   vUv = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + uv) / vec2(4.0, 6.0);
   vKind = cell < 15.5 ? 0.0 : cell < 19.5 ? 1.0 : 2.0;
+  vHue = fract(tuftData.w * 53.7 + 0.21);
   vColor = reliefPaint(root, rn, h, tone);
   vLit = min(band, reliefCast(root, rn));
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
@@ -221,24 +227,33 @@ varying vec2 vUv;
 varying vec3 vColor;
 varying float vLit;
 varying float vKind;
-uniform vec3 tuftTall;
+varying float vHue;
+uniform vec2 tuftDetail; // x: brightness of the thin tufts, y: their hue variation
 uniform vec3 tuftSpark;
 void main() {
   vec4 t = texture(tuftAtlas, vUv);
   if (t.a < 0.02) discard;
-  // Each blade lighter or darker by its own tone; its lit tip a little lighter still.
-  vec3 c = vColor * mix(0.84, 1.14, t.r) * mix(1.0, 1.18, t.g * t.g * vLit);
-  // Tall accents: lighter and a warmer hue. Clusters: short grass catching the sun, bright where lit.
-  if (vKind > 0.5 && vKind < 1.5) c *= tuftTall;
-  else if (vKind > 1.5) c *= mix(vec3(1.0), tuftSpark, vLit);
-  // Coverage firmed up, so a stroke stays a solid shape of paint at a distance (its mipmaps thin it) with a soft edge.
-  gl_FragColor = vec4(c, smoothstep(0.15, 0.55, t.a));
+  vec3 c;
+  float a;
+  if (vKind < 0.5) {
+    // Chubby: the ground's own paint, barely a tone apart per stroke; soft edged.
+    c = vColor * mix(0.95, 1.05, t.r);
+    a = smoothstep(0.02, 0.6, t.a);
+  } else {
+    // Thin (tall accents and sunlit clusters): brighter than the ground, each its own hue from warm yellow-green to
+    // cool blue-green, each stroke its own tone; crisp edged. Clusters brighten further where lit.
+    vec3 hue = mix(vec3(1.18, 1.07, 0.6), vec3(0.82, 1.04, 1.25), vHue);
+    c = vColor * tuftDetail.x * mix(vec3(1.0), hue, tuftDetail.y) * mix(0.88, 1.12, t.r);
+    if (vKind > 1.5) c *= mix(vec3(1.0), tuftSpark, vLit);
+    a = smoothstep(0.35, 0.6, t.a);
+  }
+  gl_FragColor = vec4(c, a);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
 
 /** Tufts over `ground` (the lawn, before relief), painted and placed by the relief mesh `relief` (grass-relief.ts). */
-export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: GrassTuftOptions = {}): THREE.Mesh {
+export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: GrassTuftOptions = {}): THREE.Mesh[] {
   const next = random(options.seed ?? 5);
   ground.updateWorldMatrix(true, false);
   const source = ground.geometry.index ? ground.geometry.toNonIndexed() : ground.geometry;
@@ -283,32 +298,40 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     // A cell is square; each tuft is stretched to its own width.
     data.set([tall, tall * aspect, cell, next()], k * 4);
   }
+  // Two meshes: the chubby tufts, blurred with the relief, and the thin ones, drawn after it unblurred.
+  const atlas = tuftAtlas();
+  const shared = (relief.material as THREE.ShaderMaterial);
+  const build = (detail: boolean): THREE.Mesh => {
+  const picked: number[] = [];
+  for (let k = 0; k < count; k++) if ((data[k * 4 + 2] >= 16) === detail) picked.push(k);
+  const pick = (source: Float32Array, size: number) => { const out = new Float32Array(picked.length * size); picked.forEach((k, i) => out.set(source.subarray(k * size, k * size + size), i * size)); return out; };
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3));
   geometry.setAttribute("uv", new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
   geometry.setIndex([0, 1, 2, 0, 2, 3]);
-  geometry.setAttribute("tuftRoot", new THREE.InstancedBufferAttribute(roots, 3));
-  geometry.setAttribute("tuftUp", new THREE.InstancedBufferAttribute(ups, 3));
-  geometry.setAttribute("tuftData", new THREE.InstancedBufferAttribute(data, 4));
-  geometry.instanceCount = count;
-  const shared = (relief.material as THREE.ShaderMaterial);
+  geometry.setAttribute("tuftRoot", new THREE.InstancedBufferAttribute(pick(roots, 3), 3));
+  geometry.setAttribute("tuftUp", new THREE.InstancedBufferAttribute(pick(ups, 3), 3));
+  geometry.setAttribute("tuftData", new THREE.InstancedBufferAttribute(pick(data, 4), 4));
+  geometry.instanceCount = picked.length;
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true, depthWrite: false,
     defines: { ...shared.defines, ...(options.everywhere ?? true ? { TUFT_EVERYWHERE: "" } : {}) },
     uniforms: {
       ...shared.uniforms,
-      tuftAtlas: { value: tuftAtlas() },
+      tuftAtlas: { value: atlas },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.25, options.far ?? 30, 0.37) },
-      tuftTall: { value: new THREE.Vector3(...(options.tallTint ?? [1.22, 1.16, 0.78])) },
+      tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.3, options.hue ?? 1.0) },
       tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [1.75, 1.62, 0.72])) },
     },
   });
   followPaintedFinishing(material);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = "grass/tufts";
+  mesh.name = detail ? "grass/tufts-detail" : "grass/tufts";
   mesh.frustumCulled = false;
   mesh.renderOrder = 3;
-  mesh.userData.clumpBlur = true;
-  mesh.userData.grassTufts = { candidates: count, area: total };
+  if (detail) mesh.userData.clumpDetail = true; else mesh.userData.clumpBlur = true;
+  mesh.userData.grassTufts = { candidates: picked.length, area: total, detail };
   return mesh;
+  };
+  return [build(false), build(true)];
 }

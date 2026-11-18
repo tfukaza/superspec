@@ -46,7 +46,7 @@ export class FoliageBlur {
    * colours are only blurred among themselves, not snapped to bands, and finished as painted materials are.
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, readonly meters: number, strength = 0.6, readonly repaint = false,
-    readonly options: { layer?: number; pixels?: number; soften?: boolean; soft?: boolean } = {}) {
+    readonly options: { layer?: number; pixels?: number; soften?: boolean; soft?: boolean; detailLayer?: number } = {}) {
     this.quad.frustumCulled = false;
     this.blur = new THREE.ShaderMaterial({
       uniforms: { source: { value: null }, direction: { value: new THREE.Vector2(1, 0) }, radius: { value: 4 }, first: { value: 1 } },
@@ -140,9 +140,27 @@ void main() {
     });
     // The leaves' colours are the painted materials' before finishing; the composite finishes them as they would be.
     if (options.soft) { this.composite.transparent = true; this.composite.blending = THREE.NormalBlending; }
+    // Detail parts (soft mode's detailLayer): drawn after the blurred parts into a target that shares their depth, so
+    // they are hidden by them where behind, and laid over the scene unblurred.
+    this.detailComposite = new THREE.ShaderMaterial({
+      uniforms: { detail: { value: null } }, vertexShader: QUAD_VERTEX, depthTest: false, depthWrite: false, transparent: true,
+      blending: THREE.NormalBlending,
+      fragmentShader: /* glsl */`\nuniform sampler2D detail;
+void main() {
+  vec4 d = texelFetch(detail, ivec2(gl_FragCoord.xy), 0);
+  if (d.a < 0.004) discard;
+  gl_FragColor = vec4(d.rgb / d.a, clamp(d.a, 0.0, 1.0));
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}`,
+    });
+    followPaintedFinishing(this.detailComposite);
     if (repaint && !options.soften) this.composite.toneMapped = false;
     else followPaintedFinishing(this.composite);
   }
+
+  private readonly detailComposite: THREE.ShaderMaterial;
+  private detail: THREE.WebGLRenderTarget | null = null;
 
   private draw(material: THREE.Material, target: THREE.WebGLRenderTarget | null): void {
     this.quad.material = material;
@@ -163,7 +181,18 @@ void main() {
       t.texture.generateMipmaps = false;
       return t;
     };
-    this.target = make(true);
+    this.detail?.dispose();
+    if (this.options.soft && this.options.detailLayer !== undefined) {
+      // The blurred parts' depth as a texture, shared by the detail target.
+      const depth = new THREE.DepthTexture(size.x, size.y);
+      this.target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, depthBuffer: true, depthTexture: depth });
+      this.detail = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, depthBuffer: true, depthTexture: depth });
+      for (const t of [this.target, this.detail]) {
+        t.texture.colorSpace = THREE.LinearSRGBColorSpace;
+        t.texture.minFilter = t.texture.magFilter = THREE.NearestFilter;
+        t.texture.generateMipmaps = false;
+      }
+    } else this.target = make(true);
     this.passes = [make(false), make(false)];
   }
 
@@ -209,6 +238,15 @@ void main() {
       this.composite.uniforms.original.value = target.texture;
       this.composite.uniforms.blurred.value = this.passes[1].texture;
       this.draw(this.composite, null);
+      if (this.detail && this.options.detailLayer !== undefined) {
+        renderer.setRenderTarget(this.detail);
+        renderer.clear(true, false, false);
+        camera.layers.set(this.options.detailLayer);
+        renderer.render(scene, camera);
+        camera.layers.mask = layers;
+        this.detailComposite.uniforms.detail.value = this.detail.texture;
+        this.draw(this.detailComposite, null);
+      }
     } finally {
       scene.overrideMaterial = override;
       camera.layers.mask = layers;
@@ -222,6 +260,8 @@ void main() {
   dispose(): void {
     this.target?.dispose();
     for (const t of this.passes) t.dispose();
+    this.detail?.dispose();
+    this.detailComposite.dispose();
     this.blur.dispose(); this.composite.dispose(); this.depthOnly.dispose();
     this.quad.geometry.dispose();
   }

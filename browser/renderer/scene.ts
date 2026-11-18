@@ -163,7 +163,7 @@ export class RustScene {
   readonly clumpBlur = (() => {
     const query = new URLSearchParams(location.search);
     const pixels = Number(query.get("clumpblur"));
-    return pixels > 0 ? new FoliageBlur(this.renderer, 0, Number(query.get("clumpblurmix") ?? 1), false, { layer: 11, pixels, soft: true }) : null;
+    return pixels > 0 ? new FoliageBlur(this.renderer, 0, Number(query.get("clumpblurmix") ?? 1), false, { layer: 11, pixels, soft: true, detailLayer: 12 }) : null;
   })();
   /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
   readonly strokeEdges = STROKES ? (() => {
@@ -249,6 +249,8 @@ export class RustScene {
     let clumpAnchor: THREE.Vector3 | null = null;
     if (this.clumpBlur) {
       for (const mesh of this.models.children) {
+        // Parts with `clumpDetail` go after the blurred ones, unblurred (the thin grass tufts).
+        if (mesh.userData.clumpDetail) { mesh.layers.set(12); continue; }
         if (!mesh.userData.clumpBlur) continue;
         mesh.layers.set(11);
         if (mesh.visible && !clumpAnchor) clumpAnchor = this.controls.target.clone();

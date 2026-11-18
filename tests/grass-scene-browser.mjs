@@ -132,9 +132,9 @@ try {
       reliefInfo = mesh.userData.grassRelief;
       // TUFTS=1|<json>: pre-blurred grass tuft billboards over the relief (grass-tufts.ts).
       if (tufts) {
-        const tuftMesh = window.__grassTufts(lawn, mesh, tufts === "1" ? {} : JSON.parse(tufts));
-        s.models.add(tuftMesh);
-        reliefInfo = { ...reliefInfo, tufts: tuftMesh.userData.grassTufts };
+        const tuftMeshes = window.__grassTufts(lawn, mesh, tufts === "1" ? {} : JSON.parse(tufts));
+        for (const tuftMesh of tuftMeshes) s.models.add(tuftMesh);
+        reliefInfo = { ...reliefInfo, tufts: tuftMeshes.map(m => m.userData.grassTufts) };
       }
     }
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
