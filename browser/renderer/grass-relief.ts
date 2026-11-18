@@ -320,7 +320,7 @@ void main() {
 
 /** The lawn drawn with grass relief by `mode`; the caller hides the lawn itself. */
 export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: GrassReliefOptions = {}): THREE.Mesh {
-  const geometry = divided(ground, mode === "displace" ? options.divisions ?? 10 : 1);
+  const geometry = divided(ground, mode === "displace" ? options.divisions ?? 3 : 1);
   const field = sceneFieldUniforms("ground.color");
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: fragment(mode, options.steps ?? 32),
