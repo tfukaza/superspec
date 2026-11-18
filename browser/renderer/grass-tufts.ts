@@ -35,6 +35,8 @@ export interface GrassTuftOptions {
   closeDensity?: number;
   /** The least a tuft's painted normal faces the camera (its paint follows the slope it is seen against). */
   face?: number;
+  /** The tall blades' tip colour (linear RGB), a bright lime, brighter where lit. */
+  lime?: [number, number, number];
   /** Tall blades: the ground lightness (luma) below which they thin to a tenth, and above which all are kept. */
   light?: [number, number];
   /** Chubby tufts' colour range: brightness (share either way) and warm/cool hue shift (0 to 1). */
@@ -80,7 +82,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 6;
  * stroke its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 6): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 9): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -133,14 +135,16 @@ export function tuftAtlas(seed = 11, blur = 6): THREE.DataTexture {
   // The clusters (row 5) are tiny on screen, so they take a much wider blur to read as soft.
   const kernel = (sigma: number) => { const reach = Math.ceil(sigma * 3), weights: number[] = []; for (let k = -reach; k <= reach; k++) weights.push(Math.exp(-0.5 * k * k / (sigma * sigma))); return { reach, weights }; };
   // The tall thin blades (row 4) take only a slight blur.
-  const kernels = [kernel(blur), kernel(6), kernel(0.4)];
+  // Chubby rows 0 to 3 each their own blur (from crisp to soft, the softest lur), so tufts vary in softness.
+  const kernels = [kernel(6), kernel(0.4), kernel(blur * 0.22), kernel(blur * 0.45), kernel(blur * 0.7), kernel(blur)];
   const pass = (source: Float32Array, horizontal: boolean): Float32Array => {
     const out = new Float32Array(source.length);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const cx = Math.floor(x / CELL) * CELL, cy = Math.floor(y / CELL) * CELL;
       if (blur <= 0) { out[y * width + x] = source[y * width + x]; continue; }
       let sum = 0, total = 0;
-      const { reach, weights } = kernels[cy >= 5 * CELL ? 1 : cy >= 4 * CELL ? 2 : 0];
+      const row = Math.floor(cy / CELL);
+      const { reach, weights } = kernels[row >= 5 ? 0 : row === 4 ? 1 : 2 + row];
       for (let k = -reach; k <= reach; k++) {
         const sx = horizontal ? x + k : x, sy = horizontal ? y : y + k;
         if (sx < cx || sx >= cx + CELL || sy < cy || sy >= cy + CELL) continue;
@@ -269,6 +273,7 @@ varying vec3 vColor;
 varying float vLit;
 varying float vKind;
 varying float vHue;
+uniform vec3 tuftLime; // the tall blades' tip colour, a bright lime
 uniform vec2 tuftVary; // chubby tufts: x brightness range (share), y hue shift (0 to 1)
 uniform vec2 tuftDetail; // x: brightness of the thin tufts, y: their hue variation
 uniform vec3 tuftSpark;
@@ -291,7 +296,7 @@ void main() {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
     // Toward the tip it gleams: brighter with the light it catches, toward a pale sunlit yellow-green.
-    vec3 glint = bright * (1.05 + 0.75 * vLit) + vec3(0.07, 0.08, 0.02) * vLit;
+    vec3 glint = mix(bright * (1.0 + 0.4 * vLit), tuftLime * (0.75 + 0.5 * vLit), 0.65);
     c = mix(vColor * mix(0.95, 1.05, t.r), glint, smoothstep(0.15, 0.9, t.g));
     a = smoothstep(0.3, 0.6, t.a);
   } else {
@@ -411,6 +416,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       tuftAtlas: { value: atlas },
       tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0, 0])) },
       tuftLight: { value: new THREE.Vector2(...(options.light ?? [0.33, 0.45])) },
+      tuftLime: { value: new THREE.Vector3(...(options.lime ?? [0.36, 0.86, 0.04])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
