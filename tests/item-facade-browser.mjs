@@ -62,17 +62,34 @@ try {
   }
   if (!process.exitCode) {
     await waitForFrames(page, 6);
-    // The sun, turned round to the other side of the scene (SUN=<azimuth>,<elevation> degrees from +x toward +y sets
-    // it, SUN=keep leaves the scene's own).
-    const sun = await page.evaluate(sun => {
-      if (sun === "keep") return null;
+    // The sun, turned round to the other side of the scene and softened (SUN=<azimuth>,<elevation> degrees from +x toward +y
+    // sets its direction).
+    // LIGHT: "keep" leaves the scene's lighting alone; otherwise the sun is turned round and `softSun` (below) is merged into
+    // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
+    // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
+    const softSun = {
+      intensity: 2,
+      shadow: {
+        // A wider, softer edge that widens with the distance to what casts it.
+        softness: 0.05, spread: 0.09, maxSoftness: 0.3,
+        // A cool shade, lighter than the default, with a mottled interior (patches of darker and bluer shade 0.6 m across).
+        darkness: 0.2, tintStrength: 0.5, tint: [0.05, 0.2, 0.8], tintAlt: [0.08, 0.14, 0.7], wrap: 0.4,
+        noise: { scale: 0.6, edge: 0.1, amount: 0.5, seed: 7 },
+      },
+    };
+    const lit = await page.evaluate(({ sun, soft, extra, keep }) => {
       const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
+      const before = JSON.stringify(light);
+      if (keep) return { before };
+      const merge = (target, source) => { for (const [key, value] of Object.entries(source)) target[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(target[key] ?? {}, value) : value; return target; };
       if (sun) { const [az, el] = sun.split(",").map(v => Number(v) * Math.PI / 180); light.direction = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)]; }
       else light.direction = [-light.direction[0], -light.direction[1], light.direction[2]];
+      merge(light, soft); merge(light, extra);
       s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
-      return light.direction;
-    }, process.env.SUN ?? "");
-    if (sun) console.log(`sun direction ${sun.map(v => v.toFixed(2))}`);
+      return { before, after: JSON.stringify(light) };
+    }, { sun: process.env.SUN ?? "", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep" });
+    console.log(`sun before ${lit.before}`);
+    if (lit.after) console.log(`sun after  ${lit.after}`);
     await waitForFrames(page, 6);
     const info = await page.evaluate(id => {
       const s = window.__scene, T = window.__three, box = new T.Box3();

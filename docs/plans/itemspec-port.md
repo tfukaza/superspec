@@ -136,8 +136,12 @@ Four differences from the picture were then closed, and the sun turned to the ot
 - **Windows:** `spansPlans` (edge, storey, bank, `[from, to]`) place windows in banks of any width, as
   in the reference model; without it the bays are even.
 - **Paint:** the coat's patches are about a third the size (`Patch frequency` 2.4 per metre).
-- **Sun:** `tests/item-facade-browser.mjs` turns the sun to the other side of the scene by default
-  (`SUN=<azimuth>,<elevation>` sets it, `SUN=keep` leaves the scene's own).
+- **Sun and shade:** `tests/item-facade-browser.mjs` turns the sun to the other side of the scene and
+  softens it, in the scene's global lighting record rather than in any material: intensity 3 to 2,
+  shadow `softness` 0.05, `spread` 0.09 and `maxSoftness` 0.3 (the edge widens with the distance to the
+  caster), `darkness` 0.2, a bluer `tint` at `tintStrength` 0.5, and interior `noise` of 0.5 over 0.6 m
+  patches (`SUN=<azimuth>,<elevation>` sets the direction, `LIGHT_SUN` is JSON merged over the sun,
+  `LIGHT=keep` leaves the scene's own lighting).
 
 Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden, before these fixes),
 `itemspec/shop-house-lane.png` and `itemspec/shop-house-planned.png` (after them).
