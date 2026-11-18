@@ -692,9 +692,9 @@ fn write_washroom_lawn() {
     definition.blade.taper = 0.42;
     // And fewer of them: wider blades hold the cover with about a quarter fewer clumps.
     definition.density = 105.;
-    // Uneven heights: blades from 10 to 46 cm, and each clump scaled from 0.6 to 1.4.
-    definition.blade.height = [0.10, 0.46];
-    definition.scale = [0.6, 1.4];
+    // Short, uneven grass: blades from 5 to 22 cm, and each clump scaled from 0.5 to 1.5.
+    definition.blade.height = [0.05, 0.22];
+    definition.scale = [0.5, 1.5];
     let mut far = definition.lods[2];
     far.keep = 0.1;
     far.blades = 0.5;
@@ -760,7 +760,7 @@ fn write_washroom_lawn() {
         accent.density = 85.;
         accent.clump.blades = [1, 3];
         accent.clump.radius = 0.03;
-        accent.blade.height = [0.10, 0.66];
+        accent.blade.height = [0.06, 0.35];
         accent.blade.width = accent.blade.width.map(|w| w * 1.8);
         accent.clumping.scale = 0.7;
         accent.clumping.strength = 0.6;
