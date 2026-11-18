@@ -18,9 +18,9 @@ const meadowAmount = param.scalar({ default: 0.3, range: [0, 1], label: "Meadow 
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-// Five bands, darkest first, each about 5 % lighter than the last and turning from a cool blue-green to a warm yellow-green.
-const band0 = param.vec3({ default: vec3(0.22, 0.50, 0.10), range: [0, 1], label: "Band 1 (cool, deepest)" });
-const band1 = param.vec3({ default: vec3(0.255, 0.515, 0.085), range: [0, 1], label: "Band 2" });
+// Five bands, darkest first, each about 5 % lighter than the last and turning from a deep green to a warm yellow-green.
+const band0 = param.vec3({ default: vec3(0.21, 0.50, 0.065), range: [0, 1], label: "Band 1 (deepest)" });
+const band1 = param.vec3({ default: vec3(0.25, 0.515, 0.06), range: [0, 1], label: "Band 2" });
 const band2 = param.vec3({ default: vec3(0.29, 0.535, 0.07), range: [0, 1], label: "Band 3" });
 const band3 = param.vec3({ default: vec3(0.33, 0.55, 0.06), range: [0, 1], label: "Band 4" });
 const band4 = param.vec3({ default: vec3(0.37, 0.565, 0.055), range: [0, 1], label: "Band 5 (warm, lightest)" });
@@ -32,7 +32,7 @@ const hueAmount = param.scalar({ default: 0.07, range: [0, 0.5], label: "Hue var
 const grain = param.scalar({ default: 0.05, range: [0, 0.3], label: "Grain" });
 const grainScale = param.scalar({ default: 14, range: [2, 60], label: "Grain frequency" });
 const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label: "Hue direction" });
-const shadeTint = param.vec3({ default: vec3(0.42, 0.62, 0.9), range: [0, 1], label: "Shade tint" });
+const shadeTint = param.vec3({ default: vec3(0.5, 0.66, 0.68), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
 const softness = param.scalar({ default: 1.5, range: [0, 8], label: "Edge softness (pixels)" });
 const range = param.scalar({ default: 0.02, range: [0, 1], label: "Gradient range" });
