@@ -58,7 +58,7 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar }) => {
+  const info = await page.evaluate(({ keep, pillar, ball }) => {
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
     for (const m of s.models.children) {
@@ -83,6 +83,17 @@ try {
       column.castShadow = column.receiveShadow = true;
       column.name = "test/pillar";
       s.models.add(column);
+      // A ball for scale: a size 5 soccer ball, 22 cm across (BALL=basketball: 24 cm), resting on the lawn a meter in
+      // front of the pillar.
+      const ballAt = new T.Vector3(at.x + 0.6, at.y - 0.8, box.max.z + 5);
+      const ballHit = new T.Raycaster(ballAt, new T.Vector3(0, 0, -1)).intersectObject(lawn)[0];
+      const radius = ball === "basketball" ? 0.12 : 0.11;
+      const sphere = new T.Mesh(new T.SphereGeometry(radius, 48, 24),
+        new T.MeshStandardMaterial({ color: ball === "basketball" ? 0xc8642a : 0xf2f0ea, roughness: 0.6 }));
+      sphere.position.set(ballAt.x, ballAt.y, (ballHit ? ballHit.point.z : base) + radius);
+      sphere.castShadow = sphere.receiveShadow = true;
+      sphere.name = "test/ball";
+      s.models.add(sphere);
       // Lighting again, so the pillar casts and the shadow map is fitted to the scene with it.
       s.setLighting(JSON.parse(document.querySelector("#viewport").dataset.lighting));
     }
@@ -90,7 +101,7 @@ try {
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
     return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray() };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1" });
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer" });
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, y1 - y0);
