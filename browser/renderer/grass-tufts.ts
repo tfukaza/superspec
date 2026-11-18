@@ -242,7 +242,7 @@ void main() {
     // and only where lit (shade band and cast shadow): a blade reads as it catches the sun, as a glint.
     float sun = min(band, reliefCast(root, rn));
     vGround = smoothstep(tuftLight.x, tuftLight.y, lightness);
-    keep *= mix(0.1, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness)) * mix(0.1, 1.0, smoothstep(0.3, 0.8, sun));
+    keep *= mix(0.45, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness)) * mix(0.45, 1.0, smoothstep(0.3, 0.8, sun));
   }
   if (!close && rank > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // Grass grows mostly upward: the tuft stands between the relief's normal and straight up, turned to face the camera.
@@ -250,7 +250,7 @@ void main() {
   vec3 side = cross(grow, v);
   side = length(side) < 1e-4 ? t1 : normalize(side);
   // Each tuft tilted its own way across the view (the tall blades most), so they do not all stand straight up.
-  float tilt = (fract(rank * 17.31 + 0.5) - 0.5) * (tuftData.z > 15.5 && tuftData.z < 19.5 ? 0.9 : 0.35);
+  float tilt = (fract(rank * 17.31 + 0.5) - 0.5) * (tuftData.z > 19.5 ? 1.6 : tuftData.z > 15.5 ? 0.9 : 0.35);
   grow = normalize(grow + side * tilt);
   float mirror = fract(rank * 91.7 + tuftKeep.z) < 0.5 ? -1.0 : 1.0;
   vec3 world = root - grow * 0.08 * tuftData.x + side * position.x * tuftData.y * mirror + grow * position.y * tuftData.x;
@@ -301,15 +301,13 @@ void main() {
     // cool blue-green) up the blade; crisp edged.
     // Toward the tip it gleams: brighter with the light it catches, toward a pale sunlit yellow-green.
     // On dark ground the blade stays dark; on light ground its tip gleams neon lime, brighter where lit.
-    vec3 dark = vColor * 0.82;
-    vec3 neon = mix(bright * (1.0 + 0.4 * vLit), tuftLime * (0.85 + 0.75 * vLit), 0.8);
-    vec3 glint = mix(dark, neon, vGround);
-    c = mix(vColor * mix(0.95, 1.05, t.r), glint, smoothstep(0.15, 0.9, t.g));
+    // The ground's own colour up the blade, its tip a little lighter where lit.
+    c = vColor * mix(0.94, 1.06, t.r) * (1.0 + 0.25 * vLit * smoothstep(0.4, 1.0, t.g));
     a = smoothstep(0.3, 0.6, t.a);
   } else {
     // Clusters: short grass in the sun, bright and brighter where lit; soft edged like the chubby tufts.
     // The patch's own colour pushed bright, much brighter where lit, so each dash matches the grass it lies on.
-    c = vColor * mix(0.92, 1.08, t.r) * mix(vec3(1.45), tuftSpark, vLit);
+    c = vColor * mix(0.92, 1.08, t.r) * mix(vec3(1.8), tuftSpark, vLit);
     a = smoothstep(0.02, 0.6, t.a);
   }
   gl_FragColor = vec4(c, a);
@@ -340,7 +338,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     cumulative.push(total);
   }
   const [s0, s1] = options.size ?? [0.05, 0.26], [a0, a1] = options.aspect ?? [0.75, 1.4];
-  const clusterShare = options.clusterShare ?? 0.18;
+  const clusterShare = options.clusterShare ?? 0.07;
   const point = (): { at: THREE.Vector3; up: THREE.Vector3 } => {
     const pick = next() * total;
     let lo = 0, hi = cumulative.length - 1;
@@ -391,7 +389,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     }
     return best;
   };
-  const tallCandidates = Math.round(total * (options.tallDensity ?? 700));
+  const tallCandidates = Math.round(total * (options.tallDensity ?? 1100));
   for (let k = 0; k < tallCandidates; k++) {
     const { at, up } = point();
     // A thin sprinkling between patches too.
@@ -433,7 +431,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
       tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.4, options.hue ?? 1.0) },
-      tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [2.3, 2.2, 1.0])) },
+      tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [3.1, 3.0, 1.3])) },
     },
   });
   followPaintedFinishing(material);
