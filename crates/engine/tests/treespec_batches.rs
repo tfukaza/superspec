@@ -745,6 +745,44 @@ fn write_washroom_lawn() {
         level.batch.object_id = "lawn".into();
         level.batch.foliage.as_mut().unwrap().patch = "lawn".into();
     }
+    // Accent grass (the painterly study's highlight population): a sparse patch of its own, a few broad blades a clump,
+    // a little taller, colored by `painted-grass-accent` (bright where it faces the sun, now and then another hue) and
+    // drawn 3 cm above the ground, as quick strokes laid over the lawn; the renderer can blur it alone
+    // (`?grassblur=<px>&grassblurpatch=lawn-accent`). Its near three levels only. LAWN_ACCENT=0 leaves it out.
+    if !std::env::var("LAWN_ACCENT").is_ok_and(|v| v == "0") && std::env::var("LAWN_LEVEL").is_err()
+    {
+        let mut accent = definition.clone();
+        accent.seed = definition.seed + 101;
+        accent.density = 16.;
+        accent.clump.blades = [1, 3];
+        accent.blade.height = accent.blade.height.map(|h| h * 1.15);
+        accent.blade.width = accent.blade.width.map(|w| w * 1.2);
+        accent.lods.truncate(3);
+        let accent_patch = grass::generate(
+            &accent,
+            &GrassSite {
+                ground: ground.clone(),
+                mask: DensityMask::Uniform,
+            },
+            &|| false,
+        )
+        .unwrap();
+        let mut accent_look = look.clone();
+        accent_look.material = Some("painted-grass-accent".into());
+        accent_look.far = 22.;
+        let mut accent_levels =
+            batches::grass_levels(&accent_patch, [0., 0., 0.03], &accent_look, None).unwrap();
+        for level in &mut accent_levels {
+            level.batch.id = level.batch.id.replacen(&accent_patch.id, "lawn-accent", 1);
+            level.batch.object_id = "lawn-accent".into();
+            level.batch.foliage.as_mut().unwrap().patch = "lawn-accent".into();
+        }
+        println!(
+            "lawn accent: {} clumps, {} blades at level 0",
+            accent_patch.stats.instances, accent_patch.stats.blades
+        );
+        levels.extend(accent_levels);
+    }
     let mut scene = Scene::empty(1, "test");
     for FoliageBatch { batch, mesh } in &levels {
         scene.add_batch(batch, mesh).unwrap();

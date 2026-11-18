@@ -151,7 +151,9 @@ export class RustScene {
   readonly grassBlur = (() => {
     const query = new URLSearchParams(location.search);
     const pixels = Number(query.get("grassblur"));
-    return pixels > 0 ? { blur: new FoliageBlur(this.renderer, 0, 1, true, { layer: 10, pixels, soften: true }), from: Number(query.get("grassblurfrom") ?? 3) } : null;
+    // `?grassblurpatch=<id>` blurs that grass patch instead, at every level (the accent strokes over a lawn).
+    return pixels > 0 ? { blur: new FoliageBlur(this.renderer, 0, 1, true, { layer: 10, pixels, soften: true }), from: Number(query.get("grassblurfrom") ?? 3),
+      patch: query.get("grassblurpatch") } : null;
   })();
   /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
   readonly strokeEdges = STROKES ? (() => {
@@ -230,7 +232,8 @@ export class RustScene {
     if (this.grassBlur) {
       for (const mesh of this.models.children) {
         const look = mesh.userData.foliage;
-        if (look?.family === "grass" && look.level >= this.grassBlur.from) mesh.layers.set(10);
+        if (look?.family !== "grass") continue;
+        if (this.grassBlur.patch ? look.patch === this.grassBlur.patch : look.level >= this.grassBlur.from) mesh.layers.set(10);
       }
     }
     if (this.ambientOcclusion) this.ambientOcclusion.render();

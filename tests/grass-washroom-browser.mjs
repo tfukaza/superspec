@@ -38,7 +38,8 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 
 const lawn = loadLawn();
 const { project } = buildProject(Number(process.env.RESOLUTION ?? 256), undefined, { grass: lawn });
-const grassBatches = project.batches.filter(batch => batch.foliage);
+// The lawn's own grass; its accent patch (lawn-accent) is drawn too, but not counted here.
+const grassBatches = project.batches.filter(batch => batch.foliage && batch.foliage.patch === "lawn");
 assert.ok(grassBatches.length >= 3, "the lawn's grass is delivered as foliage batches, a level each");
 const text = JSON.stringify(project);
 // The lawn's look keeps blades only near shade boundaries (a lawn written with LAWN_BOUNDARY=1), or keeps every blade
@@ -111,7 +112,7 @@ try {
     const loaded = await state();
     assert.equal(loaded.sceneFields?.ground, project.materials.find(material => material.id === "painted-lawn").meshes[0], "the lawn is the ground the grass samples");
     // The Wasm build delivered every clump TreeSpec grew (native), each level the share its keep says.
-    const delivered = loaded.described.patches[0].levels;
+    const delivered = loaded.described.patches.find(p => p.id === "lawn").levels;
     assert.equal(delivered[0].instances, lawn.stats.instances, "level 0 holds every clump");
     assert.deepEqual(delivered.map(level => level.instances), delivered.map((_, level) => grassBatches.filter(batch => batch.foliage.level === level).reduce((sum, batch) => sum + batch.instances.length, 0)));
     const shot = async name => {
@@ -138,9 +139,9 @@ try {
       const windy = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.frameBudget));
       await page.evaluate(() => window.__scene.setContinuous(false));
       await shot(`${name}-${view}`);
-      const levels = now.described.patches[0].levels;
+      const levels = now.described.patches.find(p => p.id === "lawn").levels;
       return {
-        view, tiles: now.described.patches[0].tiles, tilesDrawn: now.described.patches[0].tilesDrawn,
+        view, tiles: now.described.patches.find(p => p.id === "lawn").tiles, tilesDrawn: now.described.patches.find(p => p.id === "lawn").tilesDrawn,
         instancesDrawn: levels.reduce((sum, level) => sum + level.drawn, 0), levels: levels.map(level => ({ level: level.level, instances: level.drawn, blades: level.bladesDrawn, vertices: level.verticesDrawn, meshes: level.meshes })),
         bladesSubmitted: now.blades.candidates, bladesDrawn: now.blades.drawn, keptBy: now.blades.byReason,
         frame: steady.frame, gpuMs: steady.gpuMs, drawAndReadMs: steady.drawAndReadMs, withoutGrass: { frame: bare.frame, gpuMs: bare.gpuMs },
@@ -193,7 +194,7 @@ try {
       assert.ok(new Set(sun.moves.map(move => move.bladesDrawn)).size > 1, `the blades drawn follow the boundary: ${JSON.stringify(sun.moves)}`);
       // A high sun lights every slope of the lawn and a low one shades most: a boundary crosses it at the middle suns.
       assert.ok(sun.moves.filter(move => move.bladesDrawn > 0).length >= 2, "middle suns leave blades at a boundary");
-      assert.equal(after.described.patches[0].tiles, loaded.described.patches[0].tiles);
+      assert.equal(after.described.patches.find(p => p.id === "lawn").tiles, loaded.described.patches.find(p => p.id === "lawn").tiles);
     }
     // The other profile over the same geometry and instances: its programs compiled cold, then the same numbers.
     const switched = await page.evaluate(async other => window.__scene.setFoliageProfile(other), other);

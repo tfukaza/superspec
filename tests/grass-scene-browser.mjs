@@ -37,7 +37,8 @@ try {
   // GRASS_BLUR=<pixels>: the far grass levels (from GRASS_BLUR_FROM, default 3) blurred into dabs (scene.ts grassBlur).
   // A lawn written with LAWN_LEVEL=k (LAWN names its document) has that level alone, as level 0: GRASS_BLUR_FROM=0.
   const profile = (process.env.PROFILE === "lit" ? "&foliage=lit" : "")
-    + (process.env.GRASS_BLUR ? `&grassblur=${process.env.GRASS_BLUR}&grassblurfrom=${process.env.GRASS_BLUR_FROM ?? 3}` : "");
+    + (process.env.GRASS_BLUR ? `&grassblur=${process.env.GRASS_BLUR}&grassblurfrom=${process.env.GRASS_BLUR_FROM ?? 3}`
+      + (process.env.GRASS_BLUR_PATCH ? `&grassblurpatch=${process.env.GRASS_BLUR_PATCH}` : "") : "");
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off${profile}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "grass.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
