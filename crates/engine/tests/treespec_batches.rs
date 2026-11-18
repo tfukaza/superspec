@@ -687,6 +687,11 @@ fn write_washroom_lawn() {
     // The washroom is seen from a few meters: its levels step at 7 and 14 m. Two far levels follow for a large
     // field, a painter's quick strokes: at 22 m half of each clump's blades, 2.2 times as wide, and at 30 m a third,
     // 3.5 times as wide, each keeping fewer clumps; the grass stops at 40 m.
+    // Fuller blades than the meadow fixture's: half as wide again, and narrowing less toward the tip.
+    definition.blade.width = definition.blade.width.map(|w| w * 1.5);
+    definition.blade.taper = 0.42;
+    // And fewer of them: wider blades hold the cover with about a quarter fewer clumps.
+    definition.density = 105.;
     let mut far = definition.lods[2];
     far.keep = 0.1;
     far.blades = 0.5;
