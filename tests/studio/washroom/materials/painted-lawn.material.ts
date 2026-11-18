@@ -16,10 +16,10 @@ const meadowAmount = param.scalar({ default: 0.22, range: [0, 1], label: "Meadow
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-const lime = param.vec3({ default: vec3(0.37, 0.65, 0.07), range: [0, 1], label: "Green A (lime)" });
-const emerald = param.vec3({ default: vec3(0.28, 0.56, 0.07), range: [0, 1], label: "Green B (emerald)" });
-const sun = param.vec3({ default: vec3(0.45, 0.69, 0.08), range: [0, 1], label: "Sun-yellow patches" });
-const deep = param.vec3({ default: vec3(0.24, 0.52, 0.10), range: [0, 1], label: "Deep teal patches" });
+const lime = param.vec3({ default: vec3(0.31, 0.55, 0.06), range: [0, 1], label: "Green A (lime)" });
+const emerald = param.vec3({ default: vec3(0.24, 0.48, 0.06), range: [0, 1], label: "Green B (emerald)" });
+const sun = param.vec3({ default: vec3(0.38, 0.59, 0.07), range: [0, 1], label: "Sun-yellow patches" });
+const deep = param.vec3({ default: vec3(0.20, 0.44, 0.08), range: [0, 1], label: "Deep teal patches" });
 const darknessA = param.scalar({ default: 0.08, range: [0, 0.8], label: "Green A darkness" });
 const darknessB = param.scalar({ default: 0.09, range: [0, 0.8], label: "Green B darkness" });
 const blendScale = param.scalar({ default: 4.6, range: [0.2, 16], label: "Blend frequency" });
