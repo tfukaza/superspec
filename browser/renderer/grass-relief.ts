@@ -45,6 +45,9 @@ export interface GrassReliefOptions {
   tone?: number;
   crown?: number;
   blend?: number;
+  /** Dark patches lift toward lightness viewMid (luma) as the view looks down on them, by viewFade at most (0 off). */
+  viewMid?: number;
+  viewFade?: number;
   /** Darkening in the hollows (share). */
   cavity?: number;
   /** Divisions of each lawn triangle's edge (displace). */
@@ -180,6 +183,9 @@ uniform vec4 groundRect;
 uniform vec3 shadeTint;
 uniform vec3 shadeBand; // x: threshold, y: range, z: cavity
 uniform vec2 reliefTint; // x: tone per clump (share), y: crown lift (share)
+// The dark patches fade as the view looks down on the surface: ground darker than x (luma) is lifted toward it, by z at
+// most (0 none, 1 fully when seen from straight above); y unused.
+uniform vec3 reliefView;
 uniform highp sampler2DShadow msFoliageShadow;
 uniform mat4 msFoliageShadowMatrix;
 uniform vec4 msFoliageShadowParams;
@@ -196,7 +202,13 @@ vec3 reliefPaint(vec3 world, vec3 n, float h, float tone) {
   vec2 uv = clamp((world.xy - groundRect.xy) / (groundRect.zw - groundRect.xy), 0.0, 1.0);
   float up = clamp(h / max(reliefShape.x, 1e-4), 0.0, 1.0);
   // Darker in the hollows, lighter and a little warmer on the crowns, each clump its own tone.
-  vec3 base = texture(groundColor, uv).rgb * mix(1.0 - shadeBand.z, 1.0, up) * (1.0 + (tone - 0.5) * 2.0 * reliefTint.x);
+  vec3 ground = texture(groundColor, uv).rgb;
+  // The dark gaps between blades show when looking across the grass and hide when looking down on it: a dark patch is
+  // lifted toward the middle lightness as the view turns from grazing to straight down on this point.
+  float lightness = dot(ground, vec3(0.2126, 0.7152, 0.0722));
+  float down = smoothstep(0.3, 0.85, abs(dot(n, normalize(cameraPosition - world))));
+  ground *= mix(1.0, max(reliefView.x / max(lightness, 1e-4), 1.0), down * reliefView.z);
+  vec3 base = ground * mix(1.0 - shadeBand.z, 1.0, up) * (1.0 + (tone - 0.5) * 2.0 * reliefTint.x);
   base *= mix(vec3(1.0), vec3(1.12, 1.1, 0.85), reliefTint.y * smoothstep(0.45, 1.0, up));
   float band = min(smoothstep(-shadeBand.y, shadeBand.y, dot(n, normalize(msSunDirection)) - shadeBand.x), reliefCast(world, n));
   return base * mix(shadeTint, vec3(1.0), band);
@@ -333,6 +345,7 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
       reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? 1.0, options.smallPatch ?? 0.35, options.edge ?? 0.12, options.jaggedness ?? 0.9) },
+      reliefView: { value: new THREE.Vector3(options.viewMid ?? 0.48, 0, options.viewFade ?? 1) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
       reliefDome: { value: new THREE.Vector2(options.dome ?? 0.5, options.blend ?? 0.08) },
       ...(options.shadow ?? {}),

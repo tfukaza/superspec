@@ -145,6 +145,18 @@ try {
   if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
   if (info.relief) console.log(`relief ${JSON.stringify(info.relief)}`);
   if (info.clumps) console.log(`clumps ${JSON.stringify(info.clumps)}`);
+  // FIELD_STATS=1: the ground colour field's lightness (luma) percentiles, where there is ground.
+  if (process.env.FIELD_STATS === "1") {
+    const stats = await page.evaluate(() => {
+      const field = window.__scene.groundFields?.read("ground.color");
+      if (!field) return null;
+      const l = [];
+      for (let i = 0; i < field.values.length; i += 4) if (field.values[i + 3] > 0.5) l.push(0.2126 * field.values[i] + 0.7152 * field.values[i + 1] + 0.0722 * field.values[i + 2]);
+      l.sort((a, b) => a - b);
+      return [0.05, 0.25, 0.5, 0.75, 0.95].map(q => +l[Math.floor(q * (l.length - 1))].toFixed(3));
+    });
+    console.log(`ground.color luma p5/p25/p50/p75/p95: ${JSON.stringify(stats)}`);
+  }
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, y1 - y0);
