@@ -6,9 +6,9 @@
 // by the sun's shade band with a world-anchored edge break. Its base color (the bands without the shade) is what the
 // scene's `ground.color` field holds, so the grass rooted on it (painted-grass.material.ts) takes the same greens and
 // applies the same band at each root. Keep the band's parameters equal in both recipes.
-import { defineMaterial, param, vec2, vec3, mix, mul, add, sub, div, neg, sin, cos, rotate, normalize, floor, fract, step, abs, clamp, world, shadeBand, sunDirection, normal, edgeBreak, seed, smoothstep } from "@superspec/material/v1";
-import type { Scalar, ScalarInput, Vec2, Vec3 } from "@superspec/material/v1";
-import { fracture, pigment, fractal, cellRandom } from "./kowloon-noise.material";
+import { defineMaterial, param, vec2, vec3, mix, mul, add, sub, div, world, shadeBand, sunDirection, normal, edgeBreak, seed, smoothstep } from "@superspec/material/v1";
+import type { Scalar, ScalarInput } from "@superspec/material/v1";
+import { fracture, pigment, fractal } from "./kowloon-noise.material";
 
 // The meadow scale: a slow field over many meters tints the whole ground (and so its blades) warmer, toward
 // yellow-green, or cooler, toward blue-green, subtly, on top of the bands below, so a large meadow drifts in hue the
@@ -30,11 +30,6 @@ const breakup = param.scalar({ default: 0.35, range: [0, 1], label: "Band breaku
 const jaggedness = param.scalar({ default: 0.9, range: [0, 2], label: "Edge jaggedness" });
 const regionScale = param.scalar({ default: 0.5, range: [0.05, 4], label: "Region frequency" });
 const regionWeight = param.scalar({ default: 1.1, range: [0, 3], label: "Region strength" });
-const strokeCell = param.scalar({ default: 0.12, range: [0.02, 1], unit: "m", label: "Stroke spacing" });
-const strokeLength = param.scalar({ default: 0.85, range: [0.1, 1], label: "Stroke length (of its cell)" });
-const strokeWidth = param.scalar({ default: 0.14, range: [0.01, 0.5], label: "Stroke width (of its cell)" });
-const strokeTilt = param.scalar({ default: 0.7, range: [0, 3], label: "Stroke normal tilt" });
-const strokeTone = param.scalar({ default: 0.1, range: [0, 0.5], label: "Stroke tone" });
 const hueAmount = param.scalar({ default: 0.07, range: [0, 0.5], label: "Hue variation" });
 const grain = param.scalar({ default: 0.05, range: [0, 0.3], label: "Grain" });
 const grainScale = param.scalar({ default: 14, range: [2, 60], label: "Grain frequency" });
@@ -64,41 +59,7 @@ const meadowTint = mix(vec3(1, 1, 1), mix(cool, warm, meadow), meadowAmount);
 const grained = mul(bands, add(1, mul(sub(fractal(add(mul(world.xy, grainScale), vec2(3.3, 8.8)), seed("grain")), 0.5), mul(grain, 2))));
 const patched = mul(meadowTint, pigment(grained, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));
 
-// Grass strokes, so the ground reads as a grass field even from above, scattered as blades are: one stroke in each
-// cell of a grid at a random place, turned any way, lighter or darker at random; three such layers of different
-// cell sizes and offsets lie over one another, so no grid shows. A stroke is a thin pointed oval. Each lightens or
-// darkens the paint a little (Stroke tone) and tips the shading normal across itself (Stroke normal tilt), so the
-// shade band breaks stroke by stroke.
-// The cell's random draw: x and y place the stroke, z turns it and picks lighter or darker.
-const strokeDraw = (p: Vec2, size: ScalarInput, key: ScalarInput): Vec3 => cellRandom(floor(div(p, size)), key);
-const strokeAngle = (r: Vec3): Scalar => mul(r.z, 6.2831853);
-// The point in the stroke's own frame: x along it, y across, from its randomly placed centre.
-const strokeLocal = (p: Vec2, size: ScalarInput, r: Vec3): Vec2 =>
-  rotate(sub(p, mul(add(floor(div(p, size)), add(vec2(0.3, 0.3), mul(vec2(r.x, r.y), 0.4))), size)), strokeAngle(r));
-const strokeAlong = (local: Vec2, size: ScalarInput): Scalar => div(local.x, mul(size, mul(strokeLength, 0.5)));
-// Pointed: the half width narrows toward both ends.
-const strokeHalfWidth = (along: ScalarInput, size: ScalarInput): Scalar => mul(mul(size, mul(strokeWidth, 0.5)), sub(1, mul(along, along)));
-const strokeCover = (local: Vec2, along: ScalarInput, halfWidth: ScalarInput): Scalar =>
-  mul(sub(1, smoothstep(0.85, 1, abs(along))), sub(1, smoothstep(mul(halfWidth, 0.6), halfWidth, abs(local.y))));
-// x: coverage signed lighter (+) or darker (-); y and z: the across direction weighted by coverage.
-const strokeOf = (cover: ScalarInput, r: Vec3): Vec3 =>
-  vec3(mul(cover, sub(mul(step(0.5, fract(mul(r.z, 7.13))), 2), 1)), mul(neg(sin(strokeAngle(r))), cover), mul(cos(strokeAngle(r)), cover));
-const strokeLayer = (p: Vec2, size: ScalarInput, r: Vec3): Vec3 =>
-  strokeOf(strokeCover(strokeLocal(p, size, r), strokeAlong(strokeLocal(p, size, r), size),
-    strokeHalfWidth(strokeAlong(strokeLocal(p, size, r), size), size)), r);
-const p1 = world.xy;
-const p2 = add(world.xy, vec2(0.37, 0.11));
-const p3 = add(world.xy, vec2(0.13, 0.52));
-const size2 = mul(strokeCell, 0.83);
-const size3 = mul(strokeCell, 1.21);
-const s1 = strokeLayer(p1, strokeCell, strokeDraw(p1, strokeCell, seed("strokes-a")));
-const s2 = strokeLayer(p2, size2, strokeDraw(p2, size2, seed("strokes-b")));
-const s3 = strokeLayer(p3, size3, strokeDraw(p3, size3, seed("strokes-c")));
-const strokes = add(add(s1, s2), s3);
-const tone = clamp(strokes.x, -1, 1);
-const tip = mul(tone, strokeTilt);
-const strokeNormal = normalize(add(normal, vec3(mul(strokes.y, tip), mul(strokes.z, tip), 0)));
-const ground = mul(patched, add(1, mul(tone, strokeTone)));
+const ground = patched;
 
 const edge = edgeBreak({ size: 0.35, amount: 0.05 });
 
@@ -106,5 +67,5 @@ export default defineMaterial({
   name: "Washroom painted lawn",
   shading: "painted",
   base: { baseColor: ground, roughness: 0.95 },
-  paint: mul(ground, mix(shadeTint, vec3(1, 1, 1), shadeBand(strokeNormal, sunDirection, add(threshold, edge.offset), softness, range))),
+  paint: mul(ground, mix(shadeTint, vec3(1, 1, 1), shadeBand(normal, sunDirection, add(threshold, edge.offset), softness, range))),
 });

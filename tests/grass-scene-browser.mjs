@@ -58,7 +58,7 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass }) => {
+  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass, clumps }) => {
     let lightingInfo = null;
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
@@ -75,6 +75,16 @@ try {
     }
     // NO_GRASS=1: the lawn's grass hidden, to judge the painted ground alone.
     if (noGrass) for (const m of s.models.children) if (m.userData.foliage) { m.visible = false; m.userData.source = { visible: false }; }
+    // CLUMPS=<json options>: soft clump mounds over the lawn (grass-clumps.ts); CLUMPS=1 at their defaults.
+    let clumpInfo = null;
+    if (clumps && lawn) {
+      // The grass's shadow-map uniforms, so the sun's cast shadow falls on the clumps too.
+      let shadow;
+      s.models.traverse(o => { const u = o.material?.userData?.foliageUniforms; if (!shadow && u?.msFoliageShadow) shadow = { msFoliageShadow: u.msFoliageShadow, msFoliageShadowMatrix: u.msFoliageShadowMatrix, msFoliageShadowParams: u.msFoliageShadowParams }; });
+      const mesh = window.__grassClumps(lawn, { ...(clumps === "1" ? {} : JSON.parse(clumps)), shadow });
+      s.models.add(mesh);
+      clumpInfo = mesh.userData.grassClumps;
+    }
     // PILLAR=1: a concrete pillar standing on the lawn (0.35 m square, 1.8 m tall), to see the shadows it casts on
     // the ground and grass.
     if (pillar && lawn) {
@@ -110,9 +120,10 @@ try {
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
-    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1" });
+    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo, clumps: clumpInfo };
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1", clumps: process.env.CLUMPS ?? "" });
   if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
+  if (info.clumps) console.log(`clumps ${JSON.stringify(info.clumps)}`);
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, y1 - y0);
@@ -133,6 +144,7 @@ try {
     await writeFile(file, await page.locator("#viewport canvas").screenshot());
     console.log(`Wrote ${file}`);
   }
+  if (errors.length) console.log(`Page errors:\n${errors.slice(0, 8).join("\n")}`);
 } finally {
   await browser.close();
   server.close();
