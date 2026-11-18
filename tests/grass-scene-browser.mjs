@@ -39,7 +39,9 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "grass.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null")?.boundary?.ready === true, {}, { timeout: 120000 });
+  // A boundary look (LAWN_BOUNDARY=1 lawn) has its field made after the first frames; grass everywhere needs none.
+  await waitForFrames(page, 8);
+  await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
   const info = await page.evaluate(keep => {
     const s = window.__scene, T = window.__three, box = new T.Box3();

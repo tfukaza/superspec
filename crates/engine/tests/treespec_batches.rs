@@ -699,10 +699,21 @@ fn write_washroom_lawn() {
     )
     .unwrap();
     let generated = started.elapsed();
-    let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+    // Grass everywhere, as games draw it: every blade kept. LAWN_BOUNDARY=1 writes the stage-6 look instead, whose
+    // painted profile keeps blades only near shade boundaries (the default rejection).
+    let rejection = if std::env::var("LAWN_BOUNDARY").is_ok_and(|v| v == "1") {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 } })
+    };
+    let mut fields = serde_json::json!({
         "family": "grass", "patch": "lawn", "far": 22, "material": "painted-grass",
-    }))
-    .unwrap();
+    });
+    fields
+        .as_object_mut()
+        .unwrap()
+        .extend(rejection.as_object().unwrap().clone());
+    let look: superspec_model::batches::Foliage = serde_json::from_value(fields).unwrap();
     let mut levels = batches::grass_levels(&patch, [0.; 3], &look, None).unwrap();
     for level in &mut levels {
         level.batch.id = level.batch.id.replacen(&patch.id, "lawn", 1);

@@ -41,6 +41,9 @@ const { project } = buildProject(Number(process.env.RESOLUTION ?? 256), undefine
 const grassBatches = project.batches.filter(batch => batch.foliage);
 assert.ok(grassBatches.length >= 3, "the lawn's grass is delivered as foliage batches, a level each");
 const text = JSON.stringify(project);
+// The lawn's look keeps blades only near shade boundaries (a lawn written with LAWN_BOUNDARY=1), or keeps every blade
+// (grass everywhere, the default): the boundary field and the painted profile's rejection are checked for the first.
+const bounded = (grassBatches[0].foliage.rejection?.boundary ?? 0.22) > 0;
 
 /** In the page: the GPU's time for `frames` draws (timer queries), and the time to draw and read one pixel. */
 async function measure(page, frames = 32) {
@@ -96,7 +99,7 @@ try {
     await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
     await waitForFrames(page, 6);
     // The boundary field is made after the frames that made the shadow map and the ground fields.
-    await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null")?.boundary?.ready === true, {}, { timeout: 60000 });
+    if (bounded) await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null")?.boundary?.ready === true, {}, { timeout: 60000 });
     const loadedMs = Date.now() - started;
     const result = report[first] ??= { loadedMs };
     const state = () => page.evaluate(() => {
@@ -154,7 +157,7 @@ try {
     result[first] = { framed: await profile(first, "framed") };
     console.log(`${first} framed: ${JSON.stringify(result[first].framed)}`);
     // Moving the sun (painted only: the lit profile keeps every blade): the boundary field is remade, nothing else.
-    if (first === "painted") {
+    if (first === "painted" && bounded) {
       const sun = await page.evaluate(async () => {
         const scene = window.__scene, host = document.querySelector("#viewport");
         const meshes = scene.models.children.filter(mesh => mesh.userData.foliage);
@@ -202,7 +205,7 @@ try {
     await page.evaluate(async first => window.__scene.setFoliageProfile(first), first);
     result[first].close = await profile(first, "close");
     // Low over the lawn (painted): where the view grazes the ground the grazing term keeps blades away from boundaries.
-    if (first === "painted") {
+    if (first === "painted" && bounded) {
       const box = await page.locator("#viewport canvas").boundingBox();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       // Dragging up turns the view toward the horizon (about 0.4 radians).
@@ -215,8 +218,10 @@ try {
       const painted = result.painted?.[view], lit = result.lit?.[view];
       if (painted && lit) {
         assert.equal(painted.instancesDrawn, lit.instancesDrawn, `${view}: both profiles draw the same instances`);
-        assert.ok(painted.bladesDrawn < lit.bladesDrawn, `${view}: the painted profile rejects blades away from boundaries`);
-        assert.ok(painted.bladesDrawn > 0, `${view}: the painted profile keeps blades at boundaries`);
+        if (bounded) {
+          assert.ok(painted.bladesDrawn < lit.bladesDrawn, `${view}: the painted profile rejects blades away from boundaries`);
+          assert.ok(painted.bladesDrawn > 0, `${view}: the painted profile keeps blades at boundaries`);
+        } else assert.equal(painted.bladesDrawn, lit.bladesDrawn, `${view}: grass everywhere: both profiles draw every blade`);
       }
     }
     assert.deepEqual(errors.filter(error => !/Source could not be compiled|Material evaluation|MS_/.test(error)), [], "no page errors");
@@ -232,7 +237,7 @@ try {
         + `${values.instancesDrawn} instances in ${values.tilesDrawn}/${values.tiles} tiles, ${values.bladesDrawn}/${values.bladesSubmitted} blades drawn, ${values.frame.calls} draw calls, ${values.frame.triangles.toLocaleString()} triangles submitted`);
     }
   }
-  console.log(`  cold compile: lit ${p.litColdCompileMs} ms, painted ${l.paintedColdCompileMs} ms; sun moves ${JSON.stringify(p.sunMoves.moves.map(move => [move.ms, move.boundaryGpuMs]))} (ms, boundary GPU ms)`);
+  console.log(`  cold compile: lit ${p.litColdCompileMs} ms, painted ${l.paintedColdCompileMs} ms; sun moves ${p.sunMoves ? JSON.stringify(p.sunMoves.moves.map(move => [move.ms, move.boundaryGpuMs])) + " (ms, boundary GPU ms)" : "(grass everywhere: no boundary field)"}`);
 } finally {
   await browser?.close();
   server.close();

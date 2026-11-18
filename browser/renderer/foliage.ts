@@ -578,7 +578,8 @@ export class FoliageView {
     const signature = `${ground ? `${ground.positions.uuid}:${ground.rect.toArray().join(",")}` : "none"}|${sun.toArray().map(v => v.toFixed(6)).join(",")}|${this.shadow.signature()}|${program?.shading.shader.id ?? "none"}|${values}`;
     if (signature === this.boundarySignature) return false;
     this.boundarySignature = signature;
-    if (!ground) { this.boundary.clear(); return false; }
+    // A look that keeps every blade (no boundary distance) needs no boundary field: none is made, also when the sun moves.
+    if (!ground || look.rejection.boundary <= 0) { this.boundary.clear(); return false; }
     const began = performance.now();
     this.boundary.make(ground, program, look.rejection.boundary);
     this.stats.boundaryMs = performance.now() - began;
