@@ -32,6 +32,12 @@ export interface GrassReliefOptions {
   moundScale?: number;
   moundWeight?: number;
   fine?: number;
+  /** Dome profile exponent (0.5 a round cushion, 2 a soft hump) and the blend where clumps meet. */
+  dome?: number;
+  /** Tone per clump (share) and the crowns' lighter, warmer lift (share). */
+  tone?: number;
+  crown?: number;
+  blend?: number;
   /** Darkening in the hollows (share). */
   cavity?: number;
   /** Divisions of each lawn triangle's edge (displace). */
@@ -48,6 +54,7 @@ export interface GrassReliefOptions {
 export const RELIEF_GLSL = /* glsl */`
 uniform vec4 reliefShape; // x: height (m), y: cell (m), z: blades, w: ridge
 uniform vec4 reliefMore;  // x: warp (m), y: mound frequency (1/m), z: mound weight, w: fine roughness
+uniform vec2 reliefDome;  // x: dome profile exponent (0.5 round cushion, 2 soft hump), y: blend where clumps meet
 float reliefHash(vec3 c) { return fract(sin(dot(c, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 vec3 reliefHash3(vec3 c) {
   return fract(sin(vec3(dot(c, vec3(127.1, 311.7, 74.7)), dot(c, vec3(269.5, 183.3, 246.1)), dot(c, vec3(113.5, 271.9, 124.6)))) * 43758.5453);
@@ -67,6 +74,8 @@ void reliefFrame(vec3 n, out vec3 t1, out vec3 t2) {
 }
 // Clumps as blobs in space on a jittered 3D grid: where the surface passes through one, a dome rises, so the pattern
 // is the same on a slope, a bank or flat ground. Blades ridge each crown unevenly, fanning out from its centre along the surface.
+// The random of the clump that won at the last reliefClumps point, for a tone per clump.
+float reliefTone = 0.5;
 float reliefClumps(vec3 p, vec3 n, float cell) {
   vec3 q = p / cell, base = floor(q);
   vec3 t1, t2;
@@ -75,10 +84,12 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
   for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) for (int z = -1; z <= 1; z++) {
     vec3 c = base + vec3(float(x), float(y), float(z));
     vec3 r = reliefHash3(c);
-    vec3 d = (q - (c + 0.1 + 0.8 * r)) / (0.6 + 0.45 * reliefHash(c + 3.7));
+    float size = 0.6 + 0.45 * reliefHash(c + 3.7);
+    vec3 d = (q - (c + 0.1 + 0.8 * r)) / size;
     float d2 = dot(d, d);
     if (d2 >= 1.0) continue;
-    float dome = pow(1.0 - d2, 1.5);
+    // Height in proportion to the clump's width, so every clump keeps one shape.
+    float dome = pow(1.0 - d2, reliefDome.x) * size;
     float angle = atan(dot(d, t2), dot(d, t1));
     // Irregular blade ridges: noise read around a circle about the clump's centre (so it closes on itself), drifting
     // outward, so blades are uneven in width and spacing rather than a regular star.
@@ -86,8 +97,9 @@ float reliefClumps(vec3 p, vec3 n, float cell) {
     float ridges = reliefNoise(vec3(cos(angle) * ring, sin(angle) * ring, sqrt(d2) * 1.5 + r.z * 40.0));
     ridges = smoothstep(0.25, 0.85, ridges);
     float crown = dome * (1.0 - reliefShape.w * sqrt(d2) * (1.0 - ridges));
-    float k = 0.12;
+    float k = reliefDome.y;
     float h = clamp(0.5 + 0.5 * (crown - best) / k, 0.0, 1.0);
+    if (h > 0.5) reliefTone = r.x;
     best = mix(best, crown, h) + k * h * (1.0 - h);
   }
   return best;
@@ -119,6 +131,7 @@ uniform highp sampler2D groundColor;
 uniform vec4 groundRect;
 uniform vec3 shadeTint;
 uniform vec3 shadeBand; // x: threshold, y: range, z: cavity
+uniform vec2 reliefTint; // x: tone per clump (share), y: crown lift (share)
 uniform highp sampler2DShadow msFoliageShadow;
 uniform mat4 msFoliageShadowMatrix;
 uniform vec4 msFoliageShadowParams;
@@ -131,9 +144,12 @@ float reliefCast(vec3 world, vec3 normal) {
   for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) lit += texture(msFoliageShadow, vec3(c.xy + vec2(float(x), float(y)) * msFoliageShadowParams.w * 1.5, depth));
   return lit / 9.0;
 }
-vec3 reliefPaint(vec3 world, vec3 n, float h) {
+vec3 reliefPaint(vec3 world, vec3 n, float h, float tone) {
   vec2 uv = clamp((world.xy - groundRect.xy) / (groundRect.zw - groundRect.xy), 0.0, 1.0);
-  vec3 base = texture(groundColor, uv).rgb * mix(1.0 - shadeBand.z, 1.0, clamp(h / max(reliefShape.x, 1e-4), 0.0, 1.0));
+  float up = clamp(h / max(reliefShape.x, 1e-4), 0.0, 1.0);
+  // Darker in the hollows, lighter and a little warmer on the crowns, each clump its own tone.
+  vec3 base = texture(groundColor, uv).rgb * mix(1.0 - shadeBand.z, 1.0, up) * (1.0 + (tone - 0.5) * 2.0 * reliefTint.x);
+  base *= mix(vec3(1.0), vec3(1.12, 1.1, 0.85), reliefTint.y * smoothstep(0.45, 1.0, up));
   float band = min(smoothstep(-shadeBand.y, shadeBand.y, dot(n, normalize(msSunDirection)) - shadeBand.x), reliefCast(world, n));
   return base * mix(shadeTint, vec3(1.0), band);
 }
@@ -216,11 +232,13 @@ function fragment(mode: ReliefMode, steps: number): string {
   float pb = -dot(point - vWorld, ground);
   vec3 base = point + ground * pb - ground * reliefShape.x;
   float h = reliefHeight(base, ground);
+  float tone = reliefTone;
   vec3 n = reliefNormal(base, ground);` : `
   vec3 point = vWorld;
   // The point on the undisplaced lawn this one rose from.
   vec3 base = vBase;
   float h = reliefHeight(base, ground);
+  float tone = reliefTone;
   vec3 n = reliefNormal(base, ground);`;
   return /* glsl */`
 #include <common>
@@ -232,7 +250,7 @@ ${RELIEF_GLSL}
 ${PAINT_GLSL}
 void main() {
   vec3 ground = normalize(vGround);${body}
-  gl_FragColor = vec4(reliefPaint(point, n, h), 1.0);
+  gl_FragColor = vec4(reliefPaint(point, n, h, tone), 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -247,10 +265,12 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? 0.11, options.cell ?? 0.45, options.blades ?? 14, options.ridge ?? 0.08) },
-      reliefMore: { value: new THREE.Vector4(options.warp ?? 0.16, options.moundScale ?? 0.9, options.moundWeight ?? 0.8, options.fine ?? 0.03) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? 0.16, options.cell ?? 0.32, options.blades ?? 14, options.ridge ?? 0) },
+      reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
-      shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.3, options.cavity ?? 0.25) },
+      shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
+      reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
+      reliefDome: { value: new THREE.Vector2(options.dome ?? 0.6, options.blend ?? 0.08) },
       ...(options.shadow ?? {}),
     },
   });
