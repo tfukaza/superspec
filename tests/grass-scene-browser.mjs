@@ -60,7 +60,7 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass, clumps }) => {
+  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass, clumps, relief, reliefOptions }) => {
     let lightingInfo = null;
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
@@ -119,12 +119,24 @@ try {
       s.setLighting(record);
       lightingInfo = { direction: record.lights[0].direction, shadows: record.shadows ?? record.lights[0].shadow ?? null, casting: column.castShadow, map: s.renderer.shadowMap.enabled };
     }
+    // RELIEF=normal|displace|parallax (RELIEF_OPTIONS=<json>): the lawn drawn as grass relief (grass-relief.ts) in its
+    // place; the lawn itself is hidden after the ground fields were made from it.
+    let reliefInfo = null;
+    if (relief && lawn) {
+      let shadow;
+      s.models.traverse(o => { const u = o.material?.userData?.foliageUniforms; if (!shadow && u?.msFoliageShadow) shadow = { msFoliageShadow: u.msFoliageShadow, msFoliageShadowMatrix: u.msFoliageShadowMatrix, msFoliageShadowParams: u.msFoliageShadowParams }; });
+      const mesh = window.__grassRelief(lawn, relief, { ...(reliefOptions ? JSON.parse(reliefOptions) : {}), shadow });
+      s.models.add(mesh);
+      lawn.visible = false;
+      reliefInfo = mesh.userData.grassRelief;
+    }
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
-    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo, clumps: clumpInfo };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1", clumps: process.env.CLUMPS ?? "" });
+    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo, clumps: clumpInfo, relief: reliefInfo };
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1", clumps: process.env.CLUMPS ?? "", relief: process.env.RELIEF ?? "", reliefOptions: process.env.RELIEF_OPTIONS ?? "" });
   if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
+  if (info.relief) console.log(`relief ${JSON.stringify(info.relief)}`);
   if (info.clumps) console.log(`clumps ${JSON.stringify(info.clumps)}`);
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
@@ -145,6 +157,16 @@ try {
     const file = resolve(out, `${process.env.LABEL ?? "grass"}-${name}.png`);
     await writeFile(file, await page.locator("#viewport canvas").screenshot());
     console.log(`Wrote ${file}`);
+    // TIME=1: the median of 30 frames of this view, each finished by a one-pixel read back.
+    if (process.env.TIME === "1") {
+      const ms = await page.evaluate(() => {
+        const s = window.__scene, gl = s.renderer.getContext(), pixel = new Uint8Array(4), times = [];
+        for (let i = 0; i < 33; i++) { const t = performance.now(); s.draw(); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel); if (i >= 3) times.push(performance.now() - t); }
+        times.sort((a, b) => a - b);
+        return times[times.length >> 1];
+      });
+      console.log(`  ${name}: ${ms.toFixed(2)} ms a frame`);
+    }
   }
   if (errors.length) console.log(`Page errors:\n${errors.slice(0, 8).join("\n")}`);
 } finally {
