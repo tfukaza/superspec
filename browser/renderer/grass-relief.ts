@@ -217,21 +217,35 @@ function divided(ground: THREE.Mesh, n: number): THREE.BufferGeometry {
     const nn = q[0].clone().multiplyScalar(w).addScaledVector(q[1], u).addScaledVector(q[2], v).normalize();
     return [point, nn] as const;
   };
-  const push = (...vs: (readonly [THREE.Vector3, THREE.Vector3])[]) => { for (const [a, b] of vs) { out.push(a.x, a.y, a.z); normals.push(b.x, b.y, b.z); } };
+  // Each lawn triangle's grid of points is shared by its small triangles (indexed), so a displaced mesh runs the
+  // relief once per point, not three times per small triangle. Points on a shared lawn edge are repeated, but each copy
+  // lands exactly where the other does (the same position and normal), so no crack opens.
+  const index: number[] = [];
   for (let i = 0; i + 2 < position.count; i += 3) {
     for (let k = 0; k < 3; k++) {
       p[k].fromBufferAttribute(position, i + k).applyMatrix4(ground.matrixWorld);
       if (normal) q[k].fromBufferAttribute(normal, i + k).applyMatrix3(turn).normalize(); else q[k].set(0, 0, 1);
       if (q[k].z < 0) q[k].negate();
     }
+    const first = out.length / 3;
+    // Row a holds n - a + 1 points (b from 0 to n - a); the point (a, b) is at its row's start plus b.
+    const rowStart: number[] = [];
+    for (let a = 0, count = 0; a <= n; a++) { rowStart.push(first + count); count += n - a + 1; }
+    for (let a = 0; a <= n; a++) for (let b = 0; b <= n - a; b++) {
+      const [point, nn] = at(a / n, b / n);
+      out.push(point.x, point.y, point.z);
+      normals.push(nn.x, nn.y, nn.z);
+    }
+    const id = (a: number, b: number) => rowStart[a] + b;
     for (let a = 0; a < n; a++) for (let b = 0; b < n - a; b++) {
-      push(at(a / n, b / n), at((a + 1) / n, b / n), at(a / n, (b + 1) / n));
-      if (a + b < n - 1) push(at((a + 1) / n, b / n), at((a + 1) / n, (b + 1) / n), at(a / n, (b + 1) / n));
+      index.push(id(a, b), id(a + 1, b), id(a, b + 1));
+      if (a + b < n - 1) index.push(id(a + 1, b), id(a + 1, b + 1), id(a, b + 1));
     }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(out, 3));
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setIndex(index.length > 65535 ? new THREE.Uint32BufferAttribute(index, 1) : new THREE.Uint16BufferAttribute(index, 1));
   return geometry;
 }
 
@@ -330,6 +344,6 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
   mesh.receiveShadow = true;
   // The scene's `?clumpblur=` pass may blend its colours among themselves.
   mesh.userData.clumpBlur = true;
-  mesh.userData.grassRelief = { mode, triangles: geometry.getAttribute("position").count / 3 };
+  mesh.userData.grassRelief = { mode, triangles: (geometry.index?.count ?? geometry.getAttribute("position").count) / 3, vertices: geometry.getAttribute("position").count };
   return mesh;
 }
