@@ -14,21 +14,23 @@ import { fracture, pigment, fractal } from "./kowloon-noise.material";
 // yellow-green, or cooler, toward blue-green, subtly, on top of the bands below, so a large meadow drifts in hue the
 // way a real one does rather than repeating one mottle.
 const meadowScale = param.scalar({ default: 9, range: [1, 100], unit: "m", label: "Meadow hue scale" });
-const meadowAmount = param.scalar({ default: 0.22, range: [0, 1], label: "Meadow hue amount" });
+const meadowAmount = param.scalar({ default: 0.3, range: [0, 1], label: "Meadow hue amount" });
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-// Five bands, darkest first, each about 5 % from the next.
-const band0 = param.vec3({ default: vec3(0.265, 0.505, 0.065), range: [0, 1], label: "Band 1 (deepest)" });
-const band1 = param.vec3({ default: vec3(0.28, 0.52, 0.065), range: [0, 1], label: "Band 2" });
-const band2 = param.vec3({ default: vec3(0.295, 0.535, 0.065), range: [0, 1], label: "Band 3" });
-const band3 = param.vec3({ default: vec3(0.31, 0.55, 0.065), range: [0, 1], label: "Band 4" });
-const band4 = param.vec3({ default: vec3(0.325, 0.565, 0.07), range: [0, 1], label: "Band 5 (lightest)" });
+// Five bands, darkest first, each about 5 % lighter than the last and turning from a cool blue-green to a warm yellow-green.
+const band0 = param.vec3({ default: vec3(0.22, 0.50, 0.10), range: [0, 1], label: "Band 1 (cool, deepest)" });
+const band1 = param.vec3({ default: vec3(0.255, 0.515, 0.085), range: [0, 1], label: "Band 2" });
+const band2 = param.vec3({ default: vec3(0.29, 0.535, 0.07), range: [0, 1], label: "Band 3" });
+const band3 = param.vec3({ default: vec3(0.33, 0.55, 0.06), range: [0, 1], label: "Band 4" });
+const band4 = param.vec3({ default: vec3(0.37, 0.565, 0.055), range: [0, 1], label: "Band 5 (warm, lightest)" });
 const bandScale = param.scalar({ default: 3.2, range: [0.2, 16], label: "Band frequency" });
 const bandSoftness = param.scalar({ default: 0.07, range: [0.005, 0.2], label: "Band softness" });
 const breakup = param.scalar({ default: 0.35, range: [0, 1], label: "Band breakup" });
 const jaggedness = param.scalar({ default: 0.9, range: [0, 2], label: "Edge jaggedness" });
-const hueAmount = param.scalar({ default: 0.03, range: [0, 0.5], label: "Hue variation" });
+const hueAmount = param.scalar({ default: 0.07, range: [0, 0.5], label: "Hue variation" });
+const grain = param.scalar({ default: 0.05, range: [0, 0.3], label: "Grain" });
+const grainScale = param.scalar({ default: 14, range: [2, 60], label: "Grain frequency" });
 const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label: "Hue direction" });
 const shadeTint = param.vec3({ default: vec3(0.42, 0.62, 0.9), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
@@ -49,7 +51,9 @@ const bandAt = (at: ScalarInput): Scalar => smoothstep(sub(at, bandSoftness), ad
 const bands = mix(mix(mix(mix(band0, band1, bandAt(0.2)), band2, bandAt(0.4)), band3, bandAt(0.6)), band4, bandAt(0.8));
 const meadow = smoothstep(0.3, 0.7, fractal(add(div(world.xy, meadowScale), vec2(7.3, 2.9)), seed("meadow")));
 const meadowTint = mix(vec3(1, 1, 1), mix(cool, warm, meadow), meadowAmount);
-const ground = mul(meadowTint, pigment(bands, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));
+// A fine grain over it all, as the concrete's darkness fields: a few percent lighter or darker, about 5 to 10 cm across.
+const grained = mul(bands, add(1, mul(sub(fractal(add(mul(world.xy, grainScale), vec2(3.3, 8.8)), seed("grain")), 0.5), mul(grain, 2))));
+const ground = mul(meadowTint, pigment(grained, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));
 
 const edge = edgeBreak({ size: 0.35, amount: 0.05 });
 
