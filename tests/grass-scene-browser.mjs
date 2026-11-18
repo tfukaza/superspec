@@ -39,8 +39,8 @@ try {
   const profile = (process.env.PROFILE === "lit" ? "&foliage=lit" : "")
     + (process.env.GRASS_BLUR ? `&grassblur=${process.env.GRASS_BLUR}&grassblurfrom=${process.env.GRASS_BLUR_FROM ?? 3}`
       + (process.env.GRASS_BLUR_PATCH ? `&grassblurpatch=${process.env.GRASS_BLUR_PATCH}` : "") : "")
-    // CLUMP_BLUR=<pixels>: the clumps' colours blurred among themselves (CLUMP_BLUR_MIX how much, default 1).
-    + (process.env.CLUMP_BLUR ? `&clumpblur=${process.env.CLUMP_BLUR}&clumpblurmix=${process.env.CLUMP_BLUR_MIX ?? 1}` : "");
+    // CLUMP_BLUR=<pixels>: the clumps' colours blurred among themselves (CLUMP_BLUR_MIX how much, default 0.4: each stroke keeps most of its own colour).
+    + (process.env.CLUMP_BLUR ? `&clumpblur=${process.env.CLUMP_BLUR}&clumpblurmix=${process.env.CLUMP_BLUR_MIX ?? 0.4}` : "");
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off${profile}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   const errors = [];
