@@ -657,6 +657,18 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     DENSITY=5 COARSE=0.3 STRENGTH=1.2`, `FIELD_LEVEL` 0.6 (poplar) or 0.85 with `CARD_KEEP=0.5` (birch), the rest at
     the script's defaults. Still to do: these settings belong in each tree's definition (the shrub shares the core's),
     the bark does not droop with the sprays, and the blob is an ellipsoid, not the crown's own shape.
+  - **Milestone `painted-grass-milestone` (2026-11-17): the blade lawn.** Grass grows everywhere (no shade-boundary
+    rejection), a calm meadow: blades 4 to 13 cm, about 105 clump sites a square meter, light clumping, its levels
+    keeping 0.75 and 0.45 of the clumps from 12 and 20 m (two far levels of fewer, chubbier blades from 28 and 36 m,
+    `blades`, `chubby`). Tips lighten toward their own blade's color. The lawn (`painted-lawn.material.ts`) is five
+    close bands from a deep olive to a soft yellow-green, chosen by the concrete's eroded fracture plus finer fractal
+    noise (fragments, not contour rings), a fine 5 % grain, a meadow-scale warm/cool tint; shade is a gradual band
+    (range 0.3) with a dark blue-green shade tint that also colours cast shadows. Highlight grass (a patch of its own:
+    per-blade tip palette as the web study's, drawn as translucent brushstrokes, gathered in drifts with
+    `clumping.octaves` and `bias`) is written only with `LAWN_ACCENT=1`. Test site: `LAWN_SITE=hill` (a 7 m square,
+    a hill steep to the south, a near-vertical bank), pictured by `tests/grass-scene-browser.mjs` with `PILLAR=1`
+    (a concrete pillar and a 22 cm ball), `SUN=60,62`, `VIEW_SCALE=1.9`. Reference renders `painted-mass/grass-*.png`.
+    Known: with the shade threshold at 0.76, cast shadows only show with the sun above about 50 degrees.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
