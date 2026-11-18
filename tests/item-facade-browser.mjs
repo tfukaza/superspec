@@ -69,13 +69,14 @@ try {
     // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
     // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
     const softSun = {
-      intensity: 2,
+      intensity: 1.8,
       shadow: {
-        // A wider, softer edge that widens with the distance to what casts it.
-        softness: 0.05, spread: 0.09, maxSoftness: 0.3,
-        // A cool shade, lighter than the default, with a mottled interior (patches of darker and bluer shade 0.6 m across).
-        darkness: 0.2, tintStrength: 0.5, tint: [0.05, 0.2, 0.8], tintAlt: [0.08, 0.14, 0.7], wrap: 0.4,
-        noise: { scale: 0.6, edge: 0.1, amount: 0.5, seed: 7 },
+        // A wide, soft edge that widens with the distance to what casts it.
+        softness: 0.08, spread: 0.14, maxSoftness: 0.45,
+        // A light shade with only a slight cool cast, as in the reference picture, faintly mottled (broad, gentle
+        // patches about 1.5 m across) with a slight wobble to its edge.
+        darkness: 0.12, tintStrength: 0.25, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
+        noise: { scale: 1.5, edge: 0.04, amount: 0.1, seed: 7 },
       },
     };
     const lit = await page.evaluate(({ sun, soft, extra, keep }) => {
