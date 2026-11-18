@@ -200,6 +200,14 @@ part's X axis to a plan direction without trigonometry, so its front (-Y) faces 
 footprint. The `prism` generator sweeps the cut footprint, moved `inset` inward, up by `height`
 (face groups `side`, `top`, `bottom`). A clockwise footprint fails with `ITEM_FOOTPRINT`.
 
+**Plans.** A `grid` control holds nested lists (at most three deep, 4096 entries) of numbers
+or, with `choices`, of texts among them: an explicit plan of what goes where. Expressions read it
+with `cell(grid, i, j, k)`: a text's index among the choices, a number's value, and 0 where the
+grid has no such element. So a definition whose first choice is `auto` falls back to its seeded
+rule wherever a plan is silent: `select(cell(plan, i) == 0, random(seed, i) < chance, cell(plan, i)
+== 2)`. `{"element": grid, "at": expression}` hands one element (a row of a plan) to a sub-item,
+or nothing where the grid has none, so the sub-item keeps its default.
+
 **Features and weathering layers.** `features` places named polylines (`name`, `part`, `points`,
 optional `face`, `normal`, `width`, `closed`, one-axis `repeat` and `when`) beside those the
 generators report; a feature whose part was not emitted is dropped. `layers` maps a slot to

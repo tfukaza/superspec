@@ -114,6 +114,15 @@ reproduce it procedurally rather than as a fixed model:
 - a provisions shop, a gate and a hardware shop under awnings, with blade and hung signs;
 - the cream paint coat peeling to grey render, and the rooftop's hut, tank and aerials.
 
+What goes where is the seed's choice, so a seed and its inputs always give the same building.
+Plans override it per bay: `windowsPlans` and `fixturesPlans` (edge, storey from the ground,
+bay), and `shopPlans` and `awningPlans` (edge, shop bay). A cell that is missing or `auto` keeps
+the seeded choice. `tests/studio/washroom-items/reference-shop-house.json` plans the reference
+picture: on the front, a gate and two shops; on the first floor, the balcony and no fixtures;
+on the second, two cages and a split unit; on the third, a window unit and a split unit. On the
+right side, a gate and the hardware shop, with split units in the bay by the corner. Render:
+`itemspec/shop-house-planned.png`.
+
 Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden) and
 `itemspec/shop-house-lane.png`. The building's balcony parapet is solid concrete where the
 reference has a steel railing. Its sign copy is seeded, not the reference's.
