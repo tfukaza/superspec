@@ -166,6 +166,33 @@ pub enum ParameterType {
     Points,
     /// Up to 64 booleans, such as one per edge of a footprint.
     Flags,
+    /// Nested lists, at most three deep and 4096 entries in all, of numbers or (with `choices`)
+    /// texts among the choices: an explicit plan, such as what each bay of each storey holds.
+    /// Expressions read it with `cell(grid, i, j, ...)`.
+    Grid,
+}
+
+/// Whether `value` is a grid of at most `depth` nested lists whose leaves are numbers, or texts
+/// among `choices` when there are any; counts its leaves into `count`.
+fn grid(value: &Value, choices: &[String], depth: usize, count: &mut usize) -> bool {
+    match value {
+        Value::Array(items) => {
+            depth > 0
+                && items.len() <= 64
+                && items
+                    .iter()
+                    .all(|item| grid(item, choices, depth - 1, count))
+        }
+        Value::Number(number) => {
+            *count += 1;
+            choices.is_empty() && number.as_f64().is_some_and(f64::is_finite) && *count <= 4096
+        }
+        Value::String(text) => {
+            *count += 1;
+            choices.iter().any(|choice| choice == text) && *count <= 4096
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -679,6 +706,7 @@ impl Parameter {
             ParameterType::Flags => value
                 .as_array()
                 .is_some_and(|flags| flags.len() <= 64 && flags.iter().all(Value::is_boolean)),
+            ParameterType::Grid => value.is_array() && grid(value, &self.choices, 3, &mut 0),
         }
     }
 }
@@ -1065,6 +1093,30 @@ impl ItemDefinition {
                 if let Some(value) = derived.get(name) {
                     return Ok(*value);
                 }
+                // `cell(grid, i, ...)` arrives as `grid[i]...`: its element, or 0 where it has none.
+                if let Some((grid, rest)) = name.split_once('[') {
+                    let parameter = self
+                        .parameters
+                        .get(grid)
+                        .filter(|parameter| parameter.kind == ParameterType::Grid)
+                        .ok_or_else(|| missing(format!("{grid} is not a grid control.")))?;
+                    let mut element = values.get(grid);
+                    for index in rest.trim_end_matches(']').split("][") {
+                        element = index
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|index| element?.as_array()?.get(index));
+                    }
+                    return Ok(match element {
+                        Some(Value::Number(number)) => number.as_f64().unwrap_or(0.),
+                        Some(Value::String(text)) => parameter
+                            .choices
+                            .iter()
+                            .position(|choice| choice == text)
+                            .map_or(0., |index| index as f64),
+                        _ => 0.,
+                    });
+                }
                 let parameter = self
                     .parameters
                     .get(name)
@@ -1205,7 +1257,14 @@ impl ItemDefinition {
                         .and_then(Value::as_str)
                     {
                         let at = format!("{pointer}/parameters/{}", super::pointer_key(name));
-                        *value = self.parameter(reference, values, &at, false)?.clone();
+                        let resolved = self.parameter(reference, values, &at, false)?;
+                        // A color control's hex text becomes linear RGB, as for materials.
+                        *value = match (self.parameters[reference].kind, resolved.as_str()) {
+                            (ParameterType::Color, Some(hex)) => {
+                                serde_json::json!(superspec_types::color::srgb(hex))
+                            }
+                            _ => resolved.clone(),
+                        };
                     }
                 }
                 resolved.push(layer);

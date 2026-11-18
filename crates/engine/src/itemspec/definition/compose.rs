@@ -152,6 +152,31 @@ pub(super) fn arguments(
             result.insert(name.clone(), options[index].clone());
             continue;
         }
+        // `{"element": grid, "at": expression}` passes one element of a grid control (a row of
+        // a plan); none is passed where the grid has no such element, so the sub-item keeps
+        // its default.
+        if let Some(object) = value.as_object().filter(|object| {
+            object.len() == 2 && object.contains_key("element") && object.contains_key("at")
+        }) {
+            let (Some(grid), Some(at)) = (object["element"].as_str(), object["at"].as_str()) else {
+                return Err(fail(
+                    &definition.source,
+                    &pointer,
+                    "ITEM_PARAMETER",
+                    "An element names a grid control and an index expression.",
+                ));
+            };
+            let index = definition.expression(at, values, derived, &pointer)?;
+            let element = definition
+                .parameter(grid, values, &pointer, false)?
+                .as_array()
+                .and_then(|items| items.get(index.floor().max(0.) as usize))
+                .filter(|_| index >= 0.);
+            if let Some(element) = element {
+                result.insert(name.clone(), element.clone());
+            }
+            continue;
+        }
         let single = value.as_object().filter(|object| object.len() == 1);
         let resolved = match single.and_then(|object| object.iter().next()) {
             Some((key, Value::String(reference))) if key == "parameter" => definition

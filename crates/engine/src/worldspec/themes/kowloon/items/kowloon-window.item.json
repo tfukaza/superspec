@@ -12,6 +12,7 @@
     "frame": {"type": "color", "default": "#2f4f43"},
     "trim": {"type": "color", "default": "#e6e2d6"},
     "lit": {"type": "boolean", "default": false},
+    "transom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
     "bars": {"type": "boolean", "default": false},
     "barsPattern": {"type": "choice", "default": "bars", "choices": ["bars", "grid", "diamond"]}
   },
@@ -21,7 +22,9 @@
       "generator": {"kind": "native", "name": "kowloon/window",
         "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "hood": {"parameter": "hood"}, "recess": {"parameter": "recess"},
-                       "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"}}}
+                       "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"},
+                       "transom": {"parameter": "transom"}}},
+      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "metal": "metal", "concrete": "concrete"}
     },
     {
       "id": "bars",

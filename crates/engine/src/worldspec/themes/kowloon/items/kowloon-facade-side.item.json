@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-facade-side",
   "parameters": {
+    "paint": {"type": "color", "default": "#e6d6b0"},
+    "peeling": {"type": "number", "default": 0.18, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.3, "max": 30, "unit": "m"},
     "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
     "storyHeight": {"type": "number", "default": 3.0, "min": 2.6, "max": 4.5, "unit": "m"},
@@ -19,6 +21,9 @@
     "windows": {"type": "boolean", "default": true},
     "windowChance": {"type": "number", "default": 1, "min": 0, "max": 1},
     "backDoor": {"type": "boolean", "default": false},
+    "balcony": {"type": "boolean", "default": false},
+    "tileBands": {"type": "boolean", "default": false},
+    "cageChance": {"type": "number", "default": 0, "min": 0, "max": 1},
     "pipes": {"type": "integer", "default": 0, "min": 0, "max": 8},
     "airconChance": {"type": "number", "default": 0.5, "min": 0, "max": 1},
     "condenserChance": {"type": "number", "default": 0.35, "min": 0, "max": 1},
@@ -53,13 +58,14 @@
       "when": "groundShops",
       "generator": {"kind": "item", "entry": "kowloon-ground-floor.item.json",
         "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
-                       "shopWidth": {"parameter": "shopWidth"}, "awningChance": {"parameter": "awningChance"}, "seed": {"parameter": "seed"}}}
+                       "shopWidth": {"parameter": "shopWidth"}, "awningChance": {"parameter": "awningChance"}, "seed": {"parameter": "seed"},
+                       "paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}}
     },
     {
       "id": "groundFloor",
       "when": "1 - groundShops",
       "generator": {"kind": "item", "entry": "kowloon-floor.item.json",
-        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
+        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
                        "z0": 0, "level": 0, "seed": {"parameter": "seed"},
                        "windows": {"parameter": "windows"}, "windowChance": {"expr": "windowChance * 0.7"}, "bayWidth": {"parameter": "bayWidth"}, "edge": {"parameter": "edge"},
                        "windowWidth": {"parameter": "windowWidth"}, "windowHeight": {"parameter": "windowHeight"}, "sill": {"expr": "sill + 0.25"},
@@ -72,7 +78,7 @@
       "id": "floor",
       "repeat": [{"name": "j", "count": {"derived": "uppers"}}],
       "generator": {"kind": "item", "entry": "kowloon-floor.item.json",
-        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "storyHeight"}, "thickness": {"parameter": "thickness"},
+        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"parameter": "width"}, "height": {"parameter": "storyHeight"}, "thickness": {"parameter": "thickness"},
                        "z0": {"expr": "base + j * storyHeight"}, "level": {"expr": "j + upper"}, "seed": {"parameter": "seed"},
                        "windows": {"parameter": "windows"}, "windowChance": {"parameter": "windowChance"}, "bayWidth": {"parameter": "bayWidth"}, "edge": {"parameter": "edge"},
                        "windowWidth": {"parameter": "windowWidth"}, "windowHeight": {"parameter": "windowHeight"}, "sill": {"parameter": "sill"},
@@ -80,15 +86,23 @@
                        "airconChance": {"parameter": "airconChance"}, "condenserChance": {"parameter": "condenserChance"},
                        "barsChance": {"expr": "select((j == 0) * groundShops, barsChance, 0)"}, "ventChance": {"parameter": "ventChance"},
                        "rackChance": {"parameter": "rackChance"}, "plantChance": {"parameter": "plantChance"},
+                       "tileBands": {"parameter": "tileBands"}, "cageChance": {"expr": "select(j == 1, cageChance, cageChance * 0.3)"},
                        "band": {"parameter": "bands"}}},
       "placement": {"position": [0, 0, "base + j * storyHeight"]}
     },
     {
       "id": "parapet",
       "generator": {"kind": "item", "entry": "kowloon-parapet.item.json",
-        "parameters": {"width": {"parameter": "width"}, "thickness": {"parameter": "thickness"}, "height": {"parameter": "parapet"},
+        "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"parameter": "width"}, "thickness": {"parameter": "thickness"}, "height": {"parameter": "parapet"},
                        "outlet": {"parameter": "downpipe"}, "outletX": {"derived": "pipeX"}}},
       "placement": {"position": [0, 0, {"derived": "height"}]}
+    },
+    {
+      "id": "balcony",
+      "when": "balcony * (uppers >= 1) * (width >= 3)",
+      "generator": {"kind": "native", "name": "kowloon/balcony",
+        "parameters": {"width": {"expr": "width - 1.2"}, "depth": 0.85, "thickness": 0.14, "parapet": true, "parapet_height": 0.95}},
+      "placement": {"position": ["width / 2", 0, {"derived": "base"}]}
     },
     {
       "id": "backDoor",

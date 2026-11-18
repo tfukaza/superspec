@@ -525,8 +525,8 @@ fn lane_ground() -> GroundMesh {
 
 /// Writes the lane's plants (`lane-plants.json` in `TREESPEC_OUTPUT`, default
 /// `generated/verification/treespec`): the grass patch of `lane_ground`, grown as the washroom
-/// lawn's grass, and three broadleaf trees and two shrubs standing in front of the Kowloon
-/// building, two of the trees on the patch. `tests/studio/washroom-items/build.mjs` adds them
+/// lawn's grass, and two broadleaf trees and a shrub standing in front of the Kowloon
+/// building, one tree on the patch. `tests/studio/washroom-items/build.mjs` adds them
 /// with the building (`LANE=1`).
 #[test]
 #[ignore = "writes the lane plants for the item building picture"]
@@ -596,12 +596,12 @@ fn write_lane_plants() {
             .filter(|p| (p[0] - x).abs() < 0.2 && (p[1] - y).abs() < 0.2)
             .map_or(0., |p| p[2])
     };
+    // Two trees and a shrub: each plant's levels are about 6 MB of project, which a Studio
+    // project holds at most 32 MiB of.
     for (index, (definition, at)) in [
-        (broadleaf(0.75), [-2.2, -6.6]),
-        (broadleaf(0.6), [-2.5, -4.0]),
-        (broadleaf(0.7), [-2.3, 1.9]),
-        (shrub.clone(), [-1.3, -7.4]),
-        (shrub, [-1.4, -3.4]),
+        (broadleaf(0.75), [-2.2, -5.9]),
+        (broadleaf(0.65), [-2.3, 1.6]),
+        (shrub, [-1.4, -3.6]),
     ]
     .into_iter()
     .enumerate()

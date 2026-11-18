@@ -2,8 +2,10 @@
 //! (`< <= > >= == !=`, which give 1 or 0), parentheses and `min`, `max`, `floor`,
 //! `ceil`, `round`, `abs`, `clamp(x, low, high)`, `select(condition, a, b)` (`a` when
 //! the condition is positive) and `random(...)`, a value in [0, 1) hashed from the
-//! bits of its arguments. Every operation is IEEE arithmetic or integer hashing, so
-//! native and Wasm results are bit-identical.
+//! bits of its arguments. `cell(grid, i, j, ...)` reads an element of a `grid` control: its
+//! index among the control's choices for text, its value for a number, and 0 where the grid has
+//! no such element. Every operation is IEEE arithmetic or integer hashing, so native and Wasm
+//! results are bit-identical.
 
 /// A failure inside one expression. `offset` is a zero-based byte offset into its text.
 #[derive(Clone, Debug, PartialEq)]
@@ -25,6 +27,8 @@ enum Node {
     Negate(Box<Node>),
     Binary(u8, Box<Node>, Box<Node>, usize),
     Call(Function, Vec<Node>, usize),
+    /// `cell(grid, indices...)`: resolved as the name `grid[i][j]...` with floored indices.
+    Cell(String, Vec<Node>, usize),
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Function {
@@ -187,6 +191,27 @@ impl Parser<'_> {
                 if self.peek() != Some(b'(') {
                     return Ok(Node::Name(name, start));
                 }
+                if name == "cell" {
+                    self.cursor += 1;
+                    self.space();
+                    let at = self.cursor;
+                    let Node::Name(grid, _) = self.atom(depth + 1)? else {
+                        return error(at, "cell() reads a grid control by name.");
+                    };
+                    let mut indices = Vec::new();
+                    while self.peek() == Some(b',') {
+                        self.cursor += 1;
+                        if indices.len() >= 3 {
+                            return error(self.cursor, "A grid has at most three indices.");
+                        }
+                        indices.push(self.comparison(depth + 1)?);
+                    }
+                    self.expect(b')')?;
+                    if indices.is_empty() {
+                        return error(start, "cell() needs at least one index.");
+                    }
+                    return Ok(Node::Cell(grid, indices, start));
+                }
                 let function = match name.as_str() {
                     "min" => Function::Min,
                     "max" => Function::Max,
@@ -266,6 +291,12 @@ impl Expression {
                     visit(right, names);
                 }
                 Node::Call(_, arguments, _) => arguments.iter().for_each(|a| visit(a, names)),
+                Node::Cell(grid, indices, at) => {
+                    if !names.iter().any(|(known, _)| known == grid) {
+                        names.push((grid, *at));
+                    }
+                    indices.iter().for_each(|a| visit(a, names));
+                }
             }
         }
         let mut names = Vec::new();
@@ -286,6 +317,14 @@ impl Expression {
                 Node::Number(number) => return Ok(*number),
                 Node::Name(name, at) => (resolve(name, *at)?, *at),
                 Node::Negate(inner) => return Ok(-value(inner, resolve)?),
+                Node::Cell(grid, indices, at) => {
+                    let mut key = grid.clone();
+                    for index in indices {
+                        let index = value(index, resolve)?.floor();
+                        key.push_str(&format!("[{}]", index as i64));
+                    }
+                    (resolve(&key, *at)?, *at)
+                }
                 Node::Binary(operator, left, right, at) => {
                     let (a, b) = (value(left, resolve)?, value(right, resolve)?);
                     (

@@ -94,7 +94,7 @@ export function buildBatches() {
  * The lawn's ground from its TreeSpec document (`washroom-lawn.json`, see build.mjs): world points (already in the
  * scene's turned frame) and triangles, with smooth normals weighted by triangle area.
  */
-function lawnGround(mesh, ground) {
+export function lawnGround(mesh, ground) {
   const { positions, indices } = ground;
   const normals = new Array(positions.length).fill(0);
   for (let at = 0; at < indices.length; at += 3) {

@@ -854,6 +854,18 @@ class Studio {
     // The values of each layered slot's layers: like a material's own, they reach the GPU bake through uniforms.
     const layerValues = Object.fromEntries((candidate.materials ?? []).filter(material => material.layers?.length)
       .map(material => [material.id, material.layers!.map(layer => layer.parameters as Record<string, unknown>)]));
+    // An item that weathers a slot binds its receivers to an assignment of its own, `<material>.<model>.<slot>`,
+    // which only the engine's resolved project has: its values are the material's, its layers' the engine lists.
+    const derive = (metadata: AuthoringMetadata | undefined) => {
+      for (const [id, described] of Object.entries((metadata?.materials ?? {}) as Record<string, { layers?: { parameters?: Record<string, unknown> }[] }>)) {
+        if (id in values) continue;
+        const base = (candidate.materials ?? []).filter(material => id.startsWith(`${material.id}.`)).sort((a, b) => b.id.length - a.id.length)[0];
+        if (!base) continue;
+        values[id] = base.parameters;
+        if (described.layers?.length) layerValues[id] = described.layers.map(layer => layer.parameters ?? {});
+      }
+    };
+    derive(this.shaded?.metadata);
     // While an item control is dragged the scene is shown per pixel alone; its settled value is baked.
     const baking = this.sceneBake && !this.dragging;
     const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.mappings, candidate.anchors, candidate.gravity, candidate.domain,
@@ -876,7 +888,8 @@ class Studio {
         throw new Error(result.error || "Source could not be compiled.");
       }
       packet = decodePacket(result.packet); metadata = result.metadata;
-      const shading = { materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity, domain: metadata.domain } as unknown as SceneShading;
+      derive(metadata);
+      const shading ={ materials: metadata.materials, meshes: metadata.shading, gravity: metadata.gravity, domain: metadata.domain } as unknown as SceneShading;
       this.mapShading(shading, metadata, candidate);
       // With the receivers' atlas layouts, GPU-baked maps follow the first look; without them the scene stays per pixel.
       const bake = baking && result.layouts ? { layouts: result.layouts, fields: (requests: { mesh: string; names: string[]; planes: string[][] }[]) => this.sceneFields(requests) } : undefined;

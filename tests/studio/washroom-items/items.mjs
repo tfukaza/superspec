@@ -6,6 +6,10 @@
  * same quarter turn it applies, (x, y) to (y, -x), so their numbers can be read against that file.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** Four affine columns: three basis vectors and the translation. */
 const placed = (x, y, z, at) => [x, y, z, at];
 /** Where a definition written in `model.mjs`'s layout stands: (x, y) becomes (y, -x). */
@@ -152,6 +156,47 @@ export const drain = {
     { id: "shadow", generator: { kind: "pipe", length: 0.003, radius: 0.085, segments: 24 },
       placement: { position: [1.2, 1.25, 0.002] }, slots: { surface: "opening" } },
   ],
+};
+
+const kowloonItems = resolve(dirname(fileURLToPath(import.meta.url)), "../../../crates/engine/src/worldspec/themes/kowloon/items");
+/**
+ * The Kowloon building side across the lane, beyond the low wall: a composed item (`kowloon-facade-side`) whose riser is
+ * a sub-item (`kowloon-duct-riser`) and whose air conditioners and condensers are the Kowloon fixtures as native
+ * generators. Its front faces the room (+x); its width runs along +y. Slots name the project materials of
+ * `build.mjs`; the fixtures' own slots (`aircon`, `metal`, `paint`) are bound here too.
+ */
+const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(name => name.endsWith(".item.json"))
+  .map(name => [name, readFileSync(resolve(kowloonItems, name), "utf8")]));
+/**
+ * Project materials for every slot the Kowloon items and their fixtures emit (an item binds those it has). The walls'
+ * render is the anchored concrete, an intrinsic base: their grime, ground stain and moss are the weathering layers the
+ * items declare on their `wall` slot.
+ */
+const kowloonSlots = { wall: "render-paint", trim: "concrete-slab", concrete: "concrete-slab", frame: "frame-green", tile: "tile", glass: "glass", pane: "glass",
+  galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "flat-steel", "vent-edge": "flat-steel",
+  opening: "openings", "interior-lit": "openings", aircon: "enamel", paint: "enamel", sheet: "enamel", lettering: "enamel", posters: "enamel",
+  tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", board: "bench-wood", timber: "bench-wood",
+  rust: "rusted-pipe" };
+export const facade = {
+  id: "facade",
+  entry: "kowloon-facade-side.item.json",
+  definitions: kowloonDefinitions,
+  parameters: { width: 12, floors: 4 },
+  transform: placed([0, 1, 0], [-1, 0, 0], [0, 0, 1], [-4.5, -8, 0]),
+  slots: kowloonSlots,
+};
+/**
+ * The building across the lane (`kowloon-building`), generated from its footprint: by default the reference shop
+ * house, 9.8 by 7 m with streets on its front and right and their corner cut. Street edges get shops and signs; the
+ * others back doors, few windows, pipes, a riser and duct runs. Its front faces the room; its cut corner is toward the
+ * lane's far end (+y). Set `footprint` (counterclockwise plan points) and `streets` (one flag per edge) to reshape it.
+ */
+export const building = {
+  ...facade,
+  id: "building",
+  entry: "kowloon-building.item.json",
+  parameters: {},
+  transform: placed([0, 1, 0], [-1, 0, 0], [0, 0, 1], [-4.5, -6.8, 0]),
 };
 
 /**

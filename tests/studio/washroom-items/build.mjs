@@ -8,10 +8,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
-import { materials as washroomMaterials } from "../washroom/build.mjs";
-import { buildBatches, buildMeshes } from "../washroom/model.mjs";
-import { writeGlb } from "../washroom/geometry.mjs";
-import { models } from "./items.mjs";
+import { materials as washroomMaterials, lawnMaterials, treeMaterials } from "../washroom/build.mjs";
+import { buildBatches, buildMeshes, lawnGround } from "../washroom/model.mjs";
+import { Mesh, writeGlb } from "../washroom/geometry.mjs";
+import { models, facade, building } from "./items.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const examples = resolve(here, "../../../crates/engine/src/materialspec/program/examples");
@@ -91,11 +91,32 @@ export function buildMaterials({ weathering = true } = {}) {
 }
 
 /**
+ * The Kowloon items' own materials: their render (the anchored concrete, an intrinsic base measured on each part's
+ * pattern anchor, with no grime of its own: the items' weathering layers add it where their features say), the air
+ * conditioners' enamelled sheet, awning canvas and potted leaves.
+ */
+const anchoredConcrete = "kowloon-concrete-anchored.material.ts";
+/** The weathering layer recipes the Kowloon items name, and the base they go over. */
+export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts"];
+function facadeMaterials() {
+  const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
+  return [
+    // The reference shop house's cream render: the concrete's plaster coat, with patches lost to the concrete beneath.
+    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: true, plasterChips: true, darknessA: 0.1, darknessB: 0.14, hueAmount: 0.12, hueAngle: 60 }, seed: 11, meshes: [] },
+    // The green of its steel window frames and railings.
+    { id: "frame-green", entry: steel, parameters: { ...plain, substrate: [0.06, 0.13, 0.09], metalness: 0.3, roughness: 0.5, edgeRust: 0.25, surfaceRust: 0.05, rainRust: 0.3 }, seed: 7, meshes: [] },
+    { id: "enamel", entry: steel, parameters: { ...plain, substrate: [0.78, 0.76, 0.7], metalness: 0.1, roughness: 0.45, edgeRust: 0.3, surfaceRust: 0.05, rainRust: 0.4 }, seed: 7, meshes: [] },
+    { id: "canvas", entry: steel, parameters: { ...plain, substrate: [0.2, 0.36, 0.28], metalness: 0, roughness: 0.85, edgeRust: 0, surfaceRust: 0, rainRust: 0.3 }, seed: 7, meshes: [] },
+    { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
+  ];
+}
+
+/**
  * `weathering: false` uses the shipped recipes as they are (nothing follows a feature); `batches: false` leaves out the
  * bolts of the brackets and the vent, which are the GLB washroom's instanced batch without its two flange rings (the
  * pipe item makes its own flange bolts).
  */
-export function buildProject(resolution = 512, texelDensity = 128, { weathering = true, batches = true, anchored = false, walls } = {}) {
+export function buildProject(resolution = 512, texelDensity = 128, { weathering = true, batches = true, anchored = false, walls, facade: withFacade = false, lane = null } = {}) {
   const example = name => readFileSync(resolve(examples, name), "utf8");
   const modules = Object.fromEntries(["kowloon-noise.material.ts", concrete, steel, "tiled-courtyard.material.ts"].map(name => [name, example(name)]));
   modules["wood.material.ts"] = readFileSync(resolve(here, "../washroom/materials/wood.material.ts"), "utf8");
@@ -114,7 +135,20 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
   // `walls` names another recipe for the walls (with its default parameters): one that reads no receiver bounds shows
   // what a resize leaves of a pattern when only the items decide it.
   if (walls) Object.assign(materials.find(material => material.id === "concrete-walls"), { entry: walls, parameters: {} });
+  // `anchored`: the walls' concrete is measured from each part's pattern anchor, so a resize does not move it.
+  const mappings = anchored ? { "concrete-walls": "anchored" } : {};
   const scene = models.map(({ id, definition, transform, slots }) => ({ id, kind: "item", entry: `items/${definition.id}.item.json`, parameters: {}, transform, slots }));
+  // `facade`: the Kowloon building side across the lane (true), or the whole building ("building"): composed items whose
+  // sides and riser are sub-items and whose fixtures are native Kowloon generators. Their definitions are modules under
+  // their own file names, as their entries name them.
+  if (withFacade) {
+    const model = withFacade === "building" ? building : facade;
+    for (const [name, text] of Object.entries(model.definitions)) modules[name] = text;
+    for (const name of kowloonLayerModules) modules[name] ??= example(name);
+    mappings["render-paint"] = "anchored";
+    materials.push(...facadeMaterials());
+    scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots });
+  }
   let batchList;
   if (batches) {
     // The bolt template is the GLB washroom's own mesh, alone in a model; it is baked once as flat steel.
@@ -124,12 +158,28 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     materials.find(material => material.id === "flat-steel").meshes.push(template);
     batchList = buildBatches().map(batch => ({ ...batch, mesh: template, instances: batch.instances.slice(16) }));
   }
+  // `lane` (a TreeSpec document, `lane-plants.json`): the lane between the room and the building, paved, with a patch of
+  // painted grass toward its open end and trees and shrubs in front of the building.
+  if (lane) {
+    for (const name of [...lawnMaterials, ...treeMaterials].map(material => material.entry)) {
+      modules[name] = readFileSync(resolve(here, "../washroom/materials", name), "utf8");
+    }
+    assets["lane.glb"] = writeGlb([lawnGround(new Mesh("lawn", [0.3, 0.48, 0.14]), lane.ground)]);
+    scene.push({ id: "lane", kind: "glb", name: "lane.glb" });
+    const paving = { format: "itemspec", version: 2, id: "lane-paving",
+      parts: [{ id: "paving", generator: { kind: "box", size: [13, 15, 0.2] }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
+    modules["items/lane-paving.item.json"] = JSON.stringify(paving, null, 2) + "\n";
+    scene.push({ id: "paving", kind: "item", entry: "items/lane-paving.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-13.6, -9.5, -0.2]], slots: { concrete: "concrete-slab" } });
+    materials.push(...lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0") })),
+      ...treeMaterials.map(material => ({ ...material, seed: 7 })));
+    batchList = [...(batchList ?? []), ...lane.batches];
+  }
   const project = {
     schemaVersion: 2, kind: "material", entry: concrete, modules, parameters: {}, seed: 7, resolution,
     ...(texelDensity ? { texelDensity } : {}), inspection: "final", mapping: "world", domain: [1, 1], edges: [], gravity: [0, 0, -1],
     base: { kind: "swatch" }, target: { scope: "mesh", enabled: false },
     // `anchored`: the walls' concrete is measured from each part's pattern anchor, so a resize does not move it.
-    ...(anchored ? { mappings: { "concrete-walls": "anchored" } } : {}),
+    ...(Object.keys(mappings).length ? { mappings } : {}),
     models: scene, materials, ...(batchList ? { batches: batchList } : {}),
     assets: Object.fromEntries(Object.entries(assets).map(([name, bytes]) => [name, Buffer.from(bytes).toString("base64")])),
   };
@@ -137,7 +187,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { project, definitions, assets } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128));
+  const { project, definitions, assets } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128), { facade: process.env.FACADE === "building" ? "building" : process.env.FACADE === "1" });
   for (const [name, content] of [...Object.entries(definitions), ...Object.entries(assets).filter(([name]) => name.startsWith("decals/"))]) {
     mkdirSync(dirname(resolve(out, name)), { recursive: true });
     writeFileSync(resolve(out, name), content);

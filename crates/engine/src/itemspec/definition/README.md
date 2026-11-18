@@ -188,11 +188,35 @@ The shipped host (`worldspec::shipped::item_generators`) offers the Kowloon fixt
 (`worldspec/themes/kowloon/items.rs`); without a host, or for an unknown name, preparing fails
 with `ITEM_NATIVE`. `prepare` keeps its old signature; `prepare_in` takes the environment.
 
-Composed examples are in `worldspec/themes/kowloon/items/`: `kowloon-duct-riser` (a riser that
-spans `floors` with a branch into each, an elbow into the wall at the roof and a hood at its
-foot) and `kowloon-facade-side` (one side of a building: a wall panel per floor with a row of
-windows, string courses, a parapet, air conditioners and condensers chosen per bay by `seed`, and
-the riser as a sub-item when there are two floors or more).
+**Footprints.** A `points` control holds a plan polygon (3 to 64 `[x, y]` points,
+counterclockwise seen from above) and a `flags` control up to 64 booleans. A repeat axis with
+`"footprint": {"points": ..., "streets": ..., "cut": ...}` runs over the polygon's edges (edge i
+from point i to point i + 1) instead of a count. Each copy reads `<name>_x`, `_y` (the wall's
+start), `_dx`, `_dy` (its direction), `_length`, `_street`, `_next_street`, `_previous_street`,
+`_cut` and the cut corner at its end, `_cx`, `_cy`, `_cdx`, `_cdy`, `_clength`, plus the
+footprint's bounds `_min_x`, `_min_y`, `_max_x`, `_max_y`. A convex corner between two street
+edges is cut back `cut` along each (at most a third of either edge). `placement.along` sets a
+part's X axis to a plan direction without trigonometry, so its front (-Y) faces out of the
+footprint. The `prism` generator sweeps the cut footprint, moved `inset` inward, up by `height`
+(face groups `side`, `top`, `bottom`). A clockwise footprint fails with `ITEM_FOOTPRINT`.
+
+**Features and weathering layers.** `features` places named polylines (`name`, `part`, `points`,
+optional `face`, `normal`, `width`, `closed`, one-axis `repeat` and `when`) beside those the
+generators report; a feature whose part was not emitted is dropped. `layers` maps a slot to
+weathering layers, lowest first: `{"entry", "parameters", "seed", "follow"}`, a MaterialSpec layer
+recipe whose named features `follow` maps to the receiver's (`{"top": "sill"}` makes the top
+grime measure from sills). Layer parameters may bind controls. A sub-item's features join its
+part in the parent, and its layers join the slots they land in, so a window's `sill` or an air
+conditioner's `drip` reaches the wall it is on when both are in one sub-item. In a scene project a
+slot with layers is bound to an assignment of its own, `<material>.<model>.<slot>`: the bound
+material with the item's layers over the material's own, mapped as it is.
+
+Composed examples are in `worldspec/themes/kowloon/items/`: small items (`kowloon-window`,
+`kowloon-aircon`, `kowloon-shopfront`, `kowloon-parapet`, `kowloon-duct-run`, `kowloon-duct-riser`,
+`kowloon-roof`), storeys made of them (`kowloon-floor`, `kowloon-ground-floor`), a building side
+that stacks storeys and adds its services (`kowloon-facade-side`), and `kowloon-building`, which
+places a side along every edge of its footprint, shops on street edges, back doors and pipes on
+the rest, and a cut corner with a sign between two streets.
 
 In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
 its slots are bound to the project's materials, every part and face group is a receiver

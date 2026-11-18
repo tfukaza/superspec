@@ -157,8 +157,13 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     let bays = ((9. - 1.8) / 2.1f64).floor() as usize;
     assert_eq!(openings(&floor, "wall"), bays);
     assert_eq!(parts(&floor, "window-").len(), bays);
-    // The floor's wall is weathered under its top, its sills and its air conditioners' drips.
-    let follows: Vec<String> = floor.layers["wall"]
+    // The floor's wall is painted, then weathered under its top, its sills and its air
+    // conditioners' drips.
+    assert_eq!(
+        floor.layers["wall"][0].entry,
+        "kowloon-paint-coat.material.ts"
+    );
+    let follows: Vec<String> = floor.layers["wall"][1..]
         .iter()
         .map(|layer| {
             layer
