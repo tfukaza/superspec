@@ -27,11 +27,10 @@ export interface GrassTuftOptions {
   everywhere?: boolean;
   /** Share kept where nothing changes (0 to 1). */
   base?: number;
-  /** Heights (m) of the short chubby tufts and the long ones, each a range. */
-  short?: [number, number];
-  long?: [number, number];
-  /** Share of long tufts. */
-  longShare?: number;
+  /** Tuft heights (m), from the smallest to the largest (most are small: the size is drawn as a square of a random). */
+  size?: [number, number];
+  /** Tuft width over its height, a range (each tuft its own). */
+  aspect?: [number, number];
   /** Tufts fade out from 60 % of this distance (m) and are gone at it. */
   far?: number;
   seed?: number;
@@ -48,31 +47,33 @@ function random(seed: number): () => number {
   };
 }
 
-/** Cells of the atlas: 4 columns, 2 rows; the lower row short chubby tufts, the upper long ones. */
-const CELL = 128, COLUMNS = 4, ROWS = 2;
+/** Cells of the atlas: 4 columns, 4 rows, each a different tuft. */
+const CELL = 128, COLUMNS = 4, ROWS = 4;
 
 /**
- * The tuft atlas, painted once: each cell 4 or 5 blades fanning from a root near its bottom, each a curved stroke
- * tapering to its tip (chubby ones wide and rounded, long ones thin), then blurred. Red: the blade's own tone (0 dark to
+ * The tuft atlas, painted once as a digital painter would: each cell 2 to 4 broad strokes fanning from a root near its
+ * bottom, each its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 2.2): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 1.0): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
   for (let k = 0; k < COLUMNS * ROWS; k++) {
-    const long = k >= COLUMNS, ox = (k % COLUMNS) * CELL, oy = Math.floor(k / COLUMNS) * CELL;
-    const blades = 4 + (next() < 0.5 ? 1 : 0);
+    const ox = (k % COLUMNS) * CELL, oy = Math.floor(k / COLUMNS) * CELL;
+    const blades = 2 + Math.floor(next() * 3);
     for (let b = 0; b < blades; b++) {
-      const rootX = 0.5 + (next() - 0.5) * 0.3;
-      const tall = long ? 0.68 + 0.22 * next() : 0.42 + 0.25 * next();
-      const lean = (rootX - 0.5) * 1.4 + (next() - 0.5) * (long ? 0.55 : 0.45);
-      const thick = long ? 0.045 + 0.02 * next() : 0.085 + 0.035 * next();
+      const long = next() < 0.45, pointed = next() < 0.55;
+      const rootX = 0.5 + (next() - 0.5) * 0.28;
+      const tall = long ? 0.62 + 0.3 * next() : 0.3 + 0.32 * next();
+      const lean = (rootX - 0.5) * 1.6 + (next() - 0.5) * 0.7;
+      const droop = long ? next() * 0.5 : next() * 0.2;
+      const thick = 0.12 + 0.12 * next();
       const own = next();
       const points: { x: number; y: number; t: number }[] = [];
       for (let s = 0; s <= 24; s++) {
         const t = s / 24;
-        points.push({ x: rootX + lean * tall * Math.pow(t, 1.6), y: 0.06 + tall * t * (1 - 0.12 * Math.abs(lean) * t), t });
+        points.push({ x: rootX + lean * tall * Math.pow(t, 1.6), y: 0.05 + tall * (t - droop * Math.pow(t, 3) * 0.6) * (1 - 0.12 * Math.abs(lean) * t), t });
       }
       for (let py = 0; py < CELL; py++) for (let px = 0; px < CELL; px++) {
         const x = (px + 0.5) / CELL, y = (py + 0.5) / CELL;
@@ -84,8 +85,9 @@ export function tuftAtlas(seed = 11, blur = 2.2): THREE.DataTexture {
           const ex = a.x + dx * u - x, ey = a.y + dy * u - y, d = Math.hypot(ex, ey);
           if (d < best) { best = d; bestT = a.t + (c.t - a.t) * u; }
         }
-        // Half width along the blade: chubby blades rounded to their tips, long ones tapering to a point.
-        const half = long ? 0.5 * thick * (1 - Math.pow(bestT, 1.4)) + 0.002 : 0.5 * thick * Math.sqrt(Math.max(1 - bestT * bestT, 0)) + 0.002;
+        // Half width along the stroke: swelling a little above its root, then to a point or a rounded tip.
+        const swell = 0.75 + 0.25 * Math.sin(Math.min(bestT * 2.2, 1) * Math.PI / 2);
+        const half = 0.5 * thick * swell * (pointed ? 1 - Math.pow(bestT, 1.2) : Math.sqrt(Math.max(1 - Math.pow(bestT, 3), 0))) + 0.002;
         const pixel = 1 / CELL;
         const c = Math.max(0, Math.min(1, (half - best) / pixel + 0.5));
         if (c <= 0) continue;
@@ -187,13 +189,14 @@ void main() {
   float keep = mix(tuftKeep.x, 1.0, score) * (1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away));
 #endif
   if (tuftData.w > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
-  // Upright along the relief's normal, turned about it to face the camera.
-  vec3 side = cross(rn, v);
+  // Grass grows mostly upward: the tuft stands between the relief's normal and straight up, turned to face the camera.
+  vec3 grow = normalize(mix(rn, vec3(0.0, 0.0, 1.0), 0.6));
+  vec3 side = cross(grow, v);
   side = length(side) < 1e-4 ? t1 : normalize(side);
   float mirror = fract(tuftData.w * 91.7 + tuftKeep.z) < 0.5 ? -1.0 : 1.0;
-  vec3 world = root - rn * 0.08 * tuftData.x + side * position.x * tuftData.y * mirror + rn * position.y * tuftData.x;
+  vec3 world = root - grow * 0.08 * tuftData.x + side * position.x * tuftData.y * mirror + grow * position.y * tuftData.x;
   float cell = tuftData.z;
-  vUv = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + uv) / vec2(4.0, 2.0);
+  vUv = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + uv) / vec2(4.0, 4.0);
   vColor = reliefPaint(root, rn, h, tone);
   vLit = band;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
@@ -210,7 +213,8 @@ void main() {
   if (t.a < 0.02) discard;
   // Each blade lighter or darker by its own tone; its lit tip a little lighter still.
   vec3 c = vColor * mix(0.84, 1.14, t.r) * mix(1.0, 1.18, t.g * t.g * vLit);
-  gl_FragColor = vec4(c, t.a);
+  // Coverage firmed up, so a stroke stays a solid shape of paint at a distance (its mipmaps thin it) with a soft edge.
+  gl_FragColor = vec4(c, smoothstep(0.04, 0.5, t.a));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
@@ -237,8 +241,8 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     triangles.push({ p, n });
     cumulative.push(total);
   }
-  const count = Math.max(1, Math.round(total * (options.density ?? 600)));
-  const [s0, s1] = options.short ?? [0.06, 0.1], [l0, l1] = options.long ?? [0.13, 0.2];
+  const count = Math.max(1, Math.round(total * (options.density ?? 150)));
+  const [s0, s1] = options.size ?? [0.05, 0.26], [a0, a1] = options.aspect ?? [0.75, 1.4];
   const roots = new Float32Array(count * 3), ups = new Float32Array(count * 3), data = new Float32Array(count * 4);
   for (let k = 0; k < count; k++) {
     const pick = next() * total;
@@ -250,12 +254,11 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     const w = 1 - u - v;
     const at = p[0].clone().multiplyScalar(w).addScaledVector(p[1], u).addScaledVector(p[2], v);
     const up = n[0].clone().multiplyScalar(w).addScaledVector(n[1], u).addScaledVector(n[2], v).normalize();
-    const long = next() < (options.longShare ?? 0.45);
-    const tall = long ? l0 + (l1 - l0) * next() : s0 + (s1 - s0) * next();
+    const tall = s0 + (s1 - s0) * next() ** 2;
     roots.set([at.x, at.y, at.z], k * 3);
     ups.set([up.x, up.y, up.z], k * 3);
-    // A cell's width equals its height, so a tuft's quad is square.
-    data.set([tall, tall, (long ? 4 : 0) + Math.floor(next() * 4), next()], k * 4);
+    // A cell is square; each tuft is stretched to its own width.
+    data.set([tall, tall * (a0 + (a1 - a0) * next()), Math.floor(next() * COLUMNS * ROWS), next()], k * 4);
   }
   const geometry = new THREE.InstancedBufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3));
