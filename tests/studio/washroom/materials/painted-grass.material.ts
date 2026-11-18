@@ -5,7 +5,7 @@
 // parameters equal painted-lawn.material.ts's. Its base color is the lit profile's albedo and the baked fallback.
 import { defineMaterial, param, vec3, mix, mul, add, shadeBand, sunDirection, sampleField, placedWorld, edgeBreak } from "@superspec/material/v1";
 
-const shadeTint = param.vec3({ default: vec3(0.5, 0.66, 0.68), range: [0, 1], label: "Shade tint" });
+const shadeTint = param.vec3({ default: vec3(0.4, 0.52, 0.44), range: [0, 1], label: "Shade tint" });
 const threshold = param.scalar({ default: 0.76, range: [-1, 1], label: "Shade threshold" });
 const softness = param.scalar({ default: 1.5, range: [0, 8], label: "Edge softness (pixels)" });
 const range = param.scalar({ default: 0.3, range: [0, 1], label: "Gradient range" });
