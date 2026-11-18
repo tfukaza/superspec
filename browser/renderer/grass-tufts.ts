@@ -183,6 +183,7 @@ uniform float lift;
 uniform vec3 tuftKeep; // x: base share, y: far (m), z: mirror seed
 uniform vec2 tuftNear; // close tufts: full to x (m), gone at y
 uniform float tuftFace;
+varying float vGround; // tall blades: how light the ground under them is (0 dark, 1 light)
 uniform vec2 tuftLight; // tall blades: ground lightness (luma) from which they thin out (x) to where all are kept (y) // the least a tuft's painted normal faces the camera
 varying float vKind;
 varying float vHue;
@@ -235,10 +236,12 @@ void main() {
   float keep = mix(tuftKeep.x, 1.0, score) * (1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away));
 #endif
   // Tall blades grow mostly on the lighter patches of the ground's colour (a tenth on the darkest).
+  vGround = 1.0;
   if (tuftData.z > 15.5 && tuftData.z < 19.5) {
     float lightness = dot(texture(groundColor, clamp((root.xy - groundRect.xy) / (groundRect.zw - groundRect.xy), 0.0, 1.0)).rgb, vec3(0.2126, 0.7152, 0.0722));
     // and only where lit (shade band and cast shadow): a blade reads as it catches the sun, as a glint.
     float sun = min(band, reliefCast(root, rn));
+    vGround = smoothstep(tuftLight.x, tuftLight.y, lightness);
     keep *= mix(0.1, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness)) * mix(0.1, 1.0, smoothstep(0.3, 0.8, sun));
   }
   if (!close && rank > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
@@ -274,6 +277,7 @@ varying float vLit;
 varying float vKind;
 varying float vHue;
 uniform vec3 tuftLime; // the tall blades' tip colour, a bright lime
+varying float vGround;
 uniform vec2 tuftVary; // chubby tufts: x brightness range (share), y hue shift (0 to 1)
 uniform vec2 tuftDetail; // x: brightness of the thin tufts, y: their hue variation
 uniform vec3 tuftSpark;
@@ -296,7 +300,10 @@ void main() {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
     // Toward the tip it gleams: brighter with the light it catches, toward a pale sunlit yellow-green.
-    vec3 glint = mix(bright * (1.0 + 0.4 * vLit), tuftLime * (0.75 + 0.5 * vLit), 0.65);
+    // On dark ground the blade stays dark; on light ground its tip gleams neon lime, brighter where lit.
+    vec3 dark = vColor * 0.82;
+    vec3 neon = mix(bright * (1.0 + 0.4 * vLit), tuftLime * (0.85 + 0.75 * vLit), 0.8);
+    vec3 glint = mix(dark, neon, vGround);
     c = mix(vColor * mix(0.95, 1.05, t.r), glint, smoothstep(0.15, 0.9, t.g));
     a = smoothstep(0.3, 0.6, t.a);
   } else {
@@ -416,7 +423,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       tuftAtlas: { value: atlas },
       tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0, 0])) },
       tuftLight: { value: new THREE.Vector2(...(options.light ?? [0.33, 0.45])) },
-      tuftLime: { value: new THREE.Vector3(...(options.lime ?? [0.36, 0.86, 0.04])) },
+      tuftLime: { value: new THREE.Vector3(...(options.lime ?? [0.42, 1.0, 0.02])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
