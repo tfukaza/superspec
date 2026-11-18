@@ -15,7 +15,7 @@ const at = mul(vec2(surface.x, surface.y), patchScale);
 const warped = add(at, mul(domainWarp(mul(at, 1.3), seed("paint-warp")), 0.5));
 // Peeled where the field rises above a threshold that falls as `peeling` grows.
 const field = fractal(add(warped, vec2(17.3, 5.9)), seed("paint-peel"));
-const threshold = sub(0.79, mul(peeling, 0.3));
+const threshold = sub(0.84, mul(peeling, 0.3));
 const intact = sub(1, smoothstep(threshold, add(threshold, 0.02), field));
 const mottle = fractal(add(mul(at, 3.1), vec2(3.7, 41.2)), seed("paint-mottle"));
 

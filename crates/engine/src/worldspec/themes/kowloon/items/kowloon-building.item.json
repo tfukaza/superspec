@@ -4,7 +4,7 @@
   "id": "kowloon-building",
   "parameters": {
     "paint": {"type": "color", "default": "#e6d6b0"},
-    "peeling": {"type": "number", "default": 0.18, "min": 0, "max": 1},
+    "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "footprint": {"type": "points", "default": [[0, 0], [9.8, 0], [9.8, 7], [0, 7]]},
     "streets": {"type": "flags", "default": [true, true, false, false]},
     "cut": {"type": "number", "default": 0.24, "min": 0, "max": 3, "unit": "m"},
