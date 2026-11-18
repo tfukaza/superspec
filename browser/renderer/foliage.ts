@@ -355,7 +355,11 @@ varying float vFoliageVariation;`;
     float h = clamp(vFoliageHeight, 0.0, 1.0);
     vec3 paint = vFoliageColor * mix(1.0, msFoliageTip.x, h);
     float fade = smoothstep(msFoliageTip.y, 1.0, h) * msFoliageTip.z * clamp(vFoliageBand, 0.0, 1.0);
-    diffuseColor.rgb = mix(paint, msFoliageHighlight * (0.85 + 0.3 * vFoliageVariation), fade);
+    // The tip lightens toward a lighter, warmer version of the blade's own colour, with only a fifth of the shared
+    // highlight in it: blades rooted on different greens keep different tips instead of all ending in one colour.
+    vec3 own = paint * vec3(1.24, 1.17, 0.86) * (0.92 + 0.16 * vFoliageVariation);
+    vec3 target = mix(own, msFoliageHighlight * (0.85 + 0.3 * vFoliageVariation), 0.2);
+    diffuseColor.rgb = mix(paint, target, fade);
   }` : `
   diffuseColor.rgb = vFoliageColor * mix(0.5, 1.0, clamp(vFoliageHeight, 0.0, 1.0)) * (0.88 + 0.24 * vFoliageVariation);`;
   return { declarations, color };
