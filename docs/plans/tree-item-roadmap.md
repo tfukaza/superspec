@@ -701,6 +701,15 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     to a near-neon lime. Dark patches fade as the view looks down on them (the gaps between blades show only from
     across the grass), so from above they no longer read as cracks. Reference renders `painted-mass/grass-tufts-*.png`.
     Known: the cushion relief still reads as Voronoi cells from above.
+  - **Milestone `painted-lawn-milestone` (2026-11-18): grass done for now.** Patches, not cells: the relief default
+    is `rolling` (domain-warped 3D fractal humps, 0.7 m and 0.25 m, raised softly above a level; cheaper than the
+    cushions, 1.5 to 2.3 ms a frame on the hill site with every tuft kind), and the lawn colour is a subtle mix of its
+    three middle bands by warped fractal noise with occasional organic dark (rarity 0.7) and lime (0.67) patches from
+    two more warped fractals (`Patch frequency`, `Dark patch rarity`, `Light patch rarity`, `Patch softness`). Bands
+    0.17,0.36,0.03 / 0.24,0.47,0.04 / 0.27,0.52,0.05 / 0.34,0.6,0.05 / 0.42,0.7,0.03 (a tree-matched teal palette was
+    tried and dropped). Made with `RELIEF=displace CLUMP_BLUR=2 TUFTS=1`; reference renders
+    `painted-mass/painted-lawn-*.png`. Still to do: these settings live in the test script and recipe, not yet in the
+    lawn's definition or a level-of-detail system; the colour field is top-down, so it stretches on steep banks.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
