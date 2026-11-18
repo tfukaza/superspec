@@ -155,6 +155,16 @@ export class RustScene {
     return pixels > 0 ? { blur: new FoliageBlur(this.renderer, 0, 1, true, { layer: 10, pixels, soften: true }), from: Number(query.get("grassblurfrom") ?? 3),
       patch: query.get("grassblurpatch") } : null;
   })();
+  /**
+   * Soft parts' colours blurred among themselves (`?clumpblur=<pixels>`, foliage-blur.ts soft; `?clumpblurmix=` how
+   * much): meshes that set `userData.clumpBlur` (the grass clumps, grass-clumps.ts) keep their soft coverage while the
+   * borders between their lit and shaded parts run together.
+   */
+  readonly clumpBlur = (() => {
+    const query = new URLSearchParams(location.search);
+    const pixels = Number(query.get("clumpblur"));
+    return pixels > 0 ? new FoliageBlur(this.renderer, 0, Number(query.get("clumpblurmix") ?? 1), false, { layer: 11, pixels, soft: true }) : null;
+  })();
   /** The canopy masses' leafy stroke edges (`?strokes=1`; `strokeband`, `strokeamount`, `stroketile` in meters). */
   readonly strokeEdges = STROKES ? (() => {
     const query = new URLSearchParams(location.search);
@@ -236,8 +246,17 @@ export class RustScene {
         if (this.grassBlur.patch ? look.patch === this.grassBlur.patch : look.level >= this.grassBlur.from) mesh.layers.set(10);
       }
     }
+    let clumpAnchor: THREE.Vector3 | null = null;
+    if (this.clumpBlur) {
+      for (const mesh of this.models.children) {
+        if (!mesh.userData.clumpBlur) continue;
+        mesh.layers.set(11);
+        if (mesh.visible && !clumpAnchor) clumpAnchor = this.controls.target.clone();
+      }
+    }
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);
+    if (this.clumpBlur) this.clumpBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, clumpAnchor);
     if (this.grassBlur) this.grassBlur.blur.render(this.scene, this.camera as THREE.PerspectiveCamera, this.controls.target);
     if (this.foliageBlur) this.foliageBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, blurAnchor);
     if (this.strokeEdges) this.strokeEdges.render(this.scene, this.camera as THREE.PerspectiveCamera, strokeAnchor, this.strokeEdges.options.tile);

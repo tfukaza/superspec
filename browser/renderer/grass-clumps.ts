@@ -232,5 +232,7 @@ export function grassClumps(ground: THREE.Mesh, options: GrassClumpOptions = {})
     rootAttribute.needsUpdate = upAttribute.needsUpdate = sizeAttribute.needsUpdate = true;
   };
   mesh.userData.grassClumps = { count, area: total };
+  // The scene's `?clumpblur=` pass blends their colours among themselves.
+  mesh.userData.clumpBlur = true;
   return mesh;
 }

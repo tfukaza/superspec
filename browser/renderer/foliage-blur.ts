@@ -46,7 +46,7 @@ export class FoliageBlur {
    * colours are only blurred among themselves, not snapped to bands, and finished as painted materials are.
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, readonly meters: number, strength = 0.6, readonly repaint = false,
-    readonly options: { layer?: number; pixels?: number; soften?: boolean } = {}) {
+    readonly options: { layer?: number; pixels?: number; soften?: boolean; soft?: boolean } = {}) {
     this.quad.frustumCulled = false;
     this.blur = new THREE.ShaderMaterial({
       uniforms: { source: { value: null }, direction: { value: new THREE.Vector2(1, 0) }, radius: { value: 4 }, first: { value: 1 } },
@@ -77,7 +77,7 @@ void main() {
     });
     this.composite = new THREE.ShaderMaterial({
       uniforms: { original: { value: null }, blurred: { value: null }, strength: { value: strength }, repaint: { value: repaint ? 1 : 0 },
-        soften: { value: options.soften ? 1 : 0 } },
+        soften: { value: options.soften ? 1 : 0 }, softParts: { value: options.soft ? 1 : 0 } },
       vertexShader: QUAD_VERTEX, depthTest: false, depthWrite: false,
       fragmentShader: /* glsl */`
 uniform sampler2D original;
@@ -85,6 +85,7 @@ uniform sampler2D blurred;
 uniform float strength;
 uniform float repaint;
 uniform float soften;
+uniform float softParts;
 // The paint bands of leaf-normals.ts (BAND_GLSL) and its highlight (msLeafPaint), linear, darkest first.
 const vec3 BANDS[8] = vec3[8](vec3(0.0232, 0.1022, 0.0844), vec3(0.0331, 0.1441, 0.0823), vec3(0.0452, 0.1779, 0.0782),
   vec3(0.0844, 0.2384, 0.0802), vec3(0.15, 0.3277, 0.0844), vec3(0.2747, 0.4793, 0.1022), vec3(0.40, 0.64, 0.12),
@@ -93,7 +94,18 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
   vec4 here = texelFetch(original, at, 0);
-  vec4 soft = texelFetch(blurred, at, 0);
+  vec4 blurredHere = texelFetch(blurred, at, 0);
+  if (softParts > 0.5) {
+    // Soft parts (grass clumps): drawn blended, so the target holds colour times coverage. The colours are blurred
+    // among the parts and laid over the scene with each pixel's own soft coverage, so fringes stay soft.
+    if (here.a < 0.004) discard;
+    vec3 own = here.rgb / here.a, mixed = blurredHere.a > 1e-4 ? blurredHere.rgb / blurredHere.a : own;
+    gl_FragColor = vec4(mix(own, mixed, strength), clamp(here.a, 0.0, 1.0));
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    return;
+  }
+  vec4 soft = blurredHere;
   if (soften > 0.5) {
     // Coverage blurred and cut again (strokes run together, specks drop); the colours blurred among the strokes.
     if (soft.a < 0.5) discard;
@@ -127,6 +139,7 @@ void main() {
 }`,
     });
     // The leaves' colours are the painted materials' before finishing; the composite finishes them as they would be.
+    if (options.soft) { this.composite.transparent = true; this.composite.blending = THREE.NormalBlending; }
     if (repaint && !options.soften) this.composite.toneMapped = false;
     else followPaintedFinishing(this.composite);
   }
@@ -187,7 +200,7 @@ void main() {
       this.last = { radius, pixelsPerMeter, distance };
       this.blur.uniforms.source.value = target.texture;
       this.blur.uniforms.direction.value.set(1, 0);
-      this.blur.uniforms.first.value = 1;
+      this.blur.uniforms.first.value = this.options.soft ? 0 : 1;
       this.draw(this.blur, this.passes[0]);
       this.blur.uniforms.source.value = this.passes[0].texture;
       this.blur.uniforms.direction.value.set(0, 1);
