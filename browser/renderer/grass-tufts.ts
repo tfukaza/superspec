@@ -31,6 +31,9 @@ export interface GrassTuftOptions {
   size?: [number, number];
   /** Tuft width over its height, a range (each tuft its own). */
   aspect?: [number, number];
+  /** Close level: extra chubby tufts a square meter, drawn only near the camera (full to near[0] m, gone at near[1]). */
+  closeDensity?: number;
+  near?: [number, number];
   /** Share of the scattered tufts that are tiny-stroke clusters (the rest are short chubby tufts). */
   clusterShare?: number;
   /** Tall thin blades: candidates a square meter (kept only in patches) and the patches' grid cell and radius range (m). */
@@ -168,6 +171,7 @@ attribute vec3 tuftUp;
 attribute vec4 tuftData;
 uniform float lift;
 uniform vec3 tuftKeep; // x: base share, y: far (m), z: mirror seed
+uniform vec2 tuftNear; // close tufts: full to x (m), gone at y
 varying float vKind;
 varying float vHue;
 varying vec2 vUv;
@@ -187,6 +191,11 @@ float castWide(vec3 world, vec3 normal) {
   return lit / 9.0;
 }
 void main() {
+  // Close tufts (their random stored plus one): only near the camera, fading out over tuftNear (m), and dropped here,
+  // before any relief work, everywhere else.
+  bool close = tuftData.w >= 1.0;
+  float rank = close ? tuftData.w - 1.0 : tuftData.w;
+  if (close && rank > 1.0 - smoothstep(tuftNear.x, tuftNear.y, length(cameraPosition - tuftRoot))) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   vec3 n = normalize(tuftUp);
   float h = reliefHeight(tuftRoot, n);
   float tone = reliefTone;
@@ -213,20 +222,20 @@ void main() {
   float score = max(edge, max(border, colour));
   float keep = mix(tuftKeep.x, 1.0, score) * (1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away));
 #endif
-  if (tuftData.w > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+  if (!close && rank > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // Grass grows mostly upward: the tuft stands between the relief's normal and straight up, turned to face the camera.
   vec3 grow = normalize(mix(rn, vec3(0.0, 0.0, 1.0), 0.6));
   vec3 side = cross(grow, v);
   side = length(side) < 1e-4 ? t1 : normalize(side);
   // Each tuft tilted its own way across the view (the tall blades most), so they do not all stand straight up.
-  float tilt = (fract(tuftData.w * 17.31 + 0.5) - 0.5) * (tuftData.z > 15.5 && tuftData.z < 19.5 ? 0.9 : 0.35);
+  float tilt = (fract(rank * 17.31 + 0.5) - 0.5) * (tuftData.z > 15.5 && tuftData.z < 19.5 ? 0.9 : 0.35);
   grow = normalize(grow + side * tilt);
-  float mirror = fract(tuftData.w * 91.7 + tuftKeep.z) < 0.5 ? -1.0 : 1.0;
+  float mirror = fract(rank * 91.7 + tuftKeep.z) < 0.5 ? -1.0 : 1.0;
   vec3 world = root - grow * 0.08 * tuftData.x + side * position.x * tuftData.y * mirror + grow * position.y * tuftData.x;
   float cell = tuftData.z;
   vUv = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + uv) / vec2(4.0, 6.0);
   vKind = cell < 15.5 ? 0.0 : cell < 19.5 ? 1.0 : 2.0;
-  vHue = fract(tuftData.w * 53.7 + 0.21);
+  vHue = fract(rank * 53.7 + 0.21);
   vColor = reliefPaint(root, rn, h, tone);
   vLit = min(band, reliefCast(root, rn));
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
@@ -321,6 +330,13 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     if (next() < clusterShare) add(at, up, 0.04 + 0.04 * next(), 1.6 + 0.8 * next(), 20 + Math.floor(next() * 4));
     else add(at, up, s0 + (s1 - s0) * next() ** 2, a0 + (a1 - a0) * next(), Math.floor(next() * 16));
   }
+  // The close level: more chubby tufts, kept only near the camera (their random plus one marks them).
+  const close = Math.round(total * (options.closeDensity ?? 1200));
+  for (let k = 0; k < close; k++) {
+    const { at, up } = point();
+    add(at, up, s0 + (s1 - s0) * next() ** 2, a0 + (a1 - a0) * next(), Math.floor(next() * 16));
+    dataList[dataList.length - 1] += 1;
+  }
   // Tall thin blades gathered in patches: candidates scattered evenly, kept only near the centre of a patch. Patches are
   // blobs on a jittered 3D grid (one a cell, its radius its own), so they lie on slopes as on flat ground.
   const [patchCell, patchRadius] = options.tallPatch ?? [0.6, [0.22, 0.4]] as [number, [number, number]];
@@ -368,6 +384,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
+      tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
       tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.4, options.hue ?? 1.0) },
       tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [1.75, 1.62, 0.72])) },
