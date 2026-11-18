@@ -280,13 +280,18 @@ uniform float msMacroWeight;
 // Ambient occlusion of the whole blob: a clump deep inside the plant, under the leaves around it, darkens by up to
 // msOcclusion (bands' light), fading out toward the blob's outer shell. 0 (unset) none.
 uniform float msOcclusion;
+// The blob's side away from the sun shifts by msMacroShade instead (unset or 0: msMacroWeight), so the shaded side
+// can go much darker while the lit side does not burn out.
+uniform float msMacroShade;
 float msMacro(vec3 world, vec3 sun) {
-  if (msMacroWeight <= 0.0 && msOcclusion <= 0.0) return 0.0;
+  if (msMacroWeight <= 0.0 && msMacroShade <= 0.0 && msOcclusion <= 0.0) return 0.0;
   vec3 r = max(msMacroRadii, vec3(1e-3));
   vec3 n = normalize((world - msMacroCentre) / (r * r) + vec3(0.0, 0.0, 1e-5));
   // Deep inside the blob, the facing fades out (a clump in the middle is neither side).
   float depth = clamp(length((world - msMacroCentre) / r), 0.0, 1.0);
-  float facing = msMacroWeight * dot(n, sun) * smoothstep(0.15, 0.7, depth);
+  float toward = dot(n, sun);
+  float weight = toward < 0.0 && msMacroShade > 0.0 ? msMacroShade : msMacroWeight;
+  float facing = weight * toward * smoothstep(0.15, 0.7, depth);
   // Most of what shows is the blob's outer half, so the darkening runs out to near its shell.
   float occluded = msOcclusion * (1.0 - smoothstep(0.45, 1.0, depth));
   return facing - occluded;
