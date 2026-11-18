@@ -36,6 +36,8 @@ export interface GrassTuftOptions {
   /** Tall thin blades: candidates a square meter (kept only in patches) and the patches' grid cell and radius range (m). */
   tallDensity?: number;
   tallPatch?: [number, [number, number]];
+  /** Share of tall candidates kept between patches. */
+  tallFloor?: number;
   /** The thin tufts' brightness over the ground's paint and their hue variation (0 none, 1 full). */
   brightness?: number;
   hue?: number;
@@ -80,15 +82,16 @@ export function tuftAtlas(seed = 11, blur = 2.0): THREE.DataTexture {
     for (let b = 0; b < blades; b++) {
       const long = next() < 0.45, pointed = kind === "chubby" ? next() < 0.55 : next() < 0.85;
       const rootX = kind === "cluster" ? 0.1 + 0.8 * next() : 0.5 + (next() - 0.5) * (kind === "tall" ? 0.2 : 0.28);
-      const tall = kind === "tall" ? 0.75 + 0.18 * next() : kind === "cluster" ? 0.25 + 0.4 * next() : long ? 0.62 + 0.3 * next() : 0.3 + 0.32 * next();
-      const lean = kind === "cluster" ? (next() - 0.5) * 0.9 : (rootX - 0.5) * 1.6 + (next() - 0.5) * (kind === "tall" ? 0.4 : 0.7);
-      const droop = kind === "tall" ? next() * 0.45 : long ? next() * 0.5 : next() * 0.2;
-      const thick = kind === "tall" ? 0.03 + 0.025 * next() : kind === "cluster" ? 0.035 + 0.035 * next() : 0.08 + 0.08 * next();
+      const tall = kind === "tall" ? 0.6 + 0.33 * next() : kind === "cluster" ? 0.25 + 0.4 * next() : long ? 0.62 + 0.3 * next() : 0.3 + 0.32 * next();
+      const lean = kind === "cluster" ? (next() - 0.5) * 0.9 : (rootX - 0.5) * 1.6 + (next() - 0.5) * (kind === "tall" ? 1.1 : 0.7);
+      const bend = kind === "tall" ? 1.1 + 1.3 * next() : 1.6;
+      const droop = kind === "tall" ? next() * 0.85 : long ? next() * 0.5 : next() * 0.2;
+      const thick = kind === "tall" ? 0.05 + 0.035 * next() : kind === "cluster" ? 0.035 + 0.035 * next() : 0.08 + 0.08 * next();
       const own = next();
       const points: { x: number; y: number; t: number }[] = [];
       for (let s = 0; s <= 24; s++) {
         const t = s / 24;
-        points.push({ x: rootX + lean * tall * Math.pow(t, 1.6), y: 0.05 + tall * (t - droop * Math.pow(t, 3) * 0.6) * (1 - 0.12 * Math.abs(lean) * t), t });
+        points.push({ x: rootX + lean * tall * Math.pow(t, bend), y: 0.05 + tall * (t - droop * Math.pow(t, 3) * 0.6) * (1 - 0.12 * Math.abs(lean) * t), t });
       }
       for (let py = 0; py < CELL; py++) for (let px = 0; px < CELL; px++) {
         const x = (px + 0.5) / CELL, y = (py + 0.5) / CELL;
@@ -120,14 +123,15 @@ export function tuftAtlas(seed = 11, blur = 2.0): THREE.DataTexture {
   // The chubby tufts and the clusters are blurred; the tall thin ones (row 4) keep crisp edges.
   // The clusters (row 5) are tiny on screen, so they take a much wider blur to read as soft.
   const kernel = (sigma: number) => { const reach = Math.ceil(sigma * 3), weights: number[] = []; for (let k = -reach; k <= reach; k++) weights.push(Math.exp(-0.5 * k * k / (sigma * sigma))); return { reach, weights }; };
-  const kernels = [kernel(blur), kernel(blur * 3)];
+  // The tall thin blades (row 4) take only a slight blur.
+  const kernels = [kernel(blur), kernel(blur * 3), kernel(blur * 0.4)];
   const pass = (source: Float32Array, horizontal: boolean): Float32Array => {
     const out = new Float32Array(source.length);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
       const cx = Math.floor(x / CELL) * CELL, cy = Math.floor(y / CELL) * CELL;
-      if ((cy >= 4 * CELL && cy < 5 * CELL) || blur <= 0) { out[y * width + x] = source[y * width + x]; continue; }
+      if (blur <= 0) { out[y * width + x] = source[y * width + x]; continue; }
       let sum = 0, total = 0;
-      const { reach, weights } = kernels[cy >= 5 * CELL ? 1 : 0];
+      const { reach, weights } = kernels[cy >= 5 * CELL ? 1 : cy >= 4 * CELL ? 2 : 0];
       for (let k = -reach; k <= reach; k++) {
         const sx = horizontal ? x + k : x, sy = horizontal ? y : y + k;
         if (sx < cx || sx >= cx + CELL || sy < cy || sy >= cy + CELL) continue;
@@ -214,6 +218,9 @@ void main() {
   vec3 grow = normalize(mix(rn, vec3(0.0, 0.0, 1.0), 0.6));
   vec3 side = cross(grow, v);
   side = length(side) < 1e-4 ? t1 : normalize(side);
+  // Each tuft tilted its own way across the view (the tall blades most), so they do not all stand straight up.
+  float tilt = (fract(tuftData.w * 17.31 + 0.5) - 0.5) * (tuftData.z > 15.5 && tuftData.z < 19.5 ? 0.9 : 0.35);
+  grow = normalize(grow + side * tilt);
   float mirror = fract(tuftData.w * 91.7 + tuftKeep.z) < 0.5 ? -1.0 : 1.0;
   vec3 world = root - grow * 0.08 * tuftData.x + side * position.x * tuftData.y * mirror + grow * position.y * tuftData.x;
   float cell = tuftData.z;
@@ -240,7 +247,9 @@ void main() {
   if (t.a < 0.02) discard;
   vec3 c;
   float a;
-  vec3 hue = mix(vec3(1.18, 1.07, 0.6), vec3(0.82, 1.04, 1.25), vHue);
+  // The thin tufts' hues: warm straw, yellow-green, lime and cool teal, each tuft its own place among them.
+  float hs = vHue * 3.0;
+  vec3 hue = hs < 1.0 ? mix(vec3(1.3, 1.12, 0.5), vec3(1.12, 1.2, 0.55), hs) : hs < 2.0 ? mix(vec3(1.12, 1.2, 0.55), vec3(0.95, 1.25, 0.45), hs - 1.0) : mix(vec3(0.95, 1.25, 0.45), vec3(0.78, 1.08, 1.3), hs - 2.0);
   vec3 bright = vColor * tuftDetail.x * mix(vec3(1.0), hue, tuftDetail.y) * mix(0.88, 1.12, t.r);
   if (vKind < 0.5) {
     // Chubby: the ground's own paint, barely a tone apart per stroke; soft edged.
@@ -249,8 +258,8 @@ void main() {
   } else if (vKind < 1.5) {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
-    c = mix(vColor * mix(0.95, 1.05, t.r), bright, smoothstep(0.2, 0.75, t.g));
-    a = smoothstep(0.35, 0.6, t.a);
+    c = mix(vColor * mix(0.95, 1.05, t.r), bright * 1.2, smoothstep(0.15, 0.85, t.g));
+    a = smoothstep(0.2, 0.6, t.a);
   } else {
     // Clusters: short grass in the sun, bright and brighter where lit; soft edged like the chubby tufts.
     c = bright * mix(vec3(1.0), tuftSpark, vLit);
@@ -314,7 +323,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
   }
   // Tall thin blades gathered in patches: candidates scattered evenly, kept only near the centre of a patch. Patches are
   // blobs on a jittered 3D grid (one a cell, its radius its own), so they lie on slopes as on flat ground.
-  const [patchCell, patchRadius] = options.tallPatch ?? [0.8, [0.18, 0.32]] as [number, [number, number]];
+  const [patchCell, patchRadius] = options.tallPatch ?? [0.6, [0.22, 0.4]] as [number, [number, number]];
   const hash = (x: number, y: number, z: number, s: number) => { const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + s * 19.3) * 43758.5453; return h - Math.floor(h); };
   const nearPatch = (at: THREE.Vector3): number => {
     const q = at.clone().divideScalar(patchCell), base = new THREE.Vector3(Math.floor(q.x), Math.floor(q.y), Math.floor(q.z));
@@ -324,14 +333,15 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       const centre = new THREE.Vector3(cx + 0.15 + 0.7 * hash(cx, cy, cz, 1), cy + 0.15 + 0.7 * hash(cx, cy, cz, 2), cz + 0.15 + 0.7 * hash(cx, cy, cz, 3)).multiplyScalar(patchCell);
       const radius = patchRadius[0] + (patchRadius[1] - patchRadius[0]) * hash(cx, cy, cz, 4);
       const d = at.distanceTo(centre) / radius;
-      if (d < 1) best = Math.max(best, 1 - d * d);
+      if (d < 1) best = Math.max(best, 1 - d);
     }
     return best;
   };
-  const tallCandidates = Math.round(total * (options.tallDensity ?? 2300));
+  const tallCandidates = Math.round(total * (options.tallDensity ?? 800));
   for (let k = 0; k < tallCandidates; k++) {
     const { at, up } = point();
-    if (next() > nearPatch(at)) continue;
+    // A thin sprinkling between patches too.
+    if (next() > Math.max(nearPatch(at), options.tallFloor ?? 0.05)) continue;
     add(at, up, 0.22 + 0.16 * next(), 0.5 + 0.2 * next(), 16 + Math.floor(next() * 4));
   }
   const count = dataList.length / 4;
@@ -358,7 +368,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.25, options.far ?? 30, 0.37) },
-      tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.3, options.hue ?? 1.0) },
+      tuftDetail: { value: new THREE.Vector2(options.brightness ?? 1.4, options.hue ?? 1.0) },
       tuftSpark: { value: new THREE.Vector3(...(options.sparkle ?? [1.75, 1.62, 0.72])) },
     },
   });
