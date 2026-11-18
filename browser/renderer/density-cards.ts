@@ -139,24 +139,32 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const n = gradient(field, p).negate();
     if (n.lengthSq() < 1e-12) n.subVectors(p, middle);
     n.normalize();
-    // Dense cards near the core, sparse toward the rim (blended at random between), and smaller as the field thins.
-    const sparse = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 1 : 0;
-    // A branch card is bigger, so fewer of them.
+    // With the family, three tiers that blend into each other with the density, picked at random by overlapping
+    // weights: full round cards in the core, open round ones (leaves missing, thinning to their rim) between, and
+    // sprays on the twigs at the rim. Without it, dense cards near the core and sparse toward the rim.
+    let tier: number;
+    if (branches) {
+      const smooth = (a: number, b: number, x: number) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+      const wDense = smooth(0.5, 0.95, depth), wSpray = 1 - smooth(0.05, 0.5, depth);
+      const wMid = Math.max(0, 1 - wDense - wSpray), r = random() * (wDense + wMid + wSpray);
+      tier = r < wDense ? 0 : r < wDense + wMid ? 1 : 2;
+    } else tier = random() > Math.min(1, Math.max(0, (depth - 0.25) / 0.5)) ? 2 : 0;
+    const sparse = tier === 2 ? 1 : 0;
+    // A spray grows from a twig: its root on the nearest one (none near: no card), so none floats in the air.
     if (sparse && branches && random() > branchKeep) continue;
-    // A branch card grows from a twig: its root on the nearest one (none near: no card), so none floats in the air.
     const twig = sparse && branches ? nearestTwig(p) : null;
     if (sparse && branches && !twig) continue;
     if (twig) p.copy(twig.p);
-    // Its size by the density: large in the fuller foliage, medium, small at the faint rim (blended at random). With
-    // the family, a denser card is a round stemless one (kinds 3 to 5), a sparser one a spray (0 to 2).
+    // Its size by the density: large in the fuller foliage, medium, small at the faint rim (blended at random). Kinds:
+    // 0 to 2 sprays, 3 to 5 full round cards, 6 to 8 open round ones; -1 an original lobed clump card (no family, or
+    // roundFamily off).
     const size3 = Math.min(2, Math.max(0, Math.floor(depth * 3 + (random() - 0.5) * 0.9)));
-    // Kind -1: an original lobed clump card (no family, or roundFamily off).
     const family = branches && (twig || roundFamily);
-    const kind = family ? (twig ? size3 : 3 + size3) : -1;
-    // A round card fills its whole circle, so it is drawn smaller than a spray and fewer are kept, or they bury the
-    // branches and sprays.
+    const kind = family ? (twig ? size3 : (tier === 0 ? 3 : 6) + size3) : -1;
+    // A round card fills its circle, so it is drawn smaller than a spray and fewer are kept, or they bury the branches
+    // and sprays; an open one a little larger, its leaves farther apart.
     if (family && !twig && random() > roundKeep) continue;
-    kinds.push(kind, family ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize) : 0);
+    kinds.push(kind, family ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize * (tier === 1 ? 1.15 : 1)) : 0);
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
     let plane: THREE.Vector3, up: THREE.Vector3;
@@ -186,6 +194,32 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     axes.push(up.x, up.y, up.z);
     randoms.push(random());
     looks.push(sparse + 0.5 * (0.65 + 0.35 * depth));
+  }
+  // A spray on the end of every leafy twig, rooted three quarters along it and growing on its way, so no twig ends
+  // in a bare stub past the foliage.
+  if (branches) for (const flat of twigs) {
+    const count = Math.floor(flat.length / 3);
+    if (count < 3) continue;
+    const point = (i: number) => new THREE.Vector3(flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]);
+    const root = point(Math.round((count - 1) * 0.75)), tip = point(count - 1);
+    const along = tip.clone().sub(point(count - 2));
+    if (along.lengthSq() < 1e-10 || tip.distanceTo(point(0)) < 0.3) continue;
+    along.normalize();
+    const n = gradient(field, root).negate();
+    if (n.lengthSq() < 1e-12) n.subVectors(root, middle);
+    n.normalize();
+    const up = along.clone().addScaledVector(n, 0.25).addScaledVector(new THREE.Vector3(0, 0, 1), -0.35 - 0.2 * random()).normalize();
+    const plane = new THREE.Vector3(0, 0, 1).projectOnPlane(up);
+    if (plane.lengthSq() < 1e-6) plane.set(1, 0, 0).projectOnPlane(up);
+    plane.normalize().applyAxisAngle(up, (random() - 0.5) * 0.9);
+    const size3 = random() < 0.6 ? 1 : 0;
+    kinds.push(size3, branchSize * BRANCH_FAMILY[size3].scale);
+    centres.push(root.x, root.y, root.z);
+    normals.push(n.x, n.y, n.z);
+    planes.push(plane.x, plane.y, plane.z);
+    axes.push(up.x, up.y, up.z);
+    randoms.push(random());
+    looks.push(1 + 0.5 * 0.65);
   }
   const quad = new THREE.PlaneGeometry(1, 1);
   const instanced = new THREE.InstancedBufferGeometry();
@@ -307,10 +341,11 @@ void main() {
     // round stemless one (kinds 3 to 5: rows 4, 5-6, 7). Shaded by its own leaves' normals in the card's axes, and
     // their tones, so the bands fall on its leaves wherever it turns.
     float k = floor(vKind + 0.5);
-    float size3 = mod(k, 3.0), rows = k > 2.5 ? 16.0 : 0.0;
+    // Sprays rows 0-3, full round cards rows 4-7, open round cards rows 8-11.
+    float size3 = mod(k, 3.0), rows = k > 5.5 ? 32.0 : k > 2.5 ? 16.0 : 0.0;
     float pick = fract(vRandom * 31.7);
     float cell = rows + (size3 < 0.5 ? floor(pick * 4.0) : size3 < 1.5 ? 4.0 + floor(pick * 8.0) : 12.0 + floor(pick * 4.0));
-    vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / vec2(4.0, 8.0);
+    vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / vec2(4.0, 12.0);
     vec4 branch = texture2D(branches, at);
     if (branch.a < 0.5) discard;
     vec2 own = branch.rg * 2.0 - 1.0;

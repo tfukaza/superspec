@@ -35,13 +35,14 @@ export const BRANCH_FAMILY: { scale: number; options: BranchCardOptions }[] = [
  * and 3 (large); round stemless cards in rows 4 (small), 5 and 6 (medium) and 7 (large).
  */
 export function branchFamilyAtlas(size = 256, melt = 2, fade = 0.35): { width: number; height: number; data: Uint8Array } {
-  const rows = [0, 1, 1, 2, 0, 1, 1, 2];
+  const rows = [0, 1, 1, 2, 0, 1, 1, 2, 0, 1, 1, 2];
   return branchCardAtlas(4, size, 1, melt, {}, cell => {
     const row = Math.floor(cell / 4), kind = BRANCH_FAMILY[rows[row]];
+    // Rows 4 to 7 full round cards; rows 8 to 11 open ones: a third of their leaves missing, thinning hard to the rim.
+    const round = row >= 8 ? { round: true, missing: 0.33, fade: 0.9 } : row >= 4 ? { round: true, missing: 0.04 } : {};
     // Leaves and stems as on the medium card at the kind's scale.
-    return { ...kind.options, ...(row >= 4 ? { round: true, missing: 0.04 } : {}), leaf: 0.08 / kind.scale, step: 0.06 / kind.scale,
-      stemRef: size / kind.scale, fade, seed: 11 + cell };
-  }, 8);
+    return { ...kind.options, fade, ...round, leaf: 0.08 / kind.scale, step: 0.06 / kind.scale, stemRef: size / kind.scale, seed: 11 + cell };
+  }, 12);
 }
 
 export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}, per?: (cell: number) => BranchCardOptions, tall = grid): { width: number; height: number; data: Uint8Array } {
