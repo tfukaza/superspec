@@ -50,6 +50,11 @@ export interface DensityCardOptions {
    * shaded by the foliage's normal alone, keeps the dense foliage's bands calm.
    */
   denseFacing?: number;
+  /**
+   * How strongly the denser cards' own leaf tilts and the leaf map move a leaf across the bands (1 fully, as the
+   * sprays); lower keeps the dense foliage's light and shade in broad masses from its overall form.
+   */
+  denseDetail?: number;
   /** With the family: the denser cards are round family cards (true) or the original lobed clump cards (false). */
   roundFamily?: boolean;
   /** With the family: the round cards' size against a spray's of the same kind, and the share of them kept. */
@@ -86,7 +91,7 @@ function generator(seed: number): () => number {
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
-    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true } = options;
+    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1 } = options;
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
@@ -201,7 +206,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     uniforms: {
       cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() }, facing: { value: facing },
       branches: { value: branches ?? cards }, hybrid: { value: branches ? 1 : 0 }, branchSize: { value: branchSize },
-      denseFacing: { value: branches ? denseFacing : facing },
+      denseFacing: { value: branches ? denseFacing : facing }, denseDetail: { value: denseDetail },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
@@ -281,6 +286,7 @@ uniform float highlight;
 uniform float facing;
 uniform sampler2D branches;
 uniform float hybrid;
+uniform float denseDetail;
 varying float vKind;
 varying float vFacing;
 varying vec2 vUv;
@@ -309,13 +315,15 @@ void main() {
     if (branch.a < 0.5) discard;
     vec2 own = branch.rg * 2.0 - 1.0;
     float z = sqrt(max(0.0, 1.0 - dot(own, own)));
-    vec3 n = normalize(base * z + (normalize(vSideAxis) * own.x + normalize(vUpAxis) * own.y) * 1.1);
+    // A spray keeps its leaves' full detail; a round card's is scaled by denseDetail.
+    float d = k < 2.5 ? 1.0 : denseDetail;
+    vec3 n = normalize(base * z + (normalize(vSideAxis) * own.x + normalize(vUpAxis) * own.y) * 1.1 * d);
     // Then the leaf pattern normal map, as every other part takes it: its leaves tip the card's leaf, and its tone
     // shares the card's, so the pattern runs on from the core into the sprays.
     vec3 mt, mb;
     vec3 mapLeaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, mt, mb);
     float mz = sqrt(max(0.0, 1.0 - dot(mapLeaf.xy, mapLeaf.xy)));
-    n = normalize(n * mz + (mt * mapLeaf.x + mb * mapLeaf.y) * mapStrength);
+    n = normalize(n * mz + (mt * mapLeaf.x + mb * mapLeaf.y) * mapStrength * d);
     float tone = 0.5 * branch.b + 0.5 * mapLeaf.z * 1.6;
     float light = msLeafLight(n, sun, offset);
     vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * tone);
@@ -331,7 +339,7 @@ void main() {
   vec3 t, b;
   vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
-  vec3 n = normalize(base * z + (t * leaf.x + b * leaf.y) * mapStrength);
+  vec3 n = normalize(base * z + (t * leaf.x + b * leaf.y) * mapStrength * denseDetail);
   float light = msLeafLight(n, sun, offset);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
   gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
