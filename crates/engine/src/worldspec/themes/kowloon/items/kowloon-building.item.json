@@ -15,7 +15,12 @@
     "seed": {"type": "integer", "default": 3, "min": 0, "max": 100000},
     "frame": {"type": "color", "default": "#3f554b"},
     "signs": {"type": "boolean", "default": true},
-    "rooftop": {"type": "boolean", "default": true}
+    "rooftop": {"type": "boolean", "default": true},
+    "shopWidth": {"type": "number", "default": 2.9, "min": 1.6, "max": 12, "unit": "m"},
+    "windowsPlans": {"type": "grid", "default": [], "choices": ["auto", "none", "window", "barred"]},
+    "fixturesPlans": {"type": "grid", "default": [], "choices": ["auto", "none", "aircon", "split", "cage", "rack", "plants"]},
+    "shopPlans": {"type": "grid", "default": [], "choices": ["auto", "shop", "shutter", "gate", "door", "service"]},
+    "awningPlans": {"type": "grid", "default": [], "choices": ["auto", "none", "awning"]}
   },
   "derived": {
     "height": "groundHeight + (floors - 1) * storyHeight"
@@ -30,7 +35,9 @@
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + e"},
                        "frame": {"parameter": "frame"},
                        "groundShops": {"choose": [false, true], "by": "e_street * (e_length >= 2.5)"},
-                       "shopWidth": 3.6, "awningChance": 0.6,
+                       "shopWidth": {"parameter": "shopWidth"}, "awningChance": 0.6,
+                       "windowsPlan": {"element": "windowsPlans", "at": "e"}, "fixturesPlan": {"element": "fixturesPlans", "at": "e"},
+                       "shopPlan": {"element": "shopPlans", "at": "e"}, "awningPlan": {"element": "awningPlans", "at": "e"},
                        "bayWidth": {"expr": "select(e_street, 2.35, 2.1)"}, "edge": {"expr": "select(e_street, 0.5, 0.9)"},
                        "windowWidth": {"expr": "select(e_street, 1.85, 0.9)"}, "windowHeight": {"expr": "select(e_street, 1.75, 1.1)"},
                        "sill": {"expr": "select(e_street, 0.85, 1.1)"},

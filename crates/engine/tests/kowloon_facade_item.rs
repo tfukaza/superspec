@@ -337,3 +337,90 @@ fn a_building_follows_its_footprint_cutting_corners_between_streets() {
     .unwrap();
     assert_eq!(error.code, "ITEM_FOOTPRINT");
 }
+
+#[test]
+fn a_plan_places_exactly_what_it_names_and_auto_keeps_the_seed() {
+    // On the front (edge 0): storey 1 has no window in its middle bay; storey 2 holds two
+    // cages and a split unit; the ground floor a gate and two shops.
+    let planned = generate(
+        "kowloon-building.item.json",
+        &[
+            ("windowsPlans", json!([[[], ["window", "none", "window"]]])),
+            (
+                "fixturesPlans",
+                json!([[
+                    [],
+                    ["none", "none", "none"],
+                    ["cage", "cage", "split"],
+                    ["none", "aircon", "none"]
+                ]]),
+            ),
+            ("shopPlans", json!([["gate", "shop", "shop"]])),
+        ],
+    );
+    let front = |storey: &str, piece: &str| {
+        planned.geometry.meshes.iter().any(|m| {
+            m.id.starts_with("side-0/")
+                && m.id.contains(&format!("{storey}/"))
+                && m.id.contains(&format!("/{piece}/"))
+        })
+    };
+    assert!(
+        front("floor-0", "window-0")
+            && !front("floor-0", "window-1")
+            && front("floor-0", "window-2")
+    );
+    for bay in 0..3 {
+        assert!(
+            !front("floor-0", &format!("aircon-{bay}")),
+            "storey 1 bay {bay} has no fixture"
+        );
+    }
+    assert!(
+        front("floor-1", "cage-0") && front("floor-1", "cage-1") && front("floor-1", "aircon-2")
+    );
+    assert!(!front("floor-1", "aircon-0") && !front("floor-1", "aircon-1"));
+    assert!(
+        front("floor-2", "aircon-1")
+            && !front("floor-2", "aircon-0")
+            && !front("floor-2", "aircon-2")
+    );
+    // A plan is an input like any other: the same plan and seed give the same building, and
+    // the sides it does not name keep their seeded contents.
+    let again = generate(
+        "kowloon-building.item.json",
+        &[
+            ("windowsPlans", json!([[[], ["window", "none", "window"]]])),
+            (
+                "fixturesPlans",
+                json!([[
+                    [],
+                    ["none", "none", "none"],
+                    ["cage", "cage", "split"],
+                    ["none", "aircon", "none"]
+                ]]),
+            ),
+            ("shopPlans", json!([["gate", "shop", "shop"]])),
+        ],
+    );
+    assert_eq!(again.geometry_key, planned.geometry_key);
+    let seeded = generate("kowloon-building.item.json", &[]);
+    let back = |item: &GeneratedItem| {
+        item.geometry
+            .parts
+            .iter()
+            .find(|p| p.id == "side-2")
+            .unwrap()
+            .geometry_key
+            .clone()
+    };
+    assert_eq!(back(&planned), back(&seeded));
+    // An entry outside the choices is refused.
+    let files = library();
+    let definition = item::parse("b", &files["kowloon-building.item.json"]).unwrap();
+    let values: Values = [("fixturesPlans".to_owned(), json!([[["fridge"]]]))].into();
+    assert_eq!(
+        definition.resolve_parameters(&values).unwrap_err().code,
+        "ITEM_PARAMETER"
+    );
+}

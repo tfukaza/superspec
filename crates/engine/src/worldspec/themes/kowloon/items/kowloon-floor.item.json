@@ -27,6 +27,8 @@
     "rackChance": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "plantChance": {"type": "number", "default": 0.12, "min": 0, "max": 1},
     "band": {"type": "boolean", "default": true},
+    "windowPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "window", "barred"]},
+    "fixturePlan": {"type": "grid", "default": [], "choices": ["auto", "none", "aircon", "split", "cage", "rack", "plants"]},
     "tileBands": {"type": "boolean", "default": false},
     "cageChance": {"type": "number", "default": 0, "min": 0, "max": 1}
   },
@@ -45,7 +47,7 @@
         "thickness": {"parameter": "thickness"},
         "patternAnchor": [0, "-z0"],
         "openings": [
-          {"id": "window", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "random(seed, level, i, 11) < windowChance",
+          {"id": "window", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)",
            "width": {"parameter": "windowWidth"}, "height": {"parameter": "windowHeight"},
            "u": {"from": "start", "offset": "start + i * bayWidth + inset"}, "v": {"from": "start", "offset": {"parameter": "sill"}}}
         ]
@@ -55,21 +57,21 @@
     {
       "id": "window",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "random(seed, level, i, 11) < windowChance",
+      "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)",
       "generator": {"kind": "item", "entry": "kowloon-window.item.json",
         "parameters": {"width": {"parameter": "windowWidth"}, "height": {"parameter": "windowHeight"}, "kind": {"parameter": "windowKind"},
                        "frame": {"parameter": "frame"}, "recess": {"expr": "min(0.3, thickness - 0.02)"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"},
-                       "bars": {"choose": [false, true], "by": "random(seed, level, i, 3) < barsChance"},
+                       "bars": {"choose": [false, true], "by": "select(cell(windowPlan, i) == 0, random(seed, level, i, 3) < barsChance, cell(windowPlan, i) == 3)"},
                        "barsPattern": {"choose": ["bars", "grid", "diamond"], "by": "random(seed, i, 6) * 3"}}},
       "placement": {"position": ["start + i * bayWidth + bayWidth / 2", 0, {"parameter": "sill"}]}
     },
     {
       "id": "aircon",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "random(seed, level, i, 1) < airconChance + condenserChance",
+      "when": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) < airconChance + condenserChance, (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
       "generator": {"kind": "item", "entry": "kowloon-aircon.item.json",
-        "parameters": {"split": {"choose": [false, true], "by": "random(seed, level, i, 1) >= airconChance"},
+        "parameters": {"split": {"choose": [false, true], "by": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) >= airconChance, cell(fixturePlan, i) == 3)"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
       "placement": {"position": ["start + i * bayWidth + bayWidth / 2", 0, "sill - 0.72"]}
     },
@@ -83,7 +85,7 @@
     {
       "id": "rack",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "(random(seed, level, i, 11) < windowChance) * (random(seed, level, i, 8) < rackChance)",
+      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 8) < rackChance, cell(fixturePlan, i) == 5)",
       "generator": {"kind": "native", "name": "kowloon/drying-rack",
         "parameters": {"width": {"expr": "windowWidth + 0.3"}, "depth": 0.55, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
       "placement": {"position": ["start + i * bayWidth + bayWidth / 2", 0, "sill + windowHeight + 0.12"]}
@@ -91,7 +93,7 @@
     {
       "id": "plants",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "(random(seed, level, i, 11) < windowChance) * (random(seed, level, i, 8) >= rackChance) * (random(seed, level, i, 9) < plantChance)",
+      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, (random(seed, level, i, 8) >= rackChance) * (random(seed, level, i, 9) < plantChance), cell(fixturePlan, i) == 6)",
       "generator": {"kind": "native", "name": "kowloon/plants",
         "parameters": {"width": {"expr": "windowWidth - 0.1"}, "offset": 0.14, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
       "placement": {"position": ["start + i * bayWidth + bayWidth / 2", 0, "sill + 0.03"]}
@@ -99,7 +101,7 @@
     {
       "id": "tiles",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "tileBands * (random(seed, level, i, 11) < windowChance)",
+      "when": "tileBands * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))",
       "generator": {"kind": "box", "size": ["bayWidth - 0.24", 0.015, "sill - 0.12"]},
       "placement": {"position": ["start + i * bayWidth + 0.12", -0.015, 0.06]},
       "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
@@ -107,7 +109,7 @@
     {
       "id": "cage",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "(random(seed, level, i, 11) < windowChance) * (random(seed, level, i, 16) < cageChance)",
+      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",
       "generator": {"kind": "native", "name": "kowloon/cage",
         "parameters": {"width": {"expr": "min(windowWidth * 0.55, 1.2)"}, "height": {"expr": "min(windowHeight * 0.4, 0.8)"}, "depth": 0.48,
                        "color": "#857a61", "stocked": false, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},

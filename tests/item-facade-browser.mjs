@@ -23,7 +23,10 @@ const choice = process.env.MODEL ?? "side";
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
 const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 256), { facade: choice === "side" ? true : choice, lane });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
-Object.assign(facade.parameters, JSON.parse(process.env.BUILDING_PARAMETERS ?? "{}"));
+// BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
+// reference picture's plan); keys starting with "/" are comments.
+const overrides = process.env.BUILDING_PARAMETERS?.endsWith(".json") ? await readFile(resolve(process.env.BUILDING_PARAMETERS), "utf8") : process.env.BUILDING_PARAMETERS;
+Object.assign(facade.parameters, Object.fromEntries(Object.entries(JSON.parse(overrides ?? "{}")).filter(([key]) => !key.startsWith("/"))));
 // Above 512 texels a project needs the production profile.
 if (project.resolution > 512) project.profile = "production";
 Object.assign(facade.parameters, JSON.parse(process.env.FACADE_PARAMETERS ?? "{}"));

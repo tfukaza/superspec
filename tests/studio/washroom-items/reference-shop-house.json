@@ -1,0 +1,15 @@
+{
+  "//": "kowloon-building controls that recreate the reference shop house bay by bay (the authored model=\"reference-corner\"). Edge 0 is the front, edge 1 the right side from the cut corner; storey 0 is the ground floor. The back and left edges are left to the seed.",
+  "seed": 3,
+  "shopWidth": 2.9,
+  "shopPlans": [["gate", "shop", "shop"], ["gate", "shop"]],
+  "awningPlans": [["awning", "awning", "awning"], ["none", "awning"]],
+  "windowsPlans": [
+    [[], ["window", "window", "window"], ["window", "window", "window"], ["window", "window", "window"]],
+    [[], ["window", "window"], ["window", "window"], ["window", "window"]]
+  ],
+  "fixturesPlans": [
+    [[], ["none", "none", "none"], ["cage", "cage", "split"], ["none", "aircon", "split"]],
+    [[], ["none", "none"], ["split", "none"], ["split", "none"]]
+  ]
+}
