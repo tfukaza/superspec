@@ -265,12 +265,12 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
-      reliefShape: { value: new THREE.Vector4(options.height ?? 0.16, options.cell ?? 0.32, options.blades ?? 14, options.ridge ?? 0) },
+      reliefShape: { value: new THREE.Vector4(options.height ?? 0.25, options.cell ?? 0.5, options.blades ?? 14, options.ridge ?? 0) },
       reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
-      reliefDome: { value: new THREE.Vector2(options.dome ?? 0.6, options.blend ?? 0.08) },
+      reliefDome: { value: new THREE.Vector2(options.dome ?? 0.6, options.blend ?? 0.2) },
       ...(options.shadow ?? {}),
     },
   });
