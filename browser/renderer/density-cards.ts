@@ -45,6 +45,13 @@ export interface DensityCardOptions {
    * its nearest twig grows there, so the sprays follow the branches they hang from.
    */
   twigs?: number[][];
+  /**
+   * How much the denser (non-spray) cards face the camera, apart from `facing` (the sprays'): 1, a plain billboard
+   * shaded by the foliage's normal alone, keeps the dense foliage's bands calm.
+   */
+  denseFacing?: number;
+  /** With the family: the denser cards are round family cards (true) or the original lobed clump cards (false). */
+  roundFamily?: boolean;
   /** With the family: the round cards' size against a spray's of the same kind, and the share of them kept. */
   roundSize?: number;
   roundKeep?: number;
@@ -79,7 +86,7 @@ function generator(seed: number): () => number {
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
-    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6 } = options;
+    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true } = options;
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
@@ -138,11 +145,13 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     // Its size by the density: large in the fuller foliage, medium, small at the faint rim (blended at random). With
     // the family, a denser card is a round stemless one (kinds 3 to 5), a sparser one a spray (0 to 2).
     const size3 = Math.min(2, Math.max(0, Math.floor(depth * 3 + (random() - 0.5) * 0.9)));
-    const kind = branches ? (twig ? size3 : 3 + size3) : 1;
+    // Kind -1: an original lobed clump card (no family, or roundFamily off).
+    const family = branches && (twig || roundFamily);
+    const kind = family ? (twig ? size3 : 3 + size3) : -1;
     // A round card fills its whole circle, so it is drawn smaller than a spray and fewer are kept, or they bury the
     // branches and sprays.
-    if (branches && !twig && random() > roundKeep) continue;
-    kinds.push(kind, branches ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize) : 0);
+    if (family && !twig && random() > roundKeep) continue;
+    kinds.push(kind, family ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize) : 0);
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
     let plane: THREE.Vector3, up: THREE.Vector3;
@@ -192,6 +201,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     uniforms: {
       cards: { value: cards }, size: { value: size }, sun: { value: sun.clone().normalize() }, facing: { value: facing },
       branches: { value: branches ?? cards }, hybrid: { value: branches ? 1 : 0 }, branchSize: { value: branchSize },
+      denseFacing: { value: branches ? denseFacing : facing },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
     },
@@ -208,6 +218,8 @@ uniform float size;
 uniform float facing;
 uniform float hybrid;
 uniform float branchSize;
+uniform float denseFacing;
+varying float vFacing;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
@@ -234,14 +246,17 @@ void main() {
   vec3 sideW = cross(upW, plane);
   if (dot(sideW, sideC) < 0.0) sideW = -sideW;
   if (!branch && dot(upW, upC) < 0.0) upW = -upW;
-  vec3 side = normalize(mix(sideW, sideC, facing)), up = normalize(mix(upW, upC, facing));
+  // The sprays turn by facing, the denser cards by denseFacing.
+  float f = branch ? facing : denseFacing;
+  vFacing = f;
+  vec3 side = normalize(mix(sideW, sideC, f)), up = normalize(mix(upW, upC, f));
   // The card's own normal, turned toward the viewer, for its shading.
   vCard = dot(plane, view) < 0.0 ? -plane : plane;
   // Rolled at random only as far as it faces the camera: a world card's turn is in its own up. A branch card only
   // sways a little about its root.
-  float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * facing;
+  float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * f;
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
-  float s = (hybrid > 0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
+  float s = (hybrid > 0.5 && aKind.x > -0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
   vKind = aKind.x;
   // A branch card stands on its root (the bottom of the card, where its stem starts) on the twig; the others on their
   // middle.
@@ -267,6 +282,7 @@ uniform float facing;
 uniform sampler2D branches;
 uniform float hybrid;
 varying float vKind;
+varying float vFacing;
 varying vec2 vUv;
 varying float vRandom;
 varying float vSparse;
@@ -278,9 +294,9 @@ varying vec3 vUpAxis;
 ${BAND_GLSL}
 void main() {
   // The foliage's outward normal, tipped toward the card's own as far as it keeps its own orientation, so cards at
-  // different angles take different light, as a game tree's do.
-  vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
-  if (hybrid > 0.5) {
+  // different angles take different light, as a game tree's do. A card facing the camera wholly takes the foliage's.
+  vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - vFacing));
+  if (hybrid > 0.5 && vKind > -0.5) {
     // A family card (branch-cards.ts): a spray (kinds 0 to 2: rows 0, 1-2, 3), its stem at the card's bottom, or a
     // round stemless one (kinds 3 to 5: rows 4, 5-6, 7). Shaded by its own leaves' normals in the card's axes, and
     // their tones, so the bands fall on its leaves wherever it turns.

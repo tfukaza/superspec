@@ -116,7 +116,8 @@ try {
       const cards = window.__densityCards(f, window.__leafCards().cards, { level: densityBase.level, size: densityBase.cardSize,
         keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, facing: densityBase.cardFacing, sun,
         ...(densityBase.branches ? { branches: window.__branchCardTexture(), branchSize: densityBase.branchSize, branchKeep: densityBase.branchKeep, twigs: densityBase.twigs,
-          roundSize: densityBase.roundSize, roundKeep: densityBase.roundKeep } : {}),
+          roundSize: densityBase.roundSize, roundKeep: densityBase.roundKeep, denseFacing: densityBase.denseFacing,
+          roundFamily: densityBase.roundFamily } : {}),
         leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
       s.models.add(cards);
@@ -171,6 +172,9 @@ try {
       // them kept.
       // ROUND_SIZE, ROUND_KEEP: the round stemless cards' size against a spray's, and the share kept.
       roundSize: Number(process.env.ROUND_SIZE ?? 0.7), roundKeep: Number(process.env.ROUND_KEEP ?? 0.6),
+      // DENSE_FACING: how much the denser cards face the camera (1 wholly, the sprays keep CARD_FACING); DENSE=old: the
+      // original lobed clump cards there instead of the round family cards.
+      denseFacing: Number(process.env.DENSE_FACING ?? 1), roundFamily: process.env.DENSE !== "old",
       branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 0.75), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.9),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
       // between a side's leaves, STRIP_DROOP: the tip's drop as a share of the strip's length).
