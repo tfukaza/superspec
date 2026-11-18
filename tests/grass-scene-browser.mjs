@@ -58,7 +58,8 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar, ball }) => {
+  const info = await page.evaluate(({ keep, pillar, ball, sun }) => {
+    let lightingInfo = null;
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
     for (const m of s.models.children) {
@@ -94,14 +95,22 @@ try {
       sphere.castShadow = sphere.receiveShadow = true;
       sphere.name = "test/ball";
       s.models.add(sphere);
-      // Lighting again, so the pillar casts and the shadow map is fitted to the scene with it.
-      s.setLighting(JSON.parse(document.querySelector("#viewport").dataset.lighting));
+      // Lighting again, so the pillar casts and the shadow map is fitted to the scene with it. SUN=<azimuth>,<elevation>
+      // (degrees, azimuth from +x toward +y) turns the sun.
+      const record = JSON.parse(document.querySelector("#viewport").dataset.lighting);
+      if (sun) {
+        const [az, el] = sun.split(",").map(v => Number(v) * Math.PI / 180);
+        record.lights[0].direction = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];
+      }
+      s.setLighting(record);
+      lightingInfo = { direction: record.lights[0].direction, shadows: record.shadows ?? record.lights[0].shadow ?? null, casting: column.castShadow, map: s.renderer.shadowMap.enabled };
     }
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
-    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray() };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer" });
+    return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo };
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "" });
+  if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, y1 - y0);
