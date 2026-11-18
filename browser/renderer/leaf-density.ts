@@ -85,6 +85,29 @@ export function gradient(field: DensityField, p: THREE.Vector3): THREE.Vector3 {
   return g;
 }
 
+/**
+ * The way out of the foliage at `p` by `field` (its falling gradient), normalized; `fallback` where it is flat. With a
+ * field of a wide kernel this is the plant's broad form, not the bumps of single clusters: a painter's light.
+ */
+export function outward(field: DensityField, p: THREE.Vector3, fallback: THREE.Vector3): THREE.Vector3 {
+  const n = gradient(field, p).negate();
+  return n.lengthSq() < 1e-12 ? fallback.clone().normalize() : n.normalize();
+}
+
+/** Replaces a geometry's normals with `field`'s outward direction at each vertex (shading by the broad form). */
+export function shadeNormals(geometry: THREE.BufferGeometry, field: DensityField): THREE.BufferGeometry {
+  const position = geometry.getAttribute("position"), normal = geometry.getAttribute("normal");
+  const p = new THREE.Vector3(), own = new THREE.Vector3();
+  for (let i = 0; i < position.count; i++) {
+    p.fromBufferAttribute(position, i);
+    own.fromBufferAttribute(normal, i);
+    const n = outward(field, p, own);
+    normal.setXYZ(i, n.x, n.y, n.z);
+  }
+  normal.needsUpdate = true;
+  return geometry;
+}
+
 // A cube's corners are numbered by their offsets (bit 0 x, bit 1 y, bit 2 z); six tetrahedra share its 0-7 diagonal.
 const TETRAHEDRA = [[0, 1, 3, 7], [0, 3, 2, 7], [0, 2, 6, 7], [0, 6, 4, 7], [0, 4, 5, 7], [0, 5, 1, 7]];
 

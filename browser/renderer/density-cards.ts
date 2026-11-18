@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { BAND_GLSL } from "./leaf-normals.ts";
-import { type DensityField, gradient, sampleDensity } from "./leaf-density.ts";
+import { type DensityField, gradient, outward, sampleDensity } from "./leaf-density.ts";
 import { BRANCH_FAMILY, branchFamilyAtlas } from "./branch-cards.ts";
 
 /**
@@ -60,6 +60,11 @@ export interface DensityCardOptions {
    * wider band than the painted core's own falloff; without it, the field itself.
    */
   tierField?: DensityField;
+  /**
+   * A smoother field whose outward direction lights the cards (their orientation still follows the field and twigs),
+   * so light and shade follow the plant's broad form and not the bumps of single clusters.
+   */
+  shadeField?: DensityField;
   /** Sprays' length against the family's, and how far (a share of their length) their roots sink into the foliage. */
   sprayScale?: number;
   tuck?: number;
@@ -100,7 +105,8 @@ function generator(seed: number): () => number {
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
     branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1,
-    tierField, sprayScale = 0.75, tuck = 0.3 } = options;
+    tierField, shadeField, sprayScale = 0.75, tuck = 0.3 } = options;
+  const shade = (q: THREE.Vector3, n: THREE.Vector3) => (shadeField ? outward(shadeField, q, n) : n);
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
@@ -178,7 +184,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const length = branchSize * BRANCH_FAMILY[size3].scale * (twig ? sprayScale : roundSize * (tier === 1 ? 1.15 : 1));
     kinds.push(kind, family ? length : 0);
     centres.push(p.x, p.y, p.z);
-    normals.push(n.x, n.y, n.z);
+    { const s = shade(p, n); normals.push(s.x, s.y, s.z); }
     let plane: THREE.Vector3, up: THREE.Vector3;
     if (sparse && branches) {
       // A branchlet lies along the way out of the foliage, sagging a little: its up is that way, and its plane holds
@@ -232,7 +238,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     kinds.push(size3, length);
     root.addScaledVector(up, -tuck * length);
     centres.push(root.x, root.y, root.z);
-    normals.push(n.x, n.y, n.z);
+    { const s = shade(root, n); normals.push(s.x, s.y, s.z); }
     planes.push(plane.x, plane.y, plane.z);
     axes.push(up.x, up.y, up.z);
     randoms.push(random());

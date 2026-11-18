@@ -81,12 +81,17 @@ try {
       if (family !== "bark") { m.visible = false; m.userData.source = { visible: false }; }
     }
     if (!hull) return { error: "the shrub has no near hull (its clumps)" };
-    let geometry, surface, f;
+    let geometry, surface, f, shadeField;
     if (densityBase) {
       // BASE=density: the leaf density field's surface at a level (leaf-density.ts) in place of the clumps.
       const started = performance.now();
       f = window.__densityField(densityBase.sites, densityBase.radius, densityBase.cell);
       geometry = window.__densitySurface(f, densityBase.level);
+      // SHADE_SPREAD: the core and cards lit by a field smoothed this many times wider (the broad form), 0 the field.
+      if (densityBase.shadeSpread > 0) {
+        shadeField = window.__densityField(densityBase.sites, densityBase.radius * densityBase.shadeSpread, densityBase.cell);
+        window.__shadeNormals(geometry, shadeField);
+      }
       surface = { triangles: geometry.index.count / 3, ms: performance.now() - started, full: f.full };
     } else {
       // The clumps' mesh in world space.
@@ -117,7 +122,7 @@ try {
         keep: densityBase.keep, spacing: densityBase.spacing, floor: densityBase.cardFloor, facing: densityBase.cardFacing, sun,
         ...(densityBase.branches ? { branches: window.__branchCardTexture(), branchSize: densityBase.branchSize, branchKeep: densityBase.branchKeep, twigs: densityBase.twigs,
           roundSize: densityBase.roundSize, roundKeep: densityBase.roundKeep, denseFacing: densityBase.denseFacing, denseDetail: densityBase.denseDetail,
-          roundFamily: densityBase.roundFamily, sprayScale: densityBase.sprayScale, tuck: densityBase.tuck,
+          roundFamily: densityBase.roundFamily, sprayScale: densityBase.sprayScale, tuck: densityBase.tuck, shadeField,
           tierField: densityBase.tierSpread > 0 ? window.__densityField(densityBase.sites, densityBase.radius * densityBase.tierSpread, densityBase.cell) : undefined } : {}),
         leafMap: { texture: window.__leafNormalTexture(brush), tile, origin: centre, strength, offset } });
       cards.name = "painted/cards";
@@ -179,7 +184,7 @@ try {
       denseDetail: Number(process.env.DENSE_DETAIL ?? 1),
       // TIER_SPREAD: the card tiers are chosen on a field smoothed this many times wider (0: the field itself);
       // SPRAY_SCALE: the sprays' length; TUCK: how far their roots sink into the foliage, a share of their length.
-      tierSpread: Number(process.env.TIER_SPREAD ?? 1.6), sprayScale: Number(process.env.SPRAY_SCALE ?? 0.75), tuck: Number(process.env.TUCK ?? 0.3),
+      tierSpread: Number(process.env.TIER_SPREAD ?? 1.6), shadeSpread: Number(process.env.SHADE_SPREAD ?? 2), sprayScale: Number(process.env.SPRAY_SCALE ?? 0.75), tuck: Number(process.env.TUCK ?? 0.3),
       denseFacing: Number(process.env.DENSE_FACING ?? 1), roundFamily: process.env.DENSE !== "old",
       branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 0.75), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.9),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters
