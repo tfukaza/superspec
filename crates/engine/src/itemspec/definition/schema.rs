@@ -142,12 +142,15 @@ pub struct DerivedReference {
     pub derived: String,
 }
 
+/// A scalar field: a number, a control or derived value by name, or an inline expression
+/// (the derived-value grammar) that may also read the copy indices of a repeated part.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Scalar {
     Number(f64),
     Parameter(ParameterReference),
     Derived(DerivedReference),
+    Expression(String),
 }
 impl Default for Scalar {
     fn default() -> Self {
@@ -207,6 +210,11 @@ pub enum Generator {
     Panel(PanelDefinition),
     /// Version 2 part generator.
     Route(RouteDefinition),
+    /// Version 2 part generator: another item definition, placed as a sub-item.
+    Item(ItemReference),
+    /// Version 2 part generator: a generator supplied by the host (for example a theme's
+    /// fixtures), named and given parameters.
+    Native(NativeReference),
     /// The value of an absent root `generator`: the item is defined by `parts`.
     #[default]
     Parts,
@@ -217,6 +225,48 @@ impl Generator {
     }
 }
 
+/// One sub-item or alternative sub-items: `entry` is an item definition path, or a list of
+/// them from which `pick` (floored, then wrapped into range) chooses. `{name}` in an entry
+/// is replaced by the integer value of that copy index or derived value.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Entry {
+    One(String),
+    Choice(Vec<String>),
+}
+
+/// A value handed to a sub-item or native generator: `{"parameter": name}` passes a control
+/// of the parent unchanged, `{"derived": name}` and `{"expr": text}` give numbers,
+/// `{"choose": [values], "by": text}` picks one value by an expression, and any other JSON
+/// value is passed literally.
+pub type Arguments = BTreeMap<String, Value>;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemReference {
+    pub entry: Entry,
+    pub pick: Option<Scalar>,
+    #[serde(default)]
+    pub parameters: Arguments,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeReference {
+    pub name: String,
+    #[serde(default)]
+    pub parameters: Arguments,
+}
+
+/// One axis of a repeated part: `count` copies (0 to 256), indexed from zero by `name`.
+/// Inside the part, `name` and `<name>_count` read as numbers.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepeatAxis {
+    pub name: String,
+    pub count: Scalar,
+}
+
 /// One generator of a version 2 item, with its own meshes, features and geometry key.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -224,9 +274,15 @@ pub struct PartDefinition {
     pub id: String,
     pub generator: Generator,
     /// Face group to item slot. Empty means every face group uses a slot of its own name.
+    /// For a sub-item or native part, a group is a slot of the generated meshes.
     #[serde(default)]
     pub slots: BTreeMap<String, String>,
     pub placement: Option<PlacementDefinition>,
+    /// Copies of the part over up to three nested axes; copy IDs are `<id>-<i>[-<j>[-<k>]]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repeat: Vec<RepeatAxis>,
+    /// The part (or each copy) is emitted only when this is positive.
+    pub when: Option<Scalar>,
 }
 
 /// Where a part sits inside its item: a position and extrinsic XYZ rotations in degrees.
@@ -856,6 +912,7 @@ impl ItemDefinition {
                     format!("Unknown derived value {}.", reference.derived),
                 )
             })?,
+            Scalar::Expression(text) => self.expression(text, values, derived, pointer)?,
             Scalar::Parameter(reference) => self
                 .parameter(&reference.parameter, values, pointer, true)?
                 .as_f64()
@@ -877,6 +934,52 @@ impl ItemDefinition {
             ));
         }
         Ok(number)
+    }
+    /// Evaluates inline expression text. Names are derived values (including copy indices)
+    /// first, then numeric or boolean geometry controls (a boolean reads as 1 or 0).
+    pub(super) fn expression(
+        &self,
+        text: &str,
+        values: &Values,
+        derived: &Derived,
+        pointer: &str,
+    ) -> Result<f64, ItemDiagnostic> {
+        let failure = |error: ExpressionError| {
+            fail(
+                &self.source,
+                pointer,
+                "ITEM_EXPRESSION",
+                format!("{} (character {})", error.message, error.offset + 1),
+            )
+        };
+        let expression = Expression::parse(text).map_err(failure)?;
+        expression
+            .evaluate(&mut |name, at| {
+                let missing = |message: String| ExpressionError {
+                    offset: at,
+                    message,
+                };
+                if let Some(value) = derived.get(name) {
+                    return Ok(*value);
+                }
+                let parameter = self
+                    .parameters
+                    .get(name)
+                    .ok_or_else(|| missing(format!("Unknown name {name}.")))?;
+                if parameter.role != Role::Geometry {
+                    return Err(missing(format!(
+                        "Geometry cannot read the finish control {name}."
+                    )));
+                }
+                let value = values
+                    .get(name)
+                    .ok_or_else(|| missing(format!("Missing parameter {name}.")))?;
+                value
+                    .as_f64()
+                    .or_else(|| value.as_bool().map(f64::from))
+                    .ok_or_else(|| missing(format!("Parameter {name} is not numeric.")))
+            })
+            .map_err(failure)
     }
     pub(super) fn switch(
         &self,

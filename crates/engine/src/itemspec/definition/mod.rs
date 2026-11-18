@@ -1,4 +1,5 @@
 //! Persistent ItemSpec definitions, local generation and bounded scene-preserving GLB ingestion.
+mod compose;
 mod decal;
 pub mod expression;
 mod glb;
@@ -12,6 +13,7 @@ mod route;
 mod schema;
 mod surfaces;
 use crate::materialspec::program::MaterialRequest;
+pub use compose::{Environment, NativeGenerators, NativeOutput};
 pub use location::locate_diagnostic;
 pub use output::*;
 pub use schema::*;
@@ -216,9 +218,22 @@ pub fn prepare(
     assets: &AssetReader<'_>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<PreparedItem, ItemDiagnostic> {
+    prepare_in(definition, overrides, &mut Environment::new(assets), cancelled)
+}
+
+/// Prepares a definition whose parts may be sub-items (read through the environment's
+/// assets) or native generators (from its host). Sub-item slots without an assignment in
+/// the parent take the sub-item's own material requests.
+pub fn prepare_in(
+    definition: &ItemDefinition,
+    overrides: &Values,
+    environment: &mut Environment<'_>,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<PreparedItem, ItemDiagnostic> {
+    let assets = environment.assets;
     check_cancelled(&definition.source, cancelled)?;
     let parameters = definition.resolve_parameters(overrides)?;
-    let materials = definition.materials(&parameters)?;
+    let mut materials = definition.materials(&parameters)?;
     let derived = definition.resolve_derived(&parameters)?;
     let context = parts::Context {
         definition,
@@ -315,7 +330,19 @@ pub fn prepare(
             (Shape::Glb(package), json!(["glb", scene, dependencies]))
         }
         Generator::Parts => {
-            let prepared = parts::prepare(&context, &mut attachments)?;
+            let prepared = parts::prepare(&context, &mut attachments, environment, cancelled)?;
+            for part in &prepared {
+                if let Some(child) = part.sub_item() {
+                    for (slot, request) in &child.materials {
+                        if let Some(target) = part.slot(slot) {
+                            materials.entry(target).or_insert_with(|| request.clone());
+                        }
+                    }
+                    for (asset, hash) in &child.assets {
+                        dependencies.insert(asset.clone(), hash.clone());
+                    }
+                }
+            }
             part_keys = prepared
                 .iter()
                 .zip(&definition.parts)
@@ -325,12 +352,16 @@ pub fn prepare(
             decals = parts::decals(&context, &prepared, Matrix(definition.transform))?;
             (Shape::Parts(prepared), identity)
         }
-        Generator::Box { .. } | Generator::Panel(_) | Generator::Route(_) => {
+        Generator::Box { .. }
+        | Generator::Panel(_)
+        | Generator::Route(_)
+        | Generator::Item(_)
+        | Generator::Native(_) => {
             return Err(fail(
                 &definition.source,
                 "/generator",
                 "ITEM_PART",
-                "Box, panel and route generators belong to the parts of a version 2 item.",
+                "Box, panel, route, item and native generators belong to the parts of a version 2 item.",
             ));
         }
     };

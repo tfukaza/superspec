@@ -2,9 +2,10 @@
 //! group, features, pattern anchor, attachments and geometry key.
 use super::{
     Attachment, Derived, Feature, ImportedMaterial, ItemDecal, ItemDefinition, ItemDiagnostic,
-    ItemGeometry, ItemMesh, ItemNode, ItemPart, PatternAnchor, Values, decal, fail, panel,
-    procedural, route,
-    schema::{Generator, Scalar, Switch, bounded_name},
+    ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PatternAnchor, PreparedItem, Values,
+    compose::{self, Environment, Opaque},
+    decal, fail, panel, procedural, route,
+    schema::{Generator, PartDefinition, Scalar, Switch, bounded_name},
     surfaces::{Frame, Outline, Surfaces, prism},
 };
 use serde::Serialize;
@@ -120,7 +121,18 @@ enum PartShape {
     },
     Panel(panel::Panel),
     Route(route::Route),
+    /// A sub-item: its entry, geometry key and prepared definition.
+    Item {
+        entry: String,
+        key: String,
+        #[serde(skip_serializing)]
+        prepared: Opaque<PreparedItem>,
+    },
+    Native(compose::Native),
 }
+
+/// Most parts an item may expand to, counting every copy of a repeated part.
+pub const MAXIMUM_PARTS: usize = 512;
 
 pub(super) struct PreparedPart {
     id: String,
@@ -135,6 +147,118 @@ impl PreparedPart {
     pub(super) fn key(&self) -> &str {
         &self.key
     }
+    /// The prepared sub-item of an item part.
+    pub(super) fn sub_item(&self) -> Option<&PreparedItem> {
+        match &self.shape {
+            PartShape::Item { prepared, .. } => Some(&prepared.0),
+            _ => None,
+        }
+    }
+    /// The item slot that a generated slot of this part lands in.
+    pub(super) fn slot(&self, group: &str) -> Option<String> {
+        if self.slots.is_empty() {
+            Some(group.to_owned())
+        } else {
+            self.slots.get(group).cloned()
+        }
+    }
+}
+
+/// One emitted copy of a part definition: its ID and the derived values it reads, which
+/// include its copy indices.
+struct Copy {
+    id: String,
+    derived: Derived,
+}
+
+/// Expands repeats and conditions. Copy indices join the derived values of each copy.
+fn copies(
+    context: &Context<'_>,
+    part: &PartDefinition,
+    pointer: &str,
+) -> Result<Vec<Copy>, ItemDiagnostic> {
+    if part.repeat.len() > 3 {
+        return Err(context.fail(
+            &format!("{pointer}/repeat"),
+            "ITEM_REPEAT",
+            "A part repeats over at most three axes.",
+        ));
+    }
+    let mut copies = vec![Copy {
+        id: part.id.clone(),
+        derived: context.derived.clone(),
+    }];
+    for (axis, repeat) in part.repeat.iter().enumerate() {
+        let at = format!("{pointer}/repeat/{axis}");
+        let identifier = !repeat.name.is_empty()
+            && repeat.name.len() <= 64
+            && repeat
+                .name
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+            && !repeat.name.as_bytes()[0].is_ascii_digit();
+        if !identifier
+            || context.definition.parameters.contains_key(&repeat.name)
+            || context.derived.contains_key(&repeat.name)
+        {
+            return Err(context.fail(
+                &format!("{at}/name"),
+                "ITEM_REPEAT",
+                "A copy index is an identifier that differs from every control and derived value.",
+            ));
+        }
+        let mut next = Vec::new();
+        for copy in copies {
+            let count = context.definition.scalar(
+                &repeat.count,
+                context.parameters,
+                &copy.derived,
+                &format!("{at}/count"),
+            )?;
+            if count.fract() != 0. || !(0. ..=256.).contains(&count) {
+                return Err(context.fail(
+                    &format!("{at}/count"),
+                    "ITEM_REPEAT",
+                    "A repeat count is an integer from 0 to 256.",
+                ));
+            }
+            for index in 0..count as usize {
+                let mut derived = copy.derived.clone();
+                derived.insert(repeat.name.clone(), index as f64);
+                derived.insert(format!("{}_count", repeat.name), count);
+                next.push(Copy {
+                    id: format!("{}-{index}", copy.id),
+                    derived,
+                });
+            }
+            if next.len() > MAXIMUM_PARTS {
+                return Err(context.fail(
+                    &format!("{pointer}/repeat"),
+                    "ITEM_LIMIT",
+                    format!("An item expands to at most {MAXIMUM_PARTS} parts."),
+                ));
+            }
+        }
+        copies = next;
+    }
+    let mut kept = Vec::with_capacity(copies.len());
+    for copy in copies {
+        let shown = match &part.when {
+            None => true,
+            Some(condition) => {
+                context.definition.scalar(
+                    condition,
+                    context.parameters,
+                    &copy.derived,
+                    &format!("{pointer}/when"),
+                )? > 0.
+            }
+        };
+        if shown {
+            kept.push(copy);
+        }
+    }
+    Ok(kept)
 }
 
 pub(super) fn endpoints(prefix: &str, length: f64) -> [Attachment; 2] {
@@ -155,151 +279,236 @@ pub(super) fn endpoints(prefix: &str, length: f64) -> [Attachment; 2] {
 /// Resolves every part in order and appends its attachments in item definition
 /// coordinates. A route may start from an attachment of an earlier part.
 pub(super) fn prepare(
-    context: &Context<'_>,
+    outer: &Context<'_>,
     attachments: &mut Vec<Attachment>,
+    environment: &mut Environment<'_>,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<PreparedPart>, ItemDiagnostic> {
     let mut ids = BTreeSet::new();
     let mut parts = Vec::new();
-    for (index, part) in context.definition.parts.iter().enumerate() {
+    for (index, part) in outer.definition.parts.iter().enumerate() {
         let pointer = format!("/parts/{index}");
-        if !bounded_name(&part.id) || part.id.contains('/') || !ids.insert(part.id.as_str()) {
-            return Err(context.fail(
+        if !bounded_name(&part.id) || part.id.contains('/') {
+            return Err(outer.fail(
                 &format!("{pointer}/id"),
                 "ITEM_PART",
                 "Part IDs are unique bounded identifiers without a slash.",
             ));
         }
-        let mut placement = Matrix::default();
-        if let Some(definition) = &part.placement {
-            let mut values = [[0.; 3]; 2];
-            for (row, (name, source)) in [
-                ("position", &definition.position),
-                ("rotation", &definition.rotation),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                for axis in 0..3 {
-                    values[row][axis] = context
-                        .scalar(&source[axis], &format!("{pointer}/placement/{name}/{axis}"))?;
-                }
-            }
-            if values[0].iter().any(|v| v.abs() > 1e7) {
-                return Err(context.fail(
-                    &format!("{pointer}/placement"),
+        for copy in copies(outer, part, &pointer)? {
+            super::check_cancelled(&outer.definition.source, cancelled)?;
+            if !ids.insert(copy.id.clone()) || parts.len() >= MAXIMUM_PARTS {
+                return Err(outer.fail(
+                    &format!("{pointer}/id"),
                     "ITEM_PART",
-                    "Part position exceeds coordinate bounds.",
+                    format!(
+                        "Part ID {} repeats, or the item expands beyond {MAXIMUM_PARTS} parts.",
+                        copy.id
+                    ),
                 ));
             }
-            placement = Matrix::placement(values[0], values[1], [1.; 3])
-                .map_err(|e| context.fail(&format!("{pointer}/placement"), "ITEM_PART", e))?;
-        }
-        let generator = format!("{pointer}/generator");
-        let (shape, groups, local): (PartShape, &[&str], Vec<Attachment>) = match &part.generator {
-            Generator::Box { size } => {
-                let mut resolved = [0.; 3];
-                for axis in 0..3 {
-                    resolved[axis] =
-                        context.dimension(&size[axis], &format!("{generator}/size/{axis}"))?;
+            let context = &Context {
+                definition: outer.definition,
+                parameters: outer.parameters,
+                derived: &copy.derived,
+            };
+            let id = copy.id.as_str();
+            let mut placement = Matrix::default();
+            if let Some(definition) = &part.placement {
+                let mut values = [[0.; 3]; 2];
+                for (row, (name, source)) in [
+                    ("position", &definition.position),
+                    ("rotation", &definition.rotation),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    for axis in 0..3 {
+                        values[row][axis] = context
+                            .scalar(&source[axis], &format!("{pointer}/placement/{name}/{axis}"))?;
+                    }
                 }
-                (
-                    PartShape::Box { size: resolved },
-                    &["side", "top", "bottom"],
-                    vec![],
-                )
+                if values[0].iter().any(|v| v.abs() > 1e7) {
+                    return Err(context.fail(
+                        &format!("{pointer}/placement"),
+                        "ITEM_PART",
+                        "Part position exceeds coordinate bounds.",
+                    ));
+                }
+                placement = Matrix::placement(values[0], values[1], [1.; 3])
+                    .map_err(|e| context.fail(&format!("{pointer}/placement"), "ITEM_PART", e))?;
             }
-            Generator::Pipe {
-                length,
-                radius,
-                wall_thickness,
-                segments,
-                capped,
-            } => {
-                let (length, radius, thickness, segments, capped) = context.pipe(
-                    &generator,
-                    [length, radius, wall_thickness, segments],
+            let generator = format!("{pointer}/generator");
+            let (shape, groups, local): (PartShape, &[&str], Vec<Attachment>) = match &part
+                .generator
+            {
+                Generator::Box { size } => {
+                    let mut resolved = [0.; 3];
+                    for axis in 0..3 {
+                        resolved[axis] =
+                            context.dimension(&size[axis], &format!("{generator}/size/{axis}"))?;
+                    }
+                    (
+                        PartShape::Box { size: resolved },
+                        &["side", "top", "bottom"],
+                        vec![],
+                    )
+                }
+                Generator::Pipe {
+                    length,
+                    radius,
+                    wall_thickness,
+                    segments,
                     capped,
-                )?;
-                (
-                    PartShape::Pipe {
-                        length,
-                        radius,
-                        thickness,
-                        segments,
+                } => {
+                    let (length, radius, thickness, segments, capped) = context.pipe(
+                        &generator,
+                        [length, radius, wall_thickness, segments],
                         capped,
-                    },
-                    &["surface"],
-                    endpoints(&format!("{}/", part.id), length).into(),
-                )
-            }
-            Generator::Duct {
-                length,
-                width,
-                height,
-                wall_thickness,
-                capped,
-            } => {
-                let (length, width, height, thickness, capped) =
-                    context.duct(&generator, [length, width, height, wall_thickness], capped)?;
-                (
-                    PartShape::Duct {
-                        length,
-                        width,
-                        height,
-                        thickness,
+                    )?;
+                    (
+                        PartShape::Pipe {
+                            length,
+                            radius,
+                            thickness,
+                            segments,
+                            capped,
+                        },
+                        &["surface"],
+                        endpoints(&format!("{id}/"), length).into(),
+                    )
+                }
+                Generator::Duct {
+                    length,
+                    width,
+                    height,
+                    wall_thickness,
+                    capped,
+                } => {
+                    let (length, width, height, thickness, capped) = context.duct(
+                        &generator,
+                        [length, width, height, wall_thickness],
                         capped,
-                    },
-                    &["surface"],
-                    endpoints(&format!("{}/", part.id), length).into(),
-                )
-            }
-            Generator::Panel(definition) => (
-                PartShape::Panel(panel::resolve(context, definition, &generator)?),
-                panel::GROUPS,
-                vec![],
-            ),
-            Generator::Route(definition) => {
-                let origin = match &definition.from {
-                    None => [0.; 3],
-                    Some(reference) => {
-                        if part.placement.is_some() {
-                            return Err(context.fail(
+                    )?;
+                    (
+                        PartShape::Duct {
+                            length,
+                            width,
+                            height,
+                            thickness,
+                            capped,
+                        },
+                        &["surface"],
+                        endpoints(&format!("{id}/"), length).into(),
+                    )
+                }
+                Generator::Panel(definition) => (
+                    PartShape::Panel(panel::resolve(context, definition, &generator)?),
+                    panel::GROUPS,
+                    vec![],
+                ),
+                Generator::Route(definition) => {
+                    let origin = match &definition.from {
+                        None => [0.; 3],
+                        Some(reference) => {
+                            let wanted = compose::template(
+                                context.definition,
+                                &reference.attachment,
+                                context.derived,
+                                &format!("{generator}/from"),
+                            )?;
+                            if part.placement.is_some() {
+                                return Err(context.fail(
                                 &format!("{pointer}/placement"),
                                 "ITEM_ROUTE",
                                 "A route that starts from an attachment has no placement of its own.",
                             ));
+                            }
+                            attachments
+                                .iter()
+                                .find(|attachment| attachment.name == wanted)
+                                .ok_or_else(|| {
+                                    context.fail(
+                                        &format!("{generator}/from"),
+                                        "ITEM_ROUTE",
+                                        format!(
+                                            "{wanted} is not an attachment of an earlier part."
+                                        ),
+                                    )
+                                })?
+                                .position
                         }
-                        attachments
-                            .iter()
-                            .find(|attachment| attachment.name == reference.attachment)
-                            .ok_or_else(|| {
-                                context.fail(
-                                    &format!("{generator}/from"),
-                                    "ITEM_ROUTE",
-                                    format!(
-                                        "{} is not an attachment of an earlier part.",
-                                        reference.attachment
-                                    ),
-                                )
-                            })?
-                            .position
-                    }
-                };
-                let route = route::resolve(context, definition, &generator, origin)?;
-                let local = route.attachments(&part.id);
-                (PartShape::Route(route), route::GROUPS, local)
-            }
-            Generator::Glb { .. } | Generator::Parts => {
-                return Err(context.fail(
-                    &generator,
-                    "ITEM_PART",
-                    "A part uses a box, panel, route, pipe or duct generator.",
-                ));
-            }
-        };
-        for (group, slot) in &part.slots {
-            if !groups.contains(&group.as_str()) || !bounded_name(slot) {
-                return Err(context.fail(
+                    };
+                    let route = route::resolve(context, definition, &generator, origin)?;
+                    let local = route.attachments(id);
+                    (PartShape::Route(route), route::GROUPS, local)
+                }
+                Generator::Item(reference) => {
+                    let entry = compose::entry(
+                        context.definition,
+                        reference,
+                        context.parameters,
+                        context.derived,
+                        &generator,
+                    )?;
+                    let arguments = compose::arguments(
+                        context.definition,
+                        &reference.parameters,
+                        context.parameters,
+                        context.derived,
+                        &format!("{generator}/parameters"),
+                    )?;
+                    let prepared = compose::sub_item(
+                        context.definition,
+                        &entry,
+                        &arguments,
+                        environment,
+                        cancelled,
+                        &generator,
+                    )?;
+                    let local = prepared
+                        .attachments
+                        .iter()
+                        .map(|attachment| Attachment {
+                            name: format!("{id}/{}", attachment.name),
+                            ..attachment.clone()
+                        })
+                        .collect();
+                    (
+                        PartShape::Item {
+                            entry,
+                            key: prepared.geometry_key.clone(),
+                            prepared: Opaque(std::sync::Arc::new(prepared)),
+                        },
+                        &[],
+                        local,
+                    )
+                }
+                Generator::Native(reference) => (
+                    PartShape::Native(compose::native(
+                        context.definition,
+                        reference,
+                        context.parameters,
+                        context.derived,
+                        environment,
+                        &generator,
+                    )?),
+                    &[],
+                    vec![],
+                ),
+                Generator::Glb { .. } | Generator::Parts => {
+                    return Err(context.fail(
+                        &generator,
+                        "ITEM_PART",
+                        "A part uses a box, panel, route, pipe, duct, item or native generator.",
+                    ));
+                }
+            };
+            // Sub-items and native generators name their own slots, known when they are built.
+            let open = matches!(shape, PartShape::Item { .. } | PartShape::Native(_));
+            for (group, slot) in &part.slots {
+                if (!open && !groups.contains(&group.as_str())) || !bounded_name(slot) {
+                    return Err(context.fail(
                     &format!("{pointer}/slots/{}", super::pointer_key(group)),
                     "ITEM_PART",
                     format!(
@@ -307,27 +516,28 @@ pub(super) fn prepare(
                         groups.join(", ")
                     ),
                 ));
+                }
             }
+            for mut attachment in local {
+                attachment.position = placement.point(attachment.position);
+                attachment.direction = placement.direction(attachment.direction);
+                attachments.push(attachment);
+            }
+            let mut hash = Sha256::new();
+            hash.update(b"itemspec-part-geometry-v1\0");
+            hash.update(
+                serde_json::to_vec(&(id, &shape, placement.0, &part.slots))
+                    .map_err(|e| context.fail(&pointer, "ITEM_JSON", e.to_string()))?,
+            );
+            parts.push(PreparedPart {
+                id: copy.id.clone(),
+                key: format!("{:x}", hash.finalize()),
+                shape,
+                placement,
+                slots: part.slots.clone(),
+                pointer: generator,
+            });
         }
-        for mut attachment in local {
-            attachment.position = placement.point(attachment.position);
-            attachment.direction = placement.direction(attachment.direction);
-            attachments.push(attachment);
-        }
-        let mut hash = Sha256::new();
-        hash.update(b"itemspec-part-geometry-v1\0");
-        hash.update(
-            serde_json::to_vec(&(&part.id, &shape, placement.0, &part.slots))
-                .map_err(|e| context.fail(&pointer, "ITEM_JSON", e.to_string()))?,
-        );
-        parts.push(PreparedPart {
-            id: part.id.clone(),
-            key: format!("{:x}", hash.finalize()),
-            shape,
-            placement,
-            slots: part.slots.clone(),
-            pointer: generator,
-        });
     }
     Ok(parts)
 }
@@ -369,7 +579,10 @@ pub(super) fn decals(
             PartShape::Panel(panel) => decal::Surface::Panel(panel),
             PartShape::Box { size } => decal::Surface::Box(*size),
             PartShape::Route(route) => decal::Surface::Route(route),
-            PartShape::Pipe { .. } | PartShape::Duct { .. } => {
+            PartShape::Pipe { .. }
+            | PartShape::Duct { .. }
+            | PartShape::Item { .. }
+            | PartShape::Native(_) => {
                 return Err(context.fail(
                     &format!("{pointer}/on/part"),
                     "ITEM_DECAL",
@@ -388,7 +601,60 @@ pub(super) fn decals(
     Ok(placed)
 }
 
+/// What building one part gives: its meshes, and any materials and images a sub-item brings.
+#[derive(Default)]
+struct Built {
+    meshes: Vec<ItemMesh>,
+    materials: BTreeMap<String, ImportedMaterial>,
+    images: Vec<ItemImage>,
+}
+
 impl PreparedPart {
+    /// Renames generated meshes into this part and maps their slots, dropping unmapped ones.
+    fn adopt(&self, meshes: Vec<ItemMesh>) -> Vec<ItemMesh> {
+        meshes
+            .into_iter()
+            .filter_map(|mut mesh| {
+                mesh.material_slot = self.slot(&mesh.material_slot)?;
+                mesh.id = format!("{}/{}", self.id, mesh.id);
+                Some(mesh)
+            })
+            .collect()
+    }
+    fn build(&self, cancelled: &dyn Fn() -> bool) -> Result<Built, String> {
+        match &self.shape {
+            PartShape::Item { prepared, .. } => {
+                let item = prepared.0.build(cancelled).map_err(|e| e.to_string())?;
+                let meshes = item.flattened().map_err(|e| e.to_string())?;
+                let mut materials = BTreeMap::new();
+                for (slot, material) in &item.geometry.imported_materials {
+                    if let Some(target) = self.slot(slot) {
+                        materials.entry(target).or_insert_with(|| material.clone());
+                    }
+                }
+                Ok(Built {
+                    meshes: self.adopt(meshes),
+                    materials,
+                    images: item.geometry.images.clone(),
+                })
+            }
+            PartShape::Native(native) => {
+                let output = native
+                    .generators
+                    .0
+                    .generate(&native.name, &native.parameters, cancelled)
+                    .map_err(|e| format!("{}: {e}", native.name))?;
+                Ok(Built {
+                    meshes: self.adopt(output.meshes),
+                    ..Built::default()
+                })
+            }
+            _ => Ok(Built {
+                meshes: self.meshes(cancelled)?,
+                ..Built::default()
+            }),
+        }
+    }
     fn meshes(&self, cancelled: &dyn Fn() -> bool) -> Result<Vec<ItemMesh>, String> {
         let straight = |geometry: ItemGeometry| {
             let slot = if self.slots.is_empty() {
@@ -445,6 +711,9 @@ impl PreparedPart {
             )?,
             PartShape::Panel(panel) => panel.build(&mut surfaces)?,
             PartShape::Route(route) => route.build(&mut surfaces)?,
+            PartShape::Item { .. } | PartShape::Native(_) => {
+                return Err("Sub-item and native parts are built by their owner.".into());
+            }
         }
         Ok(surfaces.into_meshes(&self.id, &self.slots))
     }
@@ -507,7 +776,16 @@ pub(super) fn build(
             Some(meshes) => meshes,
             None => {
                 built.push(part.id.clone());
-                part.meshes(cancelled).map_err(failure)?
+                let result = part.build(cancelled).map_err(failure)?;
+                for (slot, material) in result.materials {
+                    geometry.imported_materials.entry(slot).or_insert(material);
+                }
+                for image in result.images {
+                    if !geometry.images.iter().any(|known| known.id == image.id) {
+                        geometry.images.push(image);
+                    }
+                }
+                result.meshes
             }
         };
         let first = geometry.meshes.len();
@@ -517,6 +795,12 @@ pub(super) fn build(
                 .imported_materials
                 .entry(mesh.material_slot.clone())
                 .or_insert_with(|| {
+                    // A kept sub-item mesh keeps the material it was imported with.
+                    if let Some(material) = previous
+                        .and_then(|previous| previous.imported_materials.get(&mesh.material_slot))
+                    {
+                        return material.clone();
+                    }
                     let mut fallback = ImportedMaterial::plain(&mesh.material_slot);
                     fallback.metallic_factor = 0.;
                     fallback.roughness_factor = 0.8;

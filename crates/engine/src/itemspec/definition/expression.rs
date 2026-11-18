@@ -1,6 +1,9 @@
-//! Derived-value expressions: numbers, names, `+ - * /`, parentheses and
-//! `min`, `max`, `floor`, `ceil`, `round`, `abs`. Every operation is IEEE
-//! arithmetic, so native and Wasm results are bit-identical.
+//! Derived-value expressions: numbers, names, `+ - * / %`, comparisons
+//! (`< <= > >= == !=`, which give 1 or 0), parentheses and `min`, `max`, `floor`,
+//! `ceil`, `round`, `abs`, `clamp(x, low, high)`, `select(condition, a, b)` (`a` when
+//! the condition is positive) and `random(...)`, a value in [0, 1) hashed from the
+//! bits of its arguments. Every operation is IEEE arithmetic or integer hashing, so
+//! native and Wasm results are bit-identical.
 
 /// A failure inside one expression. `offset` is a zero-based byte offset into its text.
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +34,24 @@ enum Function {
     Ceil,
     Round,
     Abs,
+    Clamp,
+    Select,
+    Random,
+}
+
+/// A value in [0, 1) from the exact bits of `values`: SplitMix64 steps folded over them.
+pub fn random(values: &[f64]) -> f64 {
+    let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ values.len() as u64;
+    for value in values {
+        // Treat -0 as 0 so equal numbers hash alike.
+        let bits = if *value == 0. { 0 } else { value.to_bits() };
+        state = state.wrapping_add(bits).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        state = z ^ (z >> 31);
+    }
+    (state >> 11) as f64 / (1u64 << 53) as f64
 }
 
 /// A parsed expression. Parsing is separate from evaluation so a definition is checked once.
@@ -54,6 +75,26 @@ impl Parser<'_> {
         self.space();
         self.text.get(self.cursor).copied()
     }
+    fn comparison(&mut self, depth: usize) -> Result<Node, ExpressionError> {
+        let left = self.sum(depth)?;
+        let at = self.cursor;
+        let operator = match (self.peek(), self.text.get(self.cursor + 1).copied()) {
+            (Some(b'<'), Some(b'=')) => b'l',
+            (Some(b'>'), Some(b'=')) => b'g',
+            (Some(b'='), Some(b'=')) => b'e',
+            (Some(b'!'), Some(b'=')) => b'n',
+            (Some(b'<'), _) => b'<',
+            (Some(b'>'), _) => b'>',
+            _ => return Ok(left),
+        };
+        self.cursor += if matches!(operator, b'<' | b'>') {
+            1
+        } else {
+            2
+        };
+        let right = self.sum(depth)?;
+        Ok(Node::Binary(operator, Box::new(left), Box::new(right), at))
+    }
     fn sum(&mut self, depth: usize) -> Result<Node, ExpressionError> {
         let mut left = self.product(depth)?;
         while let Some(operator @ (b'+' | b'-')) = self.peek() {
@@ -66,7 +107,7 @@ impl Parser<'_> {
     }
     fn product(&mut self, depth: usize) -> Result<Node, ExpressionError> {
         let mut left = self.unary(depth)?;
-        while let Some(operator @ (b'*' | b'/')) = self.peek() {
+        while let Some(operator @ (b'*' | b'/' | b'%')) = self.peek() {
             let at = self.cursor;
             self.cursor += 1;
             let right = self.unary(depth)?;
@@ -95,7 +136,7 @@ impl Parser<'_> {
         match self.peek() {
             Some(b'(') => {
                 self.cursor += 1;
-                let inner = self.sum(depth + 1)?;
+                let inner = self.comparison(depth + 1)?;
                 self.expect(b')')?;
                 Ok(inner)
             }
@@ -153,20 +194,25 @@ impl Parser<'_> {
                     "ceil" => Function::Ceil,
                     "round" => Function::Round,
                     "abs" => Function::Abs,
+                    "clamp" => Function::Clamp,
+                    "select" => Function::Select,
+                    "random" => Function::Random,
                     _ => return error(start, format!("Unknown function {name}.")),
                 };
                 self.cursor += 1;
-                let mut arguments = vec![self.sum(depth + 1)?];
+                let mut arguments = vec![self.comparison(depth + 1)?];
                 while self.peek() == Some(b',') {
                     self.cursor += 1;
                     if arguments.len() >= 16 {
                         return error(self.cursor, "A function takes at most 16 arguments.");
                     }
-                    arguments.push(self.sum(depth + 1)?);
+                    arguments.push(self.comparison(depth + 1)?);
                 }
                 self.expect(b')')?;
                 let valid = match function {
                     Function::Min | Function::Max => arguments.len() >= 2,
+                    Function::Clamp | Function::Select => arguments.len() == 3,
+                    Function::Random => !arguments.is_empty(),
                     _ => arguments.len() == 1,
                 };
                 if !valid {
@@ -197,7 +243,7 @@ impl Expression {
             text: text.as_bytes(),
             cursor: 0,
         };
-        let node = parser.sum(0)?;
+        let node = parser.comparison(0)?;
         if parser.peek().is_some() {
             return error(parser.cursor, "Unexpected character.");
         }
@@ -247,7 +293,14 @@ impl Expression {
                             b'+' => a + b,
                             b'-' => a - b,
                             b'*' => a * b,
+                            b'<' => f64::from(a < b),
+                            b'>' => f64::from(a > b),
+                            b'l' => f64::from(a <= b),
+                            b'g' => f64::from(a >= b),
+                            b'e' => f64::from(a == b),
+                            b'n' => f64::from(a != b),
                             _ if b == 0. => return error(*at, "Division by zero."),
+                            b'%' => a - b * (a / b).floor(),
                             _ => a / b,
                         },
                         *at,
@@ -267,6 +320,15 @@ impl Expression {
                             // Half away from zero, as `f64::round` defines it.
                             Function::Round => values[0].round(),
                             Function::Abs => values[0].abs(),
+                            Function::Clamp => values[0].max(values[1]).min(values[2]),
+                            Function::Select => {
+                                if values[0] > 0. {
+                                    values[1]
+                                } else {
+                                    values[2]
+                                }
+                            }
+                            Function::Random => random(&values),
                         },
                         *at,
                     )
