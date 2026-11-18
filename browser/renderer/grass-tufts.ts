@@ -35,6 +35,8 @@ export interface GrassTuftOptions {
   closeDensity?: number;
   /** The least a tuft's painted normal faces the camera (its paint follows the slope it is seen against). */
   face?: number;
+  /** Tall blades: the ground lightness (luma) below which they thin to a tenth, and above which all are kept. */
+  light?: [number, number];
   /** Chubby tufts' colour range: brightness (share either way) and warm/cool hue shift (0 to 1). */
   vary?: [number, number];
   near?: [number, number];
@@ -78,7 +80,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 6;
  * stroke its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 9): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 6): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -131,7 +133,7 @@ export function tuftAtlas(seed = 11, blur = 9): THREE.DataTexture {
   // The clusters (row 5) are tiny on screen, so they take a much wider blur to read as soft.
   const kernel = (sigma: number) => { const reach = Math.ceil(sigma * 3), weights: number[] = []; for (let k = -reach; k <= reach; k++) weights.push(Math.exp(-0.5 * k * k / (sigma * sigma))); return { reach, weights }; };
   // The tall thin blades (row 4) take only a slight blur.
-  const kernels = [kernel(blur), kernel(6), kernel(0.8)];
+  const kernels = [kernel(blur), kernel(6), kernel(0.4)];
   const pass = (source: Float32Array, horizontal: boolean): Float32Array => {
     const out = new Float32Array(source.length);
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
@@ -176,7 +178,8 @@ attribute vec4 tuftData;
 uniform float lift;
 uniform vec3 tuftKeep; // x: base share, y: far (m), z: mirror seed
 uniform vec2 tuftNear; // close tufts: full to x (m), gone at y
-uniform float tuftFace; // the least a tuft's painted normal faces the camera
+uniform float tuftFace;
+uniform vec2 tuftLight; // tall blades: ground lightness (luma) from which they thin out (x) to where all are kept (y) // the least a tuft's painted normal faces the camera
 varying float vKind;
 varying float vHue;
 varying vec2 vUv;
@@ -227,6 +230,11 @@ void main() {
   float score = max(edge, max(border, colour));
   float keep = mix(tuftKeep.x, 1.0, score) * (1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away));
 #endif
+  // Tall blades grow mostly on the lighter patches of the ground's colour (a tenth on the darkest).
+  if (tuftData.z > 15.5 && tuftData.z < 19.5) {
+    float lightness = dot(texture(groundColor, clamp((root.xy - groundRect.xy) / (groundRect.zw - groundRect.xy), 0.0, 1.0)).rgb, vec3(0.2126, 0.7152, 0.0722));
+    keep *= mix(0.1, 1.0, smoothstep(tuftLight.x, tuftLight.y, lightness));
+  }
   if (!close && rank > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // Grass grows mostly upward: the tuft stands between the relief's normal and straight up, turned to face the camera.
   vec3 grow = normalize(mix(rn, vec3(0.0, 0.0, 1.0), 0.6));
@@ -281,7 +289,7 @@ void main() {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
     c = mix(vColor * mix(0.95, 1.05, t.r), bright * 1.2, smoothstep(0.15, 0.85, t.g));
-    a = smoothstep(0.2, 0.6, t.a);
+    a = smoothstep(0.3, 0.6, t.a);
   } else {
     // Clusters: short grass in the sun, bright and brighter where lit; soft edged like the chubby tufts.
     c = bright * mix(vec3(1.0), tuftSpark, vLit);
@@ -366,7 +374,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     }
     return best;
   };
-  const tallCandidates = Math.round(total * (options.tallDensity ?? 800));
+  const tallCandidates = Math.round(total * (options.tallDensity ?? 1600));
   for (let k = 0; k < tallCandidates; k++) {
     const { at, up } = point();
     // A thin sprinkling between patches too.
@@ -398,6 +406,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
       tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0, 0])) },
+      tuftLight: { value: new THREE.Vector2(...(options.light ?? [0.33, 0.45])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
