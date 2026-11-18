@@ -55,7 +55,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 4;
  * bottom, each its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 1.0): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 0.4): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -68,7 +68,7 @@ export function tuftAtlas(seed = 11, blur = 1.0): THREE.DataTexture {
       const tall = long ? 0.62 + 0.3 * next() : 0.3 + 0.32 * next();
       const lean = (rootX - 0.5) * 1.6 + (next() - 0.5) * 0.7;
       const droop = long ? next() * 0.5 : next() * 0.2;
-      const thick = 0.12 + 0.12 * next();
+      const thick = 0.08 + 0.08 * next();
       const own = next();
       const points: { x: number; y: number; t: number }[] = [];
       for (let s = 0; s <= 24; s++) {
@@ -214,7 +214,7 @@ void main() {
   // Each blade lighter or darker by its own tone; its lit tip a little lighter still.
   vec3 c = vColor * mix(0.84, 1.14, t.r) * mix(1.0, 1.18, t.g * t.g * vLit);
   // Coverage firmed up, so a stroke stays a solid shape of paint at a distance (its mipmaps thin it) with a soft edge.
-  gl_FragColor = vec4(c, smoothstep(0.04, 0.5, t.a));
+  gl_FragColor = vec4(c, smoothstep(0.15, 0.55, t.a));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }`;
