@@ -20,6 +20,11 @@ import { PAINT_GLSL, RELIEF_GLSL } from "./grass-relief.ts";
 export interface GrassTuftOptions {
   /** Candidate tufts per square meter. */
   density?: number;
+  /**
+   * Every tuft kept (default), with no test of where the picture changes; false gathers them at edges, light borders and
+   * colour changes over a thin base share. Both cost about the same: a tuft's cost is placing and painting it.
+   */
+  everywhere?: boolean;
   /** Share kept where nothing changes (0 to 1). */
   base?: number;
   /** Heights (m) of the short chubby tufts and the long ones, each a range. */
@@ -163,13 +168,16 @@ void main() {
   vec3 toCamera = cameraPosition - root;
   float away = length(toCamera);
   vec3 v = toCamera / away;
-  // Where the picture changes: the outline, a light border (shade band or cast shadow), a change of ground colour.
-  float edge = 1.0 - smoothstep(0.12, 0.45, abs(dot(rn, v)));
   float band = smoothstep(-shadeBand.y, shadeBand.y, dot(rn, normalize(msSunDirection)) - shadeBand.x);
-  float light = min(band, castWide(root, rn));
-  float border = 1.0 - abs(2.0 * light - 1.0);
   vec3 t1, t2;
   reliefFrame(n, t1, t2);
+#ifdef TUFT_EVERYWHERE
+  float keep = 1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away);
+#else
+  // Where the picture changes: the outline, a light border (shade band or cast shadow), a change of ground colour.
+  float edge = 1.0 - smoothstep(0.12, 0.45, abs(dot(rn, v)));
+  float light = min(band, castWide(root, rn));
+  float border = 1.0 - abs(2.0 * light - 1.0);
   vec2 span = groundRect.zw - groundRect.xy;
   float g0 = luma(texture(groundColor, clamp((root.xy - groundRect.xy) / span, 0.0, 1.0)).rgb);
   float g1 = luma(texture(groundColor, clamp((root.xy + t1.xy * 0.05 - groundRect.xy) / span, 0.0, 1.0)).rgb);
@@ -177,6 +185,7 @@ void main() {
   float colour = smoothstep(0.02, 0.08, (abs(g1 - g0) + abs(g2 - g0)) / max(g0, 1e-3));
   float score = max(edge, max(border, colour));
   float keep = mix(tuftKeep.x, 1.0, score) * (1.0 - smoothstep(0.6 * tuftKeep.y, tuftKeep.y, away));
+#endif
   if (tuftData.w > keep) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
   // Upright along the relief's normal, turned about it to face the camera.
   vec3 side = cross(rn, v);
@@ -259,7 +268,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
   const shared = (relief.material as THREE.ShaderMaterial);
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: FRAGMENT, transparent: true, depthWrite: false,
-    defines: { ...shared.defines },
+    defines: { ...shared.defines, ...(options.everywhere ?? true ? { TUFT_EVERYWHERE: "" } : {}) },
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: tuftAtlas() },
