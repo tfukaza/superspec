@@ -732,19 +732,25 @@ fn write_washroom_lawn() {
     definition.blade.taper = 0.42;
     // And fewer of them: wider blades hold the cover with about a quarter fewer clumps.
     definition.density = 105.;
-    // Short, uneven grass: blades from 5 to 22 cm, and each clump scaled from 0.5 to 1.5.
-    definition.blade.height = [0.05, 0.22];
-    definition.scale = [0.5, 1.5];
+    // A calm meadow: blades from 4 to 13 cm, each clump scaled from 0.6 to 1.4.
+    definition.blade.height = [0.04, 0.13];
+    // Even cover: the meadow fixture's drifts clear about 40 % of the clumps between them; here only a little.
+    definition.clumping.strength = 0.15;
+    definition.scale = [0.6, 1.4];
+    // The cover holds with distance: the middle levels keep more of the clumps than the fixture's (0.75 and 0.45, from
+    // 0.5 and 0.2) and start farther (12 and 20 m), their survivors widened to fill the gaps.
+    definition.lods[1].keep = 0.75;
+    definition.lods[2].keep = 0.45;
     let mut far = definition.lods[2];
-    far.keep = 0.1;
+    far.keep = 0.2;
     far.blades = 0.5;
     far.chubby = 2.2;
     let mut farther = far;
-    farther.keep = 0.05;
+    farther.keep = 0.1;
     farther.blades = 0.34;
     farther.chubby = 3.5;
     definition.lods.extend([far, farther]);
-    for (lod, distance) in definition.lods.iter_mut().zip([0., 7., 14., 22., 30.]) {
+    for (lod, distance) in definition.lods.iter_mut().zip([0., 12., 20., 28., 36.]) {
         lod.distance = distance;
     }
     // LAWN_LEVEL=k writes level k alone, from 0 m, to picture it up close.
@@ -800,7 +806,7 @@ fn write_washroom_lawn() {
         accent.density = 300.;
         accent.clump.blades = [1, 3];
         accent.clump.radius = 0.03;
-        accent.blade.height = [0.22, 0.8];
+        accent.blade.height = [0.1, 0.3];
         accent.blade.width = accent.blade.width.map(|w| w * 2.6);
         accent.clumping.scale = 3.;
         accent.clumping.strength = 1.;
