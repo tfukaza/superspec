@@ -69,7 +69,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide, highlight, macro, contrast }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide, highlight, macro, contrast, occlusion }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -147,7 +147,9 @@ try {
       for (const m of s.models.children) if (m.name.startsWith("painted/") && m.material.uniforms) Object.assign(m.material.uniforms, {
         msMacroCentre: { value: centre.clone() }, msMacroRadii: { value: half }, msMacroWeight: { value: macro },
         // CONTRAST: the light stretched about the bands' middle (leaf-normals.ts msContrast).
-        msContrast: { value: contrast } });
+        msContrast: { value: contrast },
+        // OCCLUSION: clumps deep inside the blob darken by up to this much (leaf-normals.ts msMacro).
+        msOcclusion: { value: occlusion } });
     }
     // The painted parts take part in the foliage blur when it is on (BLUR), about the plant's middle.
     for (const m of s.models.children) if (m.name.startsWith("painted/")) m.userData.blurAnchor = centre.clone();
@@ -172,6 +174,7 @@ try {
     highlight: Number(process.env.HIGHLIGHT ?? 1),
     macro: Number(process.env.MACRO ?? 0.12),
     contrast: Number(process.env.CONTRAST ?? 1.25),
+    occlusion: Number(process.env.OCCLUSION ?? 0.2),
     // VIEW=density: the plant's leaf density field instead of the painted surface (FIELD_RADIUS: kernel meters,
     // FIELD_FLOOR: share of the densest below which cells are left out, FIELD_BANDS: colour steps, 0 smooth).
     densityView: process.env.VIEW === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),

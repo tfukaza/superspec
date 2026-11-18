@@ -277,25 +277,34 @@ float msLeafLight(vec3 n, vec3 sun, float offset) {
 uniform vec3 msMacroCentre;
 uniform vec3 msMacroRadii;
 uniform float msMacroWeight;
+// Ambient occlusion of the whole blob: a clump deep inside the plant, under the leaves around it, darkens by up to
+// msOcclusion (bands' light), fading out toward the blob's outer shell. 0 (unset) none.
+uniform float msOcclusion;
 float msMacro(vec3 world, vec3 sun) {
-  if (msMacroWeight <= 0.0) return 0.0;
+  if (msMacroWeight <= 0.0 && msOcclusion <= 0.0) return 0.0;
   vec3 r = max(msMacroRadii, vec3(1e-3));
   vec3 n = normalize((world - msMacroCentre) / (r * r) + vec3(0.0, 0.0, 1e-5));
   // Deep inside the blob, the facing fades out (a clump in the middle is neither side).
   float depth = clamp(length((world - msMacroCentre) / r), 0.0, 1.0);
-  return msMacroWeight * dot(n, sun) * smoothstep(0.15, 0.7, depth);
+  float facing = msMacroWeight * dot(n, sun) * smoothstep(0.15, 0.7, depth);
+  // Most of what shows is the blob's outer half, so the darkening runs out to near its shell.
+  float occluded = msOcclusion * (1.0 - smoothstep(0.45, 1.0, depth));
+  return facing - occluded;
 }
 // Highlights as one more band, above the top one: a leaf whose light (msLeafLight of its own normal from the leaf map)
 // passes the highlight level is painted lime, the edge blended over a pixel like the other bands'. Each leaf has one
 // normal, so whole leaves light, where the leaf map tips them nearest the sun. Lighter leaves (the map's tone, its
 // diffuse) reach it a little sooner. amount 0 turns the band off.
 vec3 msLeafPaint(vec3 band, float light, float tone, float amount) {
-  float over = light + 0.04 * (tone - 0.5) - 0.92;
+  // The highlight and neon levels stretch with msContrast as the light does, so the contrast deepens the bands while
+  // the highlights stay as rare as without it.
+  float c = msContrast > 0.0 ? msContrast : 1.0;
+  float over = light + 0.04 * (tone - 0.5) - (0.5 + 0.42 * c);
   float w = max(fwidth(over), 1e-4);
   // A soft lime, about halfway from the top band toward a neon one.
   vec3 paint = mix(band, vec3(0.40, 0.64, 0.12), smoothstep(-w, w, over) * step(0.001, amount));
   // And above it a neon band, for only the very brightest leaves, where the light runs past the bands' top.
-  float neon = light + 0.04 * (tone - 0.5) - 1.0;
+  float neon = light + 0.04 * (tone - 0.5) - (0.5 + 0.5 * c);
   float wn = max(fwidth(neon), 1e-4);
   return mix(paint, vec3(0.55, 0.95, 0.06), smoothstep(-wn, wn, neon) * step(0.001, amount));
 }
