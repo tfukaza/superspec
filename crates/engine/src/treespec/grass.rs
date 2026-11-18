@@ -93,12 +93,20 @@ pub struct Clumping {
     pub scale: f64,
     /// 0 is even cover; 1 clears the gaps between drifts.
     pub strength: f64,
+    /// Octaves of the drift noise, each half the size and half the weight of the one before: 1 gives round drifts,
+    /// more give drifts with ragged, fractal edges and outliers. Left out of keys at 1, so they are as they were.
+    #[serde(skip_serializing_if = "one_octave")]
+    pub octaves: usize,
+}
+fn one_octave(octaves: &usize) -> bool {
+    *octaves == 1
 }
 impl Default for Clumping {
     fn default() -> Self {
         Self {
             scale: 1.,
             strength: 0.,
+            octaves: 1,
         }
     }
 }
@@ -277,6 +285,14 @@ impl GrassDefinition {
         within(s, "/density", self.density, 0.01, 10_000.)?;
         within(s, "/clumping/scale", self.clumping.scale, 0.01, 1000.)?;
         within(s, "/clumping/strength", self.clumping.strength, 0., 1.)?;
+        if self.clumping.octaves == 0 || self.clumping.octaves > 6 {
+            return Err(fail(
+                s,
+                "/clumping/octaves",
+                "TREE_VALUE",
+                "Expected 1 to 6 octaves.",
+            ));
+        }
         range(s, "/scale", self.scale, 0.05, 20.)?;
         within(s, "/align", self.align, 0., 1.)?;
         within(s, "/maxSlope", self.max_slope, 0., 89.)?;
@@ -813,11 +829,30 @@ pub fn generate(
             let x = (column as f64 + random.next()) * spacing;
             let y = (row as f64 + random.next()) * spacing;
             let threshold = random.next();
-            let drift = noise(
-                hash(definition.seed, &[4]),
-                x / definition.clumping.scale,
-                y / definition.clumping.scale,
-            );
+            // One octave as before; more add finer noise for ragged drifts, normalized to the same range.
+            let drift = if definition.clumping.octaves <= 1 {
+                noise(
+                    hash(definition.seed, &[4]),
+                    x / definition.clumping.scale,
+                    y / definition.clumping.scale,
+                )
+            } else {
+                let (mut sum, mut weight, mut total, mut size) =
+                    (0., 1., 0., definition.clumping.scale);
+                for octave in 0..definition.clumping.octaves {
+                    sum += weight
+                        * noise(
+                            hash(definition.seed, &[4, octave as i64]),
+                            x / size,
+                            y / size,
+                        );
+                    total += weight;
+                    weight *= 0.5;
+                    size *= 0.5;
+                }
+                // Averaging octaves narrows the spread about the middle; stretched well past it, so drifts part into clear patches.
+                (0.5 + (sum / total - 0.5) * 5.).clamp(0., 1.)
+            };
             let drift = ((drift - 0.3) / 0.4).clamp(0., 1.);
             let density =
                 site.mask.density(x, y) * (1. - definition.clumping.strength * (1. - drift));

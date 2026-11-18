@@ -26,6 +26,10 @@ const blendScale = param.scalar({ default: 4.6, range: [0.2, 16], label: "Blend 
 const jaggedness = param.scalar({ default: 0.9, range: [0, 2], label: "Edge jaggedness" });
 const sunAmount = param.scalar({ default: 0.1, range: [0, 1], label: "Sun-yellow amount" });
 const deepAmount = param.scalar({ default: 0.1, range: [0, 1], label: "Deep teal amount" });
+const darkTint = param.vec3({ default: vec3(0.42, 0.68, 0.46), range: [0, 1], label: "Dark patch tint" });
+const darkAmount = param.scalar({ default: 0.85, range: [0, 1], label: "Dark patch amount" });
+const darkCover = param.scalar({ default: 0.32, range: [0, 0.5], label: "Dark patch cover" });
+const darkScale = param.scalar({ default: 2, range: [0.5, 40], label: "Dark patch frequency" });
 const hueAmount = param.scalar({ default: 0.03, range: [0, 0.5], label: "Hue variation" });
 const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label: "Hue direction" });
 const shadeTint = param.vec3({ default: vec3(0.42, 0.62, 0.9), range: [0, 1], label: "Shade tint" });
@@ -45,7 +49,11 @@ const greens = mix(mul(lime, sub(1, mul(darknessA, darkA))), mul(emerald, sub(1,
 // Sun-yellow and deep teal patches, each an eroded field at its own threshold.
 const sunny = mul(contour(fracture(add(mul(noiseUv, 6.5), vec2(41.7, 8.2)), jaggedness, seed("sun-patches")), 0.04), sunAmount);
 const deepPatch = mul(contour(fracture(add(mul(noiseUv, 7.9), vec2(17.9, 93.1)), jaggedness, seed("deep-patches")), 0.04), deepAmount);
-const layered = mix(mix(greens, sun, mul(sunny, sub(1, blend))), deep, mul(deepPatch, blend));
+const patched = mix(mix(greens, sun, mul(sunny, sub(1, blend))), deep, mul(deepPatch, blend));
+// Small dark patches, as the web study's lawn has: jagged, about a meter across, only where the field peaks, painted a
+// deeper, richer green than the grass around them.
+const darkPatch = mul(contour(add(fracture(add(mul(noiseUv, darkScale), vec2(61.3, 7.7)), jaggedness, seed("dark-patches")), sub(darkCover, 0.5)), 0.04), darkAmount);
+const layered = mix(patched, mul(patched, darkTint), darkPatch);
 const meadow = smoothstep(0.3, 0.7, fractal(add(div(world.xy, meadowScale), vec2(7.3, 2.9)), seed("meadow")));
 const meadowTint = mix(vec3(1, 1, 1), mix(cool, warm, meadow), meadowAmount);
 const ground = mul(meadowTint, pigment(layered, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));

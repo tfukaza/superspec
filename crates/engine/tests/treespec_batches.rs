@@ -754,16 +754,17 @@ fn write_washroom_lawn() {
     if !std::env::var("LAWN_ACCENT").is_ok_and(|v| v == "0") && std::env::var("LAWN_LEVEL").is_err()
     {
         // The web study's highlight grass: a few blades a clump, near the contour grass's width but much taller and of
-        // very uneven height, in patches; about a third as many blades as the lawn.
+        // very uneven height, gathered in drifts with fractal edges (strong 2-octave clumping: clean blobs, a little ragged); about a third as many blades as the lawn.
         let mut accent = definition.clone();
         accent.seed = definition.seed + 101;
-        accent.density = 85.;
+        accent.density = 150.;
         accent.clump.blades = [1, 3];
         accent.clump.radius = 0.03;
-        accent.blade.height = [0.06, 0.35];
-        accent.blade.width = accent.blade.width.map(|w| w * 1.8);
-        accent.clumping.scale = 0.7;
-        accent.clumping.strength = 0.6;
+        accent.blade.height = [0.10, 0.50];
+        accent.blade.width = accent.blade.width.map(|w| w * 2.6);
+        accent.clumping.scale = 1.3;
+        accent.clumping.strength = 1.;
+        accent.clumping.octaves = 2;
         accent.lods.truncate(3);
         let accent_patch = grass::generate(
             &accent,
