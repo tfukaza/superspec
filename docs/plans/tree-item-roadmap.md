@@ -680,6 +680,18 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     per edge, 4 to 5 ms (non-indexed, about 3 M vertex runs); parallax occlusion mapping, 2.5 to 3.5 ms with the
     earlier flat noise. **The normal map was chosen** (`RELIEF=1 CLUMP_BLUR=2`): nearly the look at the lawn's cost.
     Known: the colour still comes from `ground.color`, a top-down field, so it stretches on steep banks.
+  - **Checkpoint `grass-relief-mid-lod` (2026-11-17): relief and tufts, good at a middle distance.** The relief is
+    displaced after all (normal maps cannot give the bank's jagged outline): half-sphere cushion domes, packed (every
+    blob within a cell of the surface counts at full width), about 35 cm cells, 8 cm high, joined by a near maximum
+    (p 12.5), the lawn divided three times per edge (88,200 triangles), drawn through `?clumpblur=2` at mix 0.4. Over it,
+    `grass-tufts.ts`: pre-painted billboard tufts in a 24-cell atlas, each taking the relief's paint at its root.
+    Chubby tufts (2 to 4 broad strokes, blurred 3.5 px, the ground's own colour) and sunlit clusters (6 to 12 tiny
+    strokes, blurred 6 px, bright where lit) at 400 a square meter, half kept everywhere and all at the outline, light
+    borders and colour changes, drawn with the blur; tall thin blades (about 6,500, lean, droop, curvature and tilt
+    varied, the ground's colour at the base and a bright hue at the tip among straw, yellow-green, lime and teal),
+    gathered loosely in patches and drawn unblurred after it (the blur's detail layer). 3.0 to 3.7 ms a frame on the
+    hill site (`RELIEF=displace CLUMP_BLUR=2 TUFTS=1`). Reference renders `painted-mass/grass-relief-mid-*.png`. Up
+    close it shows gaps between tufts: a close level comes next.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
