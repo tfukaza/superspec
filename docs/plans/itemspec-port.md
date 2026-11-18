@@ -136,8 +136,11 @@ Four differences from the picture were then closed, and the sun turned to the ot
 - **Windows:** `spansPlans` (edge, storey, bank, `[from, to]`) place windows in banks of any width, as
   in the reference model; without it the bays are even.
 - **Paint:** the coat's patches are about a third the size (`Patch frequency` 2.4 per metre).
-- **Sun and shade:** `tests/item-facade-browser.mjs` turns the sun to the other side of the scene and
-  softens it, in the scene's global lighting record rather than in any material: intensity 3 to 2,
+- **Camera and sun:** the `reference` view of `tests/item-facade-browser.mjs` stands at the cut corner, 22
+  degrees off the front, 8 above the ground, 62 m away through a 26 degree lens, with the trees hidden;
+  the sun is high (55 degrees) from the front-left (azimuth -25), so the wide face is lit and the narrow
+  one turned from it. Render: `itemspec/shop-house-reference-view.png`.
+- **Sun and shade:** the same script softens the sun, in the scene's global lighting record rather than in any material: intensity 3 to 2,
   shadow `softness` 0.05, `spread` 0.09 and `maxSoftness` 0.3 (the edge widens with the distance to the
   caster), `darkness` 0.2, a bluer `tint` at `tintStrength` 0.5, and interior `noise` of 0.5 over 0.6 m
   patches (`SUN=<azimuth>,<elevation>` sets the direction, `LIGHT_SUN` is JSON merged over the sun,

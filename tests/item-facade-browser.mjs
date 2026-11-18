@@ -62,8 +62,8 @@ try {
   }
   if (!process.exitCode) {
     await waitForFrames(page, 6);
-    // The sun, turned round to the other side of the scene and softened (SUN=<azimuth>,<elevation> degrees from +x toward +y
-    // sets its direction).
+    // The sun, as in the reference picture: high (55 degrees) and from the front, a little toward the side the narrow face
+    // turns from (SUN=<azimuth>,<elevation> degrees from +x toward +y sets its direction), and softened.
     // LIGHT: "keep" leaves the scene's lighting alone; otherwise the sun is turned round and `softSun` (below) is merged into
     // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
     // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
@@ -87,7 +87,7 @@ try {
       merge(light, soft); merge(light, extra);
       s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
       return { before, after: JSON.stringify(light) };
-    }, { sun: process.env.SUN ?? "", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep" });
+    }, { sun: process.env.SUN ?? "-25,55", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep" });
     console.log(`sun before ${lit.before}`);
     if (lit.after) console.log(`sun after  ${lit.after}`);
     await waitForFrames(page, 6);
@@ -100,7 +100,12 @@ try {
     console.log(`facade: ${info.meshes} meshes, ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
     const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
     const cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, front = x1;
+    // The reference picture's camera: at the cut corner, 22 degrees off the front's normal toward the side, 8 above the
+    // ground, 62 m from the building through a long lens (26 degrees), so the front is wide and the side foreshortened.
+    const azimuth = 22 * Math.PI / 180, elevation = 8 * Math.PI / 180, distance = 62;
     const views = {
+      reference: { position: [(x0 + front) / 2 + distance * Math.cos(elevation) * Math.cos(azimuth), cy + distance * Math.cos(elevation) * Math.sin(azimuth), 7.4 + distance * Math.sin(elevation)],
+        target: [(x0 + front) / 2, cy, 7.4], fov: 26, bare: true },
       // From the room, over the low wall, up at the side across the lane.
       room: { position: [2.4, -0.9, 1.5], target: [front, cy + 0.5, 3.2] },
       // Square on, from the lane.
@@ -115,7 +120,7 @@ try {
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
     };
     for (const [name, view] of Object.entries(views)) {
-      await page.evaluate(view => { const s = window.__scene; for (const m of s.models.children) if (m.userData.foliage) m.visible = !view.bare; s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
+      await page.evaluate(view => { const s = window.__scene; for (const m of s.models.children) if (m.userData.foliage) m.visible = !view.bare; s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));
     }
