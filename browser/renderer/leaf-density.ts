@@ -94,14 +94,17 @@ export function outward(field: DensityField, p: THREE.Vector3, fallback: THREE.V
   return n.lengthSq() < 1e-12 ? fallback.clone().normalize() : n.normalize();
 }
 
-/** Replaces a geometry's normals with `field`'s outward direction at each vertex (shading by the broad form). */
-export function shadeNormals(geometry: THREE.BufferGeometry, field: DensityField): THREE.BufferGeometry {
+/**
+ * Replaces a geometry's normals with `field`'s outward direction at each vertex (shading by the broad form), keeping
+ * `mix` of the geometry's own (its clumps' form).
+ */
+export function shadeNormals(geometry: THREE.BufferGeometry, field: DensityField, mix = 0): THREE.BufferGeometry {
   const position = geometry.getAttribute("position"), normal = geometry.getAttribute("normal");
   const p = new THREE.Vector3(), own = new THREE.Vector3();
   for (let i = 0; i < position.count; i++) {
     p.fromBufferAttribute(position, i);
     own.fromBufferAttribute(normal, i);
-    const n = outward(field, p, own);
+    const n = outward(field, p, own).lerp(own.normalize(), mix).normalize();
     normal.setXYZ(i, n.x, n.y, n.z);
   }
   normal.needsUpdate = true;

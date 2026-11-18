@@ -77,8 +77,9 @@ uniform sampler2D blurred;
 uniform float strength;
 uniform float repaint;
 // The paint bands of leaf-normals.ts (BAND_GLSL) and its highlight (msLeafPaint), linear, darkest first.
-const vec3 BANDS[7] = vec3[7](vec3(0.0232, 0.1022, 0.0844), vec3(0.0331, 0.1441, 0.0823), vec3(0.0452, 0.1779, 0.0782),
-  vec3(0.0844, 0.2384, 0.0802), vec3(0.15, 0.3277, 0.0844), vec3(0.2747, 0.4793, 0.1022), vec3(0.40, 0.64, 0.12));
+const vec3 BANDS[8] = vec3[8](vec3(0.0232, 0.1022, 0.0844), vec3(0.0331, 0.1441, 0.0823), vec3(0.0452, 0.1779, 0.0782),
+  vec3(0.0844, 0.2384, 0.0802), vec3(0.15, 0.3277, 0.0844), vec3(0.2747, 0.4793, 0.1022), vec3(0.40, 0.64, 0.12),
+  vec3(0.55, 0.95, 0.06));
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
@@ -92,7 +93,7 @@ void main() {
     vec3 c = soft.rgb / soft.a;
     float l = log(max(luma(c), 1e-4)), best = 1e9;
     vec3 paint = BANDS[0];
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 8; i++) {
       float d = abs(l - log(luma(BANDS[i])));
       if (d < best) { best = d; paint = BANDS[i]; }
     }

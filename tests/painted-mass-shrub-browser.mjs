@@ -69,7 +69,7 @@ try {
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "shrub.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
-  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide, highlight, macro }) => {
+  const info = await page.evaluate(({ tile, brush, size, density, reach, strength, offset, coarse, densityView, densityBase, hide, highlight, macro, contrast }) => {
     const s = window.__scene, T = window.__three;
     s.draw();
     let hull;
@@ -90,7 +90,7 @@ try {
       // SHADE_SPREAD: the core and cards lit by a field smoothed this many times wider (the broad form), 0 the field.
       if (densityBase.shadeSpread > 0) {
         shadeField = window.__densityField(densityBase.sites, densityBase.radius * densityBase.shadeSpread, densityBase.cell);
-        window.__shadeNormals(geometry, shadeField);
+        window.__shadeNormals(geometry, shadeField, densityBase.shadeMix);
       }
       surface = { triangles: geometry.index.count / 3, ms: performance.now() - started, full: f.full };
     } else {
@@ -145,7 +145,9 @@ try {
     {
       const half = geometry.boundingBox.getSize(new T.Vector3()).multiplyScalar(0.55);
       for (const m of s.models.children) if (m.name.startsWith("painted/") && m.material.uniforms) Object.assign(m.material.uniforms, {
-        msMacroCentre: { value: centre.clone() }, msMacroRadii: { value: half }, msMacroWeight: { value: macro } });
+        msMacroCentre: { value: centre.clone() }, msMacroRadii: { value: half }, msMacroWeight: { value: macro },
+        // CONTRAST: the light stretched about the bands' middle (leaf-normals.ts msContrast).
+        msContrast: { value: contrast } });
     }
     // The painted parts take part in the foliage blur when it is on (BLUR), about the plant's middle.
     for (const m of s.models.children) if (m.name.startsWith("painted/")) m.userData.blurAnchor = centre.clone();
@@ -169,6 +171,7 @@ try {
     hide: (process.env.HIDE ?? "").split(",").filter(Boolean),
     highlight: Number(process.env.HIGHLIGHT ?? 1),
     macro: Number(process.env.MACRO ?? 0.12),
+    contrast: Number(process.env.CONTRAST ?? 1.25),
     // VIEW=density: the plant's leaf density field instead of the painted surface (FIELD_RADIUS: kernel meters,
     // FIELD_FLOOR: share of the densest below which cells are left out, FIELD_BANDS: colour steps, 0 smooth).
     densityView: process.env.VIEW === "density" ? { sites: shrub.sites, radius: Number(process.env.FIELD_RADIUS ?? 0.5),
@@ -194,7 +197,7 @@ try {
       // SPRAY_SCALE: the sprays' length; TUCK: how far their roots sink into the foliage, a share of their length.
       tierSpread: Number(process.env.TIER_SPREAD ?? 1.6), shadeSpread: Number(process.env.SHADE_SPREAD ?? 2),
       // SHADE_MIX: share of the bumpier field's light kept in the cards'; SHADE_JITTER: each card's random light tilt.
-      shadeMix: Number(process.env.SHADE_MIX ?? 0.3), shadeJitter: Number(process.env.SHADE_JITTER ?? 0.45), sprayScale: Number(process.env.SPRAY_SCALE ?? 0.75), tuck: Number(process.env.TUCK ?? 0.3),
+      shadeMix: Number(process.env.SHADE_MIX ?? 0.55), shadeJitter: Number(process.env.SHADE_JITTER ?? 0.45), sprayScale: Number(process.env.SPRAY_SCALE ?? 0.75), tuck: Number(process.env.TUCK ?? 0.3),
       denseFacing: Number(process.env.DENSE_FACING ?? 1), roundFamily: process.env.DENSE !== "old",
       branches: process.env.BRANCHES === "1", branchSize: Number(process.env.BRANCH_SIZE ?? 0.75), branchKeep: Number(process.env.BRANCH_KEEP ?? 0.9),
       // STRIPS=1: every leafy twig as a strip along it (STRIP_WIDTH: a leaf's length in meters, STRIP_LOBE: meters

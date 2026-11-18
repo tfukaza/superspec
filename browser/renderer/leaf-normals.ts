@@ -261,10 +261,14 @@ vec3 msLeafMap(sampler2D map, vec3 world, vec3 origin, float tile, out vec3 t, o
 // The shaded side takes the sky's fill as a floor, as a painter lifts it: a leaf tipped up toward the sky steps up to
 // the second or third band, one turned down stays in the first, so leaves facing away from the sun still band leaf by
 // leaf rather than merge into one dark patch.
+// msContrast stretches the light about the middle of the bands (unset or 0: 1, as before), so more of a plant falls
+// in its darkest and lightest bands.
+uniform float msContrast;
 float msLeafLight(vec3 n, vec3 sun, float offset) {
   float direct = 1.0 - acos(clamp(dot(n, sun), -1.0, 1.0)) / 3.14159265 + offset;
   float sky = 0.42 * (0.5 + 0.5 * n.z);
-  return max(direct, sky);
+  float c = msContrast > 0.0 ? msContrast : 1.0;
+  return 0.5 + (max(direct, sky) - 0.5) * c;
 }
 // The whole plant as one blob: an ellipsoid (msMacroCentre, msMacroRadii) whose surface normal at a point is the
 // plant's own facing there. A clump's light shifts by how that blob faces the sun (up to msMacroWeight either way), so
@@ -289,7 +293,11 @@ vec3 msLeafPaint(vec3 band, float light, float tone, float amount) {
   float over = light + 0.04 * (tone - 0.5) - 0.92;
   float w = max(fwidth(over), 1e-4);
   // A soft lime, about halfway from the top band toward a neon one.
-  return mix(band, vec3(0.40, 0.64, 0.12), smoothstep(-w, w, over) * step(0.001, amount));
+  vec3 paint = mix(band, vec3(0.40, 0.64, 0.12), smoothstep(-w, w, over) * step(0.001, amount));
+  // And above it a neon band, for only the very brightest leaves, where the light runs past the bands' top.
+  float neon = light + 0.04 * (tone - 0.5) - 1.0;
+  float wn = max(fwidth(neon), 1e-4);
+  return mix(paint, vec3(0.55, 0.95, 0.06), smoothstep(-wn, wn, neon) * step(0.001, amount));
 }
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
