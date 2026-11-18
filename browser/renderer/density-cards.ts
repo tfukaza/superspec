@@ -65,6 +65,10 @@ export interface DensityCardOptions {
    * so light and shade follow the plant's broad form and not the bumps of single clusters.
    */
   shadeField?: DensityField;
+  /** With shadeField: the share of the field's own (bumpier) outward kept in a card's light, 0 to 1. */
+  shadeMix?: number;
+  /** A random tilt of each card's light normal (length of a random offset added before normalizing), 0 none. */
+  shadeJitter?: number;
   /** Sprays' length against the family's, and how far (a share of their length) their roots sink into the foliage. */
   sprayScale?: number;
   tuck?: number;
@@ -105,8 +109,14 @@ function generator(seed: number): () => number {
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
     branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1,
-    tierField, shadeField, sprayScale = 0.75, tuck = 0.3 } = options;
-  const shade = (q: THREE.Vector3, n: THREE.Vector3) => (shadeField ? outward(shadeField, q, n) : n);
+    tierField, shadeField, sprayScale = 0.75, tuck = 0.3, shadeMix = 0, shadeJitter = 0 } = options;
+  // Its own stream, so the jitter never moves the cards.
+  const jitter = generator(seed * 31 + 17);
+  const shade = (q: THREE.Vector3, n: THREE.Vector3) => {
+    const s = shadeField ? outward(shadeField, q, n).lerp(n, shadeMix).normalize() : n.clone();
+    const j = new THREE.Vector3(jitter() - 0.5, jitter() - 0.5, jitter() - 0.5).multiplyScalar(2 * shadeJitter);
+    return s.add(j).normalize();
+  };
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
