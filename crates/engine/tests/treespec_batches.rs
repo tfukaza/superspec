@@ -796,8 +796,8 @@ fn write_washroom_lawn() {
     }
     // Accent grass (the web painterly study's highlight grass): a patch of its own, drawn 2 cm above the ground, its
     // blades tipped by a palette, as quick strokes laid over the lawn; the renderer can blur it alone
-    // (`?grassblur=<px>&grassblurpatch=lawn-accent`). Its near three levels only. LAWN_ACCENT=0 leaves it out.
-    if !std::env::var("LAWN_ACCENT").is_ok_and(|v| v == "0") && std::env::var("LAWN_LEVEL").is_err()
+    // (`?grassblur=<px>&grassblurpatch=lawn-accent`). Its near three levels only. Off for now while the base grass is tuned: LAWN_ACCENT=1 adds it.
+    if std::env::var("LAWN_ACCENT").is_ok_and(|v| v == "1") && std::env::var("LAWN_LEVEL").is_err()
     {
         // The web study's highlight grass: a few blades a clump, near the contour grass's width but much taller and of
         // very uneven height, gathered in drifts with fractal edges (strong 2-octave clumping: clean blobs, a little ragged); about a third as many blades as the lawn.
