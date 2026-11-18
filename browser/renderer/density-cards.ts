@@ -285,9 +285,16 @@ void main() {
     vec2 own = branch.rg * 2.0 - 1.0;
     float z = sqrt(max(0.0, 1.0 - dot(own, own)));
     vec3 n = normalize(base * z + (normalize(vSideAxis) * own.x + normalize(vUpAxis) * own.y) * 1.1);
+    // Then the leaf pattern normal map, as every other part takes it: its leaves tip the card's leaf, and its tone
+    // shares the card's, so the pattern runs on from the core into the sprays.
+    vec3 mt, mb;
+    vec3 mapLeaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, mt, mb);
+    float mz = sqrt(max(0.0, 1.0 - dot(mapLeaf.xy, mapLeaf.xy)));
+    n = normalize(n * mz + (mt * mapLeaf.x + mb * mapLeaf.y) * mapStrength);
+    float tone = 0.5 * branch.b + 0.5 * mapLeaf.z * 1.6;
     float light = msLeafLight(n, sun, offset);
-    vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * branch.b);
-    gl_FragColor = vec4(msLeafPaint(paint, light, branch.b, highlight), 1.0);
+    vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * tone);
+    gl_FragColor = vec4(msLeafPaint(paint, light, tone, highlight), 1.0);
     #include <colorspace_fragment>
     return;
   }

@@ -10,6 +10,18 @@ import { resolve } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 import { branchCard, type BranchCardOptions } from "../browser/renderer/branch-cards.ts";
 import { melted } from "../browser/renderer/leaf-cards.ts";
+import { strokeNormalData } from "../browser/renderer/leaf-normals.ts";
+
+// The leaf pattern normal map the trees use (16-leaf brush), laid as on a tree: a 1 m tile, the medium card 0.75 m,
+// so 256 card texels are 0.75 m. MAP=0 leaves it off. Its leaves tip each card texel's own normal, as the shader does.
+const map = strokeNormalData({ clumpLeaves: 16 });
+const mapStrength = process.env.MAP === "0" ? 0 : Number(process.env.MAP ?? 1);
+const texelsPerTile = 256 / 0.75;
+function mapAt(x: number, y: number): [number, number, number] {
+  const u = Math.floor(((x / texelsPerTile) % 1 + 1) % 1 * map.size), v = Math.floor(((y / texelsPerTile) % 1 + 1) % 1 * map.size);
+  const i = (v * map.size + u) * 4;
+  return [map.data[i] / 127.5 - 1, map.data[i + 1] / 127.5 - 1, map.data[i + 2] / 255];
+}
 
 const out = resolve(process.env.OUT ?? "generated/verification/branch-cards");
 mkdirSync(out, { recursive: true });
@@ -38,8 +50,11 @@ export const FAMILY: Record<string, { size: number; options: BranchCardOptions }
   small: { size: 176, options: { twigs: [1, 1], twiglets: [0, 1], missing: 0.04 } },
   medium: { size: 256, options: { twigs: [2, 2], twiglets: [1, 1], missing: 0.08 } },
   large: { size: 368, options: { twigs: [4, 1], twiglets: [2, 1], missing: 0.03 } },
+  "round small": { size: 176, options: { round: true, missing: 0.04 } },
+  "round medium": { size: 256, options: { round: true, missing: 0.04 } },
+  "round large": { size: 368, options: { round: true, missing: 0.03 } },
 };
-const rows: { kind: string; fade: number }[] = [{ kind: "medium", fade: 0 }, { kind: "small", fade }, { kind: "medium", fade }, { kind: "large", fade }];
+const rows: { kind: string; fade: number }[] = ["small", "medium", "large", "round small", "round medium", "round large"].map(kind => ({ kind, fade }));
 const cell = 368, gap = 12, columns = 4;
 const w = columns * cell + (columns + 1) * gap, h = rows.length * cell + (rows.length + 1) * gap;
 const rgb = new Uint8Array(w * h * 3);
@@ -53,7 +68,13 @@ rows.forEach((row, r) => {
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
       const i = y * size + x;
       if (card.coverage[i] < 0.5) continue;
-      const nx = card.nx[i], ny = card.ny[i], nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+      let nx = card.nx[i], ny = card.ny[i], nz = Math.sqrt(Math.max(0, 1 - nx * nx - ny * ny));
+      // The leaf map at this texel's place on the tree (bottom-up), its leaf tipping the card's normal.
+      const [mx, my, mt] = mapAt(ox + x, (r * cell) + y);
+      const mz = Math.sqrt(Math.max(0, 1 - mx * mx - my * my));
+      nx = nx * mz + mx * mapStrength; ny = ny * mz + my * mapStrength; nz = nz * mz;
+      const nl = Math.hypot(nx, ny, nz); nx /= nl; ny /= nl; nz /= nl;
+      card.tone[i] = mapStrength > 0 ? 0.5 * card.tone[i] + 0.5 * mt * 1.6 : card.tone[i];
       const direct = 1 - Math.acos(Math.max(-1, Math.min(1, nx * sun[0] + ny * sun[1] + nz * sun[2]))) / Math.PI - 0.05;
       const light = Math.max(direct, 0.42 * (0.5 + 0.5 * ny));
       const band = light > 0.92 ? 6 : Math.max(0, Math.min(5, Math.floor(light * 6)));

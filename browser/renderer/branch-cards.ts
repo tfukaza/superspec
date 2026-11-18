@@ -82,6 +82,11 @@ export interface BranchCardOptions {
    * tips. 0 keeps every stem evenly leafed.
    */
   fade?: number;
+  /**
+   * Round: a ball of leaves with no stem showing. Short hidden twigs radiate from the middle in every direction, each
+   * leafed to its tip, with leaves filling the middle, so the card is a round, full clump of the same small leaves.
+   */
+  round?: boolean;
   /** Stems are drawn as thick as on a card this many texels across (default: the card's own size). */
   stemRef?: number;
   /** Angle of the side twigs off the main stem, radians (lower: a narrower spray). */
@@ -123,7 +128,52 @@ function at(points: [number, number][], t: number): { x: number; y: number; head
   return { x: ax + (bx - ax) * f, y: ay + (by - ay) * f, heading: Math.atan2(by - ay, bx - ax) };
 }
 
+/** The round variant: a stemless ball of leaves (`round` in BranchCardOptions). */
+function roundCard(options: BranchCardOptions): LeafCard {
+  const { size = 256, seed = 1, leaf = 0.08, step = 0.06, missing = 0.05, width = 0.42, fade = 0 } = options;
+  const random = generator(seed * 4421 + 7);
+  const between = (a: number, b: number) => a + (b - a) * random();
+  const data = new Float32Array(size * size * 4), s = size;
+  const leafLength = leaf * s, gap = step * s;
+  // A slightly uneven ball: its middle a little low, its radius wavering with the direction.
+  const cx = 0.5 * s, cy = 0.46 * s, radius = 0.36 * s;
+  const wobble = [between(0, 6.28), between(0, 6.28)];
+  const reachAt = (a: number) => radius * (1 + 0.12 * Math.sin(3 * a + wobble[0]) + 0.08 * Math.sin(5 * a + wobble[1]));
+  // Fill: leaves anywhere inside, more toward the middle, pointing outward, the outer ones stamped last so the rim's
+  // tips lie over the middle.
+  const fills: { r: number; a: number }[] = [];
+  const count = Math.round(4.5 * Math.PI * radius * radius / (leafLength * gap));
+  for (let k = 0; k < count; k++) fills.push({ r: Math.sqrt(random()) * 0.88, a: random() * Math.PI * 2 });
+  fills.sort((a, b) => a.r - b.r);
+  for (const f of fills) {
+    if (random() < missing + fade * Math.pow(f.r, 3)) continue;
+    const reach = reachAt(f.a) * f.r;
+    const x = cx + Math.cos(f.a) * reach, y = cy + Math.sin(f.a) * reach;
+    // Inside, any way; toward the rim, more and more outward, so the edge is leaf tips.
+    const angle = random() < f.r * f.r ? f.a + between(-0.7, 0.7) : random() * Math.PI * 2;
+    stamp(data, size, x, y, angle, leafLength * between(0.85, 1.1) * (1 - 0.2 * fade * f.r), width * between(0.85, 1.15), between(0.6, 1), random);
+  }
+  // The rim: short sprigs radiating past the ball's edge, a few leaves each, so its outline is leafy, not a circle.
+  const sprigs = 9 + Math.floor(random() * 5);
+  for (let k = 0; k < sprigs; k++) {
+    const a = (k + between(-0.3, 0.3)) / sprigs * Math.PI * 2;
+    const r0 = reachAt(a) * 0.75, length = reachAt(a) * between(0.2, 0.35);
+    const points = grow(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0, a + between(-0.3, 0.3), length, between(-0.5, 0.5), 6);
+    let flip = random() < 0.5 ? -1 : 1;
+    for (let d = 0; d < length; d += 0.7 * gap * between(0.85, 1.15)) {
+      flip = -flip;
+      if (random() < missing) continue;
+      const p = at(points, d / length);
+      stamp(data, size, p.x, p.y, p.heading + flip * between(0.6, 1.0), leafLength * between(0.85, 1.05), width, between(0.6, 1), random);
+    }
+    const tip = at(points, 1);
+    stamp(data, size, tip.x, tip.y, tip.heading, leafLength * 0.9, width, between(0.6, 1), random);
+  }
+  return { size, data, sprays: sprigs };
+}
+
 export function branchCard(options: BranchCardOptions = {}): LeafCard {
+  if (options.round) return roundCard(options);
   // The defaults are the dense, bushy spray (many short twigs fanning from a short stem into a full crown).
   // Small leaves, close together, on three orders of stem (main, side twigs, and short twiglets off those), so a card
   // carries many leaves.
