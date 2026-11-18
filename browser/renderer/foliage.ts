@@ -262,6 +262,8 @@ varying float vFoliageBand;
 varying float vFoliageVariation;
 // Per blade (its own random with its clump's): picks a highlight blade's palette color.
 varying float vFoliageBlade;
+// The blade's own coordinates: x across it (0 to 1), y up it (0 at the root, 1 at the tip).
+varying vec2 vFoliageUv;
 bool msFoliageRejected = false;
 vec3 msFoliageOffset = vec3(0.0);
 ${FAMILY_FUNCTIONS}
@@ -328,6 +330,7 @@ ${painted ? `  // Rejection: blades near the shade boundary, where the view graz
   vFoliageHeight = height;
   vFoliageVariation = ${variation};
   vFoliageBlade = fract(rank * 5.37 + ${variation} * 1.913);
+  vFoliageUv = uv;
 ${chunk ? `  {
     vec3 tint = vec3(1.0);
 #ifdef USE_INSTANCING_COLOR
@@ -346,8 +349,14 @@ ${chunk ? `  {
   return { declarations, body: "" };
 }
 
-/** Painted: the vertex color with the tip's lift and, on the lit side of the band, its highlight. Lit: the albedo. */
-function fragmentStage(profile: FoliageProfile): { declarations: string; color: string } {
+/**
+ * Painted: the vertex color with the tip's lift and, on the lit side of the band, its highlight. Lit: the albedo.
+ * `brush` (highlight grass, a look with a tip palette): each blade is a brushstroke of its own, drawn translucent over the
+ * grass: feathered across its width, streaked along its length by bristles, its tip breaking up as a dry brush lifts
+ * and its root fading in, so the stroke sits on the lawn without a hard base. Each blade keeps its own edges: strokes
+ * overlap as paint does and never run together as a blur of the picture would.
+ */
+function fragmentStage(profile: FoliageProfile, brush = false): { declarations: string; color: string } {
   const declarations = `
 uniform vec3 msFoliageTip;
 uniform vec3 msFoliageHighlight;
@@ -356,7 +365,25 @@ varying vec3 vFoliageColor;
 varying float vFoliageHeight;
 varying float vFoliageBand;
 varying float vFoliageVariation;
-varying float vFoliageBlade;`;
+varying float vFoliageBlade;
+varying vec2 vFoliageUv;
+float msBrushNoise(float x) {
+  float i = floor(x), f = fract(x);
+  float a = fract(sin(i * 91.3458) * 43758.5453), b = fract(sin((i + 1.0) * 91.3458) * 43758.5453);
+  return mix(a, b, f * f * (3.0 - 2.0 * f));
+}`;
+  const stroke = brush ? `
+    {
+      float across = abs(vFoliageUv.x * 2.0 - 1.0), along = clamp(vFoliageUv.y, 0.0, 1.0);
+      // Bristles: a few streaks along the stroke, each its own strength, wandering a little up it.
+      float bristle = msBrushNoise(vFoliageUv.x * 6.0 + vFoliageBlade * 37.0 + along * 0.9);
+      float edge = 1.0 - smoothstep(0.35, 1.0, across);
+      // The dry tip: past 70 % of its height a streak ends where its own value says.
+      float dry = 1.0 - smoothstep(0.62 + 0.3 * bristle, 0.75 + 0.3 * bristle, along);
+      float root = smoothstep(0.02, 0.3, along);
+      diffuseColor.a = 0.9 * edge * mix(0.45, 1.0, bristle) * dry * root;
+      diffuseColor.rgb *= 0.93 + 0.14 * bristle;
+    }` : "";
   const color = profile === "painted" ? `
   {
     float h = clamp(vFoliageHeight, 0.0, 1.0);
@@ -374,7 +401,7 @@ varying float vFoliageBlade;`;
       fade = smoothstep(msFoliageTip.y, min(msFoliageTip.y + 0.35, 1.0), h) * msFoliageTip.z * clamp(vFoliageBand, 0.0, 1.0);
       target = tipColor;
     }
-    diffuseColor.rgb = mix(paint, target, fade);
+    diffuseColor.rgb = mix(paint, target, fade);${stroke}
   }` : `
   diffuseColor.rgb = vFoliageColor * mix(0.5, 1.0, clamp(vFoliageHeight, 0.0, 1.0)) * (0.88 + 0.24 * vFoliageVariation);`;
   return { declarations, color };
@@ -392,8 +419,11 @@ function makeMaterial(look: FoliageLook, profile: FoliageProfile, program: Folia
   const material: THREE.Material = profile === "painted" ? new THREE.MeshBasicMaterial({ color: 0xffffff }) : new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0 });
   if (profile === "painted") followPaintedFinishing(material);
   material.side = THREE.FrontSide;
+  // Highlight grass in the painted profile is drawn as translucent brushstrokes after the opaque grass.
+  const brush = profile === "painted" && look.family === "grass" && !!look.tip.palette;
+  if (brush) { material.transparent = true; material.depthWrite = false; }
   const vertex = vertexStage(look, profile, program, attributes);
-  const fragment = fragmentStage(profile);
+  const fragment = fragmentStage(profile, brush);
   const uniforms: Record<string, THREE.IUniform> = {
     ...(program ? { ...receiverUniforms(), ...program.uniforms, ...fieldUniforms(program.shading.shader), msTime: programTime, msSunDirection: programSun } : {}),
     ...shared, ...level,
@@ -413,7 +443,7 @@ function makeMaterial(look: FoliageLook, profile: FoliageProfile, program: Folia
       .replace("#include <color_fragment>", `#include <color_fragment>${fragment.color}`);
   };
   const key = material.customProgramCacheKey;
-  material.customProgramCacheKey = () => `foliage:${look.family}:${profile}:${program?.shading.shader.id ?? program?.shading.shader.source.length ?? "none"}:${[...attributes].sort().join(",")}|${key.call(material)}`;
+  material.customProgramCacheKey = () => `foliage:${look.family}:${profile}:${brush ? "brush:" : ""}${program?.shading.shader.id ?? program?.shading.shader.source.length ?? "none"}:${[...attributes].sort().join(",")}|${key.call(material)}`;
   material.userData.foliageUniforms = uniforms;
   // The scene fields the families need: the ground's (the boundary's ground) and those the recipe samples.
   material.userData.sceneFields = [...new Set(["ground.normal", ...(program?.shading.shader.renderInputs ?? [])
