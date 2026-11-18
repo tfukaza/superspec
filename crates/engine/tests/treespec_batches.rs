@@ -745,18 +745,22 @@ fn write_washroom_lawn() {
         level.batch.object_id = "lawn".into();
         level.batch.foliage.as_mut().unwrap().patch = "lawn".into();
     }
-    // Accent grass (the painterly study's highlight population): a sparse patch of its own, a few broad blades a clump,
-    // a little taller, colored by `painted-grass-accent` (bright where it faces the sun, now and then another hue) and
-    // drawn 3 cm above the ground, as quick strokes laid over the lawn; the renderer can blur it alone
+    // Accent grass (the web painterly study's highlight grass): a patch of its own, drawn 2 cm above the ground, its
+    // blades tipped by a palette, as quick strokes laid over the lawn; the renderer can blur it alone
     // (`?grassblur=<px>&grassblurpatch=lawn-accent`). Its near three levels only. LAWN_ACCENT=0 leaves it out.
     if !std::env::var("LAWN_ACCENT").is_ok_and(|v| v == "0") && std::env::var("LAWN_LEVEL").is_err()
     {
+        // The web study's highlight grass: a few blades a clump, near the contour grass's width but much taller and of
+        // very uneven height, in patches; about a third as many blades as the lawn.
         let mut accent = definition.clone();
         accent.seed = definition.seed + 101;
-        accent.density = 16.;
+        accent.density = 85.;
         accent.clump.blades = [1, 3];
-        accent.blade.height = accent.blade.height.map(|h| h * 1.15);
-        accent.blade.width = accent.blade.width.map(|w| w * 1.2);
+        accent.clump.radius = 0.03;
+        accent.blade.height = [0.12, 0.72];
+        accent.blade.width = accent.blade.width.map(|w| w * 1.1);
+        accent.clumping.scale = 0.7;
+        accent.clumping.strength = 0.6;
         accent.lods.truncate(3);
         let accent_patch = grass::generate(
             &accent,
@@ -767,11 +771,21 @@ fn write_washroom_lawn() {
             &|| false,
         )
         .unwrap();
+        // Painted as the lawn's grass (its roots the ground beneath them); each blade's tip fades to one of the study's
+        // four tip colors (teal, sun-yellow, green, mid green) from 35 % of its height to 70 %, on the lit side.
         let mut accent_look = look.clone();
-        accent_look.material = Some("painted-grass-accent".into());
         accent_look.far = 22.;
+        accent_look.tip.lift = 1.;
+        accent_look.tip.amount = 1.;
+        accent_look.tip.start = 0.35;
+        accent_look.tip.palette = Some([
+            [0.0382, 0.1559, 0.1248],
+            [0.807, 1.0, 0.0467],
+            [0.0075, 0.3613, 0.0395],
+            [0.1329, 0.3712, 0.0467],
+        ]);
         let mut accent_levels =
-            batches::grass_levels(&accent_patch, [0., 0., 0.03], &accent_look, None).unwrap();
+            batches::grass_levels(&accent_patch, [0., 0., 0.02], &accent_look, None).unwrap();
         for level in &mut accent_levels {
             level.batch.id = level.batch.id.replacen(&accent_patch.id, "lawn-accent", 1);
             level.batch.object_id = "lawn-accent".into();

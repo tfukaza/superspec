@@ -43,7 +43,8 @@ export interface FoliageLook {
   bend: { angle: number; randomness: number };
   wind: { azimuth: number; angle: number; scale: number; speed: number; bias: number; flutter: number };
   rejection: { boundary: number; fill: number; grazing: number; grazingKeep: number };
-  tip: { lift: number; highlight: [number, number, number]; amount: number; start: number };
+  /** `palette`: highlight grass, four linear colors, one per blade as its tip color (see FoliageTip in batch.rs). */
+  tip: { lift: number; highlight: [number, number, number]; amount: number; start: number; palette?: [number, number, number][] };
   /** The plant families' parameters (`superspec_types::batch::FoliageCanopy`); absent for grass. */
   canopy?: FoliageCanopy;
 }
@@ -68,7 +69,9 @@ export function validFoliage(look: unknown): look is FoliageLook {
     && (value.material === undefined || typeof value.material === "string") && ["painted", "lit"].includes(value.profile)
     && numbers(value.bend, ["angle", "randomness"]) && numbers(value.wind, ["azimuth", "angle", "scale", "speed", "bias", "flutter"]) && value.wind.scale > 0
     && numbers(value.rejection, ["boundary", "fill", "grazing", "grazingKeep"]) && numbers(value.tip, ["lift", "amount", "start"])
-    && Array.isArray(value.tip.highlight) && value.tip.highlight.length === 3 && value.tip.highlight.every(Number.isFinite);
+    && Array.isArray(value.tip.highlight) && value.tip.highlight.length === 3 && value.tip.highlight.every(Number.isFinite)
+    && (value.tip.palette === undefined || (Array.isArray(value.tip.palette) && value.tip.palette.length === 4
+      && value.tip.palette.every(color => Array.isArray(color) && color.length === 3 && color.every(Number.isFinite))));
 }
 export interface BatchAttribute { name: string; domain: "instance" | "vertex"; components: number; start: number }
 /** `attributes` counts the floats of named attributes. */

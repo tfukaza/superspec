@@ -344,6 +344,12 @@ pub struct FoliageTip {
     pub amount: f64,
     /// Share of the blade's height where the fade starts, 0 to 1.
     pub start: f64,
+    /// Highlight grass (the painterly study's highlight population): four linear RGB colors, 0 to 1. With it, each
+    /// blade takes one of them, at random, as its own tip color in place of `highlight`, and the fade runs from `start`
+    /// to 0.35 above it at full `amount`, on the lit side only; below it the blade is the paint of the ground at its
+    /// root, so it melts into the ground.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette: Option<[[f64; 3]; 4]>,
 }
 impl Default for FoliageTip {
     fn default() -> Self {
@@ -352,6 +358,7 @@ impl Default for FoliageTip {
             highlight: [0.62, 0.72, 0.28],
             amount: 0.35,
             start: 0.55,
+            palette: None,
         }
     }
 }
@@ -403,6 +410,11 @@ impl Foliage {
         }
         within(self.tip.amount, 0., 1., "tip amount")?;
         within(self.tip.start, 0., 1., "tip start")?;
+        for color in self.tip.palette.iter().flatten() {
+            for channel in color {
+                within(*channel, 0., 1., "tip palette")?;
+            }
+        }
         if let Some(canopy) = &self.canopy {
             if self.family == FoliageFamily::Grass {
                 return Err(

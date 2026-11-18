@@ -215,6 +215,8 @@ function lookUniforms(look: FoliageLook, next: { distance: number; keep: number 
     msFoliageReject: { value: new THREE.Vector4(look.rejection.boundary, look.rejection.fill, Math.sin(look.rejection.grazing * RADIANS), look.rejection.grazingKeep) },
     msFoliageTip: { value: new THREE.Vector3(look.tip.lift, look.tip.start, look.tip.amount) },
     msFoliageHighlight: { value: new THREE.Color().setRGB(...look.tip.highlight, THREE.LinearSRGBColorSpace) },
+    // Highlight grass: four tip colors, one per blade (x of the first is negative without a palette).
+    msFoliagePalette: { value: (look.tip.palette ?? [[-1, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]).map(c => new THREE.Vector3(...c)) },
     ...(look.family === "grass" ? {} : canopyUniforms(look.canopy ?? DEFAULT_CANOPY)),
   };
 }
@@ -258,6 +260,8 @@ varying vec3 vFoliageColor;
 varying float vFoliageHeight;
 varying float vFoliageBand;
 varying float vFoliageVariation;
+// Per blade (its own random with its clump's): picks a highlight blade's palette color.
+varying float vFoliageBlade;
 bool msFoliageRejected = false;
 vec3 msFoliageOffset = vec3(0.0);
 ${FAMILY_FUNCTIONS}
@@ -323,6 +327,7 @@ ${painted ? `  // Rejection: blades near the shade boundary, where the view graz
   objectNormal = normalize(vec3(dot(a, normalWorld) / dot(a, a), dot(b, normalWorld) / dot(b, b), dot(c, normalWorld) / dot(c, c)));
   vFoliageHeight = height;
   vFoliageVariation = ${variation};
+  vFoliageBlade = fract(rank * 5.37 + ${variation} * 1.913);
 ${chunk ? `  {
     vec3 tint = vec3(1.0);
 #ifdef USE_INSTANCING_COLOR
@@ -346,10 +351,12 @@ function fragmentStage(profile: FoliageProfile): { declarations: string; color: 
   const declarations = `
 uniform vec3 msFoliageTip;
 uniform vec3 msFoliageHighlight;
+uniform vec3 msFoliagePalette[4];
 varying vec3 vFoliageColor;
 varying float vFoliageHeight;
 varying float vFoliageBand;
-varying float vFoliageVariation;`;
+varying float vFoliageVariation;
+varying float vFoliageBlade;`;
   const color = profile === "painted" ? `
   {
     float h = clamp(vFoliageHeight, 0.0, 1.0);
@@ -359,6 +366,14 @@ varying float vFoliageVariation;`;
     // highlight in it: blades rooted on different greens keep different tips instead of all ending in one colour.
     vec3 own = paint * vec3(1.24, 1.17, 0.86) * (0.92 + 0.16 * vFoliageVariation);
     vec3 target = mix(own, msFoliageHighlight * (0.85 + 0.3 * vFoliageVariation), 0.2);
+    if (msFoliagePalette[0].x >= 0.0) {
+      // Highlight grass: the blade is the ground's paint up to start, then its own palette color fades in over the next
+      // 0.35 of its height, on the lit side only, so its root melts into the ground and its tip is a stroke of color.
+      int k = int(min(floor(vFoliageBlade * 4.0), 3.0));
+      vec3 tipColor = k == 0 ? msFoliagePalette[0] : k == 1 ? msFoliagePalette[1] : k == 2 ? msFoliagePalette[2] : msFoliagePalette[3];
+      fade = smoothstep(msFoliageTip.y, min(msFoliageTip.y + 0.35, 1.0), h) * msFoliageTip.z * clamp(vFoliageBand, 0.0, 1.0);
+      target = tipColor;
+    }
     diffuseColor.rgb = mix(paint, target, fade);
   }` : `
   diffuseColor.rgb = vFoliageColor * mix(0.5, 1.0, clamp(vFoliageHeight, 0.0, 1.0)) * (0.88 + 0.24 * vFoliageVariation);`;

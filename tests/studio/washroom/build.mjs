@@ -46,7 +46,6 @@ export const paintedSlab = { id: "painted-ground", entry: "painted-ground.materi
 export const lawnMaterials = [
   { id: "painted-lawn", entry: "painted-lawn.material.ts", parameters: {}, meshes: ["lawn"] },
   { id: "painted-grass", entry: "painted-grass.material.ts", parameters: {}, meshes: [] },
-  { id: "painted-grass-accent", entry: "painted-grass-accent.material.ts", parameters: {}, meshes: [] },
 ];
 export const lawnPath = resolve(here, "../../../generated/verification/treespec/washroom-lawn.json");
 /** The lawn document (`LAWN` names another). */
