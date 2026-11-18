@@ -692,6 +692,15 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     gathered loosely in patches and drawn unblurred after it (the blur's detail layer). 3.0 to 3.7 ms a frame on the
     hill site (`RELIEF=displace CLUMP_BLUR=2 TUFTS=1`). Reference renders `painted-mass/grass-relief-mid-*.png`. Up
     close it shows gaps between tufts: a close level comes next.
+  - **Milestone `grass-tufts-milestone` (2026-11-18).** Since the checkpoint: a close level of 1,200 extra chubby
+    tufts a square meter within 3 to 6 m; chubby tufts of four softnesses (2 to 9 px) in the ground's own colour; tufts
+    on ground turned from the view painted with their normal turned toward it, so outline fuzz matches the slope seen
+    behind it; sunlit dashes (7 percent) in their patch's colour, much brighter where lit, tilted at random, drawn
+    after the chubby tufts; tall blades (about 9,000, loosely patched, favouring light and sunlit ground) in the
+    ground's colour with tips randomly a little (1.1 to 1.35) or much (1.7 to 2.3) brighter; lawn bands from an olive
+    to a near-neon lime. Dark patches fade as the view looks down on them (the gaps between blades show only from
+    across the grass), so from above they no longer read as cracks. Reference renders `painted-mass/grass-tufts-*.png`.
+    Known: the cushion relief still reads as Voronoi cells from above.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
