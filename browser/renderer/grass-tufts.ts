@@ -35,6 +35,8 @@ export interface GrassTuftOptions {
   closeDensity?: number;
   /** The least a tuft's painted normal faces the camera (its paint follows the slope it is seen against). */
   face?: number;
+  /** Chubby tufts' colour range: brightness (share either way) and warm/cool hue shift (0 to 1). */
+  vary?: [number, number];
   near?: [number, number];
   /** Share of the scattered tufts that are tiny-stroke clusters (the rest are short chubby tufts). */
   clusterShare?: number;
@@ -76,7 +78,7 @@ const CELL = 128, COLUMNS = 4, ROWS = 6;
  * stroke its own height, lean, droop, width and tip (rounded or pointed), then lightly blurred. Red: the blade's own tone (0 dark to
  * 1 light); green: how far up its blade a pixel is; alpha: coverage. Row 0 is the bottom of the cell.
  */
-export function tuftAtlas(seed = 11, blur = 3.5): THREE.DataTexture {
+export function tuftAtlas(seed = 11, blur = 9): THREE.DataTexture {
   const width = CELL * COLUMNS, height = CELL * ROWS;
   const cover = new Float32Array(width * height), tone = new Float32Array(width * height), along = new Float32Array(width * height);
   const next = random(seed);
@@ -257,6 +259,7 @@ varying vec3 vColor;
 varying float vLit;
 varying float vKind;
 varying float vHue;
+uniform vec2 tuftVary; // chubby tufts: x brightness range (share), y hue shift (0 to 1)
 uniform vec2 tuftDetail; // x: brightness of the thin tufts, y: their hue variation
 uniform vec3 tuftSpark;
 void main() {
@@ -269,9 +272,11 @@ void main() {
   vec3 hue = hs < 1.0 ? mix(vec3(1.3, 1.12, 0.5), vec3(1.12, 1.2, 0.55), hs) : hs < 2.0 ? mix(vec3(1.12, 1.2, 0.55), vec3(0.95, 1.25, 0.45), hs - 1.0) : mix(vec3(0.95, 1.25, 0.45), vec3(0.78, 1.08, 1.3), hs - 2.0);
   vec3 bright = vColor * tuftDetail.x * mix(vec3(1.0), hue, tuftDetail.y) * mix(0.88, 1.12, t.r);
   if (vKind < 0.5) {
-    // Chubby: the ground's own paint, barely a tone apart per stroke; soft edged.
-    c = vColor * mix(0.95, 1.05, t.r);
-    a = smoothstep(0.02, 0.6, t.a);
+    // Chubby: the ground's own paint, each tuft its own brightness and a slight warm or cool shift, its strokes a little
+    // apart in tone; soft edged.
+    vec3 shift = mix(vec3(1.07, 1.03, 0.82), vec3(0.93, 1.0, 1.15), vHue);
+    c = vColor * mix(1.0 - tuftVary.x, 1.0 + tuftVary.x, fract(vHue * 7.13 + 0.3)) * mix(vec3(1.0), shift, tuftVary.y) * mix(0.92, 1.08, t.r);
+    a = smoothstep(0.0, 0.85, t.a);
   } else if (vKind < 1.5) {
     // Tall thin blades: the ground's paint at the base, turning brighter and to their own hue (warm yellow-green to
     // cool blue-green) up the blade; crisp edged.
@@ -392,6 +397,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
+      tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0.14, 0.6])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
