@@ -33,8 +33,8 @@ export interface GrassReliefOptions {
   moundWeight?: number;
   fine?: number;
   /** Cushion fullness (above 1 the top flattens; its foot always eases out) and the blend where clumps meet (of a clump's size). */
-  /** The pattern: cushion clumps on a 3D grid (default) or the concrete's fracture noise. */
-  pattern?: "fracture" | "domes";
+  /** The pattern: rolling warped-noise humps (default), cushion clumps on a 3D grid, or the concrete's fracture noise. */
+  pattern?: "rolling" | "fracture" | "domes";
   /** Fracture pattern: patch scales (m), cushion edge width (of the noise's range) and jaggedness. */
   bigPatch?: number;
   smallPatch?: number;
@@ -155,6 +155,20 @@ float reliefHeight(vec3 p, vec3 n) {
   reliefTone = clamp(0.5 + (big - 0.5) * 1.5 + (small - 0.5) * 0.8, 0.0, 1.0);
   float h = 0.6 * a + 0.4 * b * mix(0.6, 1.0, a) + reliefMore.w * (reliefFractal(p * 12.0) - 0.5);
   return reliefShape.x * clamp(h, 0.0, 1.0);
+}
+#elif defined(RELIEF_ROLLING)
+// Rolling humps, not cells: smooth fractal noise in 3D with its point bent by more fractal noise (a domain warp), raised
+// softly above a level, so the ground swells and dips in organic blobs and never meets itself in lines. A second, finer
+// warped layer rides on top. Its own value tones it.
+float reliefHeight(vec3 p, vec3 n) {
+  vec3 q = p / reliefPatch.x;
+  vec3 warp = vec3(reliefFractal(q * 0.9 + 3.1), reliefFractal(q * 0.9 + 17.4), reliefFractal(q * 0.9 + 29.8)) - 0.5;
+  float big = reliefFractal(q + warp * reliefPatch.w);
+  float small = reliefFractal(p / reliefPatch.y + warp * reliefPatch.w * 0.6 + 41.7);
+  float w = reliefPatch.z;
+  float a = smoothstep(0.5 - w, 0.5 + w, big), b = smoothstep(0.5 - w, 0.5 + w, small);
+  reliefTone = clamp(0.5 + (big - 0.5) * 1.6, 0.0, 1.0);
+  return reliefShape.x * clamp(0.65 * a + 0.35 * b * mix(0.5, 1.0, a), 0.0, 1.0);
 }
 #else
 float reliefHeight(vec3 p, vec3 n) {
@@ -336,7 +350,7 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
   const field = sceneFieldUniforms("ground.color");
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX, fragmentShader: fragment(mode, options.steps ?? 32),
-    defines: options.pattern === "fracture" ? { RELIEF_FRACTURE: "" } : {},
+    defines: options.pattern === "fracture" ? { RELIEF_FRACTURE: "" } : options.pattern === "domes" ? {} : { RELIEF_ROLLING: "" },
     uniforms: {
       msSunDirection: programSun, groundColor: field.texture, groundRect: field.rect,
       lift: { value: mode === "displace" ? 1 : mode === "parallax" ? 2 : 0 },
@@ -344,7 +358,7 @@ export function grassRelief(ground: THREE.Mesh, mode: ReliefMode, options: Grass
       reliefMore: { value: new THREE.Vector4(options.warp ?? 0.03, options.moundScale ?? 0.9, options.moundWeight ?? 0.2, options.fine ?? 0) },
       shadeTint: { value: new THREE.Vector3(...(options.shadeTint ?? [0.3, 0.44, 0.66])) },
       shadeBand: { value: new THREE.Vector3(options.threshold ?? 0.76, options.range ?? 0.42, options.cavity ?? 0.15) },
-      reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? 1.0, options.smallPatch ?? 0.35, options.edge ?? 0.12, options.jaggedness ?? 0.9) },
+      reliefPatch: { value: new THREE.Vector4(options.bigPatch ?? (options.pattern === "fracture" ? 1.0 : 0.7), options.smallPatch ?? (options.pattern === "fracture" ? 0.35 : 0.25), options.edge ?? (options.pattern === "fracture" ? 0.12 : 0.18), options.jaggedness ?? (options.pattern === "fracture" ? 0.9 : 1.2)) },
       reliefView: { value: new THREE.Vector3(options.viewMid ?? 0.48, 0, options.viewFade ?? 1) },
       reliefTint: { value: new THREE.Vector2(options.tone ?? 0.2, options.crown ?? 0.8) },
       reliefDome: { value: new THREE.Vector2(options.dome ?? 0.5, options.blend ?? 0.08) },
