@@ -638,6 +638,25 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
       coverage at a half (0.8 to fill a gap, so bark in front stays), the colour snapped flat to its nearest band.
       0.006 m reads as gouache up close and fades at a distance (it is meters at the plant).
     - Known gaps: the bark does not droop with the strips; the round density cards still read as round.
+  - **Milestone `painted-trees-milestone` (2026-11-17).** Since the checkpoint the density cards became a family of
+    painted billboards (`branch-cards.ts`, previewed by `tests/branch-cards-preview.mts` and
+    `tests/branch-family-preview.mts`):
+    - sprays (a branchlet: curved stem, alternating twigs and twiglets, small leaves of one size, thinning to their
+      tips) in three sizes, rooted on the plant's twigs (none floats), pointing the way their twig grows, sagging,
+      tucked a third of their length into the foliage, facing the camera 0.75; a spray on every twig end;
+    - round stemless cards (a ball of the same leaves), full in the core and open (a third missing, thinning to the rim)
+      between, facing the camera wholly, so the foliage goes from the painted core through full and open round cards to
+      sprays, the tiers chosen on a field smoothed 1.6× wider and blended at random;
+    - every card takes the leaf pattern map; the twig strips are off.
+    Light and colour: cards and core lit by a field smoothed 2× (`SHADE_SPREAD`) with 0.55 of the clumps' own form kept
+    (`SHADE_MIX`) and a small per-card random tilt (`SHADE_JITTER` 0.45); contrast 1.25 (`msContrast`) with the
+    highlight and a new neon band stretched to stay rare; the whole tree as one blob (`msMacro`: an ellipsoid on the
+    core's bounds) shifting each clump by how the blob faces the sun, 0.12 on the lit side and 0.3 on the shade side
+    (`MACRO`, `MACRO_SHADE`), and darkening clumps deep inside by 0.3 (`OCCLUSION`). Blur and re-threshold is off.
+    Reference renders `painted-mass/milestone-*.png`, made with `BASE=density BRANCHES=1 STRIPS=0 TILE=1.0 SIZE=0.6
+    DENSITY=5 COARSE=0.3 STRENGTH=1.2`, `FIELD_LEVEL` 0.6 (poplar) or 0.85 with `CARD_KEEP=0.5` (birch), the rest at
+    the script's defaults. Still to do: these settings belong in each tree's definition (the shrub shares the core's),
+    the bark does not droop with the sprays, and the blob is an ellipsoid, not the crown's own shape.
   - The flat dark discs among the fuzz were cards on edges the coarsening tore (one face): the opposite of the first
     face stood in for the missing one, so the card always showed and its light normal summed to zero. Those edges now
     get no card.
