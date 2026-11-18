@@ -47,8 +47,57 @@ pub struct ItemDefinition {
     /// Version 2: dimensions an editor may drag, each linked to one numeric geometry control.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handles: Vec<HandleDefinition>,
+    /// Version 2: named features the author places (where grime or wear should go), beside
+    /// those the generators report.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<FeatureDefinition>,
+    /// Weathering layers over each slot's material, lowest first: a MaterialSpec layer
+    /// recipe, its parameters and the features it follows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub layers: BTreeMap<String, Vec<LayerRequest>>,
     #[serde(skip)]
     pub source: String,
+}
+
+/// An authored feature: a polyline in item definition coordinates given to one part's
+/// receivers. It may repeat along one axis and be conditional, as parts are.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FeatureDefinition {
+    pub name: String,
+    pub part: String,
+    #[serde(default = "front_face")]
+    pub face: String,
+    pub points: Vec<[Scalar; 3]>,
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default = "toward_front")]
+    pub normal: [f64; 3],
+    #[serde(default)]
+    pub width: Scalar,
+    pub repeat: Option<RepeatAxis>,
+    pub when: Option<Scalar>,
+}
+fn front_face() -> String {
+    "front".into()
+}
+fn toward_front() -> [f64; 3] {
+    [0., -1., 0.]
+}
+
+/// A weathering layer on a slot (`authoring::Layer` once placed): `follow` maps the layer's
+/// own feature names to the receiver's. Parameter values may bind item controls with
+/// `{"parameter": name}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerRequest {
+    pub entry: String,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, Value>,
+    #[serde(default)]
+    pub seed: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub follow: BTreeMap<String, String>,
 }
 
 /// The part and face a decal sits on. `face` is `front` (default) or `back` on a panel,
@@ -113,6 +162,10 @@ pub enum ParameterType {
     Boolean,
     Color,
     Choice,
+    /// A plan polygon: 3 to 64 `[x, y]` points in meters, counterclockwise seen from above.
+    Points,
+    /// Up to 64 booleans, such as one per edge of a footprint.
+    Flags,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -210,6 +263,14 @@ pub enum Generator {
     Panel(PanelDefinition),
     /// Version 2 part generator.
     Route(RouteDefinition),
+    /// Version 2 part generator: a footprint swept upward, with its street corners cut and
+    /// an optional inset. Face groups `side`, `top`, `bottom`.
+    Prism {
+        footprint: FootprintReference,
+        height: Scalar,
+        #[serde(default)]
+        inset: Scalar,
+    },
     /// Version 2 part generator: another item definition, placed as a sub-item.
     Item(ItemReference),
     /// Version 2 part generator: a generator supplied by the host (for example a theme's
@@ -259,12 +320,29 @@ pub struct NativeReference {
 }
 
 /// One axis of a repeated part: `count` copies (0 to 256), indexed from zero by `name`.
-/// Inside the part, `name` and `<name>_count` read as numbers.
+/// Inside the part, `name` and `<name>_count` read as numbers. With `footprint` the axis runs
+/// over the footprint's edges instead, and each copy also reads the edge's geometry (see
+/// `footprint.rs`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepeatAxis {
     pub name: String,
+    #[serde(default)]
     pub count: Scalar,
+    pub footprint: Option<FootprintReference>,
+}
+
+/// A footprint read from controls: `points` names a `points` control, `streets` an optional
+/// `flags` control (one per edge, edge i running from point i to point i + 1), and `cut` the
+/// length a corner between two street edges is cut back along each, at 45 degrees on a square
+/// corner. Only convex corners are cut.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FootprintReference {
+    pub points: String,
+    pub streets: Option<String>,
+    #[serde(default)]
+    pub cut: Scalar,
 }
 
 /// One generator of a version 2 item, with its own meshes, features and geometry key.
@@ -293,6 +371,10 @@ pub struct PlacementDefinition {
     pub position: [Scalar; 3],
     #[serde(default)]
     pub rotation: [Scalar; 3],
+    /// Instead of `rotation`: the direction in plan that the part's X axis runs along, so the
+    /// part's front (-Y) faces to its right. No trigonometry, so copies along a footprint's
+    /// edges stand exactly on them.
+    pub along: Option<[Scalar; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +665,20 @@ impl Parameter {
             ParameterType::Choice => value
                 .as_str()
                 .is_some_and(|v| self.choices.iter().any(|choice| choice == v)),
+            ParameterType::Points => value.as_array().is_some_and(|points| {
+                (3..=64).contains(&points.len())
+                    && points.iter().all(|point| {
+                        point.as_array().is_some_and(|xy| {
+                            xy.len() == 2
+                                && xy.iter().all(|v| {
+                                    v.as_f64().is_some_and(|v| v.is_finite() && v.abs() <= 1e5)
+                                })
+                        })
+                    })
+            }),
+            ParameterType::Flags => value
+                .as_array()
+                .is_some_and(|flags| flags.len() <= 64 && flags.iter().all(Value::is_boolean)),
         }
     }
 }
@@ -854,9 +950,12 @@ impl ItemDefinition {
                                 "Derived values cannot read the finish control {used}."
                             )));
                         }
+                        // A boolean control reads as 1 or 0, as in inline expressions.
                         self.values
                             .get(&used)
-                            .and_then(Value::as_f64)
+                            .and_then(|value| {
+                                value.as_f64().or_else(|| value.as_bool().map(f64::from))
+                            })
                             .ok_or_else(|| error(format!("Parameter {used} is not numeric.")))?
                     } else {
                         return Err(error(format!("Unknown name {used}.")));
@@ -1058,6 +1157,60 @@ impl ItemDefinition {
                 }
             }
             result.insert(slot.clone(), request);
+        }
+        Ok(result)
+    }
+    /// The weathering layers of every slot, with `{"parameter": name}` values bound to the
+    /// item's controls (any role: a layer is appearance, never geometry).
+    pub(super) fn resolved_layers(
+        &self,
+        values: &Values,
+    ) -> Result<BTreeMap<String, Vec<LayerRequest>>, ItemDiagnostic> {
+        let mut result = BTreeMap::new();
+        for (slot, layers) in &self.layers {
+            let pointer = format!("/layers/{}", super::pointer_key(slot));
+            if !bounded_name(slot) || layers.len() > 16 {
+                return Err(fail(
+                    &self.source,
+                    &pointer,
+                    "ITEM_LAYER",
+                    "A slot has at most 16 layers.",
+                ));
+            }
+            let mut resolved = Vec::with_capacity(layers.len());
+            for (index, layer) in layers.iter().enumerate() {
+                let pointer = format!("{pointer}/{index}");
+                if layer.entry.is_empty()
+                    || layer.entry.len() > 1024
+                    || layer.parameters.len() > 64
+                    || layer.follow.len() > 16
+                    || layer
+                        .follow
+                        .iter()
+                        .any(|(a, b)| !bounded_name(a) || !bounded_name(b))
+                {
+                    return Err(fail(
+                        &self.source,
+                        &pointer,
+                        "ITEM_LAYER",
+                        "Invalid layer entry, parameters or followed features.",
+                    ));
+                }
+                let mut layer = layer.clone();
+                for (name, value) in &mut layer.parameters {
+                    if let Some(reference) = value
+                        .as_object()
+                        .filter(|object| object.len() == 1)
+                        .and_then(|object| object.get("parameter"))
+                        .and_then(Value::as_str)
+                    {
+                        let at = format!("{pointer}/parameters/{}", super::pointer_key(name));
+                        *value = self.parameter(reference, values, &at, false)?.clone();
+                    }
+                }
+                resolved.push(layer);
+            }
+            result.insert(slot.clone(), resolved);
         }
         Ok(result)
     }

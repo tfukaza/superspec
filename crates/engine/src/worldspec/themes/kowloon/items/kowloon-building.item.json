@@ -1,0 +1,88 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-building",
+  "parameters": {
+    "footprint": {"type": "points", "default": [[0, 0], [9.8, 0], [9.8, 7], [0, 7]]},
+    "streets": {"type": "flags", "default": [true, true, false, false]},
+    "cut": {"type": "number", "default": 0.24, "min": 0, "max": 3, "unit": "m"},
+    "floors": {"type": "integer", "default": 4, "min": 2, "max": 12},
+    "storyHeight": {"type": "number", "default": 3.0, "min": 2.6, "max": 4.5, "unit": "m"},
+    "groundHeight": {"type": "number", "default": 3.35, "min": 2.6, "max": 6, "unit": "m"},
+    "parapet": {"type": "number", "default": 0.75, "min": 0.3, "max": 2, "unit": "m"},
+    "seed": {"type": "integer", "default": 3, "min": 0, "max": 100000},
+    "frame": {"type": "color", "default": "#3f554b"},
+    "signs": {"type": "boolean", "default": true},
+    "rooftop": {"type": "boolean", "default": true}
+  },
+  "derived": {
+    "height": "groundHeight + (floors - 1) * storyHeight"
+  },
+  "parts": [
+    {
+      "id": "side",
+      "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
+      "when": "e_length >= 0.3",
+      "generator": {"kind": "item", "entry": "kowloon-facade-side.item.json",
+        "parameters": {"width": {"expr": "e_length"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
+                       "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + e"},
+                       "frame": {"parameter": "frame"},
+                       "groundShops": {"choose": [false, true], "by": "e_street * (e_length >= 2.5)"},
+                       "shopWidth": 3.6, "awningChance": 0.6,
+                       "bayWidth": {"expr": "select(e_street, 2.35, 2.1)"}, "edge": {"expr": "select(e_street, 0.5, 0.9)"},
+                       "windowWidth": {"expr": "select(e_street, 1.85, 0.9)"}, "windowHeight": {"expr": "select(e_street, 1.75, 1.1)"},
+                       "sill": {"expr": "select(e_street, 0.85, 1.1)"},
+                       "windowChance": {"expr": "select(e_street, 1, 0.35)"},
+                       "barsChance": {"expr": "select(e_street, 0.5, 0.8)"}, "rackChance": {"expr": "select(e_street, 0.12, 0.35)"},
+                       "airconChance": {"expr": "select(e_street, 0.4, 0.3)"}, "condenserChance": {"expr": "select(e_street, 0.3, 0.6)"},
+                       "plantChance": {"expr": "select(e_street, 0.15, 0.05)"}, "ventChance": {"expr": "select(e_street, 0.2, 0.5)"},
+                       "bands": {"choose": [false, true], "by": "e_street"},
+                       "backDoor": {"choose": [true, false], "by": "e_street"},
+                       "pipes": {"expr": "select(e_street, 0, 3)"},
+                       "riser": {"choose": [true, false], "by": "e_street"}, "riserRight": true,
+                       "ductRun": {"choose": [true, false], "by": "e_street"}, "ducts": {"expr": "select(e_street, 0, 1)"}}},
+      "placement": {"position": ["e_x", "e_y", 0], "along": ["e_dx", "e_dy"]}
+    },
+    {
+      "id": "corner",
+      "repeat": [{"name": "c", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
+      "when": "(c_cut > 0) * (c_clength >= 0.3)",
+      "generator": {"kind": "item", "entry": "kowloon-facade-side.item.json",
+        "parameters": {"width": {"expr": "c_clength"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
+                       "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + 100 + c"},
+                       "edge": 0.2, "windows": false, "groundShops": false, "downpipe": false, "riser": false}},
+      "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_cdx", "c_cdy"]}
+    },
+    {
+      "id": "cornerSign",
+      "repeat": [{"name": "c", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
+      "when": "signs * (c_cut > 0)",
+      "generator": {"kind": "native", "name": "kowloon/blade-sign",
+        "parameters": {"height": {"expr": "storyHeight * 1.6"}, "reach": 1.3, "seed": {"expr": "seed * 7 + c"}}},
+      "placement": {"position": ["c_cx + c_cdx * c_clength / 2", "c_cy + c_cdy * c_clength / 2", "groundHeight + 0.2"], "along": ["c_cdx", "c_cdy"]}
+    },
+    {
+      "id": "streetSign",
+      "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}}],
+      "when": "signs * e_street * (e_length > 6)",
+      "generator": {"kind": "native", "name": "kowloon/hung-sign",
+        "parameters": {"height": 2.4, "reach": 1.0, "seed": {"expr": "seed * 7 + 50 + e"}}},
+      "placement": {"position": ["e_x + e_dx * e_length * 0.5", "e_y + e_dy * e_length * 0.5", "groundHeight + 0.3"], "along": ["e_dx", "e_dy"]}
+    },
+    {
+      "id": "roof",
+      "generator": {"kind": "prism", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}}, "height": 0.22, "inset": 0.2},
+      "placement": {"position": [0, 0, "height - 0.22"]},
+      "slots": {"side": "wall", "top": "trim", "bottom": "wall"}
+    },
+    {
+      "id": "rooftop",
+      "repeat": [{"name": "r", "footprint": {"points": "footprint"}}],
+      "when": "rooftop * (r == 0)",
+      "generator": {"kind": "native", "name": "kowloon/rooftop",
+        "parameters": {"width": {"expr": "(r_max_x - r_min_x) * 0.6"}, "depth": {"expr": "(r_max_y - r_min_y) * 0.6"},
+                       "parapet": {"parameter": "parapet"}, "seed": {"parameter": "seed"}}},
+      "placement": {"position": ["(r_min_x + r_max_x) / 2", "(r_min_y + r_max_y) / 2", {"derived": "height"}]}
+    }
+  ]
+}

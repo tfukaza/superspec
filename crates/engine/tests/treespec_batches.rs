@@ -493,6 +493,155 @@ fn write_washroom_trees() {
     );
 }
 
+/// The lane's grass patch, between the washroom's low wall and the Kowloon building across it
+/// (`tests/studio/washroom-items`, `FACADE=building`): 15 cm cells over x -3.8 to -0.55 and
+/// y -8 to -2.9, a meter in from the building's fixtures, rolling by a few centimeters.
+fn lane_ground() -> GroundMesh {
+    let (low, cell, columns, rows) = ([-3.8, -8.0], 0.15, 21usize, 34usize);
+    let height = |x: f64, y: f64| {
+        0.012 + 0.03 * ((1.3 * x + 0.4).sin() * (0.8 * y).cos() + 0.5 * (0.5 * x - 0.9 * y).sin())
+    };
+    let mut ground = GroundMesh {
+        positions: vec![],
+        indices: vec![],
+    };
+    for row in 0..=rows {
+        for column in 0..=columns {
+            let (x, y) = (low[0] + column as f64 * cell, low[1] + row as f64 * cell);
+            ground.positions.push([x, y, height(x, y)]);
+        }
+    }
+    let width = columns as u32 + 1;
+    for row in 0..rows as u32 {
+        for column in 0..columns as u32 {
+            let a = row * width + column;
+            ground
+                .indices
+                .extend([a, a + 1, a + width + 1, a, a + width + 1, a + width]);
+        }
+    }
+    ground
+}
+
+/// Writes the lane's plants (`lane-plants.json` in `TREESPEC_OUTPUT`, default
+/// `generated/verification/treespec`): the grass patch of `lane_ground`, grown as the washroom
+/// lawn's grass, and three broadleaf trees and two shrubs standing in front of the Kowloon
+/// building, two of the trees on the patch. `tests/studio/washroom-items/build.mjs` adds them
+/// with the building (`LANE=1`).
+#[test]
+#[ignore = "writes the lane plants for the item building picture"]
+fn write_lane_plants() {
+    let out = std::env::var_os("TREESPEC_OUTPUT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../generated/verification/treespec"),
+        PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let ground = lane_ground();
+    let patch = grass::generate(
+        &lawn_definition(),
+        &GrassSite {
+            ground: ground.clone(),
+            mask: DensityMask::Uniform,
+        },
+        &|| false,
+    )
+    .unwrap();
+    let grass_look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+        "family": "grass", "patch": "lane", "far": 40, "material": "painted-grass",
+        "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 },
+    }))
+    .unwrap();
+    let mut all = batches::grass_levels(&patch, [0.; 3], &grass_look, None).unwrap();
+    for level in &mut all {
+        level.batch.id = level.batch.id.replacen(&patch.id, "lane", 1);
+        level.batch.object_id = "lane".into();
+    }
+    let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
+        "family": "leaves", "patch": "plant", "far": 60, "material": "painted-canopy",
+        "wind": { "azimuth": 30, "angle": 2.5, "scale": 6, "speed": 0.8, "bias": 0.7, "flutter": 9 },
+        "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 },
+        "canopy": {},
+    }))
+    .unwrap();
+    let broadleaf = |factor: f64| {
+        let mut definition = scaled(
+            tree::parse(
+                "broadleaf.tree.json",
+                include_str!("../src/treespec/fixtures/broadleaf.tree.json"),
+            )
+            .unwrap(),
+            factor,
+        );
+        for (lod, distance) in definition.lods.iter_mut().zip([0., 12., 26.]) {
+            lod.distance = distance;
+        }
+        definition
+    };
+    let mut shrub = tree::parse(
+        "shrub.tree.json",
+        include_str!("../src/treespec/fixtures/shrub.tree.json"),
+    )
+    .unwrap();
+    for (lod, distance) in shrub.lods.iter_mut().zip([0., 8., 16.]) {
+        lod.distance = distance;
+    }
+    let height = |x: f64, y: f64| {
+        ground
+            .positions
+            .iter()
+            .min_by(|a, b| {
+                ((a[0] - x).powi(2) + (a[1] - y).powi(2))
+                    .total_cmp(&((b[0] - x).powi(2) + (b[1] - y).powi(2)))
+            })
+            .filter(|p| (p[0] - x).abs() < 0.2 && (p[1] - y).abs() < 0.2)
+            .map_or(0., |p| p[2])
+    };
+    for (index, (definition, at)) in [
+        (broadleaf(0.75), [-2.2, -6.6]),
+        (broadleaf(0.6), [-2.5, -4.0]),
+        (broadleaf(0.7), [-2.3, 1.9]),
+        (shrub.clone(), [-1.3, -7.4]),
+        (shrub, [-1.4, -3.4]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let plant = tree::generate(&definition, &|| false).unwrap();
+        let base = [at[0], at[1], height(at[0], at[1]) - 0.02];
+        let mut levels = batches::tree_levels(&plant, base, &look).unwrap();
+        for level in &mut levels {
+            // Each plant is an object of its own, so two of one definition do not share IDs.
+            level.batch.id = format!("lane-plant-{index}/{}", level.batch.id);
+            level.batch.object_id = format!("lane-plant-{index}");
+            let foliage = level.batch.foliage.as_mut().unwrap();
+            if foliage.family == superspec_types::batch::FoliageFamily::Bark {
+                foliage.material = Some("painted-bark".into());
+            }
+        }
+        all.extend(levels);
+    }
+    let mut scene = Scene::empty(1, "test");
+    for FoliageBatch { batch, mesh } in &all {
+        scene.add_batch(batch, mesh).unwrap();
+    }
+    superspec_model::batches::check(&scene).unwrap();
+    let document = serde_json::json!({
+        "ground": {
+            "positions": ground.positions.iter().flatten().map(|v| *v as f32).collect::<Vec<_>>(),
+            "indices": ground.indices,
+        },
+        "batches": batches::project_document(&all),
+    });
+    let text = serde_json::to_vec(&document).unwrap();
+    std::fs::write(out.join("lane-plants.json"), &text).unwrap();
+    println!(
+        "lane-plants.json: {} batches, {} clumps of grass, {} bytes",
+        all.len(),
+        patch.stats.instances,
+        text.len()
+    );
+}
+
 /// Writes the foliage of the washroom picture (the strip of ground with grass and the shrub
 /// that `treespec_verification` writes as flattened GLBs) as a project's `batches`:
 /// `washroom-foliage.batches.json` in `TREESPEC_OUTPUT` (default
@@ -723,6 +872,21 @@ fn write_washroom_lawn() {
     } else {
         lawn_ground()
     };
+    let mut definition = lawn_definition();
+    // LAWN_LEVEL=k writes level k alone, from 0 m, to picture it up close.
+    if let Some(level) = std::env::var("LAWN_LEVEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        let mut only = definition.lods[level];
+        only.distance = 0.;
+        definition.lods = vec![only];
+    }
+    write_lawn(&out, ground, definition);
+}
+
+/// The washroom lawn's grass: the meadow fixture made fuller, calmer and even.
+fn lawn_definition() -> grass::GrassDefinition {
     let mut definition = meadow();
     // The washroom is seen from a few meters: its levels step at 7 and 14 m. Two far levels follow for a large
     // field, a painter's quick strokes: at 22 m half of each clump's blades, 2.2 times as wide, and at 30 m a third,
@@ -753,15 +917,11 @@ fn write_washroom_lawn() {
     for (lod, distance) in definition.lods.iter_mut().zip([0., 12., 20., 28., 36.]) {
         lod.distance = distance;
     }
-    // LAWN_LEVEL=k writes level k alone, from 0 m, to picture it up close.
-    if let Some(level) = std::env::var("LAWN_LEVEL")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-    {
-        let mut only = definition.lods[level];
-        only.distance = 0.;
-        definition.lods = vec![only];
-    }
+    definition
+}
+
+/// Grows `definition` on `ground` and writes the lawn document `washroom-lawn.json` in `out`.
+fn write_lawn(out: &std::path::Path, ground: GroundMesh, definition: grass::GrassDefinition) {
     let started = std::time::Instant::now();
     let patch = grass::generate(
         &definition,

@@ -62,8 +62,15 @@ impl Session {
             vec![Diagnostic::from(error)]
         };
         let definition = definition::parse(&request.entry, &source).map_err(&item_failure)?;
-        let prepared = definition::prepare(&definition, &request.parameters, assets, cancelled)
-            .map_err(&item_failure)?;
+        let mut environment = definition::Environment::new(assets)
+            .with_natives(crate::worldspec::shipped::item_generators());
+        let prepared = definition::prepare_in(
+            &definition,
+            &request.parameters,
+            &mut environment,
+            cancelled,
+        )
+        .map_err(&item_failure)?;
         let fail = |message: String| vec![Diagnostic::message(&request.entry, message)];
         let plan = Plan::new(
             vec![Node {
@@ -427,6 +434,8 @@ pub(super) struct PlacedItem {
     pub features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
     /// The pattern anchor of each mesh's part, in world meters.
     pub anchors: BTreeMap<String, definition::PatternAnchor>,
+    /// The item's weathering layers per item slot, lowest first.
+    pub layers: BTreeMap<String, Vec<definition::LayerRequest>>,
     /// For inspection and overlays: controls, derived values, parts with their keys,
     /// features, anchors, attachments, decals and handles, in world meters.
     pub metadata: serde_json::Value,
@@ -471,8 +480,18 @@ impl Session {
                 "A scene places imported models with kind glb, not through an item.".into(),
             ));
         }
-        let prepared = definition::prepare(&parsed, &model.parameters, assets, cancelled)
-            .map_err(&item_failure)?;
+        // Sub-item entries name the project's modules first, then its assets.
+        let modules = |path: &str| -> Result<Arc<[u8]>, String> {
+            match project.modules.get(path) {
+                Some(text) => Ok(Arc::from(text.as_bytes())),
+                None => assets(path),
+            }
+        };
+        let mut environment = definition::Environment::new(&modules)
+            .with_natives(crate::worldspec::shipped::item_generators());
+        let prepared =
+            definition::prepare_in(&parsed, &model.parameters, &mut environment, cancelled)
+                .map_err(&item_failure)?;
         let previous = self
             .placed_items
             .borrow()
@@ -532,6 +551,7 @@ impl Session {
             transforms: BTreeMap::new(),
             features: BTreeMap::new(),
             anchors: BTreeMap::new(),
+            layers: generated.layers.clone(),
             metadata: serde_json::Value::Null,
         };
         let anchor = |anchor: &definition::PatternAnchor| -> Result<_, String> {
@@ -580,7 +600,9 @@ impl Session {
             let mut meshes = Vec::new();
             for &mesh_index in &node.meshes {
                 let mesh = &geometry.meshes[mesh_index];
-                if !mesh.colors.is_empty() || !mesh.tangents.is_empty() {
+                // Vertex colors (a native fixture's tints) are not placed: the project's
+                // materials shade every receiver. Tangents would need a delivered basis.
+                if !mesh.tangents.is_empty() {
                     return Err(fail("A placed item has plain generated meshes.".into()));
                 }
                 let count = mesh.positions.len();

@@ -1,0 +1,77 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-duct-riser",
+  "parameters": {
+    "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
+    "storyHeight": {"type": "number", "default": 3.0, "min": 2.4, "max": 5, "unit": "m"},
+    "height": {"type": "number", "default": 12, "min": 3, "max": 60, "unit": "m"},
+    "firstFloor": {"type": "number", "default": 0, "min": 0, "max": 10, "unit": "m"},
+    "width": {"type": "number", "default": 0.4, "min": 0.2, "max": 0.8, "unit": "m"},
+    "depth": {"type": "number", "default": 0.3, "min": 0.15, "max": 0.6, "unit": "m"},
+    "standoff": {"type": "number", "default": 0.32, "min": 0.2, "max": 0.8, "unit": "m"},
+    "base": {"type": "number", "default": 0.9, "min": 0.3, "max": 12, "unit": "m"},
+    "branches": {"type": "boolean", "default": true}
+  },
+  "derived": {
+    "top": "height - 0.35",
+    "half": "width / 2",
+    "reach": "standoff - depth / 2"
+  },
+  "parts": [
+    {
+      "id": "riser",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
+        "wallThickness": 0.004,
+        "points": [[0, "-standoff", {"parameter": "base"}], [0, "-standoff", {"derived": "top"}]],
+        "up": [0, 1, 0],
+        "capped": true,
+        "fittings": [
+          {"kind": "flange", "id": "seam", "at": {"every": 1.2, "inset": 0.6}, "overhang": 0.025, "thickness": 0.02},
+          {"kind": "bracket", "id": "bracket", "at": {"every": {"parameter": "storyHeight"}, "inset": 0.8}, "reach": {"derived": "reach"}, "direction": [0, 1, 0], "width": 0.05, "thickness": 0.008}
+        ]
+      },
+      "slots": {"body": "galvanized", "fitting": "galvanized", "bracket": "steel", "bolt": "steel", "end": "galvanized"}
+    },
+    {
+      "id": "elbow",
+      "generator": {
+        "kind": "route",
+        "from": {"attachment": "riser/end"},
+        "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
+        "wallThickness": 0.004,
+        "points": [[0, 0, -0.05], [0, 0, 0.35], [0, "standoff + 0.12", 0.35]],
+        "bendRadius": 0.3,
+        "up": [0, 1, 0],
+        "capped": false,
+        "fittings": [{"kind": "flange", "id": "joint", "at": {"from": "start", "offset": 0.05}, "overhang": 0.025, "thickness": 0.02}]
+      },
+      "slots": {"body": "galvanized", "fitting": "galvanized", "end": "galvanized"}
+    },
+    {
+      "id": "hood",
+      "generator": {"kind": "box", "size": ["width + 0.1", "depth + 0.1", 0.36]},
+      "placement": {"position": ["-(width + 0.1) / 2", "-standoff - (depth + 0.1) / 2", "base - 0.36"]},
+      "slots": {"side": "galvanized", "top": "galvanized", "bottom": "opening"}
+    },
+    {
+      "id": "branch",
+      "repeat": [{"name": "j", "count": {"parameter": "floors"}}],
+      "when": "branches",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": "width * 0.6", "height": "depth * 0.6"},
+        "points": [["width * 0.2", "-standoff", "firstFloor + j * storyHeight + storyHeight - 0.45"], ["width * 0.2", 0.05, "firstFloor + j * storyHeight + storyHeight - 0.45"]],
+        "up": [0, 0, 1],
+        "capped": false
+      },
+      "slots": {"body": "galvanized", "end": "galvanized"}
+    }
+  ],
+  "slots": {},
+  "attachments": [
+    {"name": "foot", "position": [0, "-standoff", "base - 0.36"], "direction": [0, 0, -1]}
+  ]
+}

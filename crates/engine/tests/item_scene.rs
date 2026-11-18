@@ -259,16 +259,14 @@ fn a_scene_places_items_and_bakes_a_material_per_slot() {
             (low.min(p[0]), high.max(p[0]))
         });
     assert!(close(low, 1.) && close(high, 3.7), "{low} {high}");
-    // A slot the item does not have, and a material the project does not have, are refused.
-    let mut wrong = washroom();
-    wrong.models[0].slots.insert("paint".into(), "steel".into());
-    let error = messages(
-        Session::default()
-            .build_project(&wrong, 1, &asset, &|| false)
-            .err()
-            .unwrap(),
-    );
-    assert!(error.contains("binds slot paint"), "{error}");
+    // A binding for a slot the item does not emit is unused (an item's slots follow its
+    // controls); a material the project does not have is refused.
+    let mut spare = washroom();
+    spare.models[0].slots.insert("paint".into(), "steel".into());
+    let spared = Session::default()
+        .build_project(&spare, 1, &asset, &|| false)
+        .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+    assert_eq!(spared.metadata["bindings"], output.metadata["bindings"]);
     let mut wrong = washroom();
     wrong.models[1]
         .slots
@@ -570,8 +568,14 @@ fn a_decal_wraps_a_round_route_on_a_straight_run_clear_of_fittings() {
             (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
             (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
         ];
-        let outward = [(a[0] + b[0] + c[0]) / 3. - 1.14, (a[1] + b[1] + c[1]) / 3. - 2.12];
-        assert!(normal[0] * outward[0] + normal[1] * outward[1] > 0., "{triangle:?}");
+        let outward = [
+            (a[0] + b[0] + c[0]) / 3. - 1.14,
+            (a[1] + b[1] + c[1]) / 3. - 2.12,
+        ];
+        assert!(
+            normal[0] * outward[0] + normal[1] * outward[1] > 0.,
+            "{triangle:?}"
+        );
     }
     // On the coupling at 0.55 m it is refused; so it is on the bend at the top.
     for along in [0.55, 2.25] {
@@ -619,6 +623,42 @@ fn a_handle_links_a_dimension_to_a_control() {
 
 /// Writes a built item scene for the Wasm parity check (`tests/item-scene-parity.mjs`): the
 /// project, its companion image and the packet the native engine delivers.
+/// An item that weathers a slot: its wall's concrete gets the shipped top grime following the
+/// window's sill, as a layer over the material the project binds.
+#[test]
+fn an_items_layers_weather_its_slot_in_an_assignment_of_their_own() {
+    let mut project = washroom();
+    for (name, text) in [
+        (
+            "kowloon-noise.material.ts",
+            include_str!("../src/materialspec/program/examples/kowloon-noise.material.ts"),
+        ),
+        (
+            "kowloon-top-grime.material.ts",
+            include_str!("../src/materialspec/program/examples/kowloon-top-grime.material.ts"),
+        ),
+    ] {
+        project.modules.insert(name.into(), text.into());
+    }
+    let mut definition: Value = serde_json::from_str(WALL).unwrap();
+    definition["layers"] = json!({"concrete": [
+        {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.7}, "seed": 3, "follow": {"top": "sill"}}
+    ]});
+    project
+        .modules
+        .insert("wall.item.json".into(), definition.to_string());
+    let output = Session::default()
+        .build_project(&project, 1, &asset, &|| false)
+        .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+    let bindings = &output.metadata["bindings"];
+    // The weathered slot's receivers are bound to the derived assignment; others are not.
+    assert_eq!(
+        bindings["wall/part/wall/wall/front"],
+        "concrete.wall.concrete"
+    );
+    assert_eq!(bindings["wall/part/wall/wall/frame"], "steel");
+    assert_eq!(bindings["pipe/part/riser/riser/body"], "steel");
+}
 #[test]
 fn native_item_scene_packet_for_parity() {
     let project = tiled(2.7, 0.1);

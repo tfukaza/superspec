@@ -60,7 +60,10 @@ pub fn inspect(arguments: &Arguments) -> ExitCode {
         Ok(parsed) => parsed,
         Err(error) => return located(error),
     };
-    let prepared = match definition::prepare(&parsed, &values, &assets, &|| false) {
+    // Sub-item entries are read the same way, and native parts use the shipped fixtures.
+    let mut environment = definition::Environment::new(&assets)
+        .with_natives(superspec_engine::worldspec::shipped::item_generators());
+    let prepared = match definition::prepare_in(&parsed, &values, &mut environment, &|| false) {
         Ok(prepared) => prepared,
         Err(error) => return located(error),
     };

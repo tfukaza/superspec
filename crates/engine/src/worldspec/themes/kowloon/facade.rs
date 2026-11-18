@@ -1,5 +1,5 @@
 //! Complete facade composition; the host owns immutable clearance and collision inputs.
-mod services;
+pub(super) mod services;
 use super::{
     doors,
     facade_cells::{self, Cell, Role},

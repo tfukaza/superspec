@@ -281,7 +281,12 @@ fn industrial(
     Ok(())
 }
 
-fn draw_duct(d: &mut Fixture<'_, '_>, x: f64, bottom: f64, top: f64) -> Result<(), String> {
+pub(crate) fn draw_duct(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    bottom: f64,
+    top: f64,
+) -> Result<(), String> {
     let steel = "vent-metal";
     let lo = bottom + 1.05;
     let hi = top - 0.72;

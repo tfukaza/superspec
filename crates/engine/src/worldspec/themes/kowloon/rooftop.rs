@@ -80,7 +80,7 @@ impl Deck<'_> {
         Ok(None)
     }
 }
-fn aerial(
+pub(super) fn aerial(
     d: &mut Fixture<'_, '_>,
     base: V3,
     height: f64,
@@ -141,7 +141,7 @@ fn aerial(
     }
     Ok(())
 }
-fn shack(
+pub(super) fn shack(
     d: &mut Fixture<'_, '_>,
     p: Plot,
     height: f64,

@@ -26,6 +26,7 @@ pub mod floor;
 pub mod frosted;
 pub mod ground;
 pub mod household;
+pub mod items;
 pub mod kit;
 pub mod kit_materials;
 pub mod laundry;

@@ -81,19 +81,19 @@ pub(super) struct Style {
     beveling: bool,
     tube_axis: Option<V3>,
 }
-struct Receiver {
-    first_triangle: usize,
-    triangle_count: usize,
+pub(super) struct Receiver {
+    pub(super) first_triangle: usize,
+    pub(super) triangle_count: usize,
     style: Style,
     inverse: Matrix,
     projection: Projection,
-    settings: metal::Settings,
+    pub(super) settings: metal::Settings,
     density: f64,
 }
-struct Prepared {
-    first_triangle: usize,
-    triangle_count: usize,
-    settings: metal::Settings,
+pub(super) struct Prepared {
+    pub(super) first_triangle: usize,
+    pub(super) triangle_count: usize,
+    pub(super) settings: metal::Settings,
     density: f64,
     key: Option<String>,
     runoff: Option<super::pipe_runoff::Recipe>,
@@ -102,7 +102,7 @@ const MAX_RECEIVERS: usize = 32_768;
 const MAX_RECIPE_BYTES: usize = 64 * 1024 * 1024;
 // Complete multi-lot hosts need more records than an isolated facade; storage remains bounded.
 #[allow(clippy::large_enum_variant)]
-enum Pending {
+pub(super) enum Pending {
     Component(Receiver),
     Prepared(Prepared),
     Surface {
@@ -116,7 +116,7 @@ enum Pending {
 #[derive(Default)]
 pub(super) struct Collection {
     assemblies: Vec<Assembly>,
-    receivers: Vec<Pending>,
+    pub(super) receivers: Vec<Pending>,
     sealed: bool,
     deposits: Vec<super::stains::Deposit>,
     members: usize,

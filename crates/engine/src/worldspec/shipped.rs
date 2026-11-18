@@ -4,6 +4,11 @@ use crate::{Scene, Session, architecture::kowloon::Kowloon};
 use std::sync::Mutex;
 use superspec_types::diagnostic::Diagnostic;
 
+/// The shipped theme's fixtures as ItemSpec native generators (`kowloon/...`).
+pub fn item_generators() -> std::sync::Arc<dyn crate::itemspec::definition::NativeGenerators> {
+    super::themes::kowloon::items::natives()
+}
+
 /// Compiles the architectural model with the shipped profile and portable kernel.
 pub fn compile(source: &str, revision: u32) -> Result<Scene, Diagnostic> {
     compile_with_assets(source, revision, &|path| {

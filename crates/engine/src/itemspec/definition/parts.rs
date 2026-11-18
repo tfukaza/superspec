@@ -4,7 +4,7 @@ use super::{
     Attachment, Derived, Feature, ImportedMaterial, ItemDecal, ItemDefinition, ItemDiagnostic,
     ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PatternAnchor, PreparedItem, Values,
     compose::{self, Environment, Opaque},
-    decal, fail, panel, procedural, route,
+    decal, fail, footprint, panel, procedural, route,
     schema::{Generator, PartDefinition, Scalar, Switch, bounded_name},
     surfaces::{Frame, Outline, Surfaces, prism},
 };
@@ -129,6 +129,11 @@ enum PartShape {
         prepared: Opaque<PreparedItem>,
     },
     Native(compose::Native),
+    /// A footprint outline swept up by `height` from the part origin.
+    Prism {
+        outline: Vec<footprint::P2>,
+        height: f64,
+    },
 }
 
 /// Most parts an item may expand to, counting every copy of a repeated part.
@@ -209,12 +214,26 @@ fn copies(
         }
         let mut next = Vec::new();
         for copy in copies {
-            let count = context.definition.scalar(
-                &repeat.count,
-                context.parameters,
-                &copy.derived,
-                &format!("{at}/count"),
-            )?;
+            // Along a footprint, one copy per edge, each reading that edge's geometry.
+            let edges = match &repeat.footprint {
+                Some(reference) => Some(footprint::resolve(
+                    context.definition,
+                    reference,
+                    context.parameters,
+                    &copy.derived,
+                    &format!("{at}/footprint"),
+                )?),
+                None => None,
+            };
+            let count = match &edges {
+                Some(edges) => edges.len() as f64,
+                None => context.definition.scalar(
+                    &repeat.count,
+                    context.parameters,
+                    &copy.derived,
+                    &format!("{at}/count"),
+                )?,
+            };
             if count.fract() != 0. || !(0. ..=256.).contains(&count) {
                 return Err(context.fail(
                     &format!("{at}/count"),
@@ -226,6 +245,9 @@ fn copies(
                 let mut derived = copy.derived.clone();
                 derived.insert(repeat.name.clone(), index as f64);
                 derived.insert(format!("{}_count", repeat.name), count);
+                if let Some(edges) = &edges {
+                    derived.extend(footprint::locals(&repeat.name, edges, index));
+                }
                 next.push(Copy {
                     id: format!("{}-{index}", copy.id),
                     derived,
@@ -335,8 +357,26 @@ pub(super) fn prepare(
                         "Part position exceeds coordinate bounds.",
                     ));
                 }
-                placement = Matrix::placement(values[0], values[1], [1.; 3])
-                    .map_err(|e| context.fail(&format!("{pointer}/placement"), "ITEM_PART", e))?;
+                placement = match &definition.along {
+                    None => Matrix::placement(values[0], values[1], [1.; 3]).map_err(|e| {
+                        context.fail(&format!("{pointer}/placement"), "ITEM_PART", e)
+                    })?,
+                    Some(along) => {
+                        let at = format!("{pointer}/placement/along");
+                        let x = context.scalar(&along[0], &format!("{at}/0"))?;
+                        let y = context.scalar(&along[1], &format!("{at}/1"))?;
+                        let size = (x * x + y * y).sqrt();
+                        if !(size > 1e-9) || values[1].iter().any(|v| *v != 0.) {
+                            return Err(context.fail(
+                                &at,
+                                "ITEM_PART",
+                                "A part placed along a direction needs a nonzero direction and no rotation.",
+                            ));
+                        }
+                        let (x, y) = (x / size, y / size);
+                        Matrix([[x, y, 0.], [-y, x, 0.], [0., 0., 1.], values[0]])
+                    }
+                };
             }
             let generator = format!("{pointer}/generator");
             let (shape, groups, local): (PartShape, &[&str], Vec<Attachment>) = match &part
@@ -442,6 +482,29 @@ pub(super) fn prepare(
                     let route = route::resolve(context, definition, &generator, origin)?;
                     let local = route.attachments(id);
                     (PartShape::Route(route), route::GROUPS, local)
+                }
+                Generator::Prism {
+                    footprint: reference,
+                    height,
+                    inset,
+                } => {
+                    let edges = footprint::resolve(
+                        context.definition,
+                        reference,
+                        context.parameters,
+                        context.derived,
+                        &format!("{generator}/footprint"),
+                    )?;
+                    let inset = context.scalar(inset, &format!("{generator}/inset"))?;
+                    let height = context.dimension(height, &format!("{generator}/height"))?;
+                    (
+                        PartShape::Prism {
+                            outline: footprint::outline(&edges, inset),
+                            height,
+                        },
+                        &["side", "top", "bottom"],
+                        vec![],
+                    )
                 }
                 Generator::Item(reference) => {
                     let entry = compose::entry(
@@ -581,6 +644,7 @@ pub(super) fn decals(
             PartShape::Route(route) => decal::Surface::Route(route),
             PartShape::Pipe { .. }
             | PartShape::Duct { .. }
+            | PartShape::Prism { .. }
             | PartShape::Item { .. }
             | PartShape::Native(_) => {
                 return Err(context.fail(
@@ -601,13 +665,122 @@ pub(super) fn decals(
     Ok(placed)
 }
 
+/// Resolves the authored features, in item definition coordinates. A feature's `part` may
+/// name a copy by template (`wall-{j}`); one whose part was not emitted (dropped by its
+/// `when`) is dropped too, so a feature can follow a conditional part.
+pub(super) fn authored(
+    context: &Context<'_>,
+    parts: &[PreparedPart],
+) -> Result<Vec<Feature>, ItemDiagnostic> {
+    let definitions = &context.definition.features;
+    if definitions.len() > 64 {
+        return Err(context.fail(
+            "/features",
+            "ITEM_LIMIT",
+            "An item has at most 64 authored features.",
+        ));
+    }
+    let mut result = Vec::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        let pointer = format!("/features/{index}");
+        if !bounded_name(&definition.name)
+            || !bounded_name(&definition.face)
+            || definition.points.is_empty()
+            || definition.points.len() > 128
+        {
+            return Err(context.fail(
+                &pointer,
+                "ITEM_FEATURE",
+                "A feature has a bounded name and face and 1 to 128 points.",
+            ));
+        }
+        let normal = unit(definition.normal)
+            .map_err(|e| context.fail(&format!("{pointer}/normal"), "ITEM_FEATURE", e))?;
+        let copies = match &definition.repeat {
+            None => vec![context.derived.clone()],
+            Some(axis) => {
+                let count = context.scalar(&axis.count, &format!("{pointer}/repeat/count"))?;
+                if count.fract() != 0. || !(0. ..=256.).contains(&count) {
+                    return Err(context.fail(
+                        &format!("{pointer}/repeat"),
+                        "ITEM_REPEAT",
+                        "A feature repeats from 0 to 256 times.",
+                    ));
+                }
+                (0..count as usize)
+                    .map(|copy| {
+                        let mut derived = context.derived.clone();
+                        derived.insert(axis.name.clone(), copy as f64);
+                        derived.insert(format!("{}_count", axis.name), count);
+                        derived
+                    })
+                    .collect()
+            }
+        };
+        for derived in copies {
+            let copy = Context {
+                definition: context.definition,
+                parameters: context.parameters,
+                derived: &derived,
+            };
+            if let Some(condition) = &definition.when {
+                if copy.scalar(condition, &format!("{pointer}/when"))? <= 0. {
+                    continue;
+                }
+            }
+            let part = compose::template(
+                context.definition,
+                &definition.part,
+                &derived,
+                &format!("{pointer}/part"),
+            )?;
+            if !parts.iter().any(|known| known.id == part) {
+                continue;
+            }
+            let mut points = Vec::with_capacity(definition.points.len());
+            for (at, point) in definition.points.iter().enumerate() {
+                let mut resolved = [0.; 3];
+                for axis in 0..3 {
+                    resolved[axis] =
+                        copy.scalar(&point[axis], &format!("{pointer}/points/{at}/{axis}"))?;
+                }
+                points.push(resolved);
+            }
+            result.push(Feature {
+                name: definition.name.clone(),
+                part,
+                source: Some(AUTHORED.into()),
+                face: definition.face.clone(),
+                points,
+                closed: definition.closed,
+                normal,
+                width: copy.scalar(&definition.width, &format!("{pointer}/width"))?,
+            });
+            if result.len() > 4096 {
+                return Err(context.fail(
+                    "/features",
+                    "ITEM_LIMIT",
+                    "An item has at most 4096 authored features, counting copies.",
+                ));
+            }
+        }
+    }
+    Ok(result)
+}
+
 /// What building one part gives: its meshes, and any materials and images a sub-item brings.
 #[derive(Default)]
 struct Built {
     meshes: Vec<ItemMesh>,
     materials: BTreeMap<String, ImportedMaterial>,
     images: Vec<ItemImage>,
+    /// A sub-item's features, in part coordinates, given to this part.
+    features: Vec<Feature>,
 }
+
+/// The source an authored feature carries at its own level; a sub-item's authored features
+/// become `authored-sub` when adopted, so a kept part's copy never duplicates the parent's.
+pub(super) const AUTHORED: &str = "authored";
 
 impl PreparedPart {
     /// Renames generated meshes into this part and maps their slots, dropping unmapped ones.
@@ -632,10 +805,24 @@ impl PreparedPart {
                         materials.entry(target).or_insert_with(|| material.clone());
                     }
                 }
+                let features = item
+                    .geometry
+                    .features
+                    .iter()
+                    .map(|feature| {
+                        let mut feature = feature.clone();
+                        feature.part = self.id.clone();
+                        if feature.source.as_deref() == Some(AUTHORED) {
+                            feature.source = Some("authored-sub".into());
+                        }
+                        feature
+                    })
+                    .collect();
                 Ok(Built {
                     meshes: self.adopt(meshes),
                     materials,
                     images: item.geometry.images.clone(),
+                    features,
                 })
             }
             PartShape::Native(native) => {
@@ -711,6 +898,18 @@ impl PreparedPart {
             )?,
             PartShape::Panel(panel) => panel.build(&mut surfaces)?,
             PartShape::Route(route) => route.build(&mut surfaces)?,
+            PartShape::Prism { outline, height } => prism(
+                &mut surfaces,
+                ["side", "bottom", "top"],
+                &Frame {
+                    origin: [0.; 3],
+                    x: [1., 0., 0.],
+                    y: [0., 1., 0.],
+                },
+                &Outline::flat(outline.clone()),
+                None,
+                [0., *height],
+            )?,
             PartShape::Item { .. } | PartShape::Native(_) => {
                 return Err("Sub-item and native parts are built by their owner.".into());
             }
@@ -772,11 +971,25 @@ pub(super) fn build(
                 .map(|index| previous.meshes.get(*index).cloned())
                 .collect::<Option<Vec<_>>>()
         });
+        let mut adopted = Vec::new();
         let meshes = match kept {
-            Some(meshes) => meshes,
+            Some(meshes) => {
+                // A kept sub-item's features are the ones it had, already in item coordinates.
+                if let Some(previous) = previous.filter(|_| part.sub_item().is_some()) {
+                    geometry.features.extend(
+                        previous
+                            .features
+                            .iter()
+                            .filter(|f| f.part == part.id && f.source.as_deref() != Some(AUTHORED))
+                            .cloned(),
+                    );
+                }
+                meshes
+            }
             None => {
                 built.push(part.id.clone());
                 let result = part.build(cancelled).map_err(failure)?;
+                adopted = result.features;
                 for (slot, material) in result.materials {
                     geometry.imported_materials.entry(slot).or_insert(material);
                 }
@@ -834,7 +1047,13 @@ pub(super) fn build(
         };
         let (features, anchor) = part.features();
         let surface = matches!(part.shape, PartShape::Panel(_));
-        for mut feature in features {
+        // A sub-item's features are surface features where they came from a panel; their
+        // normals follow the inverse transpose as a panel's do (a rigid placement keeps both).
+        for (mut feature, surface) in features
+            .into_iter()
+            .map(|f| (f, surface))
+            .chain(adopted.into_iter().map(|f| (f, true)))
+        {
             for point in &mut feature.points {
                 *point = matrix.point(*point);
             }

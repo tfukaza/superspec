@@ -505,23 +505,61 @@ impl Session {
             let prefix = format!("{}/", model.id);
             let placed = self.place_item(project, model, &prefix, assets, cancelled)?;
             for (slot, material) in &model.slots {
+                // An item's slots depend on its controls (a seed or a condition can leave a
+                // fixture out), so a binding for a slot it does not emit this time is unused.
                 if !placed.slots.values().any(|used| used == slot) {
-                    return Err(fail(format!(
-                        "Model {} binds slot {slot}, which its item does not have.",
-                        model.id
-                    )));
+                    continue;
                 }
-                let assignment = resolved
+                let base = resolved
                     .project
                     .materials
-                    .iter_mut()
-                    .find(|assignment| &assignment.id == material)
+                    .iter()
+                    .position(|assignment| &assignment.id == material)
                     .ok_or_else(|| {
                         fail(format!(
                             "Model {} binds slot {slot} to {material}, which is not a material of the project.",
                             model.id
                         ))
                     })?;
+                // A slot the item weathers is its own assignment: the bound material with the
+                // item's layers over the material's own, so the base bake is still shared.
+                let index = match placed.layers.get(slot).filter(|layers| !layers.is_empty()) {
+                    None => base,
+                    Some(layers) => {
+                        let id = format!("{material}.{}.{slot}", model.id);
+                        if !valid_identity(&id) {
+                            return Err(fail(format!(
+                                "Model {} weathers slot {slot}, whose assignment {id} is not a valid identity.",
+                                model.id
+                            )));
+                        }
+                        match resolved.project.materials.iter().position(|a| a.id == id) {
+                            Some(index) => index,
+                            None => {
+                                let mut derived = resolved.project.materials[base].clone();
+                                // It is mapped as the material it derives from.
+                                if let Some(mapping) =
+                                    resolved.project.mappings.get(material).cloned()
+                                {
+                                    resolved.project.mappings.insert(id.clone(), mapping);
+                                }
+                                derived.id = id;
+                                derived.meshes.clear();
+                                derived
+                                    .layers
+                                    .extend(layers.iter().map(|layer| super::Layer {
+                                        entry: layer.entry.clone(),
+                                        parameters: layer.parameters.clone(),
+                                        seed: layer.seed,
+                                        follow: layer.follow.clone(),
+                                    }));
+                                resolved.project.materials.push(derived);
+                                resolved.project.materials.len() - 1
+                            }
+                        }
+                    }
+                };
+                let assignment = &mut resolved.project.materials[index];
                 for (mesh, _) in placed.slots.iter().filter(|(_, used)| *used == slot) {
                     let id = format!("{prefix}{mesh}");
                     if !assignment.meshes.contains(&id) {

@@ -1,0 +1,37 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-window",
+  "parameters": {
+    "width": {"type": "number", "default": 1.2, "min": 0.4, "max": 4, "unit": "m"},
+    "height": {"type": "number", "default": 1.4, "min": 0.4, "max": 3, "unit": "m"},
+    "kind": {"type": "choice", "default": "casement", "choices": ["casement", "slider", "timber", "louver"]},
+    "seed": {"type": "integer", "default": 0, "min": 0, "max": 100000000},
+    "hood": {"type": "boolean", "default": true},
+    "recess": {"type": "number", "default": 0.22, "min": 0.05, "max": 0.6, "unit": "m"},
+    "frame": {"type": "color", "default": "#2f4f43"},
+    "trim": {"type": "color", "default": "#e6e2d6"},
+    "lit": {"type": "boolean", "default": false},
+    "bars": {"type": "boolean", "default": false},
+    "barsPattern": {"type": "choice", "default": "bars", "choices": ["bars", "grid", "diamond"]}
+  },
+  "parts": [
+    {
+      "id": "window",
+      "generator": {"kind": "native", "name": "kowloon/window",
+        "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+                       "seed": {"parameter": "seed"}, "hood": {"parameter": "hood"}, "recess": {"parameter": "recess"},
+                       "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"}}}
+    },
+    {
+      "id": "bars",
+      "when": "bars",
+      "generator": {"kind": "native", "name": "kowloon/security-bars",
+        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}}},
+      "placement": {"position": [0, -0.06, -0.04]}
+    }
+  ],
+  "features": [
+    {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06}
+  ]
+}

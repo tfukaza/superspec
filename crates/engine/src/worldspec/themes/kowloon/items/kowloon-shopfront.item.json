@@ -1,0 +1,39 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-shopfront",
+  "parameters": {
+    "width": {"type": "number", "default": 3.0, "min": 1.5, "max": 20, "unit": "m"},
+    "height": {"type": "number", "default": 3.35, "min": 2.4, "max": 6, "unit": "m"},
+    "kind": {"type": "choice", "default": "shutter", "choices": ["shutter", "gate", "door", "shop", "service"]},
+    "seed": {"type": "integer", "default": 0, "min": 0, "max": 100000000},
+    "signs": {"type": "boolean", "default": true},
+    "awning": {"type": "boolean", "default": false},
+    "awningColor": {"type": "color", "default": "#3f7f5f"},
+    "lamp": {"type": "boolean", "default": true}
+  },
+  "parts": [
+    {
+      "id": "bay",
+      "generator": {"kind": "native", "name": "kowloon/ground-bay",
+        "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+                       "seed": {"parameter": "seed"}, "signs": {"parameter": "signs"}}}
+    },
+    {
+      "id": "awning",
+      "when": "awning",
+      "generator": {"kind": "native", "name": "kowloon/awning",
+        "parameters": {"width": {"expr": "width - 0.3"}, "depth": 0.85, "drop": 0.3, "color": {"parameter": "awningColor"}, "seed": {"parameter": "seed"}}},
+      "placement": {"position": [0, 0, "height - 0.62"]}
+    },
+    {
+      "id": "lamp",
+      "when": "lamp",
+      "generator": {"kind": "native", "name": "kowloon/wall-lamp", "parameters": {}},
+      "placement": {"position": ["width / 2 + 0.05", 0, "height - 0.9"]}
+    }
+  ],
+  "features": [
+    {"name": "drip", "part": "awning", "points": [["-(width - 0.3) / 2", 0, "height - 0.62"], ["(width - 0.3) / 2", 0, "height - 0.62"]], "when": "awning"}
+  ]
+}

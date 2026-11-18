@@ -1,0 +1,146 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-facade-side",
+  "parameters": {
+    "width": {"type": "number", "default": 9, "min": 0.3, "max": 30, "unit": "m"},
+    "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
+    "storyHeight": {"type": "number", "default": 3.0, "min": 2.6, "max": 4.5, "unit": "m"},
+    "groundHeight": {"type": "number", "default": 3.35, "min": 2.6, "max": 6, "unit": "m"},
+    "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
+    "bayWidth": {"type": "number", "default": 2.1, "min": 1.0, "max": 4, "unit": "m"},
+    "edge": {"type": "number", "default": 0.9, "min": 0.2, "max": 2, "unit": "m"},
+    "windowWidth": {"type": "number", "default": 1.1, "min": 0.5, "max": 2.5, "unit": "m"},
+    "windowHeight": {"type": "number", "default": 1.3, "min": 0.5, "max": 2.4, "unit": "m"},
+    "sill": {"type": "number", "default": 0.95, "min": 0.3, "max": 1.6, "unit": "m"},
+    "windowKind": {"type": "choice", "default": "casement", "choices": ["casement", "slider", "timber", "louver"]},
+    "frame": {"type": "color", "default": "#2f4f43"},
+    "seed": {"type": "integer", "default": 1, "min": 0, "max": 100000},
+    "windows": {"type": "boolean", "default": true},
+    "windowChance": {"type": "number", "default": 1, "min": 0, "max": 1},
+    "backDoor": {"type": "boolean", "default": false},
+    "pipes": {"type": "integer", "default": 0, "min": 0, "max": 8},
+    "airconChance": {"type": "number", "default": 0.5, "min": 0, "max": 1},
+    "condenserChance": {"type": "number", "default": 0.35, "min": 0, "max": 1},
+    "barsChance": {"type": "number", "default": 0.4, "min": 0, "max": 1},
+    "ventChance": {"type": "number", "default": 0.25, "min": 0, "max": 1},
+    "rackChance": {"type": "number", "default": 0.15, "min": 0, "max": 1},
+    "plantChance": {"type": "number", "default": 0.12, "min": 0, "max": 1},
+    "groundShops": {"type": "boolean", "default": true},
+    "shopWidth": {"type": "number", "default": 3.0, "min": 1.6, "max": 12, "unit": "m"},
+    "awningChance": {"type": "number", "default": 0.4, "min": 0, "max": 1},
+    "bands": {"type": "boolean", "default": true},
+    "downpipe": {"type": "boolean", "default": true},
+    "riser": {"type": "boolean", "default": true},
+    "riserRight": {"type": "boolean", "default": true},
+    "ductRun": {"type": "boolean", "default": false},
+    "runLength": {"type": "number", "default": 0.6, "min": 0.2, "max": 0.95},
+    "ducts": {"type": "integer", "default": 0, "min": 0, "max": 6},
+    "parapet": {"type": "number", "default": 0.95, "min": 0.3, "max": 2, "unit": "m"}
+  },
+  "derived": {
+    "upper": "1",
+    "base": "groundHeight",
+    "uppers": "floors - upper",
+    "height": "base + uppers * storyHeight",
+    "bays": "max(1, floor((width - edge * 2) / bayWidth))",
+    "pipeX": "select(riserRight, edge / 2, width - edge / 2)",
+    "riserX": "select(riserRight, width - edge / 2, edge / 2)"
+  },
+  "parts": [
+    {
+      "id": "ground",
+      "when": "groundShops",
+      "generator": {"kind": "item", "entry": "kowloon-ground-floor.item.json",
+        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
+                       "shopWidth": {"parameter": "shopWidth"}, "awningChance": {"parameter": "awningChance"}, "seed": {"parameter": "seed"}}}
+    },
+    {
+      "id": "groundFloor",
+      "when": "1 - groundShops",
+      "generator": {"kind": "item", "entry": "kowloon-floor.item.json",
+        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
+                       "z0": 0, "level": 0, "seed": {"parameter": "seed"},
+                       "windows": {"parameter": "windows"}, "windowChance": {"expr": "windowChance * 0.7"}, "bayWidth": {"parameter": "bayWidth"}, "edge": {"parameter": "edge"},
+                       "windowWidth": {"parameter": "windowWidth"}, "windowHeight": {"parameter": "windowHeight"}, "sill": {"expr": "sill + 0.25"},
+                       "windowKind": {"parameter": "windowKind"}, "frame": {"parameter": "frame"},
+                       "airconChance": {"expr": "airconChance * 0.6"}, "condenserChance": {"expr": "condenserChance * 0.6"},
+                       "barsChance": {"expr": "min(1, barsChance * 1.8)"}, "ventChance": {"parameter": "ventChance"},
+                       "rackChance": 0, "plantChance": 0, "band": false}}
+    },
+    {
+      "id": "floor",
+      "repeat": [{"name": "j", "count": {"derived": "uppers"}}],
+      "generator": {"kind": "item", "entry": "kowloon-floor.item.json",
+        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "storyHeight"}, "thickness": {"parameter": "thickness"},
+                       "z0": {"expr": "base + j * storyHeight"}, "level": {"expr": "j + upper"}, "seed": {"parameter": "seed"},
+                       "windows": {"parameter": "windows"}, "windowChance": {"parameter": "windowChance"}, "bayWidth": {"parameter": "bayWidth"}, "edge": {"parameter": "edge"},
+                       "windowWidth": {"parameter": "windowWidth"}, "windowHeight": {"parameter": "windowHeight"}, "sill": {"parameter": "sill"},
+                       "windowKind": {"parameter": "windowKind"}, "frame": {"parameter": "frame"},
+                       "airconChance": {"parameter": "airconChance"}, "condenserChance": {"parameter": "condenserChance"},
+                       "barsChance": {"expr": "select((j == 0) * groundShops, barsChance, 0)"}, "ventChance": {"parameter": "ventChance"},
+                       "rackChance": {"parameter": "rackChance"}, "plantChance": {"parameter": "plantChance"},
+                       "band": {"parameter": "bands"}}},
+      "placement": {"position": [0, 0, "base + j * storyHeight"]}
+    },
+    {
+      "id": "parapet",
+      "generator": {"kind": "item", "entry": "kowloon-parapet.item.json",
+        "parameters": {"width": {"parameter": "width"}, "thickness": {"parameter": "thickness"}, "height": {"parameter": "parapet"},
+                       "outlet": {"parameter": "downpipe"}, "outletX": {"derived": "pipeX"}}},
+      "placement": {"position": [0, 0, {"derived": "height"}]}
+    },
+    {
+      "id": "backDoor",
+      "when": "backDoor * (1 - groundShops) * (width >= 2)",
+      "generator": {"kind": "item", "entry": "kowloon-shopfront.item.json",
+        "parameters": {"kind": {"choose": ["service", "door"], "by": "random(seed, 13) * 2"}, "width": {"expr": "min(1.8, width - 0.4)"},
+                       "height": {"expr": "groundHeight - 0.05"}, "signs": false, "lamp": true, "seed": {"expr": "seed * 1000 + 999"}}},
+      "placement": {"position": ["(width - bays * bayWidth) / 2 + (floor(random(seed, 14) * bays) + 0.5) * bayWidth", 0, 0]}
+    },
+    {
+      "id": "pipe",
+      "repeat": [{"name": "k", "count": "max(0, bays - 1)"}],
+      "when": "(pipes > 0) * (random(seed, k, 12) < pipes / max(1, bays - 1))",
+      "generator": {"kind": "native", "name": "kowloon/downpipe",
+        "parameters": {"height": {"expr": "height + 0.2"}, "radius": {"choose": [0.04, 0.05, 0.065], "by": "random(seed, k, 15) * 3"}}},
+      "placement": {"position": ["(width - bays * bayWidth) / 2 + (k + 1) * bayWidth + 0.25", 0, 0]}
+    },
+    {
+      "id": "downpipe",
+      "when": "downpipe",
+      "generator": {"kind": "native", "name": "kowloon/downpipe", "parameters": {"height": {"expr": "height + 0.3"}}},
+      "placement": {"position": [{"derived": "pipeX"}, 0, 0]}
+    },
+    {
+      "id": "riser",
+      "when": "riser * (floors >= 2)",
+      "generator": {"kind": "item", "entry": "kowloon-duct-riser.item.json",
+        "parameters": {"floors": {"derived": "uppers"}, "storyHeight": {"parameter": "storyHeight"},
+                       "height": {"derived": "height"}, "firstFloor": {"derived": "base"},
+                       "base": {"expr": "select(groundShops, groundHeight + 0.25, 0.9)"}}},
+      "placement": {"position": [{"derived": "riserX"}, 0, 0]}
+    },
+    {
+      "id": "run",
+      "when": "ductRun * riser * (floors >= 2)",
+      "generator": {"kind": "item", "entry": "kowloon-duct-run.item.json",
+        "parameters": {"length": {"expr": "runLength * (width - edge)"}, "direction": {"expr": "select(riserRight, -1, 1)"},
+                       "tees": {"parameter": "bayWidth"}}},
+      "placement": {"position": [{"derived": "riserX"}, 0, "height - 0.75"]}
+    },
+    {
+      "id": "duct",
+      "repeat": [{"name": "k", "count": "max(0, bays - 1)"}],
+      "when": "(ducts > 0) * (uppers >= 2) * windows * (random(seed, k, 7) < ducts / max(1, bays - 1))",
+      "generator": {"kind": "native", "name": "kowloon/riser-duct",
+        "parameters": {"height": {"expr": "clamp(uppers * storyHeight - 1.6, 3, 20)"}}},
+      "placement": {"position": ["(width - bays * bayWidth) / 2 + (k + 1) * bayWidth", 0, "base + 0.4"]}
+    }
+  ],
+  "attachments": [
+    {"name": "base-left", "position": [0, 0, 0], "direction": [0, -1, 0]},
+    {"name": "base-right", "position": [{"parameter": "width"}, 0, 0], "direction": [0, -1, 0]},
+    {"name": "roof", "position": ["width / 2", "thickness / 2", {"derived": "height"}], "direction": [0, 0, 1]}
+  ]
+}

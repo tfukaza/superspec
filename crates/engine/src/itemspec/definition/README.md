@@ -98,6 +98,8 @@ message.
 | `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
 | `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
 | `pipe`, `duct` | as version 1 | `surface` |
+| `item` | `entry` (one or a list), `pick`, `parameters` | the sub-item's slots |
+| `native` | `name`, `parameters` | the generator's slots |
 
 Placement rules position openings and fittings: `{"from": "start"|"end"|"center",
 "offset"}`, `{"fraction"}`, and for fittings `{"every", "inset"}` (even spacing no
@@ -151,12 +153,53 @@ drag the point `at` along `axis`, and `d` meters change the numeric geometry con
 `parameter` by `d * scale` (default 1). `GeneratedItem.handles` gives them resolved,
 with the control's value and range.
 
+## Composition: sub-items, repeats, conditions and native generators
+
+**Expressions.** Any scalar field may be an expression string in the derived-value grammar,
+which also has `%`, comparisons (`< <= > >= == !=`, giving 1 or 0), `clamp(x, low, high)`,
+`select(condition, a, b)` and `random(...)`: a value in [0, 1) hashed from the exact bits of
+its arguments (SplitMix64), the same on every platform. A boolean geometry control reads as 1
+or 0. `{name}` in a sub-item entry or a route's `from` attachment is replaced by the integer
+value of a copy index or derived value.
+
+**Repeats and conditions.** A part may `repeat` over up to three named axes
+(`[{"name":"j","count":"floors"},{"name":"i","count":{"derived":"bays"}}]`); copies are
+`<id>-<j>-<i>`, and inside the part `j`, `i`, `j_count` and `i_count` read as numbers. `when`
+keeps a part (or each copy) only where its expression is positive. A panel opening may
+`repeat` along one axis and have a `when` of its own; the 32-opening limit counts copies. An
+item expands to at most 512 parts.
+
+**Sub-items.** `{"kind":"item","entry":"window.item.json","parameters":{...}}` places another
+item definition as a part. `entry` may be a list, from which `pick` (floored, wrapped into
+range) chooses. Arguments are literal JSON values, `{"parameter": name}` (passed unchanged),
+`{"derived": name}`, `{"expr": text}` or `{"choose": [values], "by": text}`. The sub-item's
+meshes are flattened under the part's node and named `<part>/<mesh>`; its slots keep their names
+unless the part's `slots` maps them (an unmapped slot is then dropped). A sub-item slot the
+parent does not assign takes the sub-item's own material request, and its imported materials and
+images come along. Its attachments become `<part>/<name>`, so a later route can start from them.
+Entries are read through the same asset reader as GLB files (a scene project's modules first);
+sub-items nest at most 8 deep and a definition that contains itself fails with `ITEM_SUB_ITEM`.
+A part's geometry key includes its sub-item's key, so a change rebuilds only that part.
+
+**Native generators.** `{"kind":"native","name":"kowloon/aircon","parameters":{...}}` calls a
+generator its host supplies through `Environment::with_natives` (`NativeGenerators`: an identity
+per name, which joins the part's geometry key, and a `generate` that returns meshes with slots).
+The shipped host (`worldspec::shipped::item_generators`) offers the Kowloon fixtures
+(`worldspec/themes/kowloon/items.rs`); without a host, or for an unknown name, preparing fails
+with `ITEM_NATIVE`. `prepare` keeps its old signature; `prepare_in` takes the environment.
+
+Composed examples are in `worldspec/themes/kowloon/items/`: `kowloon-duct-riser` (a riser that
+spans `floors` with a branch into each, an elbow into the wall at the roof and a hood at its
+foot) and `kowloon-facade-side` (one side of a building: a wall panel per floor with a row of
+windows, string courses, a parapet, air conditioners and condensers chosen per bay by `seed`, and
+the riser as a sub-item when there are two floors or more).
+
 In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
 its slots are bound to the project's materials, every part and face group is a receiver
 named `<model>/part/<part>/<part>/<group>`, and each receiver is given its part's
 features and pattern anchor.
 
-Limits: 64 decals, 32 handles, 64 parts, 64 derived values, 128 route points, 256 fittings per route, 32
+Limits: 64 decals, 32 handles, 64 part definitions (512 parts counting copies), 64 derived values, 128 route points, 256 fittings per route, 32
 openings per panel, 250000 triangles per item.
 
 Diagnostics carry source identity and JSON pointers. `parse` locates its errors;

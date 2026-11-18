@@ -2,6 +2,7 @@
 mod compose;
 mod decal;
 pub mod expression;
+mod footprint;
 mod glb;
 mod location;
 mod memory;
@@ -143,6 +144,10 @@ pub struct PreparedItem {
     pub decals: Vec<ItemDecal>,
     /// Version 2: drag handles for these control values.
     pub handles: Vec<ItemHandle>,
+    /// Weathering layers per slot, the item's own first, then its sub-items'.
+    pub layers: BTreeMap<String, Vec<LayerRequest>>,
+    /// Authored features, in definition coordinates (before the item transform).
+    authored: Vec<Feature>,
     definition: ItemDefinition,
     shape: Shape,
     attachments: Vec<Attachment>,
@@ -218,7 +223,12 @@ pub fn prepare(
     assets: &AssetReader<'_>,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<PreparedItem, ItemDiagnostic> {
-    prepare_in(definition, overrides, &mut Environment::new(assets), cancelled)
+    prepare_in(
+        definition,
+        overrides,
+        &mut Environment::new(assets),
+        cancelled,
+    )
 }
 
 /// Prepares a definition whose parts may be sub-items (read through the environment's
@@ -234,6 +244,7 @@ pub fn prepare_in(
     check_cancelled(&definition.source, cancelled)?;
     let parameters = definition.resolve_parameters(overrides)?;
     let mut materials = definition.materials(&parameters)?;
+    let mut layers = definition.resolved_layers(&parameters)?;
     let derived = definition.resolve_derived(&parameters)?;
     let context = parts::Context {
         definition,
@@ -241,6 +252,7 @@ pub fn prepare_in(
         derived: &derived,
     };
     let mut dependencies = BTreeMap::new();
+    let mut authored = Vec::new();
     let mut attachments = Vec::new();
     let mut part_keys = Vec::new();
     let mut decals = Vec::new();
@@ -341,6 +353,16 @@ pub fn prepare_in(
                     for (asset, hash) in &child.assets {
                         dependencies.insert(asset.clone(), hash.clone());
                     }
+                    for (slot, stack) in &child.layers {
+                        if let Some(target) = part.slot(slot) {
+                            let slot_layers = layers.entry(target).or_default();
+                            for layer in stack {
+                                if !slot_layers.contains(layer) {
+                                    slot_layers.push(layer.clone());
+                                }
+                            }
+                        }
+                    }
                 }
             }
             part_keys = prepared
@@ -348,13 +370,15 @@ pub fn prepare_in(
                 .zip(&definition.parts)
                 .map(|(part, source)| (source.id.clone(), part.key().to_owned()))
                 .collect();
-            let identity = json!(["parts", part_keys]);
+            authored = parts::authored(&context, &prepared)?;
+            let identity = json!(["parts", part_keys, authored]);
             decals = parts::decals(&context, &prepared, Matrix(definition.transform))?;
             (Shape::Parts(prepared), identity)
         }
         Generator::Box { .. }
         | Generator::Panel(_)
         | Generator::Route(_)
+        | Generator::Prism { .. }
         | Generator::Item(_)
         | Generator::Native(_) => {
             return Err(fail(
@@ -438,6 +462,8 @@ pub fn prepare_in(
         materials,
         decals,
         handles,
+        layers,
+        authored,
         definition: definition.clone(),
         shape,
         attachments,
@@ -486,6 +512,18 @@ impl PreparedItem {
                     fail(&self.definition.source, &pointer, code, message)
                 })?;
                 built = parts;
+                let mut geometry = geometry;
+                let matrix = Matrix(self.definition.transform);
+                for feature in &self.authored {
+                    let mut feature = feature.clone();
+                    for point in &mut feature.points {
+                        *point = matrix.point(*point);
+                    }
+                    feature.normal = unit(matrix.direction(feature.normal)).map_err(|e| {
+                        fail(&self.definition.source, "/features", "ITEM_FEATURE", e)
+                    })?;
+                    geometry.features.push(feature);
+                }
                 geometry
             }
             Shape::Pipe {
@@ -562,6 +600,7 @@ impl PreparedItem {
             },
             decals: self.decals.clone(),
             handles: self.handles.clone(),
+            layers: self.layers.clone(),
         })
     }
 }

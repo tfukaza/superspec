@@ -438,6 +438,10 @@ pub struct GeneratedItem {
     /// Version 2: drag handles for the current control values.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub handles: Vec<ItemHandle>,
+    /// Weathering layers over each slot's material, lowest first, including those of the
+    /// item's sub-items under the slots they land in.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layers: BTreeMap<String, Vec<super::LayerRequest>>,
 }
 impl GeneratedItem {
     pub fn with_material_overrides(
