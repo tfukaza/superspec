@@ -266,6 +266,21 @@ float msLeafLight(vec3 n, vec3 sun, float offset) {
   float sky = 0.42 * (0.5 + 0.5 * n.z);
   return max(direct, sky);
 }
+// The whole plant as one blob: an ellipsoid (msMacroCentre, msMacroRadii) whose surface normal at a point is the
+// plant's own facing there. A clump's light shifts by how that blob faces the sun (up to msMacroWeight either way), so
+// clumps on the shaded side of the tree read darker as a whole and those toward the sun lighter, each keeping its own
+// banding: the tree reads as one object. Weight 0 (unset) leaves the light as it is.
+uniform vec3 msMacroCentre;
+uniform vec3 msMacroRadii;
+uniform float msMacroWeight;
+float msMacro(vec3 world, vec3 sun) {
+  if (msMacroWeight <= 0.0) return 0.0;
+  vec3 r = max(msMacroRadii, vec3(1e-3));
+  vec3 n = normalize((world - msMacroCentre) / (r * r) + vec3(0.0, 0.0, 1e-5));
+  // Deep inside the blob, the facing fades out (a clump in the middle is neither side).
+  float depth = clamp(length((world - msMacroCentre) / r), 0.0, 1.0);
+  return msMacroWeight * dot(n, sun) * smoothstep(0.15, 0.7, depth);
+}
 // Highlights as one more band, above the top one: a leaf whose light (msLeafLight of its own normal from the leaf map)
 // passes the highlight level is painted lime, the edge blended over a pixel like the other bands'. Each leaf has one
 // normal, so whole leaves light, where the leaf map tips them nearest the sun. Lighter leaves (the map's tone, its
@@ -447,7 +462,7 @@ void main() {
   vec4 leaf = vec4(0.0, 0.0, tone, 1.0);
   // The leaf's normal tips the bulging surface normal along the map's own axes.
   vec3 shaded = normalize(n * m.z + (t * m.x + b * m.y) * strength);
-  float light = msLeafLight(shaded, sun, offset);
+  float light = msLeafLight(shaded, sun, offset) + msMacro(vWorld, sun);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.b);
   gl_FragColor = vec4(msLeafPaint(paint, light, leaf.b, highlight), 1.0);
   #include <colorspace_fragment>

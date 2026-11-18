@@ -239,7 +239,7 @@ void main() {
     vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
     float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
     vec3 n = normalize(normalize(vEdgeNormal) * z + (t * leaf.x + b * leaf.y) * mapStrength);
-    float light = msLeafLight(n, sun, offset);
+    float light = msLeafLight(n, sun, offset) + msMacro(vWorld, sun);
     vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
     gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
   } else if (shaded > 0.5) {

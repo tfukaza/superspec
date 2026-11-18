@@ -219,7 +219,7 @@ void main() {
   float z = sqrt(max(0.0, 1.0 - dot(m.xy, m.xy)));
   // Banded by the leaf map's normals over the foliage's outward normal there, as the core is: no shading of its own.
   vec3 n = normalize(normalize(vNormal) * z + (t * m.x + b * m.y) * mapStrength);
-  float light = msLeafLight(n, sun, offset);
+  float light = msLeafLight(n, sun, offset) + msMacro(vWorld, sun);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * m.z);
   gl_FragColor = vec4(msLeafPaint(paint, light, m.z, highlight), 1.0);
   #include <colorspace_fragment>

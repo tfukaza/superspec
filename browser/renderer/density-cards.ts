@@ -393,7 +393,7 @@ void main() {
     float mz = sqrt(max(0.0, 1.0 - dot(mapLeaf.xy, mapLeaf.xy)));
     n = normalize(n * mz + (mt * mapLeaf.x + mb * mapLeaf.y) * mapStrength * d);
     float tone = 0.5 * branch.b + 0.5 * mapLeaf.z * 1.6;
-    float light = msLeafLight(n, sun, offset);
+    float light = msLeafLight(n, sun, offset) + msMacro(vWorld, sun);
     vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * tone);
     gl_FragColor = vec4(msLeafPaint(paint, light, tone, highlight), 1.0);
     #include <colorspace_fragment>
@@ -408,7 +408,7 @@ void main() {
   vec3 leaf = msLeafMap(leafMap, vWorld, mapOrigin, mapTile, t, b);
   float z = sqrt(max(0.0, 1.0 - dot(leaf.xy, leaf.xy)));
   vec3 n = normalize(base * z + (t * leaf.x + b * leaf.y) * mapStrength * denseDetail);
-  float light = msLeafLight(n, sun, offset);
+  float light = msLeafLight(n, sun, offset) + msMacro(vWorld, sun);
   vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * leaf.z);
   gl_FragColor = vec4(msLeafPaint(paint, light, leaf.z, highlight), 1.0);
   #include <colorspace_fragment>
