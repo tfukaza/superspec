@@ -397,7 +397,7 @@ export function grassTufts(ground: THREE.Mesh, relief: THREE.Mesh, options: Gras
     uniforms: {
       ...shared.uniforms,
       tuftAtlas: { value: atlas },
-      tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0.14, 0.6])) },
+      tuftVary: { value: new THREE.Vector2(...(options.vary ?? [0, 0])) },
       tuftFace: { value: options.face ?? 0.35 },
       tuftNear: { value: new THREE.Vector2(...(options.near ?? [3, 6])) },
       tuftKeep: { value: new THREE.Vector3(options.base ?? 0.5, options.far ?? 30, 0.37) },
