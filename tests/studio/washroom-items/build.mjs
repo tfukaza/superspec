@@ -97,7 +97,7 @@ export function buildMaterials({ weathering = true } = {}) {
  */
 const anchoredConcrete = "kowloon-concrete-anchored.material.ts";
 /** The weathering layer recipes the Kowloon items name, and the base they go over. */
-export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts"];
+export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-runoff.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts"];
 function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [

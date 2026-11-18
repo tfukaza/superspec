@@ -129,9 +129,13 @@
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.45}, "seed": 3, "follow": {}},
-      {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.6}, "seed": 5, "follow": {"top": "sill"}},
-      {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.85}, "seed": 7, "follow": {"top": "drip"}}
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 1}, "seed": 3, "follow": {"source": "top"}},
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 0.8, "longest": 1.6}, "seed": 5, "follow": {"source": "sill"}},
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.9, "flow": 0.9, "longest": 1.4}, "seed": 7, "follow": {"source": "drip"}}
+    ],
+    "tile": [
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 0.8, "longest": 1.6}, "seed": 5, "follow": {"source": "sill"}},
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.9, "flow": 0.9, "longest": 1.4}, "seed": 7, "follow": {"source": "drip"}}
     ]
   }
 }

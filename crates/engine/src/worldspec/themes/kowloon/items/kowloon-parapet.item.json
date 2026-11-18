@@ -36,7 +36,7 @@
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.9}, "seed": 9}
+      {"entry": "kowloon-runoff.material.ts", "parameters": {"grime": 0.85, "flow": 1}, "seed": 3, "follow": {"source": "top"}}
     ]
   }
 }

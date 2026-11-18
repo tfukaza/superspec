@@ -21,8 +21,10 @@ const choice = process.env.MODEL ?? "side";
 // LANE=1 adds the paved lane with its grass patch and trees (write it first:
 //   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants).
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
-const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 256), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
+const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
+// The whole building is GPU-baked within BAKE_MEMORY MiB (default 6144; it takes about 5.1 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
+// per-pixel look, which shows a layered slot's base alone (no paint or grime).
 // Only the building (and the lane's paving and trees) is drawn; ROOM=1 brings back the washroom items and the grass patch.
 // BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
 // reference picture's plan); keys starting with "/" are comments.
@@ -50,7 +52,7 @@ try {
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off&bakememory=${process.env.BAKE_MEMORY ?? 6144}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   await page.locator("#open-project").setInputFiles({ name: "washroom-facade.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
   try {
@@ -63,6 +65,10 @@ try {
   }
   if (!process.exitCode) {
     await waitForFrames(page, 6);
+    // What the studio says of the bake: its status line and, per material, any layered slot it could not compose.
+    const report = await page.evaluate(() => ({ status: document.querySelector("#status")?.textContent,
+      bake: (document.querySelector("#viewport").dataset.sceneBake ?? "").slice(0, 1500) }));
+    console.log(`status: ${report.status}\nbake: ${report.bake}`);
     // The sun, as in the reference picture: high (55 degrees) and from the front, a little toward the side the narrow face
     // turns from (SUN=<azimuth>,<elevation> degrees from +x toward +y sets its direction), and softened.
     // LIGHT: "keep" leaves the scene's lighting alone; otherwise the sun is turned round and `softSun` (below) is merged into

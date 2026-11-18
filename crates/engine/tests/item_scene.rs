@@ -658,6 +658,25 @@ fn an_items_layers_weather_its_slot_in_an_assignment_of_their_own() {
     );
     assert_eq!(bindings["wall/part/wall/wall/frame"], "steel");
     assert_eq!(bindings["pipe/part/riser/riser/body"], "steel");
+    // A GPU host composing the layer is given the wall's sill as the feature the layer follows.
+    let shaded = Session::default()
+        .shade_project(&project, 1, &asset, &|| false)
+        .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+    let front = &shaded.metadata["shading"]["wall/part/wall/wall/front"];
+    assert_eq!(front["material"], "concrete.wall.concrete");
+    let layers = front["layerFeatures"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{front}"));
+    let rows = layers[0].as_array().unwrap();
+    let named = rows
+        .chunks_exact(12)
+        .filter(|row| row[3].as_f64().unwrap() >= 5.)
+        .count();
+    assert!(
+        named > 0,
+        "the layer sees no sill: {} rows",
+        rows.len() / 12
+    );
 }
 #[test]
 fn native_item_scene_packet_for_parity() {

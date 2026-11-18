@@ -149,6 +149,22 @@ Four differences from the picture were then closed, and the sun turned to the ot
 Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden, before these fixes),
 `itemspec/shop-house-lane.png` and `itemspec/shop-house-planned.png` (after them).
 
+### Runoff streaks
+
+The reference's grime is the Kowloon wall condition's runoff (`wall.rs`, `runoff_at` and `deposit_detail`): under
+every ledge, sill and roofline each column of wall gets a streak of its own strength and length (up to 2.8 m), fading
+as (1 - drop / reach)^1.4, with a dark lip under the source and a fine, wandering vertical grain. The tiles take the
+same runoff plus their own streaky deposits and joint dirt (`tile.rs`). `kowloon-runoff` ports that runoff to a
+MaterialSpec layer that follows a named feature (`source`), and the items use it in place of the band-shaped top
+grime: floors under their top edge, sills and air conditioners' drips, on both the wall and the tiled spandrels;
+ground floors under their top and awnings; parapets under their coping. Identical layers from a side's storeys merge,
+so a side stays within the 8 layers a slot composes.
+
+The earlier grey blobs were not grime at all. At production resolution most of the building's 518 receivers did
+not fit the preview's 512 MiB of baked maps and stayed on the per-pixel look, which shows a layered slot's base alone:
+no paint, no grime. `?bakememory=<MiB>` (64 to 8192) raises the allowance; the building takes about 5.1 GiB at
+1024 px and 160 texels a meter, so `tests/item-facade-browser.mjs` asks for 6 GiB.
+
 ### The scene
 
 `tests/studio/washroom-items/build.mjs` places the side (`FACADE=1`) or the building

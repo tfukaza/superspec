@@ -31,7 +31,12 @@ export const GPU_PREVIEW_PROFILE = "gpu-preview";
  * 39.4 MiB at 256 px and 71.2 MiB at 512 px; after a wall drag and release the graph holds 853 textures, 62.5 and
  * 129.4 MiB (117 idle, 23.2 and 59.7 MiB). The old count of 96 idle nodes kept under a seventh of the scene's textures.
  */
-export const SCENE_MAP_BYTES = 512 * 1024 * 1024;
+export const SCENE_MAP_BYTES = sceneMapMebibytes() * 1024 * 1024;
+/** 512 MiB, or what the page asks for with `?bakememory=<MiB>` (64 to 8192): a large scene on a real GPU wants more. */
+function sceneMapMebibytes(): number {
+  const asked = typeof location === "undefined" ? NaN : Number(new URLSearchParams(location.search).get("bakememory"));
+  return Number.isFinite(asked) && asked >= 64 && asked <= 8192 ? asked : 512;
+}
 /**
  * The least an idle node is charged: a render target is a texture and a framebuffer object to the driver whatever
  * its size (a 16 by 16 map with mips is 1.4 KiB of texels).

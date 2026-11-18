@@ -165,15 +165,16 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     );
     let follows: Vec<String> = floor.layers["wall"][1..]
         .iter()
-        .map(|layer| {
-            layer
-                .follow
-                .get("top")
-                .cloned()
-                .unwrap_or_else(|| "top".into())
-        })
+        .map(|layer| layer.follow["source"].clone())
         .collect();
+    // Runoff streaks from its top, its sills and its air conditioners' drips; on the tiled
+    // spandrels from the sills and drips.
     assert_eq!(follows, ["top", "sill", "drip"]);
+    let tiles: Vec<String> = floor.layers["tile"]
+        .iter()
+        .map(|layer| layer.follow["source"].clone())
+        .collect();
+    assert_eq!(tiles, ["sill", "drip"]);
     // Sub-item features land on the floor's own parts, in floor coordinates: each window's
     // sill where it stands (at the sill height, 0.95 m), beside the wall's own opening sills.
     let sills: Vec<_> = floor
@@ -202,7 +203,7 @@ fn a_side_stacks_a_ground_floor_upper_floors_and_a_parapet() {
         .map(|l| l.entry.as_str())
         .collect();
     for entry in [
-        "kowloon-top-grime.material.ts",
+        "kowloon-runoff.material.ts",
         "kowloon-ground-stain.material.ts",
         "kowloon-moss.material.ts",
     ] {
