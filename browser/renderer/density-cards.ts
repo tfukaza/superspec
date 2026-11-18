@@ -45,6 +45,9 @@ export interface DensityCardOptions {
    * its nearest twig grows there, so the sprays follow the branches they hang from.
    */
   twigs?: number[][];
+  /** With the family: the round cards' size against a spray's of the same kind, and the share of them kept. */
+  roundSize?: number;
+  roundKeep?: number;
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
@@ -75,8 +78,8 @@ function generator(seed: number): () => number {
 }
 
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
-  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 1, sun, leafMap,
-    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [] } = options;
+  const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
+    branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6 } = options;
   // Every twig's points with the way it grows there, bucketed by cell for the nearest lookup.
   const twigCell = 0.5, twigPoints = new Map<string, { p: THREE.Vector3; d: THREE.Vector3 }[]>();
   const key = (x: number, y: number, z: number) => `${Math.floor(x / twigCell)},${Math.floor(y / twigCell)},${Math.floor(z / twigCell)}`;
@@ -132,9 +135,14 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     const twig = sparse && branches ? nearestTwig(p) : null;
     if (sparse && branches && !twig) continue;
     if (twig) p.copy(twig.p);
-    // Its size by the density: large in the fuller foliage, medium, small sprigs at the faint rim (blended at random).
-    const kind = !twig ? 1 : Math.min(2, Math.max(0, Math.floor(depth * 3 + (random() - 0.5) * 0.9)));
-    kinds.push(kind, twig ? branchSize * BRANCH_FAMILY[kind].scale : 0);
+    // Its size by the density: large in the fuller foliage, medium, small at the faint rim (blended at random). With
+    // the family, a denser card is a round stemless one (kinds 3 to 5), a sparser one a spray (0 to 2).
+    const size3 = Math.min(2, Math.max(0, Math.floor(depth * 3 + (random() - 0.5) * 0.9)));
+    const kind = branches ? (twig ? size3 : 3 + size3) : 1;
+    // A round card fills its whole circle, so it is drawn smaller than a spray and fewer are kept, or they bury the
+    // branches and sprays.
+    if (branches && !twig && random() > roundKeep) continue;
+    kinds.push(kind, branches ? branchSize * BRANCH_FAMILY[size3].scale * (twig ? 1 : roundSize) : 0);
     centres.push(p.x, p.y, p.z);
     normals.push(n.x, n.y, n.z);
     let plane: THREE.Vector3, up: THREE.Vector3;
@@ -233,7 +241,7 @@ void main() {
   // sways a little about its root.
   float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * facing;
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
-  float s = (branch ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
+  float s = (hybrid > 0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
   vKind = aKind.x;
   // A branch card stands on its root (the bottom of the card, where its stem starts) on the twig; the others on their
   // middle.
@@ -272,14 +280,15 @@ void main() {
   // The foliage's outward normal, tipped toward the card's own as far as it keeps its own orientation, so cards at
   // different angles take different light, as a game tree's do.
   vec3 base = normalize(normalize(vNormal) + normalize(vCard) * 0.7 * (1.0 - facing));
-  if (hybrid > 0.5 && vSparse > 0.5) {
-    // A branch card: one of its kind's branchlets in the family atlas (row 0 small, rows 1 and 2 medium, row 3 large),
-    // its stem at the card's bottom. Shaded by its own leaves' normals in the card's axes, and their tones, so the
-    // bands fall on its leaves wherever it turns.
+  if (hybrid > 0.5) {
+    // A family card (branch-cards.ts): a spray (kinds 0 to 2: rows 0, 1-2, 3), its stem at the card's bottom, or a
+    // round stemless one (kinds 3 to 5: rows 4, 5-6, 7). Shaded by its own leaves' normals in the card's axes, and
+    // their tones, so the bands fall on its leaves wherever it turns.
     float k = floor(vKind + 0.5);
+    float size3 = mod(k, 3.0), rows = k > 2.5 ? 16.0 : 0.0;
     float pick = fract(vRandom * 31.7);
-    float cell = k < 0.5 ? floor(pick * 4.0) : k < 1.5 ? 4.0 + floor(pick * 8.0) : 12.0 + floor(pick * 4.0);
-    vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / 4.0;
+    float cell = rows + (size3 < 0.5 ? floor(pick * 4.0) : size3 < 1.5 ? 4.0 + floor(pick * 8.0) : 12.0 + floor(pick * 4.0));
+    vec2 at = (vec2(mod(cell, 4.0), floor(cell / 4.0)) + 0.01 + clamp(vUv, 0.0, 1.0) * 0.98) / vec2(4.0, 8.0);
     vec4 branch = texture2D(branches, at);
     if (branch.a < 0.5) discard;
     vec2 own = branch.rg * 2.0 - 1.0;

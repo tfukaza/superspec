@@ -30,19 +30,23 @@ export const BRANCH_FAMILY: { scale: number; options: BranchCardOptions }[] = [
   { scale: 368 / 256, options: { twigs: [4, 1], twiglets: [2, 1], missing: 0.03 } },
 ];
 
-/** The family's atlas, 4 × 4: row 0 small cards, rows 1 and 2 medium, row 3 large, each with gradual density. */
+/**
+ * The family's atlas, 4 wide by 8 tall, each card with gradual density: sprays in rows 0 (small), 1 and 2 (medium)
+ * and 3 (large); round stemless cards in rows 4 (small), 5 and 6 (medium) and 7 (large).
+ */
 export function branchFamilyAtlas(size = 256, melt = 2, fade = 0.35): { width: number; height: number; data: Uint8Array } {
-  const rows = [0, 1, 1, 2];
+  const rows = [0, 1, 1, 2, 0, 1, 1, 2];
   return branchCardAtlas(4, size, 1, melt, {}, cell => {
-    const kind = BRANCH_FAMILY[rows[Math.floor(cell / 4)]];
+    const row = Math.floor(cell / 4), kind = BRANCH_FAMILY[rows[row]];
     // Leaves and stems as on the medium card at the kind's scale.
-    return { ...kind.options, leaf: 0.08 / kind.scale, step: 0.06 / kind.scale, stemRef: size / kind.scale, fade, seed: 11 + cell };
-  });
+    return { ...kind.options, ...(row >= 4 ? { round: true, missing: 0.04 } : {}), leaf: 0.08 / kind.scale, step: 0.06 / kind.scale,
+      stemRef: size / kind.scale, fade, seed: 11 + cell };
+  }, 8);
 }
 
-export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}, per?: (cell: number) => BranchCardOptions): { width: number; height: number; data: Uint8Array } {
-  const width = grid * size, height = grid * size, data = new Uint8Array(width * height * 4);
-  for (let cell = 0; cell < grid * grid; cell++) {
+export function branchCardAtlas(grid = 4, size = 256, seed = 1, melt = 2, options: BranchCardOptions = {}, per?: (cell: number) => BranchCardOptions, tall = grid): { width: number; height: number; data: Uint8Array } {
+  const width = grid * size, height = tall * size, data = new Uint8Array(width * height * 4);
+  for (let cell = 0; cell < grid * tall; cell++) {
     const painted = melted(branchCard({ ...options, seed: seed * 97 + cell, ...(per ? per(cell) : {}), size }), melt);
     const ox = (cell % grid) * size, oy = Math.floor(cell / grid) * size;
     for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
