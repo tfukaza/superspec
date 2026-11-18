@@ -58,7 +58,7 @@ try {
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(({ keep, pillar, ball, sun }) => {
+  const info = await page.evaluate(({ keep, pillar, ball, sun, noGrass }) => {
     let lightingInfo = null;
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
@@ -73,6 +73,8 @@ try {
       // Fall back to the grass's own bounds.
       for (const m of s.models.children) if (m.userData.foliage) box.expandByObject(m);
     }
+    // NO_GRASS=1: the lawn's grass hidden, to judge the painted ground alone.
+    if (noGrass) for (const m of s.models.children) if (m.userData.foliage) { m.visible = false; m.userData.source = { visible: false }; }
     // PILLAR=1: a concrete pillar standing on the lawn (0.35 m square, 1.8 m tall), to see the shadows it casts on
     // the ground and grass.
     if (pillar && lawn) {
@@ -109,7 +111,7 @@ try {
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
     return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray(), lighting: lightingInfo };
-  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "" });
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1", ball: process.env.BALL ?? "soccer", sun: process.env.SUN ?? "", noGrass: process.env.NO_GRASS === "1" });
   if (info.lighting) console.log(`lighting ${JSON.stringify(info.lighting)}`);
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
