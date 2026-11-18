@@ -1,15 +1,29 @@
 {
-  "//": "kowloon-building controls that recreate the reference shop house bay by bay (the authored model=\"reference-corner\"). Edge 0 is the front, edge 1 the right side from the cut corner; storey 0 is the ground floor. The back and left edges are left to the seed.",
+  "//": "kowloon-building controls that recreate the reference shop house bay by bay (the authored model=\"reference-corner\"), from that model's own numbers. Edge 0 is the front, edge 1 the right side from the cut corner; storey 0 is the ground floor. The back and left edges are left to the seed.",
   "seed": 3,
   "shopWidth": 2.9,
+  "signs": false,
+  "streetWindowHeight": 1.87,
+  "streetSill": 0.85,
   "shopPlans": [["gate", "shop", "shop"], ["gate", "shop"]],
   "awningPlans": [["awning", "awning", "awning"], ["none", "awning"]],
+  "spansPlans": [
+    [[], [[0.55, 2.65], [3.2, 5.4], [5.95, 9.05]], [[0.55, 2.65], [3.2, 5.4], [5.95, 9.05]], [[0.55, 2.65], [3.2, 5.4], [5.95, 9.05]]],
+    [[], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]]]
+  ],
   "windowsPlans": [
     [[], ["window", "window", "window"], ["window", "window", "window"], ["window", "window", "window"]],
     [[], ["window", "window"], ["window", "window"], ["window", "window"]]
   ],
   "fixturesPlans": [
     [[], ["none", "none", "none"], ["cage", "cage", "split"], ["none", "aircon", "split"]],
-    [[], ["none", "none"], ["split", "none"], ["split", "none"]]
+    [[], ["none", "none"], ["aircon", "none"], ["aircon", "none"]]
+  ],
+  "boardTexts": ["永昌藥行", "興隆五金", "電器修理"],
+  "boardPlans": [
+    [[-1.03, 4.72, 0.94, 2.82, 0, 0, 0, 0.85, 1.18, -0.08, 0]],
+    [[0.02, 6.05, 0.94, 3.33, 1, 0, 53.13, 0.78, 0, 0, 1], [-0.02, 4.95, 1.95, 0.64, 0, 1, 0, 0.83, -0.12, 2.05, 2]],
+    [],
+    []
   ]
 }

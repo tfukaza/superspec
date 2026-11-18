@@ -343,3 +343,59 @@ fn a_changed_sub_item_rebuilds_only_its_parts() {
     assert_eq!(built, ["second"]);
     assert_eq!(rebuilt.geometry.bounds[1], [2.7, 0.7, 0.7]);
 }
+
+#[test]
+fn grids_are_read_by_cell_and_count_and_texts_by_element() {
+    let top = json!({"format":"itemspec","version":2,"id":"grids",
+        "parameters":{
+            "plan":{"type":"grid","default":[[1,2,3],[4]]},
+            "kinds":{"type":"grid","default":[["b","a"]],"choices":["x","a","b"]},
+            "names":{"type":"texts","default":["first","second"]},
+            "label":{"type":"text","default":"hi"}},
+        "derived":{"rows":"count(plan)","first":"count(plan, 0)","second":"count(plan, 1)","none":"count(plan, 5)",
+                   "three":"cell(plan, 0, 2)","four":"cell(plan, 1, 0)","absent":"cell(plan, 2, 0)","b":"cell(kinds, 0, 0)"},
+        "parts":[{"id":"q","repeat":[{"name":"i","count":{"derived":"first"}}],
+                  "generator":{"kind":"native","name":"test/quad","parameters":{"size":{"expr":"cell(plan, 0, i) / 10"},
+                      "tint":{"element":"names","at":"i"}}}}]});
+    let quads = Arc::new(Quads(Mutex::new(0)));
+    let item = build_with(&top, &BTreeMap::new(), Values::new(), Some(quads)).unwrap();
+    let derived = |name: &str| {
+        let definition = item::parse("g", &top.to_string()).unwrap();
+        let values = definition.resolve_parameters(&Values::new()).unwrap();
+        definition.resolve_derived(&values).unwrap()[name]
+    };
+    assert_eq!(
+        [
+            derived("rows"),
+            derived("first"),
+            derived("second"),
+            derived("none")
+        ],
+        [2., 3., 1., 0.]
+    );
+    assert_eq!(
+        [
+            derived("three"),
+            derived("four"),
+            derived("absent"),
+            derived("b")
+        ],
+        [3., 4., 0., 2.]
+    );
+    // Three copies, sized 0.1, 0.2 and 0.3, the first two named by the texts and the third by none.
+    assert_eq!(item.geometry.parts.len(), 3);
+    assert!((item.geometry.bounds[1][0] - 0.3).abs() < 1e-9);
+    let slots: Vec<&str> = item
+        .geometry
+        .meshes
+        .iter()
+        .map(|m| m.material_slot.as_str())
+        .collect();
+    assert_eq!(slots, ["first", "second", "none"]);
+    // An entry that is not among a grid's choices, or a text that is too long, is refused.
+    let definition = item::parse("g", &top.to_string()).unwrap();
+    let bad: Values = [("kinds".to_owned(), json!([["fridge"]]))].into();
+    assert!(definition.resolve_parameters(&bad).is_err());
+    let long: Values = [("label".to_owned(), json!("x".repeat(300)))].into();
+    assert!(definition.resolve_parameters(&long).is_err());
+}

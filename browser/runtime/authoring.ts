@@ -347,10 +347,11 @@ export class AuthoringCompiler {
   /** Composes a project's models and compiles its materials to preview shaders; nothing is baked. */
   shadeProject(project: AuthoringProject, requestId: number, layouts = false): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
-    // Shaders read images on the page; the engine only needs the models and the images their decals show.
+    // Shaders read images on the page; the engine only needs the models, the images their decals show and the shipped
+    // catalog images a project supplies for its items' own slots (a sign's lettering atlas).
     const decals = decalImages(inputs);
     const models = Object.fromEntries(Object.entries(assets).filter(([name]) => /\.(glb|ktx2)$/i.test(name)
-      || inputs.models?.some(model => model.name === name) || decals.has(name)));
+      || inputs.models?.some(model => model.name === name) || decals.has(name) || name.startsWith("superspec-material:")));
     return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models, layouts });
   }
 

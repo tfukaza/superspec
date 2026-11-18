@@ -600,8 +600,7 @@ impl Session {
             let mut meshes = Vec::new();
             for &mesh_index in &node.meshes {
                 let mesh = &geometry.meshes[mesh_index];
-                // Vertex colors (a native fixture's tints) are not placed: the project's
-                // materials shade every receiver. Tangents would need a delivered basis.
+                // Tangents would need a delivered basis.
                 if !mesh.tangents.is_empty() {
                     return Err(fail("A placed item has plain generated meshes.".into()));
                 }
@@ -623,12 +622,40 @@ impl Session {
                         } else {
                             mesh.uvs.clone()
                         },
-                        colors: vec![[1.; 3]; count],
+                        // A fixture's tints (a sign's board and ink) come through for the slots a
+                        // project leaves plain.
+                        colors: if mesh.colors.len() == count {
+                            mesh.colors.iter().map(|c| [c[0], c[1], c[2]]).collect()
+                        } else {
+                            vec![[1.; 3]; count]
+                        },
                         indices: mesh.indices.clone(),
                         tangents: vec![],
                     }),
                 );
                 let material = format!("studio/item/slot/{}", mesh.material_slot);
+                // A sign's slots are the shipped catalog materials (the glyph atlas and the
+                // board) unless the project binds them; their images come from the assets.
+                let shipped = match mesh.material_slot.as_str() {
+                    "lettering" => superspec_catalog::material("builtin:lettering"),
+                    "board" => superspec_catalog::material("builtin:signboard"),
+                    _ => None,
+                };
+                if let Some(texture) = shipped.as_ref().and_then(|m| m.texture.as_ref()) {
+                    if !placed.model.images.contains_key(texture) {
+                        let bytes =
+                            assets(texture).map_err(|error| fail(format!("{texture}: {error}")))?;
+                        let decoded = image::decode(&bytes).map_err(&fail)?;
+                        placed.model.images.insert(
+                            texture.clone(),
+                            ImageResource {
+                                mime: decoded.mime,
+                                bytes: bytes.clone(),
+                                pixels: decoded.width * decoded.height,
+                            },
+                        );
+                    }
+                }
                 placed
                     .model
                     .materials
@@ -639,6 +666,9 @@ impl Session {
                             .get(&mesh.material_slot)
                             .map(|imported| imported.material())
                             .unwrap_or_default();
+                        if let Some(shipped) = shipped.clone() {
+                            value = shipped;
+                        }
                         value.id = material.clone();
                         value
                     });

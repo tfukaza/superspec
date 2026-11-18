@@ -606,6 +606,13 @@ fn balcony(
     let splay = a.number("splay", 0.)?;
     let thickness = a.number("thickness", 0.12)?;
     let parapet = a.boolean("parapet", true)?;
+    // `steel`: the reference shop house's railing (three green rails on posts, a low concrete
+    // upstand) in place of the solid parapet.
+    let rail = a.text("rail", "parapet")?;
+    if !["parapet", "steel"].contains(&rail.as_str()) {
+        return Err(format!("{name}: rail must be one of parapet, steel."));
+    }
+    let steel = a.color("rail_color", "#3f554b")?;
     let height = a.number("parapet_height", 0.85)?;
     let color = a.color("color", "#d6e4d4")?;
     let trim = a.color("trim", "#e6e2d6")?;
@@ -624,8 +631,207 @@ fn balcony(
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "balcony")?;
         balconies::slab(d, &outline, -thickness, 0., color, "concrete")?;
-        if parapet {
+        if parapet && rail == "steel" {
+            steel_rail(d, mesh_weathering(name), &outline, steel, trim)?;
+        } else if parapet {
             balconies::parapet(d, &outline, height, color, trim, &settings, "balcony")?;
+        }
+        Ok(())
+    })
+}
+
+/// The unbaked weathering of a native fixture, with the fixture's name as its seed.
+fn mesh_weathering(name: &str) -> weathered::Settings {
+    weathering(name, 0.)
+}
+
+/// The reference shop house's balcony railing around the three open sides of a four-point
+/// outline (back left, back right, front right, front left): a low concrete upstand with three
+/// steel rails on posts, mitred at the corners.
+fn steel_rail(
+    d: &mut Fixture<'_, '_>,
+    settings: weathered::Settings,
+    outline: &[V3; 4],
+    steel: V3,
+    cap: V3,
+) -> Result<(), String> {
+    let original = d.pen.clone();
+    let path = [outline[0], outline[3], outline[2], outline[1]];
+    let segments: Vec<(V3, f64)> = path
+        .windows(2)
+        .map(|p| {
+            let [x, y] = [p[1][0] - p[0][0], p[1][1] - p[0][1]];
+            let length = x.hypot(y);
+            ([x / length, y / length, 0.], length)
+        })
+        .collect();
+    let turn = |a: V3, b: V3| (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
+    for (i, &(tangent, length)) in segments.iter().enumerate() {
+        let miters = [
+            i.checked_sub(1)
+                .map(|j| (turn(segments[j].0, tangent) / 2.).tan()),
+            segments
+                .get(i + 1)
+                .map(|&(next, _)| -(turn(tangent, next) / 2.).tan()),
+        ];
+        d.pen = original.facing(path[i], tangent, [-tangent[1], tangent[0], 0.])?;
+        d.cuboid("concrete", [0., -0.075, 0.], [length, 0., 0.3], cap, "")?;
+        d.pen = d.pen.with_weathering(
+            d.mesh,
+            settings.clone(),
+            super::metal::Kind::Cage,
+            None,
+            vec!["metal".into()],
+        )?;
+        let start = -0.035 * miters[0].unwrap_or(0.);
+        let end = length - 0.035 * miters[1].unwrap_or(0.);
+        for z in [0.59, 0.83, 1.08] {
+            d.tube(
+                "metal",
+                &[[start, -0.035, z], [end, -0.035, z]],
+                0.023,
+                steel,
+                10,
+            )?;
+        }
+        let posts = (length / 1.4).ceil() as usize;
+        for j in 0..=posts {
+            let x = start + (end - start) * j as f64 / posts as f64;
+            d.tube(
+                "metal",
+                &[[x, -0.035, 0.28], [x, -0.035, 1.11]],
+                0.026,
+                steel,
+                10,
+            )?;
+        }
+    }
+    d.pen = original;
+    Ok(())
+}
+
+/// `kowloon/board-sign`: a lettered sheet sign hung from two outriggers, as on the reference shop
+/// house. Anchor: the pier line on the wall plane at the board's foot; the board projects
+/// `reach` from the wall (or stands at `angle` degrees to it, turning about the vertical axis
+/// at its fixing). Parameters: `text` (main lettering, `興隆五金`), `width` (m, 0.94), `height`
+/// (m, 3.3), `red` (true: ivory on oxblood; false: oxblood on ivory), `horizontal` (reads left to
+/// right, false: top to bottom), `reach` (m of outrigger, 0.8), `angle` (degrees, 0), `age`
+/// (0–1, 0.7), `anchor` (m along the board from its left edge to where the outriggers meet the
+/// wall, 0), `end` (m along it where they end; default the board's far edge, or its far end at
+/// an angle), `seed` (weathering).
+fn board_sign(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    use signs::{
+        Construction, Outline,
+        lettering::{Direction, Face},
+        panel,
+    };
+    let mut a = Arguments::new(name, values);
+    let text = a.text("text", "興隆五金")?;
+    let width = a.number("width", 0.94)?;
+    let height = a.number("height", 3.3)?;
+    let red = a.boolean("red", true)?;
+    let horizontal = a.boolean("horizontal", false)?;
+    let reach = a.number("reach", 0.8)?;
+    let angle = a.number("angle", 0.)?.to_radians();
+    let anchor = a.number("anchor", 0.)?;
+    let end_at = a.number("end", width)?;
+    let age = a.number("age", 0.7)?;
+    let key = a.seed()?;
+    a.finish()?;
+    let ivory = srgb("#dfcfaa");
+    let oxblood = srgb("#793f32");
+    let (ground, ink) = if red {
+        (oxblood, ivory)
+    } else {
+        (ivory, oxblood)
+    };
+    let hardware = panel::Hardware {
+        slot: "metal".into(),
+        tint: srgb("#504d3d"),
+        weathering: None,
+    };
+    let settings = sign_settings(&key);
+    draw(cancelled, |mesh| {
+        let root = pen("sign")?;
+        let (sin, cos) = angle.sin_cos();
+        // The board's own frame: its face along the direction `angle` off the wall, its body
+        // standing `reach` out from the wall.
+        let pen = root.facing([0., reach, 0.], [cos, sin, 0.], [-sin, cos, 0.])?;
+        panel::draw(
+            &mut on(mesh, pen)?,
+            &panel::Design {
+                width,
+                height,
+                depth: 0.045,
+                construction: Construction::Sheet,
+                outline: Outline::Rectangle,
+                ground,
+                border: Some(ink),
+                stack: panel::Stack::Down,
+                blocks: vec![panel::Block {
+                    text: text.clone(),
+                    face: Face::Kai,
+                    direction: if horizontal {
+                        Direction::Ltr
+                    } else {
+                        Direction::Ttb
+                    },
+                    ink,
+                    share: 1.,
+                    shadow: None,
+                }],
+                age,
+                phase: SeededRng::from_text(&key).float(0., 100.),
+            },
+            panel::Sides::Both,
+            &hardware,
+            &settings,
+        )?;
+        let d = &mut on(mesh, root)?;
+        for z in [0.12, height - 0.12] {
+            if angle != 0. {
+                let end = [width * cos, reach + width * sin, z];
+                d.tube(
+                    "metal",
+                    &[[anchor, 0.02, z], [anchor, reach, z], end],
+                    0.027,
+                    hardware.tint,
+                    10,
+                )?;
+                d.tube(
+                    "metal",
+                    &[[anchor + 0.5, 0.02, z + 0.25], end],
+                    0.018,
+                    hardware.tint,
+                    8,
+                )?;
+                continue;
+            }
+            d.tube(
+                "metal",
+                &[[anchor, 0.02, z], [anchor, reach, z], [end_at, reach, z]],
+                0.023,
+                hardware.tint,
+                8,
+            )?;
+            let brace = if horizontal {
+                anchor
+            } else if anchor > width / 2. {
+                width - 0.05
+            } else {
+                0.05
+            };
+            d.tube(
+                "metal",
+                &[[anchor, 0.02, z + 0.3], [brace, reach, z]],
+                0.018,
+                hardware.tint,
+                8,
+            )?;
         }
         Ok(())
     })
@@ -1939,6 +2145,7 @@ impl Natives {
             ("kowloon/drying-lines", drying_lines),
             ("kowloon/awning", awning),
             ("kowloon/tarp", tarp),
+            ("kowloon/board-sign", board_sign),
             ("kowloon/wall-lamp", wall_lamp),
             ("kowloon/meter-bank", meter_bank),
             ("kowloon/roller-shutter", roller_shutter),

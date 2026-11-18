@@ -174,8 +174,8 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  */
 const kowloonSlots = { wall: "render-paint", trim: "concrete-slab", concrete: "concrete-slab", frame: "frame-green", tile: "tile", glass: "glass", pane: "glass",
   galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "flat-steel", "vent-edge": "flat-steel",
-  opening: "openings", "interior-lit": "openings", aircon: "enamel", paint: "enamel", sheet: "enamel", lettering: "enamel", posters: "enamel",
-  tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", board: "bench-wood", timber: "bench-wood",
+  opening: "openings", "interior-lit": "openings", aircon: "enamel", paint: "enamel", sheet: "enamel", posters: "enamel",
+  tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
   rust: "rusted-pipe" };
 export const facade = {
   id: "facade",

@@ -62,6 +62,18 @@ try {
   }
   if (!process.exitCode) {
     await waitForFrames(page, 6);
+    // The sun, turned round to the other side of the scene (SUN=<azimuth>,<elevation> degrees from +x toward +y sets
+    // it, SUN=keep leaves the scene's own).
+    const sun = await page.evaluate(sun => {
+      if (sun === "keep") return null;
+      const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
+      if (sun) { const [az, el] = sun.split(",").map(v => Number(v) * Math.PI / 180); light.direction = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)]; }
+      else light.direction = [-light.direction[0], -light.direction[1], light.direction[2]];
+      s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
+      return light.direction;
+    }, process.env.SUN ?? "");
+    if (sun) console.log(`sun direction ${sun.map(v => v.toFixed(2))}`);
+    await waitForFrames(page, 6);
     const info = await page.evaluate(id => {
       const s = window.__scene, T = window.__three, box = new T.Box3();
       let meshes = 0;

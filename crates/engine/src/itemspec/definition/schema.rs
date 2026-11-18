@@ -166,10 +166,14 @@ pub enum ParameterType {
     Points,
     /// Up to 64 booleans, such as one per edge of a footprint.
     Flags,
-    /// Nested lists, at most three deep and 4096 entries in all, of numbers or (with `choices`)
+    /// Nested lists, at most four deep and 4096 entries in all, of numbers or (with `choices`)
     /// texts among the choices: an explicit plan, such as what each bay of each storey holds.
-    /// Expressions read it with `cell(grid, i, j, ...)`.
+    /// Expressions read it with `cell(grid, i, j, ...)` and `count(grid, i, ...)`.
     Grid,
+    /// Free text up to 256 bytes, such as a sign's lettering.
+    Text,
+    /// Up to 64 texts of up to 256 bytes: `{"element": texts, "at": expression}` hands one to a part.
+    Texts,
 }
 
 /// Whether `value` is a grid of at most `depth` nested lists whose leaves are numbers, or texts
@@ -706,7 +710,14 @@ impl Parameter {
             ParameterType::Flags => value
                 .as_array()
                 .is_some_and(|flags| flags.len() <= 64 && flags.iter().all(Value::is_boolean)),
-            ParameterType::Grid => value.is_array() && grid(value, &self.choices, 3, &mut 0),
+            ParameterType::Grid => value.is_array() && grid(value, &self.choices, 4, &mut 0),
+            ParameterType::Text => value.as_str().is_some_and(|text| text.len() <= 256),
+            ParameterType::Texts => value.as_array().is_some_and(|texts| {
+                texts.len() <= 64
+                    && texts
+                        .iter()
+                        .all(|t| t.as_str().is_some_and(|t| t.len() <= 256))
+            }),
         }
     }
 }
@@ -991,6 +1002,15 @@ impl ItemDefinition {
                     resolved.insert(used, number);
                 }
                 let result = expression.evaluate(&mut |used, at| {
+                    if used.contains('[') || used.starts_with('#') {
+                        return self
+                            .definition
+                            .grid_value(used, self.values)
+                            .map_err(|message| ExpressionError {
+                                offset: at,
+                                message,
+                            });
+                    }
                     resolved.get(used).copied().ok_or_else(|| ExpressionError {
                         offset: at,
                         message: format!("Unknown name {used}."),
@@ -1093,29 +1113,9 @@ impl ItemDefinition {
                 if let Some(value) = derived.get(name) {
                     return Ok(*value);
                 }
-                // `cell(grid, i, ...)` arrives as `grid[i]...`: its element, or 0 where it has none.
-                if let Some((grid, rest)) = name.split_once('[') {
-                    let parameter = self
-                        .parameters
-                        .get(grid)
-                        .filter(|parameter| parameter.kind == ParameterType::Grid)
-                        .ok_or_else(|| missing(format!("{grid} is not a grid control.")))?;
-                    let mut element = values.get(grid);
-                    for index in rest.trim_end_matches(']').split("][") {
-                        element = index
-                            .parse::<usize>()
-                            .ok()
-                            .and_then(|index| element?.as_array()?.get(index));
-                    }
-                    return Ok(match element {
-                        Some(Value::Number(number)) => number.as_f64().unwrap_or(0.),
-                        Some(Value::String(text)) => parameter
-                            .choices
-                            .iter()
-                            .position(|choice| choice == text)
-                            .map_or(0., |index| index as f64),
-                        _ => 0.,
-                    });
+                // `cell(grid, i, ...)` arrives as `grid[i]...` and `count(grid, i, ...)` as `#grid[i]...`.
+                if name.contains('[') || name.starts_with('#') {
+                    return self.grid_value(name, values).map_err(missing);
                 }
                 let parameter = self
                     .parameters
@@ -1135,6 +1135,39 @@ impl ItemDefinition {
                     .ok_or_else(|| missing(format!("Parameter {name} is not numeric.")))
             })
             .map_err(failure)
+    }
+    /// The value of a grid lookup key, `grid[i][j]` for an element (a text's index among the
+    /// control's choices, a number's value, 0 where there is none) or `#grid[i]` for the length of
+    /// the list there.
+    pub(super) fn grid_value(&self, key: &str, values: &Values) -> Result<f64, String> {
+        let (counting, key) = match key.strip_prefix('#') {
+            Some(rest) => (true, rest),
+            None => (false, key),
+        };
+        let (grid, rest) = key.split_once('[').unwrap_or((key, ""));
+        let parameter = self
+            .parameters
+            .get(grid)
+            .filter(|parameter| parameter.kind == ParameterType::Grid)
+            .ok_or_else(|| format!("{grid} is not a grid control."))?;
+        let mut element = values.get(grid);
+        for index in rest.split("][").filter(|index| !index.is_empty()) {
+            element = index
+                .trim_end_matches(']')
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| element?.as_array()?.get(index));
+        }
+        Ok(match element {
+            Some(Value::Array(items)) if counting => items.len() as f64,
+            Some(Value::Number(number)) if !counting => number.as_f64().unwrap_or(0.),
+            Some(Value::String(text)) if !counting => parameter
+                .choices
+                .iter()
+                .position(|choice| choice == text)
+                .map_or(0., |index| index as f64),
+            _ => 0.,
+        })
     }
     pub(super) fn switch(
         &self,

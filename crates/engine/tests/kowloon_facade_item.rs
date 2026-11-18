@@ -424,3 +424,88 @@ fn a_plan_places_exactly_what_it_names_and_auto_keeps_the_seed() {
         "ITEM_PARAMETER"
     );
 }
+
+fn translation(item: &GeneratedItem, part: &str) -> [f64; 3] {
+    item.geometry
+        .nodes
+        .iter()
+        .find(|n| n.name.as_deref() == Some(part))
+        .unwrap()
+        .transform[3]
+}
+
+#[test]
+fn window_banks_and_signs_follow_their_plans_in_place() {
+    // A floor with an explicit plan of two banks has two windows, centred on them.
+    let floor = generate(
+        "kowloon-floor.item.json",
+        &[("spanPlan", json!([[0.55, 2.65], [3.2, 5.4]]))],
+    );
+    assert_eq!(parts(&floor, "window-"), ["window-0", "window-1"]);
+    assert!((translation(&floor, "window-0")[0] - 1.6).abs() < 1e-9);
+    assert!((translation(&floor, "window-1")[0] - 4.3).abs() < 1e-9);
+    assert_eq!(openings(&floor, "wall"), 2);
+    // Without a plan the evenly spaced bays are kept.
+    assert_eq!(
+        parts(&generate("kowloon-floor.item.json", &[]), "window-").len(),
+        3
+    );
+    // Board signs stand where their rows put them on their edge, with their own text.
+    let building = generate(
+        "kowloon-building.item.json",
+        &[
+            ("boardTexts", json!(["永昌藥行", "興隆五金"])),
+            (
+                "boardPlans",
+                json!([
+                    [[-1.03, 4.72, 0.94, 2.82, 0, 0, 0, 0.85, 1.18, -0.08, 0]],
+                    [[0.02, 6.05, 0.94, 3.33, 1, 0, 53.13, 0.78, 0, 0, 1]]
+                ]),
+            ),
+            ("signs", json!(false)),
+        ],
+    );
+    assert_eq!(sides(&building, "board-"), ["board-0-0", "board-1-0"]);
+    assert!((translation(&building, "board-0-0")[0] + 1.03).abs() < 1e-9);
+    assert!((translation(&building, "board-0-0")[2] - 4.72).abs() < 1e-9);
+    // The second edge starts after the cut corner: (9.8, 0.24), running along +y.
+    let second = translation(&building, "board-1-0");
+    assert!(
+        (second[0] - 9.8).abs() < 1e-9 && (second[1] - (0.24 + 0.02)).abs() < 1e-9,
+        "{second:?}"
+    );
+    // A red board and an ivory one draw in their own tints, as vertex colors.
+    let colors: BTreeSet<String> = building
+        .geometry
+        .meshes
+        .iter()
+        .filter(|m| m.id.starts_with("board-") && m.material_slot == "board")
+        .flat_map(|m| {
+            m.colors
+                .iter()
+                .map(|c| format!("{:.2}/{:.2}/{:.2}", c[0], c[1], c[2]))
+        })
+        .collect();
+    assert!(colors.len() >= 2, "{colors:?}");
+    // A sign list replaces the seeded signs.
+    assert!(sides(&generate("kowloon-building.item.json", &[]), "cornerSign-").len() == 1);
+    assert!(sides(&building, "cornerSign-").is_empty());
+}
+
+#[test]
+fn a_steel_balcony_has_rails_where_a_parapet_is_solid() {
+    let rails = |rail: &str| {
+        let item = generate(
+            "kowloon-facade-side.item.json",
+            &[("balcony", json!(true)), ("balconyRail", json!(rail))],
+        );
+        item.geometry
+            .meshes
+            .iter()
+            .filter(|m| m.id.starts_with("balcony/"))
+            .map(|m| m.material_slot.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    assert!(rails("steel").contains("metal"), "{:?}", rails("steel"));
+    assert!(!rails("parapet").contains("metal"));
+}

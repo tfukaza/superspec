@@ -2,7 +2,8 @@
 //! (`< <= > >= == !=`, which give 1 or 0), parentheses and `min`, `max`, `floor`,
 //! `ceil`, `round`, `abs`, `clamp(x, low, high)`, `select(condition, a, b)` (`a` when
 //! the condition is positive) and `random(...)`, a value in [0, 1) hashed from the
-//! bits of its arguments. `cell(grid, i, j, ...)` reads an element of a `grid` control: its
+//! bits of its arguments. `count(grid, i, ...)` is the length of the list at that place in a `grid`
+//! control (0 where there is none). `cell(grid, i, j, ...)` reads an element of a `grid` control: its
 //! index among the control's choices for text, its value for a number, and 0 where the grid has
 //! no such element. Every operation is IEEE arithmetic or integer hashing, so native and Wasm
 //! results are bit-identical.
@@ -191,22 +192,25 @@ impl Parser<'_> {
                 if self.peek() != Some(b'(') {
                     return Ok(Node::Name(name, start));
                 }
-                if name == "cell" {
+                if name == "cell" || name == "count" {
                     self.cursor += 1;
                     self.space();
                     let at = self.cursor;
                     let Node::Name(grid, _) = self.atom(depth + 1)? else {
-                        return error(at, "cell() reads a grid control by name.");
+                        return error(at, "cell() and count() read a grid control by name.");
                     };
                     let mut indices = Vec::new();
                     while self.peek() == Some(b',') {
                         self.cursor += 1;
-                        if indices.len() >= 3 {
-                            return error(self.cursor, "A grid has at most three indices.");
+                        if indices.len() >= 4 {
+                            return error(self.cursor, "A grid has at most four indices.");
                         }
                         indices.push(self.comparison(depth + 1)?);
                     }
                     self.expect(b')')?;
+                    if name == "count" {
+                        return Ok(Node::Cell(format!("#{grid}"), indices, start));
+                    }
                     if indices.is_empty() {
                         return error(start, "cell() needs at least one index.");
                     }
@@ -291,12 +295,8 @@ impl Expression {
                     visit(right, names);
                 }
                 Node::Call(_, arguments, _) => arguments.iter().for_each(|a| visit(a, names)),
-                Node::Cell(grid, indices, at) => {
-                    if !names.iter().any(|(known, _)| known == grid) {
-                        names.push((grid, *at));
-                    }
-                    indices.iter().for_each(|a| visit(a, names));
-                }
+                // A grid is read by name from the controls, not resolved as a number.
+                Node::Cell(_, indices, _) => indices.iter().for_each(|a| visit(a, names)),
             }
         }
         let mut names = Vec::new();

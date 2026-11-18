@@ -123,9 +123,24 @@ on the second, two cages and a split unit; on the third, a window unit and a spl
 right side, a gate and the hardware shop, with split units in the bay by the corner. Render:
 `itemspec/shop-house-planned.png`.
 
-Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden) and
-`itemspec/shop-house-lane.png`. The building's balcony parapet is solid concrete where the
-reference has a steel railing. Its sign copy is seeded, not the reference's.
+Four differences from the picture were then closed, and the sun turned to the other side:
+
+- **Railing:** `kowloon/balcony` takes `rail: steel`, the reference's three green rails on posts over a
+  low upstand, instead of the solid parapet (the side's default).
+- **Signs:** `kowloon/board-sign` is a lettered sheet sign on two outriggers with its own text, red or
+  ivory, vertical or horizontal, square to the wall or at an angle. A building's `boardPlans` list
+  them per edge (`[u, z, width, height, red, horizontal, angle, reach, anchor, end, text]`) and
+  `boardTexts` holds the copy. Placed items now keep their vertex colours, and a sign's `lettering` and
+  `board` slots are the shipped catalog materials (the glyph atlas and the board), so the studio
+  passes the catalog images a project supplies on to the engine.
+- **Windows:** `spansPlans` (edge, storey, bank, `[from, to]`) place windows in banks of any width, as
+  in the reference model; without it the bays are even.
+- **Paint:** the coat's patches are about a third the size (`Patch frequency` 2.4 per metre).
+- **Sun:** `tests/item-facade-browser.mjs` turns the sun to the other side of the scene by default
+  (`SUN=<azimuth>,<elevation>` sets it, `SUN=keep` leaves the scene's own).
+
+Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden, before these fixes),
+`itemspec/shop-house-lane.png` and `itemspec/shop-house-planned.png` (after them).
 
 ### The scene
 
