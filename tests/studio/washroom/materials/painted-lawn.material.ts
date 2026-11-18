@@ -1,35 +1,33 @@
-// The washroom's lawn (GRASS=1, roadmap stage 6): a painted ground layered as the Kowloon concrete layers its two
-// images (kowloon-concrete.material.ts), with greens in place of the photographs: a lime and an emerald, each
-// mottled darker by its own jagged field, mixed by an eroded blend field; then patches of sun-yellow and of deep teal
-// in the same jagged manner, and the concrete's pigment drift over all. Shaded by the sun's shade band with a
-// world-anchored edge break. Its base color (the layered greens without the band) is what the scene's `ground.color`
-// field holds, so the grass rooted on it (painted-grass.material.ts) takes the same hues and applies the same band at
-// each root. Keep the band's parameters equal in both recipes.
+// The washroom's lawn (GRASS=1, roadmap stage 6): a painted ground of five bands of green, close together as the
+// concrete's tones are, so every difference is subtle, chosen by a fractal field and blended softly between
+// neighbouring bands. The field is the Kowloon concrete's eroded, warped fracture (kowloon-noise.material.ts) with
+// finer fractal noise added on top, so a band's edge wanders at every scale and the bands break into fragments rather
+// than nesting as rings of a contour map. A slow meadow-scale tint and the concrete's pigment drift go over it. Shaded
+// by the sun's shade band with a world-anchored edge break. Its base color (the bands without the shade) is what the
+// scene's `ground.color` field holds, so the grass rooted on it (painted-grass.material.ts) takes the same greens and
+// applies the same band at each root. Keep the band's parameters equal in both recipes.
 import { defineMaterial, param, vec2, vec3, mix, mul, add, sub, div, world, shadeBand, sunDirection, normal, edgeBreak, seed, smoothstep } from "@superspec/material/v1";
-import { fracture, contour, pigment, fractal } from "./kowloon-noise.material";
+import type { Scalar, ScalarInput } from "@superspec/material/v1";
+import { fracture, pigment, fractal } from "./kowloon-noise.material";
 
 // The meadow scale: a slow field over many meters tints the whole ground (and so its blades) warmer, toward
-// yellow-green, or cooler, toward blue-green, subtly, on top of the fine patches below, so a large meadow drifts in hue
-// the way a real one does rather than repeating one mottle.
+// yellow-green, or cooler, toward blue-green, subtly, on top of the bands below, so a large meadow drifts in hue the
+// way a real one does rather than repeating one mottle.
 const meadowScale = param.scalar({ default: 9, range: [1, 100], unit: "m", label: "Meadow hue scale" });
 const meadowAmount = param.scalar({ default: 0.22, range: [0, 1], label: "Meadow hue amount" });
 const warm = param.vec3({ default: vec3(1.18, 1.06, 0.55), range: [0, 2], label: "Meadow warm tint" });
 const cool = param.vec3({ default: vec3(0.82, 0.97, 1.6), range: [0, 2], label: "Meadow cool tint" });
 
-const lime = param.vec3({ default: vec3(0.31, 0.55, 0.06), range: [0, 1], label: "Green A (lime)" });
-const emerald = param.vec3({ default: vec3(0.28, 0.52, 0.06), range: [0, 1], label: "Green B (emerald)" });
-const sun = param.vec3({ default: vec3(0.38, 0.59, 0.07), range: [0, 1], label: "Sun-yellow patches" });
-const deep = param.vec3({ default: vec3(0.20, 0.44, 0.08), range: [0, 1], label: "Deep teal patches" });
-const darknessA = param.scalar({ default: 0.03, range: [0, 0.8], label: "Green A darkness" });
-const darknessB = param.scalar({ default: 0.03, range: [0, 0.8], label: "Green B darkness" });
-const blendScale = param.scalar({ default: 4.6, range: [0.2, 16], label: "Blend frequency" });
+// Five bands, darkest first, each about 5 % from the next.
+const band0 = param.vec3({ default: vec3(0.265, 0.505, 0.065), range: [0, 1], label: "Band 1 (deepest)" });
+const band1 = param.vec3({ default: vec3(0.28, 0.52, 0.065), range: [0, 1], label: "Band 2" });
+const band2 = param.vec3({ default: vec3(0.295, 0.535, 0.065), range: [0, 1], label: "Band 3" });
+const band3 = param.vec3({ default: vec3(0.31, 0.55, 0.065), range: [0, 1], label: "Band 4" });
+const band4 = param.vec3({ default: vec3(0.325, 0.565, 0.07), range: [0, 1], label: "Band 5 (lightest)" });
+const bandScale = param.scalar({ default: 3.2, range: [0.2, 16], label: "Band frequency" });
+const bandSoftness = param.scalar({ default: 0.07, range: [0.005, 0.2], label: "Band softness" });
+const breakup = param.scalar({ default: 0.35, range: [0, 1], label: "Band breakup" });
 const jaggedness = param.scalar({ default: 0.9, range: [0, 2], label: "Edge jaggedness" });
-const sunAmount = param.scalar({ default: 0.1, range: [0, 1], label: "Sun-yellow amount" });
-const deepAmount = param.scalar({ default: 0.1, range: [0, 1], label: "Deep teal amount" });
-const darkTint = param.vec3({ default: vec3(0.42, 0.68, 0.46), range: [0, 1], label: "Dark patch tint" });
-const darkAmount = param.scalar({ default: 0.85, range: [0, 1], label: "Dark patch amount" });
-const darkCover = param.scalar({ default: 0.32, range: [0, 0.5], label: "Dark patch cover" });
-const darkScale = param.scalar({ default: 2, range: [0.5, 40], label: "Dark patch frequency" });
 const hueAmount = param.scalar({ default: 0.03, range: [0, 0.5], label: "Hue variation" });
 const hueAngle = param.scalar({ default: 70, range: [0, 360], unit: "deg", label: "Hue direction" });
 const shadeTint = param.vec3({ default: vec3(0.42, 0.62, 0.9), range: [0, 1], label: "Shade tint" });
@@ -41,22 +39,17 @@ const range = param.scalar({ default: 0.02, range: [0, 1], label: "Gradient rang
 const studyUv = div(world.xy, 2);
 const noiseUv = mul(studyUv, vec2(0.85, 0.68));
 
-// Two greens, each with its own darkness field, mixed by an eroded blend (the concrete's two images).
-const darkA = contour(fracture(add(mul(noiseUv, 9.7), vec2(5.3, 17.1)), jaggedness, seed("dark-a")), 0.035);
-const darkB = contour(fracture(add(mul(noiseUv, 14.9), vec2(73.4, 29.6)), jaggedness, seed("dark-b")), 0.035);
-const blend = contour(fracture(add(mul(noiseUv, blendScale), vec2(113.2, 67.8)), jaggedness, seed("blend")), 0.045);
-const greens = mix(mul(lime, sub(1, mul(darknessA, darkA))), mul(emerald, sub(1, mul(darknessB, darkB))), blend);
-// Sun-yellow and deep teal patches, each an eroded field at its own threshold.
-const sunny = mul(contour(fracture(add(mul(noiseUv, 6.5), vec2(41.7, 8.2)), jaggedness, seed("sun-patches")), 0.04), sunAmount);
-const deepPatch = mul(contour(fracture(add(mul(noiseUv, 7.9), vec2(17.9, 93.1)), jaggedness, seed("deep-patches")), 0.04), deepAmount);
-const patched = mix(mix(greens, sun, mul(sunny, sub(1, blend))), deep, mul(deepPatch, blend));
-// Small dark patches, as the web study's lawn has: jagged, about a meter across, only where the field peaks, painted a
-// deeper, richer green than the grass around them.
-const darkPatch = mul(contour(add(fracture(add(mul(noiseUv, darkScale), vec2(61.3, 7.7)), jaggedness, seed("dark-patches")), sub(darkCover, 0.5)), 0.04), darkAmount);
-const layered = mix(patched, mul(patched, darkTint), darkPatch);
+// The band field: the eroded fracture, its range widened about the middle so the outer bands are reached, plus finer
+// fractal noise that pushes each band edge in and out: fragments, not rings.
+const broad = fracture(add(mul(noiseUv, bandScale), vec2(113.2, 67.8)), jaggedness, seed("bands"));
+const fine = sub(fractal(add(mul(noiseUv, mul(bandScale, 3.1)), vec2(9.4, 51.3)), seed("bands-fine")), 0.5);
+const field = add(add(mul(sub(broad, 0.5), 1.8), 0.5), mul(fine, breakup));
+// The ramp: each band laid over the ones below it from its threshold (0.2, 0.4, 0.6, 0.8), blended over the softness.
+const bandAt = (at: ScalarInput): Scalar => smoothstep(sub(at, bandSoftness), add(at, bandSoftness), field);
+const bands = mix(mix(mix(mix(band0, band1, bandAt(0.2)), band2, bandAt(0.4)), band3, bandAt(0.6)), band4, bandAt(0.8));
 const meadow = smoothstep(0.3, 0.7, fractal(add(div(world.xy, meadowScale), vec2(7.3, 2.9)), seed("meadow")));
 const meadowTint = mix(vec3(1, 1, 1), mix(cool, warm, meadow), meadowAmount);
-const ground = mul(meadowTint, pigment(layered, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));
+const ground = mul(meadowTint, pigment(bands, mul(noiseUv, 1.8), hueAmount, hueAngle, seed("pigment")));
 
 const edge = edgeBreak({ size: 0.35, amount: 0.05 });
 

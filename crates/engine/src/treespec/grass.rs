@@ -97,6 +97,13 @@ pub struct Clumping {
     /// more give drifts with ragged, fractal edges and outliers. Left out of keys at 1, so they are as they were.
     #[serde(skip_serializing_if = "one_octave")]
     pub octaves: usize,
+    /// Shrinks the drifts to where the noise is strongest (0 as before, up to 0.5): fewer, smaller patches, the rest
+    /// bare, as a different grass growing in spots. Left out of keys at 0.
+    #[serde(skip_serializing_if = "no_bias")]
+    pub bias: f64,
+}
+fn no_bias(bias: &f64) -> bool {
+    *bias == 0.
 }
 fn one_octave(octaves: &usize) -> bool {
     *octaves == 1
@@ -107,6 +114,7 @@ impl Default for Clumping {
             scale: 1.,
             strength: 0.,
             octaves: 1,
+            bias: 0.,
         }
     }
 }
@@ -285,6 +293,7 @@ impl GrassDefinition {
         within(s, "/density", self.density, 0.01, 10_000.)?;
         within(s, "/clumping/scale", self.clumping.scale, 0.01, 1000.)?;
         within(s, "/clumping/strength", self.clumping.strength, 0., 1.)?;
+        within(s, "/clumping/bias", self.clumping.bias, 0., 0.5)?;
         if self.clumping.octaves == 0 || self.clumping.octaves > 6 {
             return Err(fail(
                 s,
@@ -853,7 +862,7 @@ pub fn generate(
                 // Averaging octaves narrows the spread about the middle; stretched well past it, so drifts part into clear patches.
                 (0.5 + (sum / total - 0.5) * 5.).clamp(0., 1.)
             };
-            let drift = ((drift - 0.3) / 0.4).clamp(0., 1.);
+            let drift = ((drift - 0.3 - definition.clumping.bias) / 0.4).clamp(0., 1.);
             let density =
                 site.mask.density(x, y) * (1. - definition.clumping.strength * (1. - drift));
             if threshold >= density {

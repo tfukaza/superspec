@@ -633,6 +633,41 @@ const SLAB: [[f64; 2]; 2] = [[-0.55, -2.45], [2.45, 0.4]];
 /// The lawn outside the washroom (roadmap stage 6): an L of gently rolling ground in front of the
 /// room's open sides, 15 cm cells over x -0.55 to 6.35 and y -5.45 to 0.4 with the slab's cells
 /// left out. It sits 3 cm below the slab's top at the slab and rolls by up to 25 cm a meter away.
+/// A square test lawn for shading and shadows (`LAWN_SITE=hill`): 7 m a side, a hill gentle to the north and steep to
+/// the south, and a bank about 0.7 m high, near vertical, along its east edge, so some grass faces away from the sun
+/// and some stands on slopes too steep for it.
+fn hill_ground() -> GroundMesh {
+    let (low, cell, cells) = ([-0.6, -6.4], 0.1, 70usize);
+    let height = |x: f64, y: f64| {
+        let (dx, dy) = (x - 2.6, y + 2.9);
+        // Wide to the north, narrow (steep) to the south.
+        let sy = if dy < 0. { 0.6 } else { 1.5 };
+        let hill = 1.1 * (-(dx * dx / (2. * 1.4 * 1.4) + dy * dy / (2. * sy * sy))).exp();
+        let bank = 0.7 / (1. + (-(x - 5.2) / 0.06).exp());
+        -0.03 + hill + bank
+    };
+    let mut ground = GroundMesh {
+        positions: vec![],
+        indices: vec![],
+    };
+    for row in 0..=cells {
+        for column in 0..=cells {
+            let (x, y) = (low[0] + column as f64 * cell, low[1] + row as f64 * cell);
+            ground.positions.push([x, y, height(x, y)]);
+        }
+    }
+    let width = cells as u32 + 1;
+    for row in 0..cells as u32 {
+        for column in 0..cells as u32 {
+            let a = row * width + column;
+            ground
+                .indices
+                .extend([a, a + 1, a + width + 1, a, a + width + 1, a + width]);
+        }
+    }
+    ground
+}
+
 fn lawn_ground() -> GroundMesh {
     let (low, cell, columns, rows) = ([-0.55, -5.45], 0.15, 46usize, 39usize);
     let height = lawn_height;
@@ -682,7 +717,12 @@ fn write_washroom_lawn() {
         PathBuf::from,
     );
     std::fs::create_dir_all(&out).unwrap();
-    let ground = lawn_ground();
+    // LAWN_SITE=hill writes the square test lawn with a hill and a steep bank instead (hill_ground).
+    let ground = if std::env::var("LAWN_SITE").is_ok_and(|v| v == "hill") {
+        hill_ground()
+    } else {
+        lawn_ground()
+    };
     let mut definition = meadow();
     // The washroom is seen from a few meters: its levels step at 7 and 14 m. Two far levels follow for a large
     // field, a painter's quick strokes: at 22 m half of each clump's blades, 2.2 times as wide, and at 30 m a third,
@@ -757,14 +797,15 @@ fn write_washroom_lawn() {
         // very uneven height, gathered in drifts with fractal edges (strong 2-octave clumping: clean blobs, a little ragged); about a third as many blades as the lawn.
         let mut accent = definition.clone();
         accent.seed = definition.seed + 101;
-        accent.density = 150.;
+        accent.density = 300.;
         accent.clump.blades = [1, 3];
         accent.clump.radius = 0.03;
-        accent.blade.height = [0.10, 0.50];
+        accent.blade.height = [0.22, 0.8];
         accent.blade.width = accent.blade.width.map(|w| w * 2.6);
-        accent.clumping.scale = 1.3;
+        accent.clumping.scale = 3.;
         accent.clumping.strength = 1.;
         accent.clumping.octaves = 2;
+        accent.clumping.bias = 0.4;
         accent.lods.truncate(3);
         let accent_patch = grass::generate(
             &accent,

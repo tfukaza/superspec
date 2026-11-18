@@ -41,13 +41,24 @@ try {
       + (process.env.GRASS_BLUR_PATCH ? `&grassblurpatch=${process.env.GRASS_BLUR_PATCH}` : "") : "");
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off${profile}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
+  const errors = [];
+  page.on("pageerror", error => errors.push(error.message));
+  page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
   await page.locator("#open-project").setInputFiles({ name: "grass.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
-  await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: 900000 });
+  try {
+    await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready" && JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked", {}, { timeout: Number(process.env.BAKE_TIMEOUT ?? 900000) });
+  } catch (error) {
+    // Say why: the page's status, its bake state and its errors.
+    const state = await page.evaluate(() => ({ status: document.querySelector("#status")?.textContent, state: document.querySelector("#status")?.dataset.state, bake: document.querySelector("#viewport")?.dataset.sceneBake,
+      diagnostics: [...document.querySelectorAll("#diagnostics button")].map(button => button.textContent) }));
+    console.log(`Not baked: ${JSON.stringify(state)}\n${errors.slice(0, 8).join("\n")}`);
+    throw error;
+  }
   // A boundary look (LAWN_BOUNDARY=1 lawn) has its field made after the first frames; grass everywhere needs none.
   await waitForFrames(page, 8);
   await page.waitForFunction(() => { const f = JSON.parse(document.querySelector("#viewport").dataset.foliage ?? "null"); return !!f; }, {}, { timeout: 120000 });
   // The lawn: its mesh's bounds frame the views; every other washroom part is hidden.
-  const info = await page.evaluate(keep => {
+  const info = await page.evaluate(({ keep, pillar }) => {
     const s = window.__scene, T = window.__three, box = new T.Box3();
     let lawn = null;
     for (const m of s.models.children) {
@@ -61,11 +72,25 @@ try {
       // Fall back to the grass's own bounds.
       for (const m of s.models.children) if (m.userData.foliage) box.expandByObject(m);
     }
+    // PILLAR=1: a concrete pillar standing on the lawn (0.35 m square, 1.8 m tall), to see the shadows it casts on
+    // the ground and grass.
+    if (pillar && lawn) {
+      const at = new T.Vector3(box.min.x + (box.max.x - box.min.x) * 0.28, box.min.y + (box.max.y - box.min.y) * 0.62, box.max.z + 5);
+      const hit = new T.Raycaster(at, new T.Vector3(0, 0, -1)).intersectObject(lawn)[0];
+      const base = hit ? hit.point.z : 0;
+      const column = new T.Mesh(new T.BoxGeometry(0.35, 0.35, 1.8), new T.MeshStandardMaterial({ color: 0x9a9893, roughness: 0.9 }));
+      column.position.set(at.x, at.y, base + 0.9 - 0.05);
+      column.castShadow = column.receiveShadow = true;
+      column.name = "test/pillar";
+      s.models.add(column);
+      // Lighting again, so the pillar casts and the shadow map is fitted to the scene with it.
+      s.setLighting(JSON.parse(document.querySelector("#viewport").dataset.lighting));
+    }
     // KEEP_SHADOWS=1 keeps the room's shadows on the lawn (the map is made once; hiding the room leaves them).
     if (!keep) { s.renderer.shadowMap.needsUpdate = true; s.invalidate?.(); }
     s.draw();
     return { found: !!lawn, name: lawn?.name ?? null, min: box.min.toArray(), max: box.max.toArray() };
-  }, process.env.KEEP_SHADOWS === "1");
+  }, { keep: process.env.KEEP_SHADOWS === "1", pillar: process.env.PILLAR === "1" });
   console.log(`lawn ${info.found ? info.name : "(not found: framed by the grass)"}: ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
   const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, span = Math.max(x1 - x0, y1 - y0);
@@ -73,7 +98,12 @@ try {
     above: { position: [cx - span * 0.55, cy - span * 0.75, cz + span * 0.7], target: [cx, cy, cz] },
     eye: { position: [cx - span * 0.45, cy - span * 0.85, cz + 1.6], target: [cx, cy, cz + 0.2] },
     low: { position: [cx - span * 0.2, cy - span * 0.35, cz + 0.45], target: [cx + span * 0.05, cy, cz + 0.15] },
+    // From the far side: the slopes the other views see from behind.
+    back: { position: [cx + span * 0.75, cy + span * 0.55, cz + span * 0.55], target: [cx, cy, cz] },
   };
+  // VIEW_SCALE: every view this many times as far from the lawn's middle (a hill lawn wants about 1.8).
+  const scale = Number(process.env.VIEW_SCALE ?? 1);
+  for (const view of Object.values(views)) view.position = view.position.map((v, a) => view.target[a] + (v - view.target[a]) * scale);
   for (const [name, view] of Object.entries(views)) {
     await page.evaluate(view => { const s = window.__scene; s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
     await waitForFrames(page, 6);
