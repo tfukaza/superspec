@@ -113,10 +113,70 @@ pub(super) fn resolve(
     }
     let mut ids = BTreeSet::new();
     let mut openings: Vec<Opening> = Vec::new();
+    // Repeated openings expand into copies whose index joins the derived values they read.
+    let mut expanded = Vec::new();
     for (index, opening) in definition.openings.iter().enumerate() {
         let pointer = format!("{pointer}/openings/{index}");
-        let resolved = resolve_opening(context, opening, [width, height, thickness], &pointer)?;
-        if !ids.insert(opening.id.clone()) {
+        let copies = match &opening.repeat {
+            None => vec![(opening.id.clone(), context.derived.clone())],
+            Some(axis) => {
+                let identifier = !axis.name.is_empty()
+                    && axis.name.len() <= 64
+                    && axis
+                        .name
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    && !axis.name.as_bytes()[0].is_ascii_digit()
+                    && !context.definition.parameters.contains_key(&axis.name)
+                    && !context.derived.contains_key(&axis.name);
+                let count = context.scalar(&axis.count, &format!("{pointer}/repeat/count"))?;
+                if !identifier || count.fract() != 0. || !(0. ..=32.).contains(&count) {
+                    return Err(context.fail(
+                        &format!("{pointer}/repeat"),
+                        "ITEM_REPEAT",
+                        "An opening repeats up to 32 times, indexed by a new identifier.",
+                    ));
+                }
+                (0..count as usize)
+                    .map(|copy| {
+                        let mut derived = context.derived.clone();
+                        derived.insert(axis.name.clone(), copy as f64);
+                        derived.insert(format!("{}_count", axis.name), count);
+                        (format!("{}-{copy}", opening.id), derived)
+                    })
+                    .collect()
+            }
+        };
+        for (id, derived) in copies {
+            let copy = Context {
+                definition: context.definition,
+                parameters: context.parameters,
+                derived: &derived,
+            };
+            if let Some(condition) = &opening.when {
+                if copy.scalar(condition, &format!("{pointer}/when"))? <= 0. {
+                    continue;
+                }
+            }
+            expanded.push((opening, pointer.clone(), id, derived));
+        }
+    }
+    if expanded.len() > 32 {
+        return Err(context.fail(
+            &format!("{pointer}/openings"),
+            "ITEM_LIMIT",
+            "A panel has at most 32 openings, counting every copy.",
+        ));
+    }
+    for (opening, pointer, id, derived) in expanded {
+        let copy = Context {
+            definition: context.definition,
+            parameters: context.parameters,
+            derived: &derived,
+        };
+        let mut resolved = resolve_opening(&copy, opening, [width, height, thickness], &pointer)?;
+        resolved.id = id;
+        if !ids.insert(resolved.id.clone()) {
             return Err(context.fail(
                 &format!("{pointer}/id"),
                 "ITEM_OPENING",

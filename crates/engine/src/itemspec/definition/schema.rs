@@ -378,6 +378,10 @@ pub struct OpeningDefinition {
     pub frame: Option<FrameDefinition>,
     pub glazing: Option<GlazingDefinition>,
     pub sill: Option<SillDefinition>,
+    /// Copies of the opening along one axis, named `<id>-<i>`; the index reads as a number.
+    pub repeat: Option<RepeatAxis>,
+    /// The opening (or each copy) is cut only when this is positive.
+    pub when: Option<Scalar>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
