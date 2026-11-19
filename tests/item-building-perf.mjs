@@ -128,6 +128,30 @@ try {
   const profiler = process.env.PROFILE === "1" ? await page.context().newCDPSession(page) : null;
   if (profiler) { await profiler.send("Profiler.enable"); await profiler.send("Profiler.setSamplingInterval", { interval: 500 }); await profiler.send("Profiler.start"); }
   await open("cold", text);
+  // LIVE_RANGE=1 reads every live argument texture back and says what its channels hold: the least and the most, and the
+  // share of texels outside 0 to 1 (what a byte texture would cut off).
+  if (process.env.LIVE_RANGE === "1") {
+    report.liveRange = await page.evaluate(() => {
+      const scene = window.__scene, renderer = scene.renderer, gl = renderer.getContext();
+      const range = { textures: 0, texels: 0, least: [Infinity, Infinity, Infinity, Infinity], most: [-Infinity, -Infinity, -Infinity, -Infinity], outside: [0, 0, 0, 0] };
+      for (const node of scene.bakerInstance.graph.complete.values()) {
+        if (!node.texture.name.startsWith("gpu-atlas live") || !node.users) continue;
+        const { width, height } = node.target, texels = new Float32Array(width * height * 4);
+        renderer.setRenderTarget(node.target);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, texels);
+        range.textures++; range.texels += width * height;
+        for (let i = 0; i < texels.length; i++) {
+          const value = texels[i], channel = i & 3;
+          if (value < range.least[channel]) range.least[channel] = value;
+          if (value > range.most[channel]) range.most[channel] = value;
+          if (value < 0 || value > 1) range.outside[channel]++;
+        }
+      }
+      renderer.setRenderTarget(null);
+      return range;
+    });
+    console.log(`live arguments: ${JSON.stringify(report.liveRange)}`);
+  }
   if (profiler) {
     const { profile } = await profiler.send("Profiler.stop");
     await writeFile(resolve(out, "cold.cpuprofile"), JSON.stringify(profile));

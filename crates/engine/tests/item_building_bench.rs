@@ -131,7 +131,12 @@ fn bench_building_project() {
             digest(&records),
         );
         if label == "cold" {
-            mesh_cost(&prepared.scene);
+            let atlases = layouts
+                .receivers
+                .iter()
+                .map(|layout| (layout.id.as_str(), layout.width * layout.height))
+                .collect();
+            mesh_cost(&prepared.scene, &atlases);
         }
         // ITEM_BUILDING_FIELDS=0 leaves the field bakes out (to profile the rest).
         if label != "cold" || std::env::var("ITEM_BUILDING_FIELDS").is_ok_and(|v| v == "0") {
@@ -235,7 +240,7 @@ fn bench_building_project() {
 /// What the scene's meshes cost a renderer and where it could be less without changing a pixel:
 /// vertices against the distinct ones (same position, normal, UV and color, which an index
 /// could share), by material; and meshes that are another mesh moved (which could be instances).
-fn mesh_cost(scene: &superspec_model::Scene) {
+fn mesh_cost(scene: &superspec_model::Scene, atlases: &std::collections::BTreeMap<&str, usize>) {
     use std::collections::{BTreeMap, HashMap, HashSet};
     #[derive(Default)]
     struct Cost {
@@ -248,7 +253,7 @@ fn mesh_cost(scene: &superspec_model::Scene) {
     let mut by_material: BTreeMap<String, Cost> = BTreeMap::new();
     // Meshes by shape: positions from the mesh's low corner (to a tenth of a millimeter),
     // normals, colors and indices.
-    let mut shapes: HashMap<Vec<u32>, (usize, usize, String)> = HashMap::new();
+    let mut shapes: HashMap<Vec<u32>, (usize, usize, String, usize)> = HashMap::new();
     for mesh in scene.manifest.meshes.iter().filter(|mesh| mesh.visible) {
         let (from, count) = (mesh.vertex_start, mesh.vertex_count);
         let vertex = |at: usize| -> [u32; 11] {
@@ -302,8 +307,21 @@ fn mesh_cost(scene: &superspec_model::Scene) {
             );
         }
         shape.extend(indices);
-        let entry = shapes.entry(shape).or_insert((0, count, mesh.id.clone()));
+        // (With the material: two meshes of one shape share baked maps only under one material.)
+        shape.extend(
+            mesh.material
+                .iter()
+                .flat_map(|material| material.bytes().map(u32::from)),
+        );
+        let texels = atlases.get(mesh.id.as_str()).copied().unwrap_or(0);
+        let entry = shapes
+            .entry(shape)
+            .or_insert((0, count, mesh.id.clone(), 0));
         entry.0 += 1;
+        // The atlas texels of every such mesh after the first.
+        if entry.0 > 1 {
+            entry.3 += texels;
+        }
     }
     let mut total = Cost::default();
     let mut rows: Vec<(&String, &Cost)> = by_material.iter().collect();
@@ -334,19 +352,23 @@ fn mesh_cost(scene: &superspec_model::Scene) {
         total.distinct,
         100. * total.distinct as f64 / total.vertices.max(1) as f64
     );
-    let mut repeated: Vec<&(usize, usize, String)> =
+    let mut repeated: Vec<&(usize, usize, String, usize)> =
         shapes.values().filter(|(times, ..)| *times > 1).collect();
-    repeated.sort_by_key(|(times, vertices, _)| std::cmp::Reverse((times - 1) * vertices));
+    repeated.sort_by_key(|(times, vertices, ..)| std::cmp::Reverse((times - 1) * vertices));
     let saved: usize = repeated
         .iter()
-        .map(|(times, vertices, _)| (times - 1) * vertices)
+        .map(|(times, vertices, ..)| (times - 1) * vertices)
         .sum();
+    let texels: usize = repeated.iter().map(|shape| shape.3).sum();
+    let all: usize = atlases.values().sum();
     println!(
-        "  {} shapes are drawn more than once ({} meshes); as instances they would hold {saved} fewer vertices",
+        "  {} shapes are drawn more than once ({} meshes); as instances they would hold {saved} fewer vertices, and with maps of their own space {:.1} M fewer atlas texels of {:.1} M",
         repeated.len(),
-        repeated.iter().map(|(times, ..)| times).sum::<usize>()
+        repeated.iter().map(|(times, ..)| times).sum::<usize>(),
+        texels as f64 / 1e6,
+        all as f64 / 1e6
     );
-    for (times, vertices, id) in repeated.iter().take(8) {
+    for (times, vertices, id, _) in repeated.iter().take(8) {
         println!("    {times} x {vertices} vertices, like {id}");
     }
 }
