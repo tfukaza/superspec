@@ -6,6 +6,7 @@ import { followPaintedFinishing, programSun, programTime, type MaterialShading }
 import { sceneFieldUniforms } from "./scene-fields.ts";
 import { paintedMass } from "./painted-mass.ts";
 import { animeTree, animeTreeBark, animeTreeLook } from "./anime-tree.ts";
+import { FoliageVisibility } from "./foliage-visibility.ts";
 
 /**
  * Foliage in the viewer (roadmap stage 6, TreeSpec phase 4): instanced batches that carry a foliage look
@@ -477,7 +478,7 @@ interface LevelMesh {
 }
 
 /** One field of foliage: its levels, its tiles' bounds and the level each tile draws. */
-interface Patch { id: string; levels: LevelMesh[]; tiles: Map<number, THREE.Box3>; far: number; chosen: Map<number, number>; signature: string; origin?: THREE.Vector3 }
+interface Patch { id: string; levels: LevelMesh[]; tiles: Map<number, THREE.Box3>; far: number; visibility: FoliageVisibility; origin?: THREE.Vector3 }
 
 /** The stated look with what the page overrides. */
 function drawnProfile(look: FoliageLook, override: FoliageProfile | null): FoliageProfile { return override ?? look.profile; }
@@ -598,22 +599,9 @@ export class FoliageView {
     this.frustum.setFromProjectionMatrix(this.matrix);
     const eye = camera.getWorldPosition(new THREE.Vector3());
     for (const patch of this.patches) {
-      const levels = [...new Set(patch.levels.map(level => level.look.level))].sort((a, b) => a - b);
-      const start = new Map(patch.levels.map(level => [level.look.level, level.look.distance]));
-      let signature = "";
-      for (const [tile, box] of patch.tiles) {
-        let chosen = -1;
-        if (this.frustum.intersectsBox(box)) {
-          const distance = box.distanceToPoint(eye);
-          if (distance < patch.far) for (const level of levels) if (start.get(level)! <= distance) chosen = level;
-        }
-        patch.chosen.set(tile, chosen);
-        signature += `${chosen},`;
-      }
-      if (signature === patch.signature) continue;
-      patch.signature = signature;
+      if (!patch.visibility.update(this.frustum, eye)) continue;
       const began = performance.now();
-      for (const level of patch.levels) this.pack(level, patch.chosen);
+      for (const level of patch.levels) this.pack(level, patch.visibility.chosen);
       this.stats.packs++;
       this.stats.packMs += performance.now() - began;
     }
@@ -680,7 +668,7 @@ export class FoliageView {
           }
           byLevel.set(level.look.level, entry);
         }
-        return { id: patch.id, kind: plant ? "plant" : "grass", tiles: patch.tiles.size, tilesDrawn: [...patch.chosen.values()].filter(level => level >= 0).length, far: patch.far, levels: [...byLevel.values()].sort((a, b) => a.level - b.level) };
+        return { id: patch.id, kind: plant ? "plant" : "grass", tiles: patch.tiles.size, tilesDrawn: [...patch.visibility.chosen.values()].filter(level => level >= 0).length, far: patch.far, levels: [...byLevel.values()].sort((a, b) => a.level - b.level) };
       }),
       boundary: { ...this.stats, ...this.boundary.describe() },
     };
@@ -741,13 +729,13 @@ export class FoliageView {
   /** Finds the foliage meshes of a newly displayed scene and their tiles. */
   private collect(models: THREE.Object3D): void {
     this.group = models;
-    const byPatch = new Map<string, Patch>();
+    const byPatch = new Map<string, Omit<Patch, "visibility">>();
     for (const object of models.children) {
       const mesh = object as THREE.InstancedMesh;
       const look = mesh.userData.foliage as FoliageLook | undefined;
       if (!look || !mesh.isInstancedMesh) continue;
       let patch = byPatch.get(look.patch);
-      if (!patch) byPatch.set(look.patch, patch = { id: look.patch, levels: [], tiles: new Map(), far: look.far, chosen: new Map(), signature: "" });
+      if (!patch) byPatch.set(look.patch, patch = { id: look.patch, levels: [], tiles: new Map(), far: look.far });
       patch.far = Math.max(patch.far, look.far);
       const geometry = mesh.geometry;
       const tile = geometry.getAttribute(attributeName("instance", "tile"));
@@ -793,8 +781,7 @@ export class FoliageView {
       const level = (mesh.userData.foliageLevel as Record<string, THREE.IUniform> | undefined) ?? lookUniforms(look, { distance: look.far, keep: 0 });
       patch.levels.push({ mesh, look, source, tiles, drawn: count, level, vertices: geometry.getAttribute("position").count, blades });
     }
-    this.patches = [...byPatch.values()];
-    for (const patch of this.patches) {
+    for (const patch of byPatch.values()) {
       // A plant painted as a mass: the mass is drawn with the batch that carries it (once per placement, built once
       // per mesh), in place of the patch's leaves and hull.
       if (!patch.levels.some(level => level.look.mass)) continue;
@@ -839,7 +826,7 @@ export class FoliageView {
         level.painted = parts;
       }
     }
-    for (const patch of this.patches) {
+    this.patches = Array.from(byPatch.values(), patch => {
       // Each level thins toward the next level's share, and the last toward nothing at far. The values change in place:
       // compiled programs hold these uniform objects.
       // A plant's families thin toward the next level of the same family; one the next level does not draw (leaves at
@@ -859,7 +846,9 @@ export class FoliageView {
         level.level.msFoliageFar.value = patch.far;
         if (patch.origin && level.level.msFoliageOrigin) (level.level.msFoliageOrigin.value as THREE.Vector3).copy(patch.origin);
       }
-    }
+      const visibility = new FoliageVisibility(patch.tiles, starts.map(([index, look]) => [index, look.distance]), patch.far);
+      return { ...patch, visibility };
+    });
     this.invalidate();
   }
 

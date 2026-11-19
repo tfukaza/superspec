@@ -4,6 +4,43 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { batchAttribute, decodePacket, PLACEMENT_FLOATS, type Manifest } from "../../browser/model/packet.ts";
 import { SceneUpdates } from "../../browser/model/updates.ts";
+import { Box3, Frustum, Matrix4, Vector3 } from "three";
+import { FoliageVisibility } from "../../browser/renderer/foliage-visibility.ts";
+
+test("foliage patch culling preserves tile levels across distance, view exits and reentry", () => {
+  const tiles = new Map<number, Box3>();
+  for (let x = 0; x < 256; x++) tiles.set(x, new Box3(new Vector3(x, 0, 0), new Vector3(x + 0.5, 0.5, 0.5)));
+  const visibility = new FoliageVisibility(tiles, [[0, 0], [2, 8]], 24);
+  const frustum = new Frustum().setFromProjectionMatrix(new Matrix4());
+  let checks = 0;
+  const intersects = Frustum.prototype.intersectsBox.bind(frustum);
+  frustum.intersectsBox = box => { checks++; return intersects(box); };
+  const eye = new Vector3();
+  // Identity clip space sees the first two tiles, including the box touching its right plane.
+  assert.equal(visibility.update(frustum, eye), true);
+  assert.deepEqual([...visibility.chosen.values()], [0, 0, ...Array(254).fill(-1)]);
+  assert.equal(visibility.update(frustum, eye), false);
+  eye.x = -8;
+  assert.equal(visibility.update(frustum, eye), true);
+  assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [2, 2]);
+  eye.x = -23;
+  assert.equal(visibility.update(frustum, eye), true);
+  assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [2, -1]);
+  eye.x = -24;
+  checks = 0;
+  assert.equal(visibility.update(frustum, eye), true);
+  assert.equal(visibility.update(frustum, eye), false);
+  assert.equal(checks, 2, "one bounds check per frame for the whole distant patch");
+  assert.ok([...visibility.chosen.values()].every(level => level === -1));
+  eye.x = 0;
+  frustum.setFromProjectionMatrix(new Matrix4().makeTranslation(4, 0, 0));
+  checks = 0;
+  assert.equal(visibility.update(frustum, eye), false);
+  assert.equal(checks, 1, "one bounds check for the whole offscreen patch");
+  frustum.setFromProjectionMatrix(new Matrix4());
+  assert.equal(visibility.update(frustum, eye), true);
+  assert.deepEqual([...visibility.chosen.values()], [0, 0, ...Array(254).fill(-1)]);
+});
 
 /**
  * Instanced batches in scene packets. The packets are assembled here, from the layout `Scene::packet` documents, so
