@@ -31,6 +31,14 @@ fn library() -> BTreeMap<String, String> {
 }
 
 fn generate(name: &str, overrides: &[(&str, serde_json::Value)]) -> GeneratedItem {
+    generate_with(name, overrides, |_| {})
+}
+
+fn generate_with(
+    name: &str,
+    overrides: &[(&str, serde_json::Value)],
+    edit: impl FnOnce(&mut item::ItemDefinition),
+) -> GeneratedItem {
     let files = library();
     let reader = |name: &str| -> Result<Arc<[u8]>, String> {
         files
@@ -38,7 +46,8 @@ fn generate(name: &str, overrides: &[(&str, serde_json::Value)]) -> GeneratedIte
             .map(|text| Arc::from(text.as_bytes()))
             .ok_or(format!("Missing {name}"))
     };
-    let definition = item::parse(name, &files[name]).unwrap();
+    let mut definition = item::parse(name, &files[name]).unwrap();
+    edit(&mut definition);
     let values: Values = overrides
         .iter()
         .map(|(name, value)| ((*name).to_owned(), value.clone()))
@@ -1264,20 +1273,49 @@ fn a_sign_is_an_item_of_its_own() {
 
 #[test]
 fn a_steel_balcony_has_rails_where_a_parapet_is_solid() {
-    let rails = |rail: &str| {
-        let item = generate(
-            "kowloon-facade-side.item.json",
-            &[("balcony", json!(true)), ("balconyRail", json!(rail))],
+    let name = "kowloon-facade-side.item.json";
+    for rail in ["steel", "parapet"] {
+        let overrides = [("balcony", json!(true)), ("balconyRail", json!(rail))];
+        let facade = generate(name, &overrides);
+        let original = generate_with(name, &overrides, |definition| {
+            definition
+                .parts
+                .iter_mut()
+                .find(|part| part.id == "balcony")
+                .unwrap()
+                .slots
+                .clear();
+        });
+        let balcony = |item: GeneratedItem| -> BTreeMap<_, _> {
+            item.geometry
+                .meshes
+                .iter()
+                .filter(|m| m.id.starts_with("balcony/"))
+                .map(|m| (m.id.clone(), m.clone()))
+                .collect()
+        };
+        let bound = balcony(facade);
+        let unbound = balcony(original);
+        assert_eq!(
+            bound.keys().collect::<Vec<_>>(),
+            unbound.keys().collect::<Vec<_>>()
         );
-        item.geometry
-            .meshes
-            .iter()
-            .filter(|m| m.id.starts_with("balcony/"))
-            .map(|m| m.material_slot.clone())
-            .collect::<BTreeSet<_>>()
-    };
-    assert!(rails("steel").contains("metal"), "{:?}", rails("steel"));
-    assert!(!rails("parapet").contains("metal"));
+        assert_eq!(bound.contains_key("balcony/metal"), rail == "steel");
+        if rail == "steel" {
+            assert!(bound.contains_key("balcony/paint"));
+        }
+        for (id, before) in unbound {
+            let after = &bound[&id];
+            assert_eq!(after.positions, before.positions);
+            assert_eq!(after.indices, before.indices);
+            let slot = if before.material_slot == "concrete" {
+                "suspended-concrete"
+            } else {
+                &before.material_slot
+            };
+            assert_eq!(after.material_slot, slot);
+        }
+    }
 }
 
 #[test]

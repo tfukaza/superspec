@@ -233,7 +233,7 @@
                        "brackets": {"parameter": "balconyBrackets"}, "color": "#ffffff", "upstand": 0.465,
                        "rail": {"parameter": "balconyRail"}, "rail_color": {"parameter": "frame"}}},
       "placement": {"position": ["(balconyFrom + balconyEnd) / 2", 0, {"derived": "base"}]},
-      "slots": {"concrete": "suspended-concrete", "wall": "wall", "metal": "metal"}
+      "slots": {"concrete": "suspended-concrete", "wall": "wall", "metal": "metal", "paint": "paint"}
     },
     {
       "id": "balconyFan",
