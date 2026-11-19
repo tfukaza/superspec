@@ -8,6 +8,7 @@
     "paint": {"type": "color", "default": "#c0b49e"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.1, "max": 40, "unit": "m"},
+    "joinWalls": {"type": "boolean", "default": false},
     "copingFlush": {"type": "boolean", "default": false},
     "copingBevel": {"type": "number", "default": 0.02, "min": 0, "max": 0.035, "unit": "m"},
     "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
@@ -17,15 +18,22 @@
     "ledge": {"type": "boolean", "default": false},
     "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
     "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "wallMiterStart": {"type": "number", "default": 0, "min": -8, "max": 8},
+    "wallMiterEnd": {"type": "number", "default": 0, "min": -8, "max": 8},
     "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
     "arrisStart": {"type": "number", "default": 0, "min": 0, "max": 2},
     "arrisEnd": {"type": "number", "default": 0, "min": 0, "max": 2}
+  },
+  "derived": {
+    "copingStart": "select(joinWalls, 0.05 * wallMiterStart, select(copingFlush * (miterStart > 0), 0.05 * miterStart, 0.04))",
+    "copingEnd": "select(joinWalls, 0.05 * wallMiterEnd, select(copingFlush * (miterEnd > 0), 0.05 * miterEnd, 0.04))"
   },
   "parts": [
     {
       "id": "parapet",
       "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": {"parameter": "height"}, "thickness": {"parameter": "thickness"},
         "patternAnchor": ["-u0", "-z0"],
+        "miters": ["wallMiterStart", "wallMiterEnd"],
         "arris": {"parameter": "arris"}, "arrisStart": {"parameter": "arrisStart"}, "arrisEnd": {"parameter": "arrisEnd"}},
       "slots": {"front": "wall", "back": "wall", "edge": "wall"},
       "zones": [
@@ -34,9 +42,9 @@
     },
     {
       "id": "coping",
-      "generator": {"kind": "box", "size": ["width + select(copingFlush * (miterStart > 0), 0.05 * miterStart, 0.04) + select(copingFlush * (miterEnd > 0), 0.05 * miterEnd, 0.04)", "thickness + 0.1", 0.08],
-        "bevel": {"parameter": "copingBevel"}, "bevelSegments": 2, "bevelAxis": "x"},
-      "placement": {"position": ["0 - select(copingFlush * (miterStart > 0), 0.05 * miterStart, 0.04)", -0.05, {"parameter": "height"}]},
+      "generator": {"kind": "box", "size": ["width + copingStart + copingEnd", "thickness + 0.1", 0.08],
+        "bevel": {"parameter": "copingBevel"}, "bevelSegments": 2, "bevelAxis": "x", "miters": ["joinWalls * wallMiterStart", "joinWalls * wallMiterEnd"]},
+      "placement": {"position": ["-copingStart", -0.05, {"parameter": "height"}]},
       "slots": {"side": "trim", "top": "trim", "bottom": "trim"}
     },
     {

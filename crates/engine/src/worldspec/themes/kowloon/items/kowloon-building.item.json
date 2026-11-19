@@ -159,9 +159,10 @@
                        "backDoorColor": {"parameter": "backDoorColor"}, "backDoorLouvres": {"parameter": "backDoorLouvres"},
                        "glazing": {"parameter": "glazing"}, "hoods": {"parameter": "hoods"},
                        "plinth": {"expr": "select(count(plinthPlans) > e, cell(plinthPlans, e), select(e_street, plinth, 0))"}, "ledge": {"choose": [false, true], "by": "e_street"},
-                       "miterStart": {"expr": "select(e_street * e_previous_street, select(round > 0, select(e_previous_cut > 0, 0.0001, max(0, e_miter_start)), 0.4142), min(1, e_street + bandsAround))"}, "miterEnd": {"expr": "select(e_cut > 0, select(round > 0, 0.0001, 0.4142), min(1, e_street + bandsAround))"},
+                       "miterStart": {"expr": "select((round > 0) * (e_previous_cut > 0), 0, e_miter_start)"},
+                       "miterEnd": {"expr": "select((round > 0) * (e_cut > 0), 0, e_miter_end)"}, "joinWalls": true,
                        "copingFlush": {"choose": [false, true], "by": "round > 0"},
-                       "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, clamp(e_miter_start, 0, 2))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, clamp(e_miter_end, 0, 2))"},
+                       "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, select(e_miter_start <= 2, max(0, e_miter_start), 0))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, select(e_miter_end <= 2, max(0, e_miter_end), 0))"},
                        "tileStart": {"choose": [false, true], "by": "cornerTiles * (e_previous_cut > 0)"}, "tileEnd": {"choose": [false, true], "by": "cornerTiles * (e_cut > 0)"},
                        "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "fitted": {"parameter": "fittedBays"}, "lampStyle": {"parameter": "lampStyle"},
                        "shutterHead": {"parameter": "shutterHead"}, "shutterHeadRust": {"parameter": "shutterHeadRust"}, "meters": {"parameter": "meters"},
@@ -206,7 +207,8 @@
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + 100 + c"},
                        "edge": 0.2, "windows": false, "groundShops": false, "downpipe": false, "riser": false,
                        "sill": {"parameter": "streetSill"}, "tileStrip": {"parameter": "cornerTiles"},
-                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}, "ledge": true, "miterStart": 0.4142, "miterEnd": 0.4142}},
+                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}, "ledge": true,
+                       "miterStart": {"expr": "c_cmiter_start"}, "miterEnd": {"expr": "c_cmiter_end"}, "joinWalls": true}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_cdx", "c_cdy"]}
     },
     {

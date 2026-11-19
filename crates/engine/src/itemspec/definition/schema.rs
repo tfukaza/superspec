@@ -419,6 +419,9 @@ pub enum Generator {
         bevel_segments: Scalar,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bevel_axis: Option<Axis>,
+        /// For an X-axis bar, the end setbacks per meter of Y depth.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        miters: Option<[Scalar; 2]>,
     },
     /// Version 2 part generator.
     Panel(PanelDefinition),
@@ -632,6 +635,9 @@ pub struct PanelDefinition {
     pub arris_start: Scalar,
     #[serde(default, skip_serializing_if = "Scalar::is_zero")]
     pub arris_end: Scalar,
+    /// Start and end setbacks per meter of depth, measured from the front corners.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub miters: Option<[Scalar; 2]>,
 }
 
 /// A section swept round a plan arc. The part's origin is where the arc starts; it leaves

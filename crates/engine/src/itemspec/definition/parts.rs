@@ -139,6 +139,8 @@ enum PartShape {
         /// The one axis whose edges the bevel rounds; every edge when absent.
         #[serde(skip_serializing_if = "Option::is_none")]
         along: Option<Axis>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        miters: Option<[f64; 2]>,
     },
     Pipe {
         length: f64,
@@ -545,6 +547,7 @@ pub(super) fn prepare(
                     bevel,
                     bevel_segments,
                     bevel_axis,
+                    miters,
                 } => {
                     let mut resolved = [0.; 3];
                     for axis in 0..3 {
@@ -562,11 +565,32 @@ pub(super) fn prepare(
                         bevel_segments,
                         (smallest / 2. - 5e-4).max(0.),
                     )?;
+                    let miters = if let Some(turns) = miters {
+                        let turns = [
+                            context.scalar(&turns[0], &format!("{generator}/miters/0"))?,
+                            context.scalar(&turns[1], &format!("{generator}/miters/1"))?,
+                        ];
+                        if turns != [0.; 2]
+                            && (*bevel_axis != Some(Axis::X)
+                                || turns.iter().any(|turn| turn.abs() > 8.)
+                                || (turns[0] + turns[1]) * resolved[1] >= resolved[0] - 1e-3)
+                        {
+                            return Err(context.fail(
+                                &format!("{generator}/miters"),
+                                "ITEM_GEOMETRY",
+                                "Box miters require bevelAxis x and must leave positive length across the section.",
+                            ));
+                        }
+                        (turns != [0.; 2]).then_some(turns)
+                    } else {
+                        None
+                    };
                     (
                         PartShape::Box {
                             size: resolved,
                             bevel: Bevel { radius, segments },
-                            along: (*bevel_axis).filter(|_| radius > 0.),
+                            along: (*bevel_axis).filter(|_| radius > 0. || miters.is_some()),
+                            miters,
                         },
                         &["side", "top", "bottom"],
                         vec![],
@@ -1193,7 +1217,12 @@ impl PreparedPart {
                     *length, *width, *height, *thickness, *capped, cancelled,
                 )?));
             }
-            PartShape::Box { size, bevel, .. } if bevel.none() => prism(
+            PartShape::Box {
+                size,
+                bevel,
+                miters: None,
+                ..
+            } if bevel.none() => prism(
                 &mut surfaces,
                 ["side", "bottom", "top"],
                 &Frame {
@@ -1209,14 +1238,18 @@ impl PreparedPart {
                 size,
                 bevel,
                 along: Some(axis @ (Axis::X | Axis::Y)),
+                miters,
             } => surfaces::bar(
                 &mut surfaces,
                 *size,
                 *axis == Axis::X,
                 bevel.radius,
                 bevel.segments,
+                miters.unwrap_or([0.; 2]),
             )?,
-            PartShape::Box { size, bevel, along } => {
+            PartShape::Box {
+                size, bevel, along, ..
+            } => {
                 let frame = Frame {
                     origin: [0.; 3],
                     x: [1., 0., 0.],

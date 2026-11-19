@@ -42,6 +42,8 @@
     "fascia": {"type": "boolean", "default": true},
     "meters": {"type": "boolean", "default": true},
     "meterPlan": {"type": "grid", "default": []},
+    "wallMiterStart": {"type": "number", "default": 0, "min": -8, "max": 8},
+    "wallMiterEnd": {"type": "number", "default": 0, "min": -8, "max": 8},
     "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
     "arrisStart": {"type": "number", "default": 0, "min": 0, "max": 2},
     "arrisEnd": {"type": "number", "default": 0, "min": 0, "max": 2}
@@ -61,6 +63,7 @@
         "height": {"parameter": "height"},
         "thickness": {"parameter": "thickness"},
         "patternAnchor": ["-u0", 0],
+        "miters": ["wallMiterStart", "wallMiterEnd"],
         "arris": {"parameter": "arris"}, "arrisStart": {"parameter": "arrisStart"}, "arrisEnd": {"parameter": "arrisEnd"},
         "openings": [
           {"id": "shop", "repeat": {"name": "i", "count": {"derived": "shops"}}, "jambs": {"parameter": "arris"},

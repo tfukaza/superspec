@@ -1090,7 +1090,8 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         "{shutter:?}"
     );
     let wall = extent("side-0/ground/wall", "wall");
-    assert!((wall[1][0] - 6.).abs() < 1e-6, "{wall:?}");
+    let miter_tip = 6. - 0.025 * (1. - 0.5f64.sqrt());
+    assert!((wall[1][0] - miter_tip).abs() < 1e-6, "{wall:?}");
     // Three storeys: 3.3 m and two of 3 m, a 0.45 m parapet and its 8 cm coping.
     assert!((top_of(&building, "side-0") - 9.83).abs() < 0.03);
     // The deck is tiled in its own slot, and the dado in one of its own (the spandrels' tiles are `tile`).
@@ -2868,14 +2869,6 @@ fn no_two_receivers_of_the_planned_buildings_lie_on_one_another() {
     // Pairs drawn by fixtures, frames and signs whose own makers have yet to part them, by the
     // names in their two mesh ids: they are listed rather than hidden, so none is added.
     const PENDING: &[(&str, &str)] = &[
-        // Square corners: one side's wall end lies in the next side's front plane (and the
-        // seats both sides cut for their bands meet in the corner, behind the bands).
-        ("/wall/wall/edge", "/wall/wall/front"),
-        ("/wall/wall/edge", "/wall/wall/edge"),
-        ("/wall/wall/reveal", "/wall/wall/reveal"),
-        ("/parapet/parapet/edge", "/parapet/parapet/front"),
-        ("/parapet/parapet/edge", "/parapet/parapet/edge"),
-        ("/coping/coping/", "/coping/coping/"),
         ("/wall/wall/edge", "roof/top"),
         ("/wall/wall/reveal", "/room/room/"),
         ("/fascia/fascia/", "/balcony/balcony/"),

@@ -69,6 +69,8 @@
     "windowTransom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
     "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
     "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "wallMiterStart": {"type": "number", "default": 0, "min": -8, "max": 8},
+    "wallMiterEnd": {"type": "number", "default": 0, "min": -8, "max": 8},
     "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
     "arrisStart": {"type": "number", "default": 0, "min": 0, "max": 2},
     "arrisEnd": {"type": "number", "default": 0, "min": 0, "max": 2}
@@ -93,6 +95,7 @@
         "height": {"parameter": "height"},
         "thickness": {"parameter": "thickness"},
         "patternAnchor": ["-u0", "-z0"],
+        "miters": ["wallMiterStart", "wallMiterEnd"],
         "arris": {"parameter": "arris"}, "arrisStart": {"parameter": "arrisStart"}, "arrisEnd": {"parameter": "arrisEnd"},
         "openings": [
           {"id": "window", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)",
