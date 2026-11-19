@@ -14,21 +14,48 @@ type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "int
  * The last pass: the renderer's own tone mapping, exposure and output color space (three.js applies them to a material
  * drawn to the canvas through these two chunks, exactly as it does to a scene material), then the backdrop behind
  * whatever the scene did not cover. The scene target is premultiplied by coverage after its multisample resolve.
+ * The optional edge filter measures contrast in the displayed image, including its backdrop.
  */
 const OUTPUT = {
-  uniforms: { tDiffuse: { value: null }, backdrop: { value: new THREE.Vector3() } },
+  uniforms: { tDiffuse: { value: null }, backdrop: { value: new THREE.Vector3() }, edgeTexel: { value: new THREE.Vector2() }, edgeThreshold: { value: 0.12 } },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
 uniform sampler2D tDiffuse;
 uniform vec3 backdrop;
 varying vec2 vUv;
-void main() {
-  vec4 texel = texture2D(tDiffuse, vUv);
+#ifdef EDGE_BLUR
+uniform vec2 edgeTexel;
+uniform float edgeThreshold;
+#endif
+vec3 displayColor(vec2 uv) {
+  vec4 texel = texture2D(tDiffuse, uv);
   float coverage = clamp(texel.a, 0.0, 1.0);
-  gl_FragColor = vec4(coverage > 0.0 ? texel.rgb / coverage : vec3(0.0), 1.0);
-  #include <tonemapping_fragment>
-  #include <colorspace_fragment>
-  gl_FragColor.rgb = mix(backdrop, gl_FragColor.rgb, coverage);
+  vec3 color = coverage > 0.0 ? texel.rgb / coverage : vec3(0.0);
+  #ifdef TONE_MAPPING
+    color = toneMapping(color);
+  #endif
+  return mix(backdrop, linearToOutputTexel(vec4(color, 1.0)).rgb, coverage);
+}
+#ifdef EDGE_BLUR
+float contrast(vec3 a, vec3 b) {
+  vec3 delta = abs(a - b);
+  return max(delta.r, max(delta.g, delta.b));
+}
+#endif
+void main() {
+  vec3 color = displayColor(vUv);
+  #ifdef EDGE_BLUR
+    // Soften across the stronger gradient using taps one device pixel away.
+    vec2 dx = vec2(edgeTexel.x, 0.0), dy = vec2(0.0, edgeTexel.y);
+    vec3 left = displayColor(vUv - dx), right = displayColor(vUv + dx);
+    vec3 down = displayColor(vUv - dy), up = displayColor(vUv + dy);
+    float horizontal = max(contrast(color, left), contrast(color, right));
+    float vertical = max(contrast(color, down), contrast(color, up));
+    vec3 neighbors = horizontal >= vertical ? left + right : down + up;
+    float amount = 0.4 * smoothstep(edgeThreshold, edgeThreshold + 0.08, max(horizontal, vertical));
+    color = mix(color, 0.5 * neighbors, amount);
+  #endif
+  gl_FragColor = vec4(color, 1.0);
 }`,
 };
 
@@ -211,7 +238,8 @@ export class AmbientOcclusion {
    * drawn, and drawn in the image as usual.
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly scene: THREE.Scene, camera: THREE.Camera,
-    parameters: AmbientOcclusionParameters | null, excluded: () => THREE.Object3D[] = () => [], contours: Contours | null = null) {
+    parameters: AmbientOcclusionParameters | null, excluded: () => THREE.Object3D[] = () => [], contours: Contours | null = null,
+    edgeThreshold: number | null = null) {
     const size = renderer.getSize(new THREE.Vector2());
     const target = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, target);
@@ -239,6 +267,10 @@ export class AmbientOcclusion {
     this.camera = camera;
     this.setContours(contours);
     this.output = new ShaderPass(OUTPUT);
+    if (edgeThreshold !== null) {
+      this.output.material.defines.EDGE_BLUR = 1;
+      this.output.uniforms.edgeThreshold.value = edgeThreshold;
+    }
     this.composer.addPass(this.output);
     this.set(parameters);
   }
@@ -442,6 +474,8 @@ void main() {
     this.contours?.setPixelRatio(pixelRatio);
     this.composer.setPixelRatio(pixelRatio);
     this.composer.setSize(width, height);
+    const size = this.composer.readBuffer;
+    this.output.uniforms.edgeTexel.value.set(1 / Math.max(1, size.width), 1 / Math.max(1, size.height));
   }
 
   /** Runs `compile` with the scene target bound, so programs are made for the target the scene is drawn into. */
@@ -455,6 +489,7 @@ void main() {
     this.pass.dispose();
     this.contact.dispose();
     this.contours?.dispose();
+    this.output.dispose();
     this.foliageMask.dispose();
     this.contactMask.dispose();
     this.composer.dispose();

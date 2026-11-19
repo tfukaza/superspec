@@ -42,12 +42,12 @@ export class SceneLighting {
   /** The sun's shadow look. Every scene material is patched with it; it draws only while `styledShadows`. */
   readonly shadowStyle = new ShadowStyle(DEFAULT_LIGHTING.lights[0].shadow);
   /**
-   * The composited frame, while ambient occlusion or contour lines are on and the renderer can composite; frames then
-   * go through it. `occluding` and `outlining` say which of the two it draws.
+   * The composited frame for ambient occlusion, contour lines and edge blur.
    */
   ambientOcclusion?: AmbientOcclusion;
   occluding = false;
   outlining = false;
+  edgeBlurring = false;
   /** Why ambient occlusion the record leaves to its default is not drawn here (`software-occlusion.ts`), or null. */
   occlusionDefault: string | null = null;
   /** The record in effect: the scene's, with the session's overrides. */
@@ -145,19 +145,25 @@ export class SceneLighting {
       occlusion.enabled = false;
       this.report(`ambientOcclusion is ${this.occlusionDefault}.`, "info");
     }
-    // Contour lines are a pass over the same composited frame, with or without the occlusion.
+    // Contours and edge blur can use the composited frame independently of occlusion.
     const contours = contoursOf(lighting);
-    const unavailable = occlusion.enabled || contours.enabled ? AmbientOcclusion.unavailable(renderer) : null;
+    const edgeBlur = this.query.get("edgeblur") === "on";
+    const threshold = Number(this.query.get("edgethreshold") ?? NaN);
+    const edgeThreshold = Number.isFinite(threshold) ? Math.min(0.9, Math.max(0.01, threshold)) : 0.12;
+    const unavailable = occlusion.enabled || contours.enabled || edgeBlur ? AmbientOcclusion.unavailable(renderer) : null;
     if (unavailable && occlusion.enabled) this.report(`ambientOcclusion is not drawn: ${unavailable}.`);
     if (unavailable && contours.enabled) this.report(`contours are not drawn: ${unavailable}.`);
+    if (unavailable && edgeBlur) this.report(`edge blur is not drawn: ${unavailable}.`);
     this.occluding = occlusion.enabled && !unavailable;
     this.outlining = contours.enabled && !unavailable;
-    if (this.occluding || this.outlining) {
+    this.edgeBlurring = edgeBlur && !unavailable;
+    if (this.occluding || this.outlining || this.edgeBlurring) {
       if (this.ambientOcclusion) {
         this.ambientOcclusion.set(this.occluding ? occlusion : null);
         this.ambientOcclusion.setContours(this.outlining ? contours : null);
       } else {
-        this.ambientOcclusion = new AmbientOcclusion(renderer, scene, this.camera, this.occluding ? occlusion : null, this.excluded, this.outlining ? contours : null);
+        this.ambientOcclusion = new AmbientOcclusion(renderer, scene, this.camera, this.occluding ? occlusion : null, this.excluded,
+          this.outlining ? contours : null, this.edgeBlurring ? edgeThreshold : null);
         const size = renderer.getSize(new THREE.Vector2());
         this.ambientOcclusion.setSize(size.x, size.y, renderer.getPixelRatio());
       }

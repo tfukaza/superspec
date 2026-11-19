@@ -25,4 +25,9 @@ The MVP handles explicit straight segments and repeated placements. The AML
 preview uses the shop-house material recipes for city receivers, the avenue
 median's planted groundcover, and the study's lighting and shadow settings.
 Mesh contours are off in the city preview.
+
+Add `?edgeblur=on` to the preview URL to soften strong color transitions
+within one device pixel. `edgethreshold` sets the minimum display-color
+difference on a scale from 0 to 1. The default is `0.12`.
+
 Path-following and intersections require further placement and physical contracts.
