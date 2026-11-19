@@ -788,6 +788,7 @@ fn groundcover(
         jitter: 0.1,
         leaf_scale: 1.3,
         palette: GROUNDCOVER_PALETTE,
+        look: String::new(),
     });
     carrier
 }
@@ -889,12 +890,31 @@ fn write_lane_plants() {
             .collect()
     };
     let middle = avenue["median"]["offset"].as_f64().unwrap();
+    // LANE_TREE=street: the spreading street tree (`street.tree.json`: a clear bole forking into
+    // a few rising limbs under a wide crown) in the birch's stead, each station its own seed and
+    // size; LANE_LOOK names the look that draws every tree's mass (`FoliageMass::look`).
+    let street = |station: usize| {
+        let mut definition = scaled(
+            tree::parse(
+                "street.tree.json",
+                include_str!("../src/treespec/fixtures/street.tree.json"),
+            )
+            .unwrap(),
+            [1.0, 0.9, 1.06][station % 3],
+        );
+        definition.seed += 7 * station as u64;
+        (definition, superspec_types::batch::FoliageMass::default())
+    };
+    let tree_look = std::env::var("LANE_LOOK").unwrap_or_default();
     let mut row = vec![];
     for (i, along) in stations("trees").into_iter().enumerate() {
-        row.push((
-            birch([1.2, 1.1][i % 2]),
-            avenue_point(&avenue, along, middle),
-        ));
+        let (definition, mut mass) = if std::env::var("LANE_TREE").as_deref() == Ok("street") {
+            street(i)
+        } else {
+            birch([1.2, 1.1][i % 2])
+        };
+        mass.look = tree_look.clone();
+        row.push(((definition, mass), avenue_point(&avenue, along, middle)));
     }
     for along in stations("shrubs") {
         row.push((shrub.clone(), avenue_point(&avenue, along, middle)));
@@ -911,6 +931,7 @@ fn write_lane_plants() {
             form: mass.form,
             leaf_scale: mass.leaf_scale,
             jitter: mass.jitter,
+            look: mass.look.clone(),
             palette: LANE_PALETTE,
             ..painted_mass(&definition, &plant)
         };
