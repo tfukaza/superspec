@@ -48,15 +48,15 @@ const runLength = mul(runReach, add(0.15, mul(0.85, hash(vec2(joint, 3.1), seed(
 const fall = clamp(sub(1, div(max(sub(boundsMax.z, world.z), 0), runLength)), 0, 1);
 const runOn = step(hash(vec2(joint, 7.7), seed("joint-on")), jointRuns);
 const thread = add(0.6, mul(0.4, valueNoise(vec2(mul(joint, 5.3), mul(world.z, 7)), seed("joint-thread"))));
-const runCore = sub(1, smoothstep(mul(jointWidth, 0.5), add(jointWidth, mul(tileSize, mul(0.18, fall))), offJoint));
-const runs = mul(mul(mul(grime, runOn), mul(fall, fall)), mul(runCore, thread));
+const runCore = sub(1, smoothstep(mul(jointWidth, 0.5), add(jointWidth, mul(tileSize, mul(0.32, fall))), offJoint));
+const runs = mul(mul(mul(grime, runOn), fall), mul(runCore, thread));
 
 export default defineMaterial({
   name: "Kowloon wall tile",
   base: { baseColor: faded, roughness: glazeRoughness, metalness: 0 },
   layers: [
     layer({ id: "film", mask: film, baseColor: vec3(0.085, 0.078, 0.062), roughness: 0.88 }),
-    layer({ id: "runs", mask: min(runs, 0.92), baseColor: vec3(0.075, 0.064, 0.048), roughness: 0.9 }),
+    layer({ id: "runs", mask: min(mul(runs, 1.3), 0.95), baseColor: vec3(0.045, 0.038, 0.028), roughness: 0.9 }),
     layer({ id: "chips", mask: tiles.chip, baseColor: vec3(0.42, 0.39, 0.33), roughness: 0.8, height: { add: -0.0012 } }),
     layer({ id: "bedding", mask: tiles.substrate, baseColor: vec3(0.3, 0.285, 0.25), roughness: 0.95 }),
     layer({ id: "joints", mask: tiles.joint, baseColor: mix(vec3(0.16, 0.15, 0.13), vec3(0.03, 0.028, 0.024), grime), roughness: 0.95, height: { add: -0.0025 } }),

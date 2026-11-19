@@ -227,6 +227,11 @@ export interface AtlasProgramLayout {
    * opacity in its alpha, and the baked look is drawn only where that reaches the cutoff.
    */
   cutout?: number;
+  /**
+   * Whether the program states an opacity that is not a cutout (see glass): the base color texture then holds its
+   * opacity in its alpha, and the baked look is drawn blended.
+   */
+  blend?: boolean;
 }
 
 /** What a live argument is to a bake, as the engine classifies it (`LiveArgument` in `program/glsl.rs`). */
@@ -320,8 +325,9 @@ function layoutOf(shader: ProgramShader): AtlasProgramLayout {
   for (let index = 0; index < liveTextures; index++) attachments.push(`live${index}`);
   const liveParameters = [...used].map(([uniform, type]) => ({ uniform, type }));
   const cutout = typeof shader.alphaCutoff === "number" && outputs.includes("opacity") ? shader.alphaCutoff : undefined;
-  const layout: AtlasProgramLayout = { key: `${attachments.join("+")}${orient ? ":orient" : ""}${cutout === undefined ? "" : `:cutout${cutout}`}:${fnv(JSON.stringify([liveChannels, liveOperations]))}`,
-    attachments, orient, liveChannels, liveOperations, liveParameters, ...(cutout === undefined ? {} : { cutout }) };
+  const blend = cutout === undefined && outputs.includes("opacity");
+  const layout: AtlasProgramLayout = { key: `${attachments.join("+")}${orient ? ":orient" : ""}${cutout === undefined ? "" : `:cutout${cutout}`}${blend ? ":blend" : ""}:${fnv(JSON.stringify([liveChannels, liveOperations]))}`,
+    attachments, orient, liveChannels, liveOperations, liveParameters, ...(cutout === undefined ? {} : { cutout }), ...(blend ? { blend } : {}) };
   return layout;
 }
 
@@ -567,8 +573,8 @@ void main() {
 export function atlasFragment(source: string, layout: AtlasProgramLayout): string {
   const writes: Record<string, string> = {
     // The base color target is an sRGB attachment: the hardware encodes these linear values on write.
-    // A cutout's opacity rides in the alpha (linear; the baked look tests it against the cutoff).
-    base: `vec4(clamp(ms_base_color, 0.0, 1.0), ${layout.cutout === undefined ? "1.0" : "clamp(ms_opacity, 0.0, 1.0)"})`,
+    // A cutout's or a blended program's opacity rides in the alpha (linear; the baked look tests or blends by it).
+    base: `vec4(clamp(ms_base_color, 0.0, 1.0), ${layout.cutout === undefined && !layout.blend ? "1.0" : "clamp(ms_opacity, 0.0, 1.0)"})`,
     properties: "vec4(1.0, clamp(ms_roughness, 0.0, 1.0), clamp(ms_metalness, 0.0, 1.0), 1.0)",
     // Height in meters, with the world-space receiver_normal output beside it when the program has one.
     height: "vec4(ms_height, ms_receiver_normal)",

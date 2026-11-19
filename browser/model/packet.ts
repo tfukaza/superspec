@@ -47,6 +47,17 @@ export interface FoliageLook {
   tip: { lift: number; highlight: [number, number, number]; amount: number; start: number; palette?: [number, number, number][] };
   /** The plant families' parameters (`superspec_types::batch::FoliageCanopy`); absent for grass. */
   canopy?: FoliageCanopy;
+  /** The plant painted as one mass, drawn with this batch in place of its patch's leaves and hull. */
+  mass?: FoliageMass;
+}
+/**
+ * A plant's foliage painted as one mass (`superspec_types::batch::FoliageMass`, painted-mass.ts): its leaf clusters
+ * (`[x, y, z, size]`) and leafy twigs in the batch mesh's space, the density field's kernel and cell (meters), the
+ * painted core's level and the share of cards kept.
+ */
+export interface FoliageMass {
+  sites: [number, number, number, number][]; twigs: [number, number, number][][];
+  radius: number; cell: number; level: number; cardKeep: number;
 }
 /** Grass, or a plant's part: bark, leaf clusters, the canopy hull and its shadow proxy (roadmap stage 7). */
 export type FoliageFamily = "grass" | "bark" | "leaves" | "hull" | "shadow";
@@ -64,6 +75,10 @@ export function validFoliage(look: unknown): look is FoliageLook {
   const canopy = value?.canopy;
   if (canopy !== undefined && !(numbers(canopy, ["facing", "dab", "cutout", "highlights", "translucency", "glint", "wrap"])
     && Array.isArray(canopy.highlight) && canopy.highlight.length === 3 && canopy.highlight.every(Number.isFinite))) return false;
+  const mass = value?.mass;
+  const points = (list: unknown, size: number) => Array.isArray(list) && list.every(point => Array.isArray(point) && point.length === size && point.every(Number.isFinite));
+  if (mass !== undefined && !(numbers(mass, ["radius", "cell", "level", "cardKeep"]) && mass.radius > 0 && mass.cell > 0
+    && points(mass.sites, 4) && mass.sites.length > 0 && Array.isArray(mass.twigs) && mass.twigs.every(twig => points(twig, 3)))) return false;
   return typeof value === "object" && value !== null && ["grass", "bark", "leaves", "hull", "shadow"].includes(value.family) && typeof value.patch === "string" && value.patch.length > 0
     && Number.isInteger(value.level) && value.level >= 0 && numbers(value, ["distance", "keep", "far"]) && value.keep > 0 && value.far > value.distance
     && (value.material === undefined || typeof value.material === "string") && ["painted", "lit"].includes(value.profile)

@@ -4,6 +4,7 @@ import { canopyUniforms, treeMaterial, isPlant, SHADOW_PROXY_LAYER } from "./fol
 import { attributeName } from "./batch.ts";
 import { followPaintedFinishing, programSun, programTime, type MaterialShading } from "./shade.ts";
 import { sceneFieldUniforms } from "./scene-fields.ts";
+import { paintedMass } from "./painted-mass.ts";
 
 /**
  * Foliage in the viewer (roadmap stage 6, TreeSpec phase 4): instanced batches that carry a foliage look
@@ -468,6 +469,10 @@ interface LevelMesh {
   /** Vertices of the mesh and blades in it (distinct roots). */
   vertices: number;
   blades: number;
+  /** A plant's leaves or hull whose patch is painted as a mass (`FoliageLook.mass`): never drawn. */
+  replaced?: boolean;
+  /** The painted mass this level carries (painted-mass.ts), drawn whenever the level is. */
+  painted?: THREE.Mesh[];
 }
 
 /** One field of foliage: its levels, its tiles' bounds and the level each tile draws. */
@@ -775,6 +780,33 @@ export class FoliageView {
     }
     this.patches = [...byPatch.values()];
     for (const patch of this.patches) {
+      // A plant painted as a mass: the mass is drawn with the batch that carries it (once per placement, built once
+      // per mesh), in place of the patch's leaves and hull.
+      if (!patch.levels.some(level => level.look.mass)) continue;
+      for (const level of patch.levels) {
+        if (level.look.family === "leaves" || level.look.family === "hull") level.replaced = true;
+        const mass = level.look.mass;
+        if (!mass) continue;
+        const mesh = level.mesh;
+        let parts = mesh.userData.paintedMass as THREE.Mesh[] | undefined;
+        if (!parts) {
+          const placement = new THREE.Matrix4();
+          parts = [];
+          for (let instance = 0; instance < level.drawn; instance++) {
+            placement.fromArray(level.source[0].values, instance * 16);
+            parts.push(...paintedMass(mass, placement));
+          }
+          // Foliage to the passes that look for it (ambient occlusion leaves it out), drawn as leaves.
+          for (const part of parts) { part.userData.foliage = { ...level.look, family: "leaves" }; mesh.add(part); }
+          mesh.userData.paintedMass = parts;
+          // Gone with the batch's mesh (the shared textures stay).
+          const made = parts;
+          mesh.geometry.addEventListener("dispose", () => { for (const part of made) { part.geometry.dispose(); (part.material as THREE.Material).dispose(); } });
+        }
+        level.painted = parts;
+      }
+    }
+    for (const patch of this.patches) {
       // Each level thins toward the next level's share, and the last toward nothing at far. The values change in place:
       // compiled programs hold these uniform objects.
       // A plant's families thin toward the next level of the same family; one the next level does not draw (leaves at
@@ -815,7 +847,9 @@ export class FoliageView {
     level.drawn = drawn;
     level.mesh.count = drawn;
     // A level no tile draws issues no draw call.
-    level.mesh.visible = drawn > 0 && (level.mesh.userData.source?.visible ?? true);
+    level.mesh.visible = drawn > 0 && (level.mesh.userData.source?.visible ?? true) && !level.replaced;
+    // Its painted mass shows with it (passes that gather foliage by its own flag, not its parent's, see it too).
+    for (const part of level.painted ?? []) part.visible = level.mesh.visible;
   }
 
   dispose(): void {

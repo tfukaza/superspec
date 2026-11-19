@@ -172,7 +172,7 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  * render is the anchored concrete, an intrinsic base: their grime, ground stain and moss are the weathering layers the
  * items declare on their `wall` slot.
  */
-const kowloonSlots = { wall: "render-paint", "wall-round": "render-paint-round", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile",
+const kowloonSlots = { wall: "render-paint", "wall-round": "render-paint-round", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile", dado: "dado-tile",
   glass: "window-glass", pane: "room-dark", recess: "recess-plaster",
   galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
   opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",

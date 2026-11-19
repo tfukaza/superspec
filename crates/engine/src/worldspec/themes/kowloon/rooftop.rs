@@ -87,6 +87,51 @@ pub(super) fn aerial(
     rng: &mut SeededRng,
     kit: &Kit,
 ) -> Result<(), String> {
+    aerial_with(d, base, height, rng, kit, &Aerial::default())
+}
+/// What a caller adds to a seeded aerial; the default draws it exactly as [`aerial`] does.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Aerial {
+    /// How many times as long its arrays' booms and elements are (and its mast a little
+    /// heavier), 0.5–3.
+    pub size: f64,
+    /// Guy wires from a collar 0.7 of the way up the mast to plates on the roof, 0–4.
+    pub stays: usize,
+    /// How far from the mast the stays meet the roof, in meters.
+    pub spread: f64,
+    /// The bearing of the first stay in radians; the others share the circle evenly.
+    pub bearing: f64,
+}
+impl Default for Aerial {
+    fn default() -> Self {
+        Self {
+            size: 1.,
+            stays: 0,
+            spread: 0.8,
+            bearing: 0.,
+        }
+    }
+}
+/// [`aerial`] with what `shape` adds; the seed's draws are the same either way.
+pub(super) fn aerial_with(
+    d: &mut Fixture<'_, '_>,
+    base: V3,
+    height: f64,
+    rng: &mut SeededRng,
+    kit: &Kit,
+    shape: &Aerial,
+) -> Result<(), String> {
+    if !(0.5..=3.).contains(&shape.size)
+        || shape.stays > 4
+        || !(0.2..=5.).contains(&shape.spread)
+        || !shape.bearing.is_finite()
+    {
+        return Err(
+            "An aerial's arrays are 0.5–3 times their size, with 0–4 stays reaching 0.2–5 m."
+                .into(),
+        );
+    }
+    let size = shape.size;
     let pen = d.pen.with_weathering(
         d.mesh,
         kit.settings().weathering.clone(),
@@ -101,7 +146,7 @@ pub(super) fn aerial(
     };
     let steel = shade(srgb("#a4a9aa"), rng.float(0.6, 0.95));
     let top = [base[0], base[1], base[2] + height];
-    d.bar("metal", base, top, 0.03, steel)?;
+    d.bar("metal", base, top, 0.03 * (1. + (size - 1.) * 0.5), steel)?;
     let mut array = 0;
     // The source draws a fresh condition on every loop test, including the final one.
     loop {
@@ -113,9 +158,9 @@ pub(super) fn aerial(
         if array >= count {
             break;
         }
-        let z = top[2] - 0.08 - array as f64 * 0.55;
+        let z = top[2] - 0.08 - array as f64 * 0.55 * size;
         let yaw = rng.float(0., std::f64::consts::PI);
-        let reach = rng.float(0.7, 1.1);
+        let reach = rng.float(0.7, 1.1) * size;
         let along = [cos(yaw), sin(yaw), 0.];
         let across = [-along[1], along[0], 0.];
         let at = |a: f64, c: f64| {
@@ -134,10 +179,51 @@ pub(super) fn aerial(
         )?;
         for i in 0..5 {
             let a = -reach * 0.3 + i as f64 * reach * 0.9 / 4.;
-            let half = 0.3 - i as f64 * 0.04;
+            let half = (0.3 - i as f64 * 0.04) * size;
             d.bar("metal", at(a, -half), at(a, half), 0.012, steel)?;
         }
         array += 1;
+    }
+    if shape.stays > 0 {
+        // A collar on the mast, thin wires down to small bolted plates on the deck.
+        let collar = base[2] + height * 0.7;
+        d.drum(
+            "metal",
+            [base[0], base[1], collar - 0.03],
+            0.045,
+            0.06,
+            shade(steel, 0.8),
+            10,
+        )?;
+        d.cuboid(
+            "metal",
+            [base[0] - 0.09, base[1] - 0.09, base[2]],
+            [base[0] + 0.09, base[1] + 0.09, base[2] + 0.012],
+            shade(steel, 0.7),
+            "d",
+        )?;
+        for k in 0..shape.stays {
+            let bearing = shape.bearing + k as f64 * std::f64::consts::TAU / shape.stays as f64;
+            let foot = [
+                base[0] + cos(bearing) * shape.spread,
+                base[1] + sin(bearing) * shape.spread,
+                base[2] + 0.02,
+            ];
+            d.bar(
+                "metal",
+                [base[0], base[1], collar],
+                foot,
+                0.006,
+                shade(steel, 0.6),
+            )?;
+            d.cuboid(
+                "metal",
+                [foot[0] - 0.05, foot[1] - 0.05, base[2]],
+                [foot[0] + 0.05, foot[1] + 0.05, base[2] + 0.015],
+                shade(steel, 0.7),
+                "d",
+            )?;
+        }
     }
     Ok(())
 }

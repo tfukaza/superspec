@@ -869,14 +869,14 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
     assert!((wall[1][0] - 6.).abs() < 1e-6, "{wall:?}");
     // Three storeys: 3.3 m and two of 3 m, a 0.45 m parapet and its 8 cm coping.
     assert!((top_of(&building, "side-0") - 9.83).abs() < 0.03);
-    // The deck is tiled in its own slot, and the dado in the walls' tile.
+    // The deck is tiled in its own slot, and the dado in one of its own (the spandrels' tiles are `tile`).
     let slots: BTreeSet<&str> = building
         .geometry
         .meshes
         .iter()
         .map(|m| m.material_slot.as_str())
         .collect();
-    assert!(slots.contains("roof-tile") && slots.contains("tile"));
+    assert!(slots.contains("roof-tile") && slots.contains("dado"));
     // The top storey's windows show their cartons, in the goods' plain slot; the others none.
     assert!(has("side-0/floor-1/window-0/window/stock"));
     assert!(!has("side-0/floor-0/window-0/window/stock"));
@@ -2021,5 +2021,326 @@ fn the_reference_buildings_runoff_zones_run_on_round_the_corner() {
         set.at([middle[0], middle[1], middle[2] + 0.05], out)
             .0
             .is_none()
+    );
+}
+
+/// World positions and normals of the vertices of the meshes under parts named `part` (or
+/// all parts for `""`) in one slot.
+fn slot_points(item: &GeneratedItem, part: &str, slot: &str) -> Vec<([f64; 3], [f64; 3])> {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut found = vec![];
+    for (node, matrix) in item.geometry.nodes.iter().zip(&transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if mesh.material_slot != slot || !(part.is_empty() || mesh.id.starts_with(part)) {
+                continue;
+            }
+            for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+                found.push((matrix.point(*p), matrix.direction(*n)));
+            }
+        }
+    }
+    found
+}
+
+/// The zones of `names` over the features of the parts whose IDs start with `part`.
+fn zone_sets(
+    item: &GeneratedItem,
+    part: &str,
+) -> superspec_engine::materialspec::program::NamedFeatures {
+    use superspec_engine::{authoring::item_features, materialspec::program::NamedFeatures};
+    let features: Vec<_> = item
+        .geometry
+        .features
+        .iter()
+        .filter(|f| f.part.starts_with(part))
+        .cloned()
+        .collect();
+    let identity = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+    ];
+    NamedFeatures::new(&item_features(&features, &identity)).unwrap()
+}
+
+/// A window states where its frame's face and its glass stand: `head` and `jamb` on the plane of
+/// the frame's face, `glass` round the glazed opening on the glass's plane, and zones hanging
+/// from the head down the frame (`runoff-head`) and down the glass (`runoff-glass`), each on its
+/// own plane, so the frame's face is in the one and the glass behind it only in the other.
+#[test]
+fn a_windows_head_hangs_runoff_down_its_frame_and_its_glass() {
+    for kind in ["casement", "slider", "timber", "louver"] {
+        let window = generate(
+            "kowloon-window.item.json",
+            &[("kind", json!(kind)), ("openChance", json!(0))],
+        );
+        let (width, height) = (1.2, 1.4);
+        let feature = |name: &str| -> &item::Feature {
+            window
+                .geometry
+                .features
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("{kind}: no {name}"))
+        };
+        for name in ["head", "jamb", "glass", "runoff-head", "runoff-glass"] {
+            feature(name);
+        }
+        assert!(feature("head").zone.is_none() && feature("runoff-head").zone.is_some());
+        let head = feature("runoff-head");
+        assert!(head.points.iter().all(|p| (p[2] - height).abs() < 1e-9));
+        // The frame's face, measured from its meshes: the outer frame's front at its outer edges
+        // (beads and hinges stand a little further out, sashes and mullions a little back; what
+        // is painted in the room behind is far behind).
+        // A timber frame is drawn in the timber slots, its painted faces in `frame`.
+        let frame: Vec<_> = ["frame", "timber", "shop-timber"]
+            .into_iter()
+            .flat_map(|slot| slot_points(&window, "window/", slot))
+            .collect();
+        let plane = head.points[0][1];
+        let edges: Vec<_> = frame
+            .iter()
+            // Its arrises are chamfered by about a millimetre.
+            .filter(|(p, n)| {
+                n[1] < -0.9 && (p[0].abs() - width / 2.).abs() < 0.002 && p[2] >= -1e-6
+            })
+            .collect();
+        assert!(
+            edges.len() >= 4,
+            "{kind}: {} outer front corners {:?}",
+            edges.len(),
+            frame
+                .iter()
+                .filter(|(p, n)| n[1] < -0.3 && p[0].abs() > width / 2. - 0.01)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            edges.iter().all(|(p, _)| (p[1] - plane).abs() < 1e-6),
+            "{kind}: {edges:?} off y = {plane}"
+        );
+        let faces: Vec<_> = frame
+            .iter()
+            .filter(|(p, n)| {
+                n[1] < -0.9
+                    && p[1] < 0.
+                    && p[0].abs() <= width / 2. + 1e-6
+                    && p[2] >= -1e-6
+                    && p[2] <= height + 1e-6
+            })
+            .collect();
+        assert!(!faces.is_empty(), "{kind}: no frame faces");
+        let zones = zone_sets(&window, "window");
+        let (on_head, on_glass) = (
+            zones.zones("runoff-head").unwrap(),
+            zones.zones("runoff-glass").unwrap(),
+        );
+        // Every face of the frame's members below the head is in the head's zone.
+        let held = faces
+            .iter()
+            .filter(|(p, n)| on_head.at(*p, *n).0.is_some())
+            .count();
+        let missed: BTreeSet<i64> = faces
+            .iter()
+            .filter(|(p, n)| on_head.at(*p, *n).0.is_none())
+            .map(|(p, _)| (p[1] * 1000.).round() as i64)
+            .collect();
+        assert!(
+            held * 10 >= faces.len() * 9,
+            "{kind}: {held} of {}, missed at {missed:?}",
+            faces.len()
+        );
+        // Nothing above the head is.
+        assert!(
+            on_head
+                .at([0., plane, height + 0.05], [0., -1., 0.])
+                .0
+                .is_none()
+        );
+        // The glass is in the glass's zone and not in the frame's, which stands in front of it
+        // (a louvre's slats tilt from the frame's face back to behind it).
+        let glass = slot_points(&window, "window/", "glass");
+        assert!(!glass.is_empty(), "{kind}: no glass");
+        let upright: Vec<_> = glass.iter().filter(|(_, n)| n[1].abs() > 0.5).collect();
+        assert!(!upright.is_empty());
+        for (p, n) in &upright {
+            let hit = on_glass.at(*p, *n).0;
+            assert!(
+                hit.is_some_and(|hit| hit.v >= 0.),
+                "{kind}: glass at {p:?} is in no zone"
+            );
+            assert!(
+                kind == "louver" || on_head.at(*p, *n).0.is_none(),
+                "{kind}: glass at {p:?} is in the frame's"
+            );
+        }
+        // The glass's outline lies on the glass's plane, behind the frame's face.
+        let outline = feature("glass");
+        assert!(outline.closed && outline.points.len() == 4);
+        assert!(outline.points.iter().all(|p| p[1] > plane));
+    }
+    // A window without glass states no glass zone.
+    let bare = generate("kowloon-window.item.json", &[("glazing", json!(false))]);
+    assert!(
+        !bare
+            .geometry
+            .features
+            .iter()
+            .any(|f| f.name == "runoff-glass")
+    );
+    // The window's slot map lists every slot its native draws, so none is dropped (a timber
+    // window's frame is in `timber`).
+    let definition: serde_json::Value =
+        serde_json::from_str(&library()["kowloon-window.item.json"]).unwrap();
+    let mapped = definition["parts"][0]["slots"].as_object().unwrap();
+    let natives = items::natives();
+    for kind in ["casement", "slider", "timber", "louver"] {
+        for (lit, storage, textured) in [(false, 0., true), (true, 0., false), (false, 0.5, true)] {
+            let values: Values = [
+                ("kind", json!(kind)),
+                ("lit", json!(lit)),
+                ("room", json!(if lit { 2.6 } else { 0. })),
+                ("storage", json!(storage)),
+                ("textured", json!(textured)),
+                ("handles", json!(true)),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+            for mesh in natives
+                .generate("kowloon/window", &values, &|| false)
+                .unwrap()
+                .meshes
+            {
+                assert!(
+                    mapped.contains_key(&mesh.material_slot),
+                    "{kind}: the window's slots drop {}",
+                    mesh.material_slot
+                );
+            }
+        }
+    }
+}
+
+/// A neighbour's stub reports its coping, string courses, sills, units' drips and foot, and the
+/// building's party part hangs the main walls' zones below them: under each sill its wall is in
+/// `runoff-sill`, under the coping in `runoff-coping`, and nothing above an edge is in its zone.
+#[test]
+fn party_walls_and_stubs_weather_from_their_coping_courses_and_sills() {
+    let building = |plans: serde_json::Value, storeys: serde_json::Value| {
+        generate(
+            "kowloon-building.item.json",
+            &[
+                ("signs", json!(false)),
+                ("partyPlans", plans),
+                ("partyStoreyPlans", storeys),
+            ],
+        )
+    };
+    let stub = building(json!(["none", "none", "stub", "wall"]), json!([0, 0, 3, 0]));
+    let zoned = |name: &str, part: &str| -> Vec<item::Feature> {
+        stub.geometry
+            .features
+            .iter()
+            .filter(|f| f.name == name && f.part == part && f.zone.is_some())
+            .cloned()
+            .collect()
+    };
+    for name in ["runoff-coping", "runoff-top", "runoff-sill"] {
+        assert!(!zoned(name, "party-2").is_empty(), "stub: no {name}");
+    }
+    // Two string courses (three storeys) on each of the three faces.
+    assert_eq!(zoned("runoff-top", "party-2").len(), 6);
+    // The coping zone hangs from the top of the stub's wall (meshes keep positions to 0.1 mm).
+    let near = 1e-4;
+    let wall = slot_points(&stub, "party-2/", "wall");
+    let high = wall.iter().map(|(p, _)| p[2]).fold(f64::MIN, f64::max);
+    for coping in zoned("runoff-coping", "party-2") {
+        assert!(
+            coping.points.iter().all(|p| (p[2] - high).abs() < near),
+            "{:?} under {high}",
+            coping.points
+        );
+    }
+    let zones = zone_sets(&stub, "party-2");
+    let sills = zones.zones("runoff-sill").unwrap();
+    let trim = slot_points(&stub, "party-2/", "trim");
+    for sill in zoned("runoff-sill", "party-2") {
+        let [a, b] = [sill.points[0], sill.points[1]];
+        let middle: [f64; 3] = std::array::from_fn(|i| (a[i] + b[i]) / 2.);
+        // A sill's underside stands there: trim faces down at the edge's height over its middle.
+        assert!(
+            trim.iter().any(|(p, n)| n[2] < -0.9
+                && (p[2] - middle[2]).abs() < near
+                && (0..2).all(|i| (p[i] - middle[i]).abs() < 0.2 + (b[i] - a[i]).abs() / 2.)),
+            "no sill at {middle:?}"
+        );
+        let below = [middle[0], middle[1], middle[2] - 0.1];
+        let hit = sills.at(below, sill.normal).0;
+        assert!(hit.is_some_and(|hit| (hit.v - 0.1).abs() < 1e-6), "{hit:?}");
+        let above = [middle[0], middle[1], middle[2] + 0.02];
+        assert!(sills.at(above, sill.normal).0.is_none());
+        // Its wall faces out along the feature's normal where the zone is.
+        assert!(wall.iter().any(|(p, n)| {
+            (0..3).map(|i| n[i] * sill.normal[i]).sum::<f64>() > 0.9
+                && (0..3)
+                    .map(|i| (p[i] - middle[i]) * sill.normal[i])
+                    .sum::<f64>()
+                    .abs()
+                    < near
+        }));
+    }
+    // A plain wall reports its coping and foot, with the coping's zone down its face.
+    let plain = zoned("runoff-coping", "party-3");
+    assert!(!plain.is_empty());
+    let plain_wall = slot_points(&stub, "party-3/", "wall");
+    let plain_high = plain_wall
+        .iter()
+        .map(|(p, _)| p[2])
+        .fold(f64::MIN, f64::max);
+    assert!(
+        plain
+            .iter()
+            .all(|f| (f.points[0][2] - plain_high).abs() < near)
+    );
+    assert!(
+        stub.geometry
+            .features
+            .iter()
+            .any(|f| f.part == "party-3" && f.name == "base")
+    );
+    assert!(zoned("runoff-sill", "party-3").is_empty());
+    // A stub's front is a back lane's: by default stacks rise past its coping and a back door
+    // stands under a hood (whose top is 2.25 m up); a lane plan leaves them out.
+    let hood = |item: &GeneratedItem| {
+        slot_points(item, "party-2/", "trim")
+            .iter()
+            .any(|(p, n)| n[2] > 0.9 && (p[2] - 2.25).abs() < 1e-3)
+    };
+    let stacks = |item: &GeneratedItem| {
+        let metal = slot_points(item, "party-2/", "metal");
+        let wall = slot_points(item, "party-2/", "wall");
+        let high = wall.iter().map(|(p, _)| p[2]).fold(f64::MIN, f64::max);
+        metal.iter().any(|(p, _)| p[2] > high + 0.5)
+    };
+    assert!(hood(&stub) && stacks(&stub));
+    let quiet = generate(
+        "kowloon-building.item.json",
+        &[
+            ("signs", json!(false)),
+            ("partyPlans", json!(["none", "none", "stub", "wall"])),
+            ("partyStoreyPlans", json!([0, 0, 3, 0])),
+            ("partyLanePlans", json!([[], [], [0, 0, 0, 0], []])),
+        ],
+    );
+    assert!(!hood(&quiet) && !stacks(&quiet));
+    // Its features follow its windows: with the door gone, its bay may have a ground window
+    // and so a sill more (unless the seed leaves that bay blank).
+    assert!(
+        zoned("runoff-sill", "party-2").len()
+            <= quiet
+                .geometry
+                .features
+                .iter()
+                .filter(|f| f.name == "runoff-sill" && f.part == "party-2")
+                .count()
     );
 }

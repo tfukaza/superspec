@@ -54,7 +54,8 @@ const skirt = mul(sub(1, smoothstep(0.02, 0.45, contact)), add(0.45, mul(0.55, v
 const soiled = mul(grime, min(add(add(mul(damp, 0.35), mul(skirt, 0.75)), mul(oil, 0.5)), 0.9));
 // Wet after rain: broad puddled patches that dry last in the low spots, darker and glossy, the water lying longest in
 // the joints beside them.
-const puddled = smoothstep(0.5, 0.66, add(valueNoise(add(mul(at, 0.8), vec2(7.3, 2.2)), seed("wet")), mul(damp, 0.2)));
+// Larger near what the water runs off or collects against: the wall's foot, the kerb, a drain cover.
+const puddled = smoothstep(0.46, 0.56, add(add(mul(valueNoise(add(mul(at, 0.45), vec2(7.3, 2.2)), seed("wet")), 0.85), mul(damp, 0.15)), mul(skirt, 0.4)));
 const wetness = mul(wet, max(puddled, mul(joint, mul(0.7, smoothstep(0.35, 0.55, valueNoise(mul(at, 0.8), seed("wet")))))));
 
 export default defineMaterial({
@@ -65,6 +66,6 @@ export default defineMaterial({
     layer({ id: "gum", mask: gumSpot, baseColor: vec3(0.035, 0.034, 0.03), roughness: 0.7 }),
     layer({ id: "joints", mask: joint, baseColor: vec3(0.055, 0.052, 0.042), roughness: 1, height: { add: -0.004 } }),
     layer({ id: "cracks", mask: crack, baseColor: vec3(0.03, 0.03, 0.025), roughness: 1, height: { add: -0.003 } }),
-    layer({ id: "wet", mask: mul(wetness, 0.85), baseColor: mul(faced, 0.62), roughness: 0.12 }),
+    layer({ id: "wet", mask: mul(wetness, 0.9), baseColor: mul(faced, 0.55), roughness: 0.06 }),
   ],
 });

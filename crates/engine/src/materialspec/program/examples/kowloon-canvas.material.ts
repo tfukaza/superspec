@@ -16,6 +16,7 @@ const stripeWidth = param.scalar({ default: 0.22, range: [0.03, 2], unit: "m", l
 const striped = param.scalar({ default: 0.35, range: [0, 1], label: "Share striped" });
 const bleaching = param.scalar({ default: 0.5, range: [0, 1], label: "Sun bleaching" });
 const soil = param.scalar({ default: 0.6, range: [0, 1], label: "Soil" });
+const wallRuns = param.scalar({ default: 0, range: [0, 1], label: "Runs from the wall" });
 
 // Which cloth this receiver is.
 const which = mul(boundsMin, 3.19);
@@ -42,11 +43,20 @@ const stains = smoothstep(0.66, 0.82, valueNoise(add(mul(vec2(along, world.z), 3
 // Soot gathers toward the wall, at the top of the fall.
 const sooty = mul(smoothstep(0.55, 1, upIt), add(0.3, mul(0.3, runs)));
 const soiled = mul(soil, min(add(add(add(mul(runs, 0.4), mul(hem, add(0.25, mul(0.35, runs)))), mul(stains, 0.45)), sooty), 0.85));
+// Water off the wall above runs down the cloth in thin dark threads from its top edge, each its own length, with a band
+// of soot along that edge.
+const thread = smoothstep(0.6, 0.78, valueNoise(vec2(mul(along, 16), mul(world.z, 0.6)), seed("canvas-threads")));
+const threadReach = add(0.25, mul(0.6, valueNoise(vec2(mul(along, 5), 0.5), seed("canvas-thread-reach"))));
+const fromTop = sub(1, upIt);
+const threads = mul(thread, sub(1, smoothstep(mul(threadReach, 0.6), threadReach, fromTop)));
+const edgeSoot = mul(sub(1, smoothstep(0.02, 0.12, fromTop)), add(0.6, mul(0.4, runs)));
+const wallSoiled = mul(wallRuns, min(add(threads, mul(edgeSoot, 0.75)), 0.95));
 
 export default defineMaterial({
   name: "Kowloon canvas",
   base: { baseColor: bleached, roughness: 0.9, metalness: 0 },
   layers: [
     layer({ id: "soil", mask: soiled, baseColor: mul(bleached, vec3(0.3, 0.29, 0.26)), roughness: 0.95 }),
+    layer({ id: "wallRuns", mask: wallSoiled, baseColor: mul(bleached, vec3(0.22, 0.2, 0.17)), roughness: 0.95 }),
   ],
 });

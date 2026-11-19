@@ -181,7 +181,84 @@ pub struct Foliage {
     /// and read with its defaults where a plant batch has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canopy: Option<FoliageCanopy>,
+    /// The plant painted as one mass (TreeSpec's painted trees): a renderer draws it in place of
+    /// the plant's `leaves` and `hull` batches, with this batch and at every level that batch
+    /// draws. A producer puts it on the plant's `shadow` batch, which draws at every level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mass: Option<FoliageMass>,
 }
+
+/// A plant's foliage painted as one mass (roadmap milestone `painted-trees-milestone`): a leaf
+/// density field made from its leaf clusters, cut at `level` into a painted core with leafy fuzz
+/// on its outline, and painted billboards (round cards and sprays rooted on the twigs) through
+/// the thinner foliage around it, all lit by the plant's broad form. Points are in the space of
+/// the batch's mesh, placed by each of its placements. The look's remaining settings are the
+/// milestone's and belong to the renderer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliageMass {
+    /// Every leaf cluster as `[x, y, z, size]`: its middle and its length, meters.
+    pub sites: Vec<[f64; 4]>,
+    /// Every leafy twig as points from its base toward its tip: the sprays grow along them.
+    pub twigs: Vec<Vec<[f64; 3]>>,
+    /// Meters of each cluster's kernel in the density field, 0.05 to 5.
+    pub radius: f64,
+    /// Meters of the field's cells, 0.02 to 2.
+    pub cell: f64,
+    /// The painted core's level, a share of the field's dense value, above 0 and at most 2.
+    pub level: f64,
+    /// Share of the card candidates kept at the core's level, 0 to 1.
+    pub card_keep: f64,
+    /// How the painted colours are graded for the scene the plant stands in (the default keeps
+    /// the milestone's own).
+    pub palette: FoliagePalette,
+}
+impl Default for FoliageMass {
+    fn default() -> Self {
+        Self {
+            sites: vec![],
+            twigs: vec![],
+            radius: 0.5,
+            cell: 0.2,
+            level: 0.6,
+            card_keep: 0.9,
+            palette: FoliagePalette::default(),
+        }
+    }
+}
+
+/// A grade of a painted mass's colours, applied to every painted colour in this order: `hue`
+/// turns it about the grey axis (degrees, -180 to 180), `saturation` scales its distance from
+/// its grey (0 to 2), `value` scales it (0 to 2). `shade` (0 to 2) scales the darker colours
+/// alone, fading out toward the light ones, and `shadeHue` (degrees) turns them alone, so the
+/// shade side can go deeper and toward another hue than the light.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FoliagePalette {
+    pub hue: f64,
+    pub saturation: f64,
+    pub value: f64,
+    pub shade: f64,
+    pub shade_hue: f64,
+}
+impl Default for FoliagePalette {
+    fn default() -> Self {
+        Self {
+            hue: 0.,
+            saturation: 1.,
+            value: 1.,
+            shade: 1.,
+            shade_hue: 0.,
+        }
+    }
+}
+/// Leaf clusters of one painted mass.
+pub const MAX_MASS_SITES: usize = 100_000;
+/// Twigs of one painted mass, and points of one twig.
+pub const MAX_MASS_TWIGS: usize = 20_000;
+pub const MAX_TWIG_POINTS: usize = 64;
+/// Cells of a painted mass's density field.
+pub const MAX_MASS_CELLS: f64 = 8e6;
 
 fn one() -> f64 {
     1.
@@ -432,6 +509,55 @@ impl Foliage {
             within(canopy.glint, 0., 1., "canopy glint")?;
             within(canopy.wrap, 0., 1., "canopy wrap")?;
         }
+        if let Some(mass) = &self.mass {
+            if self.family == FoliageFamily::Grass {
+                return Err("A painted mass belongs to a plant family, not grass.".into());
+            }
+            within(mass.radius, 0.05, 5., "mass radius")?;
+            within(mass.cell, 0.02, 2., "mass cell")?;
+            within(mass.level, 1e-3, 2., "mass level")?;
+            within(mass.card_keep, 0., 1., "mass cardKeep")?;
+            within(mass.palette.hue, -180., 180., "mass palette hue")?;
+            within(mass.palette.saturation, 0., 2., "mass palette saturation")?;
+            within(mass.palette.value, 0., 2., "mass palette value")?;
+            within(mass.palette.shade, 0., 2., "mass palette shade")?;
+            within(mass.palette.shade_hue, -180., 180., "mass palette shadeHue")?;
+            if mass.sites.is_empty() || mass.sites.len() > MAX_MASS_SITES {
+                return Err(format!(
+                    "A painted mass needs 1 to {MAX_MASS_SITES} leaf cluster sites."
+                ));
+            }
+            if mass.twigs.len() > MAX_MASS_TWIGS
+                || mass.twigs.iter().any(|twig| twig.len() > MAX_TWIG_POINTS)
+            {
+                return Err(format!(
+                    "A painted mass holds at most {MAX_MASS_TWIGS} twigs of at most {MAX_TWIG_POINTS} points."
+                ));
+            }
+            let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for [x, y, z, size] in &mass.sites {
+                for (axis, value) in [x, y, z].into_iter().enumerate() {
+                    within(*value, -1e6, 1e6, "mass site")?;
+                    low[axis] = low[axis].min(*value);
+                    high[axis] = high[axis].max(*value);
+                }
+                within(*size, 0., 1e3, "mass site size")?;
+            }
+            for point in mass.twigs.iter().flatten() {
+                for value in point {
+                    within(*value, -1e6, 1e6, "mass twig point")?;
+                }
+            }
+            // The widest field a renderer makes: the sites' bounds with a margin, at twice the radius.
+            let cells: f64 = (0..3)
+                .map(|axis| (high[axis] - low[axis] + 6. * mass.radius) / mass.cell + 3.)
+                .product();
+            if cells > MAX_MASS_CELLS {
+                return Err(
+                    "A painted mass's density field would be too large: widen its cell.".into(),
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -457,6 +583,7 @@ mod tests {
             rejection: FoliageRejection::default(),
             tip: FoliageTip::default(),
             canopy: None,
+            mass: None,
         };
         parsed.validate().unwrap();
         let plant = Foliage {
@@ -465,6 +592,46 @@ mod tests {
             ..parsed.clone()
         };
         plant.validate().unwrap();
+        let mass = FoliageMass {
+            sites: vec![[0., 0., 2., 0.15], [0.3, 0., 2.2, 0.15]],
+            twigs: vec![vec![[0., 0., 1.8], [0.1, 0., 2.]]],
+            ..FoliageMass::default()
+        };
+        Foliage {
+            family: FoliageFamily::Shadow,
+            mass: Some(mass.clone()),
+            ..plant.clone()
+        }
+        .validate()
+        .unwrap();
+        for broken in [
+            // A mass without sites, with a site off in the void, or with too fine a field.
+            Foliage {
+                mass: Some(FoliageMass::default()),
+                ..plant.clone()
+            },
+            Foliage {
+                mass: Some(FoliageMass {
+                    sites: vec![[0., f64::NAN, 0., 0.1]],
+                    ..mass.clone()
+                }),
+                ..plant.clone()
+            },
+            Foliage {
+                mass: Some(FoliageMass {
+                    sites: vec![[0., 0., 0., 0.1], [900., 900., 900., 0.1]],
+                    ..mass.clone()
+                }),
+                ..plant.clone()
+            },
+            // Grass has no mass.
+            Foliage {
+                mass: Some(mass.clone()),
+                ..parsed.clone()
+            },
+        ] {
+            assert!(broken.validate().is_err(), "{broken:?}");
+        }
         for broken in [
             Foliage {
                 canopy: Some(FoliageCanopy {

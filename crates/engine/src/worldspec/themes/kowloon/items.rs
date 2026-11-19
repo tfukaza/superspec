@@ -30,7 +30,7 @@ use super::{
     pipes, roof_access, rooftop, shop, shutters, signs, tarps, timber, water_tanks, weathered,
     windows,
 };
-use crate::itemspec::definition::{ItemMesh, NativeGenerators, NativeOutput, Values};
+use crate::itemspec::definition::{Feature, ItemMesh, NativeGenerators, NativeOutput, Values};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use superspec_geometry::{Matrix, V3};
@@ -1315,7 +1315,8 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     const CONTENTS: [&str; 6] = ["auto", "plants", "washing", "storage", "mixed", "empty"];
     let contents = a.text("contents", "auto")?;
     // `aircon`: the cage holds an old window air conditioner (one of the seeded models, its
-    // louvred back to the street) standing on the cage's floor, and nothing else.
+    // louvred back to the street) standing on the cage's floor, and nothing else; the front's
+    // middle rail then runs over the unit, or leaves a gap across it in a cage too low for that.
     let unit = contents == "aircon";
     let contents = if unit { "empty".to_owned() } else { contents };
     let key = a.seed()?;
@@ -1343,10 +1344,33 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         rail: a.optional_number("rail")?,
         spacing: a.optional_number("spacing")?,
         rust: a.optional_number("rust")?,
+        middle: None,
+        middle_gap: None,
     };
     let louvred = a.boolean("louvred", false)?;
     let mut rng = a.rng()?;
     a.finish()?;
+    // The middle rail keeps off a unit's face: above it where the cage has room, else broken
+    // across its width.
+    let plan = if unit {
+        let [w, h] = super::aircon::unit_size(SeededRng::from_text(&format!("{key}/unit")));
+        let top = cage.heights[0] + 0.045 + h + 0.04;
+        if (cage.heights[0] + cage.heights[1]) / 2. >= top {
+            plan
+        } else if top <= cage.heights[1] - 0.08 {
+            household::CagePlan {
+                middle: Some(top - cage.heights[0]),
+                ..plan
+            }
+        } else {
+            household::CagePlan {
+                middle_gap: Some([-w / 2. - 0.02, w / 2. + 0.02]),
+                ..plan
+            }
+        }
+    } else {
+        plan
+    };
     draw(cancelled, |mesh| {
         household::planned_cage(
             &mut fixture(mesh, "cage")?,
@@ -1667,20 +1691,26 @@ fn tarp(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
 }
 
 /// `kowloon/wall-lamp`: a caged bulkhead wall lamp. Anchor: bottom-centre on the wall
-/// plane. No parameters.
+/// plane. Parameters: `style` (`bulkhead`, a boxed glass behind two bars, or `round`, a domed
+/// glass in a wire cage on a round wall plate; `bulkhead`).
 fn wall_lamp(
     name: &str,
     values: &Values,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<NativeOutput, String> {
-    Arguments::new(name, values).finish()?;
+    let mut a = Arguments::new(name, values);
+    let round = a.text("style", "bulkhead")?;
+    if round != "bulkhead" && round != "round" {
+        return Err(format!("{name}: style must be one of bulkhead, round."));
+    }
+    a.finish()?;
     draw(cancelled, |mesh| {
-        household::wall_lamp(
-            &mut fixture(mesh, "wall-lamp")?,
-            0.,
-            0.,
-            &weathering(name, 0.),
-        )
+        let d = &mut fixture(mesh, "wall-lamp")?;
+        if round == "round" {
+            household::round_wall_lamp(d, 0., 0., &weathering(name, 0.))
+        } else {
+            household::wall_lamp(d, 0., 0., &weathering(name, 0.))
+        }
     })
 }
 
@@ -1813,12 +1843,18 @@ fn door_design(a: &mut Arguments<'_>, paint: V3) -> Result<doors::Design, String
     };
     // `panels`: the pressed panels of each painted or steel leaf (1–4; 0 leaves the door's three).
     let panels = a.integer("panels", 0, 0..=4)?;
+    // `lamp`: the lamp over the door, `bulkhead` (boxed) or `round` (as `kowloon/wall-lamp`).
+    let lamp = a.text("lamp", "bulkhead")?;
+    if lamp != "bulkhead" && lamp != "round" {
+        return Err(format!("{}: lamp must be one of bulkhead, round.", a.name));
+    }
     Ok(doors::Design {
         style,
         paint: style.map(|_| paint),
         transom,
         fit: None,
         panels: (panels > 0).then_some(panels),
+        round_lamp: lamp == "round",
     })
 }
 
@@ -1829,6 +1865,7 @@ fn door_design(a: &mut Arguments<'_>, paint: V3) -> Result<doors::Design, String
 /// (#ccc7b8), `shutter` (#5a6f68), `accent` (#5f8a72), `posters` (true), `signs` (draw the
 /// bay's shop signs, true), `seed`, and what a plan fixes instead of the seed: `door` and
 /// `transom` (a door bay's entrance, as `kowloon/entrance`; a named door is painted `frame`),
+/// `lamp` (the lamp over a door, `bulkhead` or `round`),
 /// `opening` (m; the head height of a wall opening as wide as the bay, which a shutter then
 /// fills, closed and painted `shutter`, and a door's frame and transom fill; 0: unfitted),
 /// `head` (m of a shutter's head box, 0.1–1, 0.22) and `headRust` (0–1, 0), `panels` (of each
@@ -1913,7 +1950,9 @@ fn ground_bay(
 /// (`round` | `box`, `round`), `seed`, and what a round tank may fix instead of its seed:
 /// `radius` (m, 0.3–1.5), `height` (m of shell, 0.6–3), `stand` (m of stand under it, 0.2–3),
 /// `ribs` (rolled ribs round the shell, 0–24; three hoops when left out) and `lid` (m of rise
-/// of a conical lid, 0–1, 0: the flat top).
+/// of a conical lid, 0–1, 0: the flat top), `shell` (a colour tinting the stainless shell, its
+/// lid and ribs; none: the plain metal). Either kind takes `ladder` (degrees from +X of the side
+/// its access ladder stands on; the whole tank turns about its anchor, 180 when left out).
 fn water_tank(
     name: &str,
     values: &Values,
@@ -1924,6 +1963,15 @@ fn water_tank(
     if round != "round" && round != "box" {
         return Err(format!("{name}: kind must be one of round, box."));
     }
+    let ladder = a.optional_number("ladder")?;
+    if ladder.is_some_and(|angle| !(-360. ..=360.).contains(&angle)) {
+        return Err(format!("{name}: ladder must lie in -360..360 degrees."));
+    }
+    let shell = if values.contains_key("shell") {
+        Some(a.color("shell", "#ffffff")?)
+    } else {
+        None
+    };
     let key = a.seed()?;
     let shape = water_tanks::RoundShape {
         radius: a.optional_number("radius")?,
@@ -1935,15 +1983,16 @@ fn water_tank(
             Some(_) => return Err(format!("{name}: ribs must be a whole number in 0..24.")),
         },
         lid: a.bounded("lid", 0., 0. ..=1.)?,
+        shell,
     };
     a.finish()?;
     if round == "box"
-        && ["radius", "height", "stand", "ribs", "lid"]
+        && ["radius", "height", "stand", "ribs", "lid", "shell"]
             .iter()
             .any(|key| values.contains_key(*key))
     {
         return Err(format!(
-            "{name}: radius, height, stand, ribs and lid shape a round tank only."
+            "{name}: radius, height, stand, ribs, lid and shell shape a round tank only."
         ));
     }
     let settings = water_tanks::Settings {
@@ -1951,7 +2000,18 @@ fn water_tank(
         brushed: binding("brushed-metal"),
     };
     draw(cancelled, |mesh| {
-        let d = &mut on(mesh, room_pen("water-tank", [0.; 3])?)?;
+        let mut pen = room_pen("water-tank", [0.; 3])?;
+        if let Some(angle) = ladder {
+            // A round tank draws its ladder on -X (180 degrees): turn the whole tank by
+            // `angle` - 180 so the ladder stands at `angle`; a box tank turns alike.
+            let turn = (angle - 180.).to_radians();
+            let (c, s) = (
+                superspec_geometry::math::cos(turn),
+                superspec_geometry::math::sin(turn),
+            );
+            pen = pen.facing([0.; 3], [c, s, 0.], [-s, c, 0.])?;
+        }
+        let d = &mut on(mesh, pen)?;
         let rng = &mut SeededRng::from_text(&key);
         if round == "round" {
             water_tanks::shaped_round_tank(d, [0.; 3], rng, &settings, &shape)
@@ -2001,7 +2061,10 @@ fn stair_hut(
 }
 
 /// `kowloon/aerial`: a rooftop TV aerial mast with one or two seeded arrays (roof frame).
-/// Anchor: the mast foot. Parameters: `height` (m, 0.9–10, 2.4), `seed`.
+/// Anchor: the mast foot. Parameters: `height` (m, 0.9–10, 2.4), `seed`, `size` (how many
+/// times as long the arrays' booms and elements are, 0.5–3, 1), `stays` (guy wires from a
+/// collar 0.7 up the mast to plates on the roof, 0–4, 0), `spread` (m from the mast to the
+/// stays' feet, 0.2–5, 0.8) and `bearing` (degrees of the first stay from +X, 0).
 fn aerial(
     name: &str,
     values: &Values,
@@ -2010,15 +2073,22 @@ fn aerial(
     let mut a = Arguments::new(name, values);
     let height = a.bounded("height", 2.4, 0.9..=10.)?;
     let key = a.seed()?;
+    let shape = rooftop::Aerial {
+        size: a.bounded("size", 1., 0.5..=3.)?,
+        stays: a.integer("stays", 0, 0..=4)?,
+        spread: a.bounded("spread", 0.8, 0.2..=5.)?,
+        bearing: a.bounded("bearing", 0., -360. ..=360.)?.to_radians(),
+    };
     a.finish()?;
     let kit = kit(&key, 1, 0.)?;
     draw(cancelled, |mesh| {
-        rooftop::aerial(
+        rooftop::aerial_with(
             &mut on(mesh, room_pen("aerial", [0.; 3])?)?,
             [0.; 3],
             height,
             &mut SeededRng::from_text(&key),
             &kit,
+            &shape,
         )
     })
 }
@@ -2926,6 +2996,12 @@ impl NativeGenerators for Natives {
             .get(name)
             .ok_or_else(|| format!("Unknown native generator {name}."))?;
         generate(name, parameters, cancelled)
+    }
+    fn features(&self, name: &str, parameters: &Values) -> Vec<Feature> {
+        match name {
+            "kowloon/party" => party::features(name, parameters),
+            _ => vec![],
+        }
     }
 }
 

@@ -30,6 +30,14 @@ pub trait NativeGenerators: Send + Sync {
         parameters: &Values,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<NativeOutput, String>;
+    /// The features `name` reports for `parameters`, in the coordinates of its meshes: edges
+    /// such as a wall's `top`, `sill` and `base` that a part's zone rules hang zones below, as
+    /// a panel's. Their normals are surface normals. As deterministic as the meshes, and cheap:
+    /// they are asked for whenever the part's features are, without drawing anything. Their
+    /// `part` is replaced by the part's ID. None by default.
+    fn features(&self, _name: &str, _parameters: &Values) -> Vec<super::Feature> {
+        Vec::new()
+    }
 }
 
 /// Everything outside a definition that preparing it may read: asset bytes (GLB files and

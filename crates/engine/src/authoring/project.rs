@@ -1180,6 +1180,9 @@ impl Session {
                 Vec<String>,
                 BTreeMap<String, crate::materialspec::program::Follow>,
             )> = Vec::new();
+            // And the zone names each layer's shader queries, in their kinds' order.
+            let mut layer_zones: Vec<Vec<String>> = Vec::new();
+            let base_zones = program.metadata().zones.clone();
             if !assignment.layers.is_empty() {
                 // A slot its bake would refuse is refused here too, with the same diagnostics.
                 self.check_layered(&material_request(project, assignment, source, Vec::new()))?;
@@ -1204,6 +1207,14 @@ impl Session {
                         names,
                         layer.follow.clone(),
                     ));
+                    layer_zones.push(
+                        shader["zones"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|name| name.as_str().map(str::to_owned))
+                            .collect(),
+                    );
                 }
                 metadata["layers"] = layers;
                 metadata["channels"] = channels;
@@ -1258,6 +1269,35 @@ impl Session {
                                 preview_features(&receiver, named, names, follow)
                             } else {
                                 Vec::new()
+                            }
+                        })
+                        .collect();
+                }
+                // The receiver's zones as each shader that queries them reads them: only the
+                // segments whose zones can reach the receiver's box, so a bake's per-texel loop
+                // visits a few (`materialspec::program::pack`).
+                let zones = |names: &[String],
+                             follow: &BTreeMap<String, crate::materialspec::program::Follow>| {
+                    let (rows, count) = crate::materialspec::program::pack_zones(
+                        named.unwrap_or(&[]),
+                        names,
+                        follow,
+                        [low, high],
+                    );
+                    serde_json::json!({"rows": rows, "count": count})
+                };
+                if !base_zones.is_empty() {
+                    entry["zones"] = zones(&base_zones, &BTreeMap::new());
+                }
+                if layer_zones.iter().any(|names| !names.is_empty()) {
+                    entry["layerZones"] = layer_zones
+                        .iter()
+                        .zip(&layer_queries)
+                        .map(|(names, (_, _, follow))| {
+                            if names.is_empty() {
+                                serde_json::Value::Null
+                            } else {
+                                zones(names, follow)
                             }
                         })
                         .collect();

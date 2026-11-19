@@ -19,6 +19,9 @@ const sky = param.scalar({ default: 0.5, range: [0, 1], label: "Sky sheen" });
 const dirt = param.scalar({ default: 0.55, range: [0, 1], label: "Dirt" });
 const gloss = param.scalar({ default: 0.1, range: [0, 1], label: "Clean roughness" });
 const glow = param.scalar({ default: 1.5, range: [0, 8], label: "Lit tube glow" });
+// How much of the room behind shows through the glass itself (0: the glass is opaque and the room is painted into it).
+// Through clear glass a host draws what stands behind; dirt and the sky's sheen stay on the glass.
+const transmission = param.scalar({ default: 0, range: [0, 0.9], label: "See-through" });
 
 // Where the texel is in its window: meters from one side along the glass, and 0 to 1 across and up it.
 const extent = sub(boundsMax, boundsMin);
@@ -73,5 +76,7 @@ export default defineMaterial({
     metalness: 0,
     // A lit tube glows through the glass and its dirt.
     emissive: mul(vec3(1, 0.86, 0.62), mul(mul(tube, interior), mul(glow, sub(1, mul(soiled, 0.5))))),
+    // Clear glass lets the room through where it is clean; dirt and sheen are on the glass.
+    opacity: clamp(add(sub(1, transmission), add(mul(soiled, 1.2), mul(sheen, 2))), 0, 1),
   },
 });

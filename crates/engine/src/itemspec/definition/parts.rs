@@ -1288,9 +1288,22 @@ impl PreparedPart {
                 anchor.part = self.id.clone();
                 (vec![], anchor)
             }
-            // Straight generators and boxes report an anchor at their origin and no features.
+            // Straight generators and boxes report an anchor at their origin and no features;
+            // a native generator may report features of its own.
             _ => (
-                vec![],
+                match &self.shape {
+                    PartShape::Native(native) => native
+                        .generators
+                        .0
+                        .features(&native.name, &native.parameters)
+                        .into_iter()
+                        .map(|mut feature| {
+                            feature.part = self.id.clone();
+                            feature
+                        })
+                        .collect(),
+                    _ => vec![],
+                },
                 PatternAnchor {
                     part: self.id.clone(),
                     origin: [0.; 3],
@@ -1414,7 +1427,10 @@ pub(super) fn build(
         };
         let (features, anchor) = part.features();
         let features = part.zoned(features);
-        let surface = matches!(part.shape, PartShape::Panel(_) | PartShape::Arc(_));
+        let surface = matches!(
+            part.shape,
+            PartShape::Panel(_) | PartShape::Arc(_) | PartShape::Native(_)
+        );
         // A sub-item's features are surface features where they came from a panel; their
         // normals follow the inverse transpose as a panel's do (a rigid placement keeps both).
         for (mut feature, surface) in features

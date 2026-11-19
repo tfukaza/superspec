@@ -58,6 +58,12 @@ pub struct Shader {
     /// with kind `5 + k`, an angle of zero and no normal.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_features: Vec<String>,
+    /// The zone names the program queries (`zone_coord`, `zone_extent`, `zone_span`), in the
+    /// order of their kinds: a host binds the receiver's zones as `materialspec::program::pack`
+    /// gives them for these names to `ms_zones` (seven RGBA texels a row) and the number of
+    /// segment rows to `ms_zone_count`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<String>,
     /// Fields the shader reads from textures because they use CPU-only operations (`runoff`), set
     /// only by [`Program::shader_plan`]. Everything they read upstream stays out of the shader;
     /// everything that reads them downstream stays in it.
@@ -414,6 +420,8 @@ struct Emitter<'a> {
     seeds: Vec<String>,
     images: Vec<(String, bool)>,
     features: bool,
+    /// Whether the source queries zones (`ms_zones`).
+    zones: bool,
     /// Stop counts of the ramps emitted (each has a helper), and whether one is display-referred.
     ramps: std::collections::BTreeSet<usize>,
     display_ramp: bool,
@@ -452,10 +460,7 @@ struct Emitter<'a> {
 fn uses_cpu_only(node: &Node) -> bool {
     match &node.kind {
         // An external input is a plane over the receiver's texels, like a baked CPU field.
-        Kind::Builtin(
-            Builtin::Runoff | Builtin::External | Builtin::ZoneCoord | Builtin::ZoneExtent,
-            _,
-        ) => true,
+        Kind::Builtin(Builtin::Runoff | Builtin::External, _) => true,
         Kind::Unary(_, a) | Kind::Member(a, _) => uses_cpu_only(a),
         Kind::Binary(_, a, b) => uses_cpu_only(a) || uses_cpu_only(b),
         Kind::Select(a, b, c) => uses_cpu_only(a) || uses_cpu_only(b) || uses_cpu_only(c),
@@ -784,6 +789,7 @@ impl<'a> Emitter<'a> {
                     | B::FeatureTangent
                     | B::ZoneCoord
                     | B::ZoneExtent
+                    | B::ZoneSpan
                     | B::AdjustNormal
                     | B::TriplanarWeights
                     | B::VariedColor
@@ -1218,9 +1224,25 @@ impl<'a> Emitter<'a> {
             ),
             // The preview reads no source edges.
             B::Runoff => "0.0".into(),
-            // Nor zones: a plan reads them as textures the CPU baked; a preview is outside every zone.
-            B::ZoneCoord => "vec3(0.0, -1.0, 0.0)".into(),
-            B::ZoneExtent => "vec3(0.0)".into(),
+            // A zone name is a kind of its own: its place in `Shader::zones`, which selects the
+            // segments a host uploads to `ms_zones` with that kind.
+            B::ZoneCoord | B::ZoneExtent | B::ZoneSpan => {
+                self.zones = true;
+                let zone = Self::text(&args[0]);
+                let place = self
+                    .program
+                    .metadata
+                    .zones
+                    .iter()
+                    .position(|known| known == zone)
+                    .unwrap_or(0);
+                let query = match name {
+                    B::ZoneCoord => "coord",
+                    B::ZoneExtent => "extent",
+                    _ => "span",
+                };
+                format!("ms_zone_{query}({place})")
+            }
             // Outside a CPU field the shader has no plane to read: the fallback.
             B::External => a[1].clone(),
             B::CreaseDistance | B::CreaseNormal | B::CreaseTangent | B::CreaseAdjacentNormal => {
@@ -1368,6 +1390,57 @@ float ms_mask(int mode, float x, float y) {
 /// widened by `softness` pixels of the difference's screen derivative, which a sample has not.
 /// `ms_cast_shadow` is the sun's cast shadow at the drawn point in the scene's shadow style; a
 /// host that draws shadows sets it before `ms_evaluate()`, and without one it stays lit.
+const ZONES: &str = r#"// Weathering zones (`materialspec::program::pack`): seven texels a row; segments first, then their clips.
+uniform highp sampler2D ms_zones;
+uniform int ms_zone_count;
+vec3 ms_zone_hit_coord;
+vec3 ms_zone_hit_extent;
+vec3 ms_zone_hit_span;
+// The zone of kind `place` the sample lies in, as `ZoneSet::at` finds it: the least drop wins.
+void ms_zone_find(int place) {
+  bool found = false;
+  float best = 0.0;
+  ms_zone_hit_coord = vec3(0.0, -1.0, 0.0); ms_zone_hit_extent = vec3(0.0); ms_zone_hit_span = vec3(0.0);
+  for (int i = 0; i < ms_zone_count; i++) {
+    vec4 kind = texelFetch(ms_zones, ivec2(5, i), 0);
+    if (int(kind.x + 0.5) != place) continue;
+    vec4 start = texelFetch(ms_zones, ivec2(0, i), 0), along = texelFetch(ms_zones, ivec2(1, i), 0);
+    vec4 down = texelFetch(ms_zones, ivec2(2, i), 0), across = texelFetch(ms_zones, ivec2(3, i), 0);
+    vec3 from = ms_world - start.xyz;
+    float off = dot(from, across.xyz);
+    if (abs(off) > down.w || abs(dot(ms_normal, across.xyz)) < 0.5) continue;
+    vec3 inPlane = from - across.xyz * off;
+    float onDown = dot(inPlane, down.xyz);
+    float t = (dot(inPlane, along.xyz) - kind.y * onDown) / kind.z;
+    if (t < 0.0 || t > 1.0) continue;
+    float v = onDown - t * kind.y;
+    if (v < -1e-4) continue;
+    v = max(v, 0.0);
+    if (found && best <= v) continue;
+    float u = start.w + t * along.w;
+    vec4 zone = texelFetch(ms_zones, ivec2(4, i), 0);
+    float limit = across.w;
+    bool left = false;
+    int first = int(zone.z + 0.5), clips = int(zone.w + 0.5);
+    for (int c = 0; c < clips; c++) {
+      vec4 clip = texelFetch(ms_zones, ivec2(0, first + c), 0);
+      if (u < clip.x || u > clip.y) continue;
+      if (texelFetch(ms_zones, ivec2(1, first + c), 0).x < 0.5) limit = min(limit, clip.z);
+      else if (v >= clip.z && v <= clip.w) left = true;
+    }
+    if (v > limit || left) continue;
+    found = true; best = v;
+    vec4 span = texelFetch(ms_zones, ivec2(6, i), 0);
+    ms_zone_hit_coord = vec3(u, v, zone.x);
+    ms_zone_hit_extent = vec3(1.0, limit, zone.y);
+    ms_zone_hit_span = vec3(span.x, span.y, 1.0);
+  }
+}
+vec3 ms_zone_coord(int place) { ms_zone_find(place); return ms_zone_hit_coord; }
+vec3 ms_zone_extent(int place) { ms_zone_find(place); return ms_zone_hit_extent; }
+vec3 ms_zone_span(int place) { ms_zone_find(place); return ms_zone_hit_span; }
+"#;
+
 const SHADE_BAND: &str = "float ms_cast_shadow = 1.0;
 float ms_shade_band(vec3 n, vec3 s, float threshold, float softness, float range) {
   float d = dot(n, s) - threshold;
@@ -1523,6 +1596,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
         seeds: Vec::new(),
         images: Vec::new(),
         features: false,
+        zones: false,
         ramps: Default::default(),
         display_ramp: false,
         render: Default::default(),
@@ -1864,6 +1938,9 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
     if emitter.shade_band {
         source.push_str(SHADE_BAND);
     }
+    if emitter.zones {
+        source.push_str(ZONES);
+    }
     if !emitter.fields.is_empty() {
         for index in 0..emitter.fields.len() {
             source.push_str(&format!(
@@ -2079,6 +2156,11 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             live,
             features: emitter.features,
             named_features: program.metadata.named_features.clone(),
+            zones: if emitter.zones {
+                program.metadata.zones.clone()
+            } else {
+                Vec::new()
+            },
             cpu_fields,
             cpu_outputs,
             id: String::new(),

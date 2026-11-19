@@ -21,7 +21,10 @@ const choice = process.env.MODEL ?? "side";
 // LANE=1 adds the paved lane with its grass patch and trees (write it first:
 //   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants).
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
-const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
+// RESOLUTION (default 2048) bounds every receiver's atlas: at 1024 a storey wall of 10 m or more cannot reach TEXELS
+// (160 a metre) and is baked at about 100, which shows its streaks in bands at close range; 2048 costs about 0.6 GiB more
+// of baked maps on screen.
+const { project } = buildProject(Number(process.env.RESOLUTION ?? 2048), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
 // The whole building is GPU-baked within BAKE_MEMORY MiB (default 4096; with its weathering layers it takes about 2.2 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
 // per-pixel look, which shows a layered slot's base alone (no paint or grime).
@@ -218,12 +221,8 @@ try {
     // VIEWS=<name>,<name> pictures only those views.
     const wanted = process.env.VIEWS?.split(",");
     for (const [name, view] of Object.entries(views).filter(([name]) => !wanted || wanted.includes(name))) {
-      // A view with the plants is drawn without ambient occlusion: the occlusion pass draws depth with one plain material,
-      // which does not stand the canopy's leaf cards up as their own shaders do, so the building's creases would be
-      // darkened through the trees. (Still the scene's global setting, per picture.)
+      // Every view keeps the scene's ambient occlusion: foliage neither casts nor receives it (ambient-occlusion.ts).
       await page.evaluate(view => { const s = window.__scene;
-        const record = window.__facadeLighting;
-        if (record?.ambientOcclusion && record.ambientOcclusion.enabled !== !!view.bare) { record.ambientOcclusion.enabled = !!view.bare; s.setLighting(record); }
         (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = !view.bare; if (m.userData.source) m.userData.source.visible = !view.bare; } }); s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));

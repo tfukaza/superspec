@@ -27,6 +27,8 @@
   "shutterColor": "#8a7f66",
   "doorColor": "#4a6a8f",
   "doorPanels": 2,
+  "/lamps": "Round caged bulkhead lamps on wall plates (lampStyle) over the door and beside the shutter.",
+  "lampStyle": "round",
   "/side door": "The right side's door stands 1.1 m from the front corner (backDoorPlans: a distance per edge, 0 leaves the seed's): a plain brown leaf without louvres.",
   "backDoorPlans": [0, 1.1],
   "backDoorColor": "#6a4a38",

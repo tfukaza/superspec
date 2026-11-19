@@ -392,6 +392,59 @@ fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefini
     definition
 }
 
+/// A plant's painted mass (roadmap milestone `painted-trees-milestone`), in the plant's own space
+/// (its base at the origin), with the milestone's settings:
+/// - every leaf cluster, clumped or not (the mass model only sorts them, so the plant without it
+///   has them all), as `[x, y, z, size]`: the cluster's middle and length, for the density field;
+/// - every leaf-bearing branch's leafy stretch (from `leaves.start` to its tip) as 9 points: the
+///   sprays grow along them.
+fn painted_mass(
+    definition: &tree::TreeDefinition,
+    plant: &tree::GeneratedTree,
+) -> superspec_types::batch::FoliageMass {
+    let all_leaves = tree::generate(
+        &tree::TreeDefinition {
+            mass: None,
+            ..definition.clone()
+        },
+        &|| false,
+    )
+    .unwrap()
+    .leaves;
+    let sites = all_leaves
+        .transforms
+        .iter()
+        .map(|[_, along, _, anchor]| {
+            let size = along.iter().map(|v| v * v).sum::<f64>().sqrt();
+            [
+                anchor[0] + 0.5 * along[0],
+                anchor[1] + 0.5 * along[1],
+                anchor[2] + 0.5 * along[2],
+                size,
+            ]
+        })
+        .collect();
+    let twigs = plant
+        .skeleton
+        .iter()
+        .filter(|b| b.level >= definition.leaves.level && b.length > 0.)
+        .map(|b| {
+            (0..9)
+                .map(|k| {
+                    let t =
+                        definition.leaves.start + (1. - definition.leaves.start) * k as f64 / 8.;
+                    b.at(t).0
+                })
+                .collect()
+        })
+        .collect();
+    superspec_types::batch::FoliageMass {
+        sites,
+        twigs,
+        ..Default::default()
+    }
+}
+
 /// Writes the washroom's plants (roadmap stage 7, `washroom-trees.json` in `TREESPEC_OUTPUT`,
 /// default `generated/verification/treespec`): the shrub fixture and the broadleaf fixture at
 /// 0.6 of its size, standing on the lawn of `write_washroom_lawn`, every level of each as
@@ -473,45 +526,21 @@ fn write_washroom_trees() {
             generated.as_secs_f64() * 1000.,
             levels.len()
         );
-        // Every leaf cluster, clumped or not (the mass model only sorts them, so the plant without it has them all):
-        // `[x, y, z, size]` in the scene, the cluster's middle, for the painted trees' density field.
-        let all_leaves = tree::generate(
-            &tree::TreeDefinition {
-                mass: None,
-                ..definition.clone()
-            },
-            &|| false,
-        )
-        .unwrap()
-        .leaves;
-        let sites: Vec<f64> = all_leaves
-            .transforms
+        // The painted trees' sites and twigs (`painted_mass`), in the scene, flat `[x, y, z, size, ...]` and
+        // `[x, y, z, ...]` per twig.
+        let mass = painted_mass(&definition, &plant);
+        let sites: Vec<f64> = mass
+            .sites
             .iter()
-            .flat_map(|[_, along, _, anchor]| {
-                let size = along.iter().map(|v| v * v).sum::<f64>().sqrt();
-                [
-                    anchor[0] + 0.5 * along[0] + base[0],
-                    anchor[1] + 0.5 * along[1] + base[1],
-                    anchor[2] + 0.5 * along[2] + base[2],
-                    size,
-                ]
-            })
+            .flat_map(|[x, y, z, size]| [x + base[0], y + base[1], z + base[2], *size])
             .map(|v| (v * 1000.).round() / 1000.)
             .collect();
-        // Every leaf-bearing branch's leafy stretch (from `leaves.start` to its tip) as 9 points in the scene, flat
-        // `[x, y, z, ...]`: the painted trees' twig strips follow them.
-        let twigs: Vec<Vec<f64>> = plant
-            .skeleton
+        let twigs: Vec<Vec<f64>> = mass
+            .twigs
             .iter()
-            .filter(|b| b.level >= definition.leaves.level && b.length > 0.)
-            .map(|b| {
-                (0..9)
-                    .flat_map(|k| {
-                        let t = definition.leaves.start
-                            + (1. - definition.leaves.start) * k as f64 / 8.;
-                        let (p, _, _) = b.at(t);
-                        [p[0] + base[0], p[1] + base[1], p[2] + base[2]]
-                    })
+            .map(|twig| {
+                twig.iter()
+                    .flat_map(|p| [p[0] + base[0], p[1] + base[1], p[2] + base[2]])
                     .map(|v| (v * 1000.).round() / 1000.)
                     .collect()
             })
@@ -575,8 +604,8 @@ fn lane_ground() -> GroundMesh {
 
 /// Writes the lane's plants (`lane-plants.json` in `TREESPEC_OUTPUT`, default
 /// `generated/verification/treespec`): the grass patch of `lane_ground`, grown as the washroom
-/// lawn's grass, and two broadleaf trees and a shrub standing in front of the Kowloon
-/// building, one tree on the patch. `tests/studio/washroom-items/build.mjs` adds them
+/// lawn's grass, and two birches and a shrub, painted as the milestone's trees (each a
+/// `FoliageMass`), standing in front of the Kowloon building, one tree on the patch. `tests/studio/washroom-items/build.mjs` adds them
 /// with the building (`LANE=1`).
 #[test]
 #[ignore = "writes the lane plants for the item building picture"]
@@ -613,20 +642,25 @@ fn write_lane_plants() {
         "canopy": {},
     }))
     .unwrap();
-    let broadleaf = |factor: f64| {
-        let mut definition = scaled(
+    // The painted trees of the milestone (`painted-mass/milestone-birch.png`): the birch, scaled to a
+    // street tree of about 7 m, its core cut at 0.85 with half the cards kept, as the milestone's.
+    let birch = |factor: f64| {
+        let definition = scaled(
             tree::parse(
-                "broadleaf.tree.json",
-                include_str!("../src/treespec/fixtures/broadleaf.tree.json"),
+                "birch.tree.json",
+                include_str!("../src/treespec/fixtures/birch.tree.json"),
             )
             .unwrap(),
             factor,
         );
-        for (lod, distance) in definition.lods.iter_mut().zip([0., 12., 26.]) {
-            lod.distance = distance;
-        }
-        definition
+        let look = superspec_types::batch::FoliageMass {
+            level: 0.85,
+            card_keep: 0.5,
+            ..Default::default()
+        };
+        (definition, look)
     };
+    // The shrub painted the same way, at the milestone's default core level.
     let mut shrub = tree::parse(
         "shrub.tree.json",
         include_str!("../src/treespec/fixtures/shrub.tree.json"),
@@ -635,6 +669,7 @@ fn write_lane_plants() {
     for (lod, distance) in shrub.lods.iter_mut().zip([0., 8., 16.]) {
         lod.distance = distance;
     }
+    let shrub = (shrub, superspec_types::batch::FoliageMass::default());
     let height = |x: f64, y: f64| {
         ground
             .positions
@@ -646,28 +681,51 @@ fn write_lane_plants() {
             .filter(|p| (p[0] - x).abs() < 0.2 && (p[1] - y).abs() < 0.2)
             .map_or(0., |p| p[2])
     };
-    // Two trees and a shrub: each plant's levels are about 6 MB of project, which a Studio
-    // project holds at most 128 MiB of.
-    for (index, (definition, at)) in [
-        (broadleaf(0.75), [-2.2, -5.9]),
-        (broadleaf(0.65), [-2.3, 1.6]),
+    // Two trees and a shrub, each painted as one mass: its bark and shadow proxy are batches, and
+    // its foliage is the mass on the shadow proxy, which a renderer draws in place of leaves and
+    // hull, so those are left out (a Studio project holds at most 128 MiB).
+    for (index, ((definition, mass), at)) in [
+        (birch(0.9), [-2.2, -5.9]),
+        (birch(0.8), [-2.3, 1.6]),
         (shrub, [-1.4, -3.6]),
     ]
     .into_iter()
     .enumerate()
     {
+        use superspec_types::batch::FoliageFamily;
         let plant = tree::generate(&definition, &|| false).unwrap();
         let base = [at[0], at[1], height(at[0], at[1]) - 0.02];
+        let painted = superspec_types::batch::FoliageMass {
+            level: mass.level,
+            card_keep: mass.card_keep,
+            ..painted_mass(&definition, &plant)
+        };
         let mut levels = batches::tree_levels(&plant, base, &look).unwrap();
+        levels.retain(|level| {
+            !matches!(
+                level.batch.foliage.as_ref().unwrap().family,
+                FoliageFamily::Leaves | FoliageFamily::Hull
+            )
+        });
         for level in &mut levels {
-            // Each plant is an object of its own, so two of one definition do not share IDs.
+            // Each plant is an object and a patch of its own, so two of one definition share
+            // neither IDs nor the patch's sway origin.
             level.batch.id = format!("lane-plant-{index}/{}", level.batch.id);
             level.batch.object_id = format!("lane-plant-{index}");
             let foliage = level.batch.foliage.as_mut().unwrap();
-            if foliage.family == superspec_types::batch::FoliageFamily::Bark {
-                foliage.material = Some("painted-bark".into());
+            foliage.patch = format!("lane-plant-{index}");
+            match foliage.family {
+                FoliageFamily::Bark => foliage.material = Some("painted-bark".into()),
+                FoliageFamily::Shadow => foliage.mass = Some(painted.clone()),
+                _ => {}
             }
         }
+        assert!(
+            levels
+                .iter()
+                .any(|level| level.batch.foliage.as_ref().unwrap().mass.is_some()),
+            "every lane plant has a shadow proxy to carry its painted mass"
+        );
         all.extend(levels);
     }
     let mut scene = Scene::empty(1, "test");

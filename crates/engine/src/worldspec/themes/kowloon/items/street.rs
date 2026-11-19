@@ -30,7 +30,8 @@ use superspec_types::rng::SeededRng;
 /// anchor, 0.03), `storey` (m of the ground storey, at least 0.5 above the head, 3.35),
 /// `shutter` (#758077), `hanging` (goods hung across the opening, true), `hangClear` and
 /// `hangDrop` (m below the head where they start and end, so they hang under an awning's
-/// edge), `fade`, `seed`.
+/// edge), `hangStyle` and `hangSides` (their colours and how much lower they reach at the
+/// opening's sides), `fade`, `seed`.
 pub(super) fn shop_room(
     name: &str,
     values: &Values,
@@ -65,6 +66,21 @@ pub(super) fn shop_room(
     if hang_drop.is_some_and(|drop| !(0.4..=4.).contains(&drop)) {
         return Err(format!("{name}: hangDrop must lie in 0.4..4."));
     }
+    // `hangStyle`: `bold` (strong packets, dyed cloths and baskets, few pale bags, the band 1.2 m
+    // deep under the clear length, down to 0.85 m above the floor, by default) or `plain` (the
+    // faded mix; `bold`). `hangSides`: m further down the long pieces at either end of the
+    // opening reach, outside the way in (0–1.5; 0.35 for bold goods, 0 for plain), at least
+    // 0.3 m above the floor.
+    let bold = match a.text("hangStyle", "bold")?.as_str() {
+        "bold" => true,
+        "plain" => false,
+        _ => return Err(format!("{name}: hangStyle must be one of bold, plain.")),
+    };
+    let hang_sides = a.optional_number("hangSides")?;
+    if hang_sides.is_some_and(|sides| !(0. ..=1.5).contains(&sides)) {
+        return Err(format!("{name}: hangSides must lie in 0..1.5."));
+    }
+    let hang_sides = hang_sides.unwrap_or(if bold { 0.35 } else { 0. });
     // `fade`: how much of their saturation the stock's colours have lost (0–1, 0.5).
     let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
     let key = a.seed()?;
@@ -136,8 +152,17 @@ pub(super) fn shop_room(
             let shortest = (height - 2.).clamp(0.3, 0.95);
             let clear = (hang_clear - 0.2).max(0.);
             let drop = hang_drop
-                .map_or((clear + 0.8).min(height - 1.25), |drop| drop - 0.2)
+                .map_or(
+                    if bold {
+                        (clear + 1.2).min(height - 1.05)
+                    } else {
+                        (clear + 0.8).min(height - 1.25)
+                    },
+                    |drop| drop - 0.2,
+                )
                 .max(shortest);
+            // The long pieces at the sides stop 0.3 m above the floor.
+            let sides = hang_sides.min((height - 0.5 - drop).max(0.));
             // Over the way in nothing comes lower than 2 m above the floor.
             let headroom = (height - 2.2).max(0.);
             // Three rows, overlapping: a near-continuous wall of goods under the head.
@@ -149,6 +174,8 @@ pub(super) fn shop_room(
                     drop,
                     way: (width >= 3.).then_some([width / 2. - 0.6, width / 2. + 0.6, headroom]),
                     rows: 3,
+                    bold,
+                    sides,
                 },
                 &mut kit.rng(&format!("{key}/front-goods"))?,
             )?;
@@ -971,7 +998,8 @@ pub(super) fn rail(
 /// `kowloon/ladder`: a steel cat ladder fixed to a wall, its stiles turning over the top onto
 /// the roof behind. Anchor: the wall plane below the ladder's centre, at its foot; it stands
 /// 0.16 m in front of the wall. Parameters: `height` (m, 0.6–20, 2.2), `width` (m, 0.25–1,
-/// 0.37), `color` (#3f554b).
+/// 0.37), `color` (#3f554b) and `grab` (m, 0–1.5, 0): grab rails, the stiles carried this far
+/// above the top and bent over in a hoop down onto the roof behind (0: they turn straight over).
 pub(super) fn ladder(
     name: &str,
     values: &Values,
@@ -981,22 +1009,50 @@ pub(super) fn ladder(
     let height = a.bounded("height", 2.2, 0.6..=20.)?;
     let width = a.bounded("width", 0.37, 0.25..=1.)?;
     let color = a.color("color", "#3f554b")?;
+    let grab = a.bounded("grab", 0., 0. ..=1.5)?;
+    if grab > 0. && grab < 0.3 {
+        return Err(format!("{name}: grab must be 0 or 0.3..1.5."));
+    }
     a.finish()?;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "ladder")?;
         let y = 0.16;
         for x in [-width / 2., width / 2.] {
-            d.tube(
-                "metal",
-                &[
-                    [x, y, 0.05],
-                    [x, y, height - 0.1],
-                    [x, -0.12, height + 0.02],
-                ],
-                0.022,
-                color,
-                10,
-            )?;
+            if grab > 0. {
+                // Up past the top, over a hoop of 0.14 m radius and down to the roof 0.12 m
+                // behind the wall, with a stay to the wall's head.
+                let (radius, crown) = (0.14, height + grab - 0.14);
+                let mut path = vec![[x, y, 0.05]];
+                path.extend((0..=8).map(|i| {
+                    let angle = std::f64::consts::PI * i as f64 / 8.;
+                    [
+                        x,
+                        y - radius + radius * superspec_geometry::math::cos(angle),
+                        crown + radius * superspec_geometry::math::sin(angle),
+                    ]
+                }));
+                path.push([x, y - 2. * radius, height + 0.02]);
+                d.tube("metal", &path, 0.022, color, 10)?;
+                d.tube(
+                    "metal",
+                    &[[x, y, height - 0.08], [x, 0., height - 0.08]],
+                    0.012,
+                    color,
+                    6,
+                )?;
+            } else {
+                d.tube(
+                    "metal",
+                    &[
+                        [x, y, 0.05],
+                        [x, y, height - 0.1],
+                        [x, -0.12, height + 0.02],
+                    ],
+                    0.022,
+                    color,
+                    10,
+                )?;
+            }
             for z in [0.5, height - 0.5] {
                 d.tube("metal", &[[x, y, z], [x, 0., z]], 0.012, color, 6)?;
             }

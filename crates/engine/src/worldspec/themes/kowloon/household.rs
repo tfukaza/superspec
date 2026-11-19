@@ -333,6 +333,11 @@ pub struct CagePlan {
     pub spacing: Option<f64>,
     /// The most rust (0–1) mixed into an unbaked cage's paint; the seed picks up to it (0.35).
     pub rust: Option<f64>,
+    /// The height of the middle rail above the cage's floor in meters (half its height).
+    pub middle: Option<f64>,
+    /// `[x0, x1]`: where the front's middle rail is left out, over what stands behind it; it
+    /// stops at the infill bars either side.
+    pub middle_gap: Option<[f64; 2]>,
 }
 impl CagePlan {
     fn validate(&self) -> Result<(), String> {
@@ -343,6 +348,10 @@ impl CagePlan {
             && within(self.rail, 0.008..=0.08)
             && within(self.spacing, 0.04..=0.5)
             && within(self.rust, 0. ..=1.)
+            && within(self.middle, 0.05..=10.)
+            && self
+                .middle_gap
+                .is_none_or(|[a, b]| a.is_finite() && b.is_finite() && a < b)
         {
             Ok(())
         } else {
@@ -466,8 +475,24 @@ pub fn planned_cage(
         rail([x0, y, z0], [x1, y, z0], 0.009)?;
         y += 0.11;
     }
-    for z in [z0, (z0 + z1) / 2., z1] {
-        rail([x0, depth, z], [x1, depth, z], frame_rail)?;
+    let middle = plan
+        .middle
+        .map_or((z0 + z1) / 2., |m| (z0 + m).min(z1 - 0.03));
+    for z in [z0, middle, z1] {
+        match plan.middle_gap {
+            Some([a, b]) if z == middle => {
+                // Stop either side at the nearest infill bar outside the gap.
+                let left = x0 + ((a - x0) / pitch).floor().max(0.) * pitch;
+                let right = x0 + ((b - x0) / pitch).ceil().max(0.) * pitch;
+                if left > x0 + 0.01 {
+                    rail([x0, depth, z], [left, depth, z], frame_rail)?;
+                }
+                if right < x1 - 0.05 {
+                    rail([right, depth, z], [x1, depth, z], frame_rail)?;
+                }
+            }
+            _ => rail([x0, depth, z], [x1, depth, z], frame_rail)?,
+        }
         for x in [x0, x1] {
             rail([x, 0., z], [x, depth, z], frame_rail)?;
         }
@@ -663,6 +688,128 @@ pub fn wall_lamp(
         )?;
     }
     conduit(0.012, settings)?.run(d, &[[x, 0.02, z + 0.13], [x, 0.02, z + 0.75]], Some(0.))
+}
+/// A round bulkhead lamp: a domed glass in a wire cage of three hoops and a ring, on a round
+/// wall plate, its foot at `z`, the conduit rising from its head. The wall frame's +Y is out.
+pub fn round_wall_lamp(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    settings: &weathered::Settings,
+) -> Result<(), String> {
+    if !position(&[x, z]) {
+        return Err("Invalid wall lamp position.".into());
+    }
+    settings.validate()?;
+    // Sizes in units of `k` m: a plate 26 cm across under a glass 17 cm across.
+    let k = 1.2;
+    let (plate, centre) = (0.11 * k, z + 0.115 * k);
+    // A frame whose +Z points out of the wall, centred on the lamp.
+    let out =
+        super::shop::forms::rotated(&d.pen, [x, 0., centre], 0, -std::f64::consts::FRAC_PI_2)?;
+    let mut lamp = Fixture {
+        pen: out,
+        mesh: d.mesh,
+        repeats: d.repeats,
+    };
+    let metal = hardware(&mut lamp, Some(settings))?;
+    let housing = shade(srgb("#a4a9aa"), 0.5);
+    let wire = shade(srgb("#a4a9aa"), 0.4);
+    {
+        let mut m = Fixture {
+            pen: metal.clone(),
+            mesh: lamp.mesh,
+            repeats: lamp.repeats,
+        };
+        super::shop::forms::lathe(
+            &mut m,
+            "metal",
+            [0.; 3],
+            &[
+                [plate, 0.],
+                [plate, 0.014 * k],
+                [plate - 0.012 * k, 0.026 * k],
+            ],
+            &super::shop::forms::Tints::Uniform(&Tint::Color(housing)),
+            24,
+            None,
+        )?;
+        m.disc(
+            "metal",
+            [0., 0., 0.026 * k],
+            plate - 0.012 * k,
+            [0., 0., 1.],
+            housing,
+            24,
+        )?;
+    }
+    // The glass: a low dome from the plate, closed by a small disc at its crown.
+    let dome = [
+        [0.072, 0.026],
+        [0.072, 0.05],
+        [0.066, 0.078],
+        [0.052, 0.1],
+        [0.03, 0.114],
+        [0.014, 0.118],
+    ]
+    .map(|p| p.map(|v| v * k));
+    super::shop::forms::lathe(
+        &mut lamp,
+        "pane",
+        [0.; 3],
+        &dome,
+        &super::shop::forms::Tints::Uniform(&Tint::Color(srgb("#f4e8c0"))),
+        20,
+        None,
+    )?;
+    lamp.disc(
+        "pane",
+        [0., 0., 0.118 * k],
+        0.014 * k,
+        [0., 0., 1.],
+        srgb("#f4e8c0"),
+        10,
+    )?;
+    let mut m = Fixture {
+        pen: metal,
+        mesh: lamp.mesh,
+        repeats: lamp.repeats,
+    };
+    // A ring round the dome's foot and three hoops over its crown.
+    let ring: Vec<V3> = (0..=24)
+        .map(|i| {
+            let a = i as f64 / 24. * std::f64::consts::TAU;
+            [
+                0.084 * k * superspec_geometry::math::cos(a),
+                0.084 * k * superspec_geometry::math::sin(a),
+                0.034 * k,
+            ]
+        })
+        .collect();
+    m.tube("metal", &ring, 0.006 * k, wire, 6)?;
+    for hoop in 0..3 {
+        let bearing = hoop as f64 * std::f64::consts::PI / 3.;
+        let (c, s) = (
+            superspec_geometry::math::cos(bearing),
+            superspec_geometry::math::sin(bearing),
+        );
+        let hoop: Vec<V3> = (0..=10)
+            .map(|i| {
+                let a = i as f64 / 10. * std::f64::consts::PI;
+                let (r, h) = (
+                    0.084 * k * superspec_geometry::math::cos(a),
+                    (0.034 + 0.096 * superspec_geometry::math::sin(a)) * k,
+                );
+                [r * c, r * s, h]
+            })
+            .collect();
+        m.tube("metal", &hoop, 0.005 * k, wire, 6)?;
+    }
+    conduit(0.012, settings)?.run(
+        d,
+        &[[x, 0.02, centre + plate], [x, 0.02, centre + 0.75]],
+        Some(0.),
+    )
 }
 /// Utility-meter boxes with individual glasses and rising, separately charted conduits.
 pub fn meter_bank(

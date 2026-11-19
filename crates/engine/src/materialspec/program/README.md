@@ -275,13 +275,22 @@ below it along downhill (0 at the edge, never above it), `id` the zone's identit
 `vec3(0, -1, 0)` outside every zone. `zone_extent("name")` (`zoneExtent`) is
 `vec3(inside, limit, scale)`: 1 inside, where the zone ends in this column (its length or the next
 edge below) and the owner's scale; `vec3(0)` outside. Where zones of the name overlap, the one whose
-edge is nearest above wins (the least `v`). A layer follows zones as it follows features
+edge is nearest above wins (the least `v`). `zone_span("name")` (`zoneSpan`) is
+`vec3(start, end, inside)`: the `u` where that zone's edge starts and ends, so a material can weight
+streaks toward an edge's ends; `vec3(0)` outside. A layer follows zones as it follows features
 (`follow: {"zone": "runoff-top"}` or a list).
 
-- No search for edges per texel beyond the receiver's own few zone segments, and on the GPU a
-  texture read: both are CPU-only operations, so a program's plan bakes the fields that use them on
-  the CPU (`Shader::cpu_fields`) and the shader reads those fields; its per-pixel preview is outside
-  every zone. Name the zone values with a field (a `const`) so there is a field to bake.
+- No search for edges per texel beyond the receiver's own few zone segments. A GPU bake evaluates
+  them in its shader (`ms_zone_coord`, `ms_zone_extent`, `ms_zone_span` in `glsl.rs`, `ZONES`):
+  `Shader::zones` names the zones in the order of their kinds, and `shade_project` gives each
+  receiver its zones packed for each shader that reads them (`zones`, `layerZones`: `pack`, seven
+  RGBA texels a segment, then the zones' stops and holes), only the segments whose zones can reach
+  the receiver's box. A host binds the rows to `ms_zones` and their number to `ms_zone_count`. The
+  GPU computes in single precision (a texel within 0.1 mm above an edge counts as on it); otherwise
+  it agrees with the CPU (`item_zones::the_packed_zones_a_gpu_reads_give_what_the_cpu_finds`,
+  `tests/item-zone-gpu-browser.mjs`). Before, the zone values were CPU fields of every layer of
+  every receiver: 670 fields of 176 receivers, 14.8 s natively and most of a 19 to 24 s bake's
+  field time in the Studio; the reference building now bakes with no CPU field at all.
 - A grime layer then samples its tile at `vec2(u / period + shift(id), v / length)`, fading with
   `v / limit`: streaks start at their edge, stop at the next edge below and never climb.
 - Zones are part of a receiver's named features, so they are part of its layout's key; a value

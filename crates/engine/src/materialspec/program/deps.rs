@@ -281,7 +281,7 @@ impl Walk<'_> {
                         }
                         found.sample = found.sample.union(S::WORLD).union(S::FOOTPRINT);
                     }
-                    Builtin::ZoneCoord | Builtin::ZoneExtent => {
+                    Builtin::ZoneCoord | Builtin::ZoneExtent | Builtin::ZoneSpan => {
                         use SampleInputs as S;
                         // A zone belongs to the receiver's owner, like its features.
                         found.features = true;

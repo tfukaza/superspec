@@ -32,6 +32,78 @@ void main() {
 };
 
 /**
+ * Materials that are not tone mapped (`toneMapped` false: painted programs and painted foliage follow the painted
+ * finishing this way, shade.ts) come out of the scene target through the output pass's tone mapping all the same, which
+ * drawn straight to the canvas they skip: their paint read paler and yellower with ambient occlusion on. So while this
+ * pass draws, such a material's colour is put through the inverse of the renderer's tone mapping, at the renderer's
+ * exposure, before it is written: the output pass then gives back exactly the colour it paints on the canvas (up to the
+ * half-float target and colours past what the curve reaches). Elsewhere (`mode` 0) the colour is left as it is. Exact
+ * for linear, Reinhard and ACES filmic; neutral is inverted by iteration; other curves are left as they are.
+ */
+const untoned = { mode: { value: 0 }, exposure: { value: 1 } };
+const UNTONED_MODES = new Map<THREE.ToneMapping, number>([
+  [THREE.LinearToneMapping, 1], [THREE.ReinhardToneMapping, 2], [THREE.ACESFilmicToneMapping, 3], [THREE.NeutralToneMapping, 4],
+]);
+const UNTONED_GLSL = /* glsl */`
+uniform float msUntonedMode;
+uniform float msUntonedExposure;
+vec3 msNeutralCurve(vec3 color) {
+  const float start = 0.8 - 0.04;
+  const float desaturation = 0.15;
+  color *= msUntonedExposure;
+  float x = min(color.r, min(color.g, color.b));
+  float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+  color -= offset;
+  float peak = max(color.r, max(color.g, color.b));
+  if (peak < start) return color;
+  float d = 1. - start;
+  float newPeak = 1. - d * d / (peak + d - start);
+  color *= newPeak / peak;
+  float g = 1. - 1. / (desaturation * (peak - newPeak) + 1.);
+  return mix(color, vec3(newPeak), g);
+}
+vec3 msUntonedInverse(vec3 color) {
+  if (msUntonedMode < 0.5) return color;
+  float exposure = max(msUntonedExposure, 1e-4);
+  vec3 y = clamp(color, 0.0, 0.985);
+  if (msUntonedMode < 1.5) return y / exposure;
+  if (msUntonedMode < 2.5) return y / (1.0 - y) / exposure;
+  if (msUntonedMode < 3.5) {
+    // three.js's ACES filmic: out * fit(in * colour * exposure / 0.6), its fit a ratio of quadratics solved per channel.
+    const mat3 inputMat = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+    const mat3 outputMat = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+    vec3 fit = clamp(inverse(outputMat) * y, 0.0, 0.985);
+    vec3 a = 1.0 - 0.983729 * fit, b = 0.0245786 - 0.4329510 * fit, c = -(0.000090537 + 0.238081 * fit);
+    vec3 v = (-b + sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a);
+    return max(inverse(inputMat) * v, 0.0) * 0.6 / exposure;
+  }
+  // Neutral: its curve is the identity below its shoulder and flattens above, so stepping by what is missing converges.
+  vec3 x = y;
+  for (int i = 0; i < 16; i++) x = max(x + (y - msNeutralCurve(x)), 0.0);
+  return x;
+}
+`;
+
+/** Makes a material put its colour through `msUntonedInverse` while it is not tone mapped (see `untoned`). */
+function prepareUntoned(material: THREE.Material): void {
+  if (material.userData.untonedOutput) return;
+  material.userData.untonedOutput = true;
+  const previous = material.onBeforeCompile, key = material.customProgramCacheKey;
+  // The default key is the hook's source: keep the original hook's, so two materials with different hooks stay apart.
+  const previousKey = key === THREE.Material.prototype.customProgramCacheKey ? previous.toString() : null;
+  material.onBeforeCompile = function (shader, renderer) {
+    previous.call(this, shader, renderer);
+    if (material.toneMapped || !shader.fragmentShader.includes("#include <colorspace_fragment>")) return;
+    shader.uniforms.msUntonedMode = untoned.mode;
+    shader.uniforms.msUntonedExposure = untoned.exposure;
+    shader.fragmentShader = UNTONED_GLSL + shader.fragmentShader.replaceAll("#include <colorspace_fragment>",
+      "gl_FragColor.rgb = msUntonedInverse(gl_FragColor.rgb);\n#include <colorspace_fragment>");
+  };
+  material.customProgramCacheKey = () => `${previousKey ?? key.call(material)}|untoned:${material.toneMapped}`;
+  material.needsUpdate = true;
+}
+
+/**
  * Cosines of the angle between a vertex normal and its face's own normal: at `NORMAL_KEPT` and above the vertex normal
  * is what the occlusion reads, at `NORMAL_REPLACED` and below the face's, with a blend between. A smoothed normal of a
  * solid stays well above (a hexagonal tube's is at 0.87).
@@ -208,7 +280,15 @@ void main() {
     }
     const clear = this.renderer.getClearColor(this.clearColor), alpha = this.renderer.getClearAlpha();
     this.renderer.setClearColor(0x000000, 0);
+    // Materials that are not tone mapped write the colour the output pass's tone mapping gives back (see `untoned`).
+    this.scene.traverse(object => {
+      const material = (object as THREE.Mesh).isMesh ? (object as THREE.Mesh).material : undefined;
+      for (const one of Array.isArray(material) ? material : material ? [material] : []) if (!one.toneMapped) prepareUntoned(one);
+    });
+    untoned.mode.value = UNTONED_MODES.get(this.renderer.toneMapping) ?? 0;
+    untoned.exposure.value = this.renderer.toneMappingExposure;
     try { this.composer.render(); } finally {
+      untoned.mode.value = 0;
       this.renderer.setClearColor(clear, alpha);
       if (color) this.scene.background = color;
     }

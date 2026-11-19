@@ -87,6 +87,7 @@
     "conduitColor": {"type": "color", "default": "#4d5048"},
     "partyPlans": {"type": "grid", "default": [], "choices": ["none", "wall", "stub"]},
     "partyStoreyPlans": {"type": "grid", "default": []},
+    "partyLanePlans": {"type": "grid", "default": []},
     "door": {"type": "choice", "default": "auto", "choices": ["auto", "single", "double", "glazed", "steel"]},
     "transom": {"type": "choice", "default": "auto", "choices": ["auto", "glazed", "mesh", "none"]},
     "fittedBays": {"type": "boolean", "default": false},
@@ -115,6 +116,13 @@
     "tankStand": {"type": "number", "default": 0.72, "min": 0.2, "max": 3, "unit": "m"},
     "tankRibs": {"type": "integer", "default": 7, "min": 0, "max": 24},
     "tankLid": {"type": "number", "default": 0.24, "min": 0, "max": 1, "unit": "m"},
+    "tankLadder": {"type": "number", "default": -1, "min": -1, "max": 360},
+    "tankShell": {"type": "color", "default": "#f7f0e6"},
+    "hutGrab": {"type": "number", "default": 1.0, "min": 0, "max": 1.5, "unit": "m"},
+    "aerialHeight": {"type": "number", "default": 2.4, "min": 0.9, "max": 9, "unit": "m"},
+    "aerialSize": {"type": "number", "default": 1.3, "min": 0.5, "max": 3},
+    "aerialStays": {"type": "integer", "default": 3, "min": 0, "max": 4},
+    "lampStyle": {"type": "choice", "default": "bulkhead", "choices": ["bulkhead", "round"]},
     "cageColor": {"type": "color", "default": "#c9c3b2"},
     "cageRust": {"type": "number", "default": 0.3, "min": 0, "max": 1},
     "cageBar": {"type": "number", "default": 0.008, "min": 0.004, "max": 0.05, "unit": "m"},
@@ -153,7 +161,7 @@
                        "copingFlush": {"choose": [false, true], "by": "round > 0"},
                        "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, clamp(e_miter_start, 0, 2))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, clamp(e_miter_end, 0, 2))"},
                        "tileStart": {"choose": [false, true], "by": "cornerTiles * (e_previous_cut > 0)"}, "tileEnd": {"choose": [false, true], "by": "cornerTiles * (e_cut > 0)"},
-                       "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "fitted": {"parameter": "fittedBays"},
+                       "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "fitted": {"parameter": "fittedBays"}, "lampStyle": {"parameter": "lampStyle"},
                        "shutterHead": {"parameter": "shutterHead"}, "shutterHeadRust": {"parameter": "shutterHeadRust"}, "meters": {"parameter": "meters"},
                        "fascia": {"choose": [true, false], "by": "bandsAround"},
                        "cagesPlan": {"element": "cagePlans", "at": "e"}, "storagePlan": {"element": "storagePlans", "at": "e"}, "windowTransom": {"parameter": "windowTransom"},
@@ -267,8 +275,19 @@
         "parameters": {"kind": {"choose": ["wall", "stub"], "by": "cell(partyPlans, e) - 1"}, "length": {"expr": "e_length"},
                        "top": {"expr": "height + parapet"}, "ground": {"parameter": "groundHeight"}, "storey": {"parameter": "storyHeight"},
                        "storeys": {"parameter": "floors"}, "own": {"expr": "clamp(round(cell(partyStoreyPlans, e)), 0, 12)"},
-                       "color": {"parameter": "paint"}, "frame": {"parameter": "frame"}, "seed": {"expr": "seed * 29 + e"}}},
-      "placement": {"position": ["e_x", "e_y", 0], "along": ["e_dx", "e_dy"]}
+                       "color": {"parameter": "paint"}, "frame": {"parameter": "frame"}, "seed": {"expr": "seed * 29 + e"},
+                       "door": {"choose": [true, false], "by": "(count(partyLanePlans, e) >= 1) * (cell(partyLanePlans, e, 0) == 0)"},
+                       "stacks": {"expr": "select(count(partyLanePlans, e) >= 2, cell(partyLanePlans, e, 1), -1)"},
+                       "cables": {"expr": "select(count(partyLanePlans, e) >= 3, cell(partyLanePlans, e, 2), 2)"},
+                       "bars": {"expr": "select(count(partyLanePlans, e) >= 4, cell(partyLanePlans, e, 3), 0.3)"},
+                       "units": {"expr": "select(count(partyLanePlans, e) >= 5, cell(partyLanePlans, e, 4), 0.45)"}}},
+      "placement": {"position": ["e_x", "e_y", 0], "along": ["e_dx", "e_dy"]},
+      "zones": [
+        {"name": "runoff-coping", "below": "top", "length": "height + parapet + 1", "u0": "e_perimeter"},
+        {"name": "runoff-top", "below": "eave", "length": {"parameter": "storyHeight"}, "u0": "e_perimeter"},
+        {"name": "runoff-sill", "below": "sill", "length": 1.0, "u0": "e_perimeter"},
+        {"name": "drip", "below": "drip", "length": 1.5, "u0": "e_perimeter"}
+      ]
     },
     {
       "id": "roofTiles",
@@ -305,15 +324,16 @@
       "id": "hutLadder",
       "repeat": [{"name": "r", "footprint": {"points": "footprint"}}],
       "when": "roofKit * (r == 0) * (r_max_x - r_min_x >= 5) * (r_max_y - r_min_y >= 5)",
-      "generator": {"kind": "native", "name": "kowloon/ladder", "parameters": {"height": 2.35, "color": {"parameter": "frame"}}},
+      "generator": {"kind": "native", "name": "kowloon/ladder", "parameters": {"height": 2.35, "color": {"parameter": "frame"}, "grab": {"expr": "select(hutGrab < 0.3, 0, hutGrab)"}}},
       "placement": {"position": ["r_min_x + (r_max_x - r_min_x) * 0.31 + 1.025", "r_min_y + (r_max_y - r_min_y) * 0.46 - 0.55", {"derived": "height"}], "rotation": [0, 0, 90]}
     },
     {
       "id": "tank",
-      "repeat": [{"name": "r", "footprint": {"points": "footprint"}}],
+      "repeat": [{"name": "r", "footprint": {"points": "footprint", "streets": "streets"}}],
       "when": "roofKit * (r == 0) * (r_max_x - r_min_x >= 5) * (r_max_y - r_min_y >= 4)",
       "generator": {"kind": "native", "name": "kowloon/water-tank", "parameters": {"kind": "round", "radius": {"parameter": "tankRadius"}, "height": {"parameter": "tankHeight"}, "stand": {"parameter": "tankStand"},
-                                                                                 "ribs": {"parameter": "tankRibs"}, "lid": {"parameter": "tankLid"}, "seed": {"parameter": "seed"}}},
+                                                                                 "ribs": {"parameter": "tankRibs"}, "lid": {"parameter": "tankLid"}, "shell": {"parameter": "tankShell"}, "seed": {"parameter": "seed"},
+                                                                                 "ladder": {"expr": "select(tankLadder >= 0, tankLadder, select(min(select(r_street, 0.44 * (r_max_y - r_min_y), 1000), select(r_next_street, 0.38 * (r_max_x - r_min_x), 1000), select(r_previous_street, 0.62 * (r_max_x - r_min_x), 1000)) >= 1000, 180, select(select(r_street, 0.44 * (r_max_y - r_min_y), 1000) <= min(select(r_next_street, 0.38 * (r_max_x - r_min_x), 1000), select(r_previous_street, 0.62 * (r_max_x - r_min_x), 1000)), 270, select(select(r_next_street, 0.38 * (r_max_x - r_min_x), 1000) <= select(r_previous_street, 0.62 * (r_max_x - r_min_x), 1000), 0, 180))))"}}},
       "placement": {"position": ["r_min_x + (r_max_x - r_min_x) * 0.62", "r_min_y + (r_max_y - r_min_y) * 0.44", {"derived": "height"}]}
     },
     {
@@ -321,8 +341,9 @@
       "repeat": [{"name": "r", "footprint": {"points": "footprint"}}, {"name": "k", "count": {"parameter": "aerials"}}],
       "when": "roofKit * (r == 0)",
       "generator": {"kind": "native", "name": "kowloon/aerial",
-        "parameters": {"height": {"expr": "1.6 + 0.7 * random(seed, k, 35)"}, "seed": {"expr": "seed * 13 + k"}}},
-      "placement": {"position": ["r_min_x + (r_max_x - r_min_x) * (0.08 + 0.84 * ((k * 0.618 + random(seed, 33) * 0.2) % 1))", "r_min_y + (r_max_y - r_min_y) * (0.1 + 0.1 * random(seed, k, 34))", {"derived": "height"}]}
+        "parameters": {"height": {"expr": "min(10, aerialHeight + 0.6 * random(seed, k, 35))"}, "seed": {"expr": "seed * 13 + k"},
+                       "size": {"parameter": "aerialSize"}, "stays": {"parameter": "aerialStays"}, "spread": {"expr": "clamp(aerialHeight * 0.25, 0.45, 1)"}, "bearing": 90}},
+      "placement": {"position": ["r_min_x + (r_max_x - r_min_x) * (0.12 + 0.76 * ((k * 0.618 + random(seed, 33) * 0.2) % 1))", "r_min_y + (r_max_y - r_min_y) * (0.14 + 0.08 * random(seed, k, 34))", {"derived": "height"}]}
     },
     {
       "id": "roofRail",
@@ -341,8 +362,8 @@
                        "vents": {"expr": "round(4 * roofClutter)"}, "parapet": {"parameter": "parapet"},"pipes": {"expr": "round(3 * roofClutter)"}, "pots": {"expr": "round(5 * roofClutter)"},
                        "ventSide": {"parameter": "roofVentSide"}, "ventInset": {"parameter": "roofVentInset"}, "pipeSide": {"parameter": "roofPipeSide"}, "potSide": {"parameter": "roofPotSide"},
                        "cable": {"choose": [false, true], "by": "roofKit * (aerials > 0) * (r_max_x - r_min_x >= 5) * (r_max_y - r_min_y >= 5)"},
-                       "cableX0": {"expr": "(r_max_x - r_min_x) * (0.08 + 0.84 * ((random(seed, 33) * 0.2) % 1) - 0.5)"},
-                       "cableY0": {"expr": "(r_max_y - r_min_y) * (0.1 + 0.1 * random(seed, 0, 34) - 0.5)"}, "cableZ0": 1.25,
+                       "cableX0": {"expr": "(r_max_x - r_min_x) * (0.12 + 0.76 * ((random(seed, 33) * 0.2) % 1) - 0.5)"},
+                       "cableY0": {"expr": "(r_max_y - r_min_y) * (0.14 + 0.08 * random(seed, 0, 34) - 0.5)"}, "cableZ0": 1.25,
                        "cableX1": {"expr": "(r_max_x - r_min_x) * (0.31 - 0.5)"},
                        "cableY1": {"expr": "(r_max_y - r_min_y) * (0.46 - 0.5) - 1.1"}, "cableZ1": 2.2,
                        "color": "#7d7b74", "seed": {"expr": "seed * 23 + 5"}}},
@@ -376,5 +397,13 @@
                        "stone": {"parameter": "pavingStone"}, "segments": {"expr": "max(12, round)"}, "seed": {"expr": "seed * 17 + 50 + c"}}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_dx", "c_dy"]}
     }
-  ]
+  ],
+  "layers": {
+    "wall": [
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 3.6, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.1, "color": [0.29, 0.26, 0.22], "streakLength": 1.4, "shift": 1.7, "period": 2.3, "variety": 0.4, "lip": 0.6}, "seed": 5, "follow": {"zone": ["runoff-coping", "runoff-sill", "runoff-top"]}}
+    ]
+  }
 }

@@ -40,6 +40,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
             live: Vec::new(),
             externals: Vec::new(),
             named_features: Vec::new(),
+            zones: Vec::new(),
             kind: RecipeKind::Material,
             double_sided: false,
             alpha_cutoff: None,
@@ -98,6 +99,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
         types: BTreeMap::new(),
         externals: BTreeMap::new(),
         named_features: BTreeSet::new(),
+        zones: BTreeSet::new(),
         depth: 0,
     };
     let mut errors: Vec<ProgramDiagnostic> = Vec::new();
@@ -160,6 +162,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
         })
         .collect();
     let named_features: Vec<String> = types.named_features.iter().cloned().collect();
+    let zones: Vec<String> = types.zones.iter().cloned().collect();
     let inferred = types.types;
     let mut parameters = Vec::new();
     let mut fields = Vec::new();
@@ -237,6 +240,7 @@ pub(super) fn compile(sources: &Sources) -> Result<Program, Vec<ProgramDiagnosti
     program.metadata.required_inputs = required.into_iter().collect();
     program.metadata.externals = externals;
     program.metadata.named_features = named_features;
+    program.metadata.zones = zones;
     program.metadata.dependencies.sort();
     program.compiled = std::sync::Arc::new(super::compiled::resolve(
         &program.definitions,
@@ -516,6 +520,8 @@ struct Checker<'a> {
     externals: BTreeMap<String, Type>,
     /// The feature names queried.
     named_features: BTreeSet<String>,
+    /// The zone names queried.
+    zones: BTreeSet<String>,
     depth: usize,
 }
 impl Checker<'_> {
@@ -759,7 +765,7 @@ impl Checker<'_> {
                     {
                         self.external(plane, result, &expr.mark)?;
                     }
-                    if let ("zone_coord" | "zone_extent", Some(Expression::Text(zone))) =
+                    if let ("zone_coord" | "zone_extent" | "zone_span", Some(Expression::Text(zone))) =
                         (name.as_str(), args.first().map(|v| &v.kind))
                     {
                         if !super::features::valid_feature_name(zone) {
@@ -769,6 +775,14 @@ impl Checker<'_> {
                                 &expr.mark,
                             ));
                         }
+                        if !self.zones.contains(zone) && self.zones.len() >= MAX_NAMED_QUERIES {
+                            return Err(self.program.diagnostic(
+                                "MS_LIMIT",
+                                format!("A program queries zones of at most {MAX_NAMED_QUERIES} names."),
+                                &expr.mark,
+                            ));
+                        }
+                        self.zones.insert(zone.clone());
                     }
                     if let (
                         "feature_distance" | "feature_tangent",
@@ -895,7 +909,7 @@ fn dependencies(
                         inputs.insert(format!("feature:{feature}"));
                     }
                 }
-                if matches!(operation.id, "zone_coord" | "zone_extent") {
+                if matches!(operation.id, "zone_coord" | "zone_extent" | "zone_span") {
                     if let Some(Expr {
                         kind: Expression::Text(zone),
                         ..

@@ -63,6 +63,8 @@ export interface ProgramShader {
    */
   live: { id: string; arguments: Record<string, string>; classes?: Record<string, { constant: number } | { parameters: string[]; glsl: string } | { varying: string }> }[];
   features: boolean;
+  /** The zone names the source queries, in their kinds' order; a host binds `ms_zones` and `ms_zone_count` (see `zoneTexture`). */
+  zones?: string[];
   /** An identity of `source`: equal sources have equal identities. */
   id?: string;
   /** Every uniform `source` declares, as GLSL declares it, and how many of them are samplers. */
@@ -148,7 +150,13 @@ export interface MeshShading {
   objectToWorld?: number[] | null;
   /** The receiver's pattern anchor, for a material mapped `anchored`; without one the frame is the world's. */
   anchor?: PatternAnchor | null;
+  /** The receiver's weathering zones as the material's shader queries them (`materialspec::program::pack`). */
+  zones?: ZoneRows | null;
+  /** The same for each layer of a layered slot, in layer order (null where a layer queries none). */
+  layerZones?: (ZoneRows | null)[];
 }
+/** Zone rows of seven RGBA texels (segments, then their clips) and the number of segment rows. */
+export interface ZoneRows { rows: number[]; count: number }
 export interface SceneShading {
   materials: Record<string, MaterialShading>;
   meshes: Record<string, MeshShading>;
@@ -187,6 +195,22 @@ function featureTexture(features: number[]): THREE.DataTexture {
   const data = new Float32Array(rows * 12);
   data.set(features);
   const texture = new THREE.DataTexture(data, 3, rows, THREE.RGBAFormat, THREE.FloatType);
+  texture.minFilter = texture.magFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** Texels of a zone row (`ZONE_ROW_TEXELS` in the engine). */
+export const ZONE_ROW_TEXELS = 7;
+/** A receiver's zone rows as a float texture, one row a texel row; at least one row, so the sampler is always bound. */
+export function zoneTexture(zones: ZoneRows | null | undefined): THREE.DataTexture {
+  const values = zones?.rows ?? [];
+  const width = ZONE_ROW_TEXELS * 4;
+  const rows = Math.max(1, values.length / width);
+  const data = new Float32Array(rows * width);
+  data.set(values);
+  const texture = new THREE.DataTexture(data, ZONE_ROW_TEXELS, rows, THREE.RGBAFormat, THREE.FloatType);
   texture.minFilter = texture.magFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;
   texture.needsUpdate = true;
@@ -340,6 +364,8 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
   }
   // A cutout is drawn where the program's opacity reaches its cutoff (the baked look does the same, scene-bake.ts).
   if (typeof shader.alphaCutoff === "number") { material.alphaTest = shader.alphaCutoff; material.alphaToCoverage = true; }
+  // Otherwise a program that states an opacity (glass) is drawn blended, as its baked look is.
+  else if (shader.outputs.includes("opacity")) { material.transparent = true; material.depthWrite = false; }
   const features = featureTexture(mesh.features);
   const relief = mode === "pixel" && hasPixelRelief(shading);
   const objectFromWorld = new THREE.Matrix4();
@@ -348,6 +374,7 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
   const uniforms: Uniforms = {
     ...shared,
     ms_features: { value: features }, ms_feature_count: { value: mesh.features.length / 12 },
+    ...(shader.zones?.length ? { ms_zones: { value: zoneTexture(mesh.zones) }, ms_zone_count: { value: mesh.zones?.count ?? 0 } } : {}),
     ms_gravity: { value: new THREE.Vector3(...(gravity as [number, number, number])) },
     ms_bounds_min: { value: new THREE.Vector3(...(mesh.boundsMin as [number, number, number])) },
     ms_bounds_max: { value: new THREE.Vector3(...(mesh.boundsMax as [number, number, number])) },

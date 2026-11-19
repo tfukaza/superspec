@@ -6,7 +6,7 @@ import { SHADE_NORMAL, batchGeometry, batchInstances, compileTwin, instancedBatc
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
-import { deliveredProgram, hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, type MaterialShading, type MeshShading, type SceneShading } from "./shade.ts";
+import { deliveredProgram, hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, zoneTexture, type MaterialShading, type MeshShading, type SceneShading, type ZoneRows } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake, type StackInput } from "./bake.ts";
 import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
@@ -95,7 +95,7 @@ export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSourc
 /** Materials prepared for a scene's meshes while the scene before it is still displayed: put on them, or given up. */
 export interface SceneLook { commit(): void; discard(): void }
 /** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
-const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msAnchorFromWorld", "msMapping"];
+const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_zones", "ms_zone_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msAnchorFromWorld", "msMapping"];
 
 /**
  * How long a newly shaded scene waits for its baked maps alone before its per-pixel looks start compiling beside them
@@ -779,10 +779,11 @@ export class RustScene {
           const use = entry.plan ?? entry;
           const own = material.userData.programUniforms as Record<string, THREE.IUniform>;
           // The program's shared uniforms (the plan's, when it bakes from one) with this receiver's own.
-          const receiver = Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, own[name]]));
+          const receiver = Object.fromEntries(RECEIVER_UNIFORMS.filter(name => own[name]).map(name => [name, own[name]]));
           const stack = entry.layers ? this.stackOf(entry, receiver, spec) : undefined;
+          const zones = spec.zones ? `|zones ${spec.zones.count}:${spec.zones.rows.length}:${hashNumbers(spec.zones.rows)}` : "";
           targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
-            receiver: `${spec.features.length}:${hashNumbers(spec.features)}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1],
+            receiver: `${spec.features.length}:${hashNumbers(spec.features)}${zones}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1],
             ...(receiverId === mesh.name ? {} : { fieldsId: receiverId }),
             ...(typeof stack === "string" ? { unsupported: stack } : stack ? { stack } : {}) });
           // What the mesh shows while a value changes keeps the relief that compiles fast and settles on the noise form that draws fast.
@@ -1110,11 +1111,30 @@ export class RustScene {
     const layers = entry.layers!.map((layer, index) => {
       const own = features?.[index] ?? [];
       if (layer.material.shader.features && !features) return undefined;
-      return { id: layer.id, shading: layer.material, reads: layer.reads, receiver: `${own.length}:${hashNumbers(own)}`,
-        uniforms: { ...layer.uniforms, ...receiver, ms_features: { value: this.layerFeatureTexture(own) }, ms_feature_count: { value: own.length / 12 } } };
+      // The receiver's zones as the layer's shader queries them (`layerZones`), evaluated in its bake.
+      const queries = layer.material.shader.zones?.length ? spec.layerZones?.[index] ?? { rows: [], count: 0 } : null;
+      const zoned = queries ? { ms_zones: { value: this.layerZoneTexture(queries) }, ms_zone_count: { value: queries.count } } : {};
+      const zones = queries ? `|zones ${queries.count}:${queries.rows.length}:${hashNumbers(queries.rows)}` : "";
+      return { id: layer.id, shading: layer.material, reads: layer.reads, receiver: `${own.length}:${hashNumbers(own)}${zones}`,
+        uniforms: { ...layer.uniforms, ...receiver, ms_features: { value: this.layerFeatureTexture(own) }, ms_feature_count: { value: own.length / 12 }, ...zoned } };
     });
     if (layers.some(layer => !layer)) return "the engine gives no features for the slot's layers";
     return { channels: entry.channels ?? {}, layers: layers as StackInput["layers"] };
+  }
+
+  /** Zone textures of layers (`zoneTexture`), by content, shared by every layer and mesh with the same rows; the oldest are dropped. */
+  private readonly layerZones = new Map<string, THREE.DataTexture>();
+  private layerZoneTexture(zones: ZoneRows): THREE.DataTexture {
+    const key = `${zones.count}:${zones.rows.length}:${hashNumbers(zones.rows)}`;
+    let texture = this.layerZones.get(key);
+    if (texture) { this.layerZones.delete(key); this.layerZones.set(key, texture); return texture; }
+    texture = zoneTexture(zones);
+    this.layerZones.set(key, texture);
+    while (this.layerZones.size > 2048) {
+      const [oldest, dropped] = this.layerZones.entries().next().value!;
+      dropped.dispose(); this.layerZones.delete(oldest);
+    }
+    return texture;
   }
 
   /** Feature textures of layers (three texels per feature, one feature per row), by content; the oldest are dropped. */

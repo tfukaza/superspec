@@ -1,7 +1,8 @@
 //! Weathering zones an item states: a panel's rule hangs a zone below its top and its sills,
 //! which stops at the openings below and never rises above its edge; an authored feature may
 //! carry a zone of its own; and a material reads the zone's coordinates (`zoneCoord`,
-//! `zoneExtent`) where the receiver is, on the CPU and through the fields a GPU host bakes.
+//! `zoneExtent`, `zoneSpan`) where the receiver is, on the CPU and, from the zones packed for
+//! it, in a GPU host's bake shader.
 //! Expectations come from the definitions' dimensions.
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -129,6 +130,125 @@ fn a_zone_hangs_below_its_edge_and_stops_at_the_openings_below() {
     );
 }
 
+/// `ms_zone_find` of the GPU runtime (`glsl.rs`, `ZONES`), read off the packed rows in single
+/// precision as a GPU does: the shader's algorithm against the CPU's, through the packing.
+fn shader_zone(rows: &[f64], count: usize, place: usize, p: [f32; 3], n: [f32; 3]) -> Option<[f32; 6]> {
+    let texel = |row: usize, column: usize| -> [f32; 4] {
+        let at = (row * 7 + column) * 4;
+        std::array::from_fn(|i| rows[at + i] as f32)
+    };
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let xyz = |t: [f32; 4]| [t[0], t[1], t[2]];
+    let mut best: Option<[f32; 6]> = None;
+    for i in 0..count {
+        let kind = texel(i, 5);
+        if (kind[0] + 0.5) as usize != place {
+            continue;
+        }
+        let (start, along, down, across) = (texel(i, 0), texel(i, 1), texel(i, 2), texel(i, 3));
+        let from = [p[0] - start[0], p[1] - start[1], p[2] - start[2]];
+        let off = dot(from, xyz(across));
+        if off.abs() > down[3] || dot(n, xyz(across)).abs() < 0.5 {
+            continue;
+        }
+        let q: [f32; 3] = std::array::from_fn(|k| from[k] - across[k] * off);
+        let on_down = dot(q, xyz(down));
+        let t = (dot(q, xyz(along)) - kind[1] * on_down) / kind[2];
+        if !(0. ..=1.).contains(&t) {
+            continue;
+        }
+        let v = on_down - t * kind[1];
+        if v < -1e-4 {
+            continue;
+        }
+        let v = v.max(0.);
+        if best.is_some_and(|b| b[1] <= v) {
+            continue;
+        }
+        let u = start[3] + t * along[3];
+        let zone = texel(i, 4);
+        let mut limit = across[3];
+        let mut left = false;
+        for c in 0..(zone[3] + 0.5) as usize {
+            let row = (zone[2] + 0.5) as usize + c;
+            let clip = texel(row, 0);
+            if u < clip[0] || u > clip[1] {
+                continue;
+            }
+            if texel(row, 1)[0] < 0.5 {
+                limit = limit.min(clip[2]);
+            } else if v >= clip[2] && v <= clip[3] {
+                left = true;
+            }
+        }
+        if v > limit || left {
+            continue;
+        }
+        best = Some([u, v, zone[0], limit, zone[1], texel(i, 6)[1]]);
+    }
+    best
+}
+
+#[test]
+fn the_packed_zones_a_gpu_reads_give_what_the_cpu_finds() {
+    use superspec_engine::materialspec::program::pack_zones;
+    let generated = generate(&wall(
+        json!([
+            {"name": "runoff", "below": "top", "face": "front", "length": 2.5, "u0": {"parameter": "u0"}},
+            {"name": "sill-runoff", "below": "sill", "face": "front", "length": 0.6, "u0": {"parameter": "u0"}}
+        ]),
+        json!([{"name": "drip", "part": "wall", "points": [[0.2, 0, 2.6], [0.6, 0, 2.6]], "zone": {"length": 0.8}}]),
+    ));
+    let identity = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+    ];
+    let features = item_features(&generated.geometry.features, &identity);
+    let named = NamedFeatures::new(&features).unwrap();
+    // A layer that reads `zone`, following the top's runoff and the drip together.
+    let follow = [(
+        "zone".to_owned(),
+        superspec_engine::materialspec::program::Follow::Many(vec!["drip".into(), "runoff".into()]),
+    )]
+    .into();
+    let names = ["sill-runoff".to_owned(), "zone".to_owned()];
+    let wall_box = [[0., 0., 0.], [4., 0., 3.]];
+    let (rows, count) = pack_zones(&features, &names, &follow, wall_box);
+    assert_eq!(rows.len() % 28, 0);
+    // A receiver nowhere near is given none of them.
+    assert_eq!(pack_zones(&features, &names, &follow, [[20., 0., 0.], [21., 0., 3.]]).1, 0);
+    let followed = NamedFeatures::new(
+        &superspec_engine::materialspec::program::followed_features(&features, &follow),
+    )
+    .unwrap();
+    let mut compared = 0;
+    for (place, name) in names.iter().enumerate() {
+        let set = if name == "zone" { followed.zones("zone") } else { named.zones(name) }.unwrap();
+        for i in 0..=80 {
+            for j in 0..=60 {
+                // (Off the stops' and openings' exact edges, where single precision may go either way.)
+                let p = [0.05 * i as f64 + 0.0071, 0., 0.05 * j as f64 + 0.0123];
+                let cpu = set.at(p, FRONT).0;
+                let gpu = shader_zone(&rows, count, place, p.map(|v| v as f32), [0., -1., 0.]);
+                match (cpu, gpu) {
+                    (None, None) => {}
+                    (Some(cpu), Some(gpu)) => {
+                        compared += 1;
+                        let close = |a: f64, b: f32| (a - f64::from(b)).abs() < 1e-4;
+                        assert!(
+                            close(cpu.u, gpu[0]) && close(cpu.v, gpu[1]) && close(cpu.id, gpu[2])
+                                && close(cpu.limit, gpu[3]) && close(cpu.scale, gpu[4])
+                                && close(cpu.span[1], gpu[5]),
+                            "{name} at {p:?}: {cpu:?} against {gpu:?}"
+                        );
+                    }
+                    (cpu, gpu) => panic!("{name} at {p:?}: {cpu:?} against {gpu:?}"),
+                }
+            }
+        }
+    }
+    assert!(compared > 1000, "{compared}");
+}
+
 #[test]
 fn clipping_leaves_an_opening_out_and_lets_the_zone_go_on_below_it() {
     let generated = generate(&wall(
@@ -158,6 +278,9 @@ fn an_authored_feature_carries_its_own_zone_and_ids_differ_per_edge() {
     let second = at(&named, "drip", 3.7, 2.).unwrap();
     assert!((first.u - 1.1).abs() < 1e-9 && (second.u - 0.1).abs() < 1e-9);
     assert_eq!((first.scale, second.scale), (1., 2.));
+    // Each zone's span: where its edge starts and ends along u.
+    assert!((first.span[0] - 1.).abs() < 1e-9 && (first.span[1] - 1.4).abs() < 1e-9);
+    assert!(second.span[0].abs() < 1e-9 && (second.span[1] - 0.3).abs() < 1e-9);
     assert_ne!(first.id, second.id);
     assert!(at(&named, "drip", 2., 2.).is_none());
     // A zone that is not one is refused at its definition.
@@ -321,24 +444,21 @@ fn project() -> Project {
 }
 
 #[test]
-fn a_material_reads_its_receivers_zones_and_a_gpu_host_bakes_them_as_fields() {
+fn a_material_reads_its_receivers_zones_and_a_gpu_host_is_given_them_packed() {
     let project = project();
     let asset = |name: &str| absent(name);
     let mut session = Session::default();
     let shaded = session
         .shade_project(&project, 1, &asset, &|| false)
         .unwrap_or_else(|errors| panic!("{}", messages(errors)));
-    // The program's zone fields are what the CPU bakes for a GPU host; its preview has none.
-    let plan = &shaded.metadata["materials"]["zoned"]["plan"]["shader"];
-    let mut fields: Vec<&str> = plan["cpuFields"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{}", shaded.metadata["materials"]["zoned"]))
-        .iter()
-        .filter_map(|field| field["name"].as_str())
-        .collect();
-    fields.sort();
-    assert_eq!(fields, ["extent", "zone"]);
+    // A GPU host evaluates the zones in its shader: no field is baked on the CPU for them, the
+    // shader names the zones it reads, and each receiver comes with its zones packed for it.
+    let material = &shaded.metadata["materials"]["zoned"];
+    assert!(material.get("plan").is_none(), "{material}");
+    assert_eq!(material["shader"]["zones"], json!(["runoff"]));
     let mesh = "wall/part/wall/wall/front";
+    let packed = &shaded.metadata["shading"][mesh]["zones"];
+    assert!(packed["count"].as_u64().unwrap() > 0, "{packed}");
     let baked = session
         .bake_project_fields(
             &project,

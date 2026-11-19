@@ -649,8 +649,8 @@ fn build() -> Vec<Operation> {
                  vec3(u, v, id), u the meters along the zone's edge (continuing from zone to zone, round \
                  corners and across a side), v the meters below the edge along downhill (0 at the edge, \
                  never above it), id the zone's identity in [0, 1). Where zones overlap, the one whose edge \
-                 is nearest above wins. vec3(0, -1, 0) outside every zone. Baked on the CPU: name it with \
-                 a field (a const) and a GPU bake reads it as a texture.",
+                 is nearest above wins. vec3(0, -1, 0) outside every zone. A GPU bake evaluates it in its \
+                 shader from the receiver's zones; a preview without a bake is outside every zone.",
                 "zoneCoord(\"runoff\")",
                 vec![overload(&[Text], Vec3)],
             ),
@@ -666,6 +666,20 @@ fn build() -> Vec<Operation> {
                  ends in this column (its length, or sooner at the next edge below), scale the value its \
                  owner gives the zone (1 unless stated). vec3(0) outside every zone.",
                 "zoneExtent(\"runoff\")",
+                vec![overload(&[Text], Vec3)],
+            ),
+            &["world", "normal", "named_features", "zones"],
+            false,
+        ),
+        literal(
+            operation(
+                "zone_span",
+                "receiver",
+                "Of the zone of this name the sample lies in (as zoneCoord chooses it): vec3(start, end, \
+                 inside), the u where the zone's edge starts and where it ends (so u - start and end - u \
+                 are the meters to either end of the edge) and inside 1 in a zone, 0 outside. vec3(0) \
+                 outside every zone.",
+                "zoneSpan(\"runoff\")",
                 vec![overload(&[Text], Vec3)],
             ),
             &["world", "normal", "named_features", "zones"],

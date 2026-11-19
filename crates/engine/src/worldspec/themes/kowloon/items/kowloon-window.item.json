@@ -37,7 +37,7 @@
                        "openChance": {"parameter": "openChance"}, "lightWidth": {"parameter": "lightWidth"}, "midRail": {"parameter": "midRail"},
                        "louvre": {"parameter": "louvre"}, "handles": {"parameter": "handles"}, "glow": {"parameter": "glow"},
                        "room": {"expr": "select(lit * (room >= 0.5), room, 0)"}}},
-      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "interior-lit": "interior-lit", "tube-light": "tube-light", "room-lit": "room-lit", "metal": "metal", "concrete": "concrete", "stock": "stock"}
+      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "interior-lit": "interior-lit", "tube-light": "tube-light", "room-lit": "room-lit", "metal": "metal", "concrete": "concrete", "stock": "stock", "timber": "timber", "shop-timber": "shop-timber"}
     },
     {
       "id": "bars",
@@ -48,6 +48,24 @@
     }
   ],
   "features": [
-    {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06}
+    {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06},
+    {"name": "head", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+     "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}]]},
+    {"name": "jamb", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+     "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["-width / 2", "select(recess > 0, -0.035, -0.07)", 0]]},
+    {"name": "jamb", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+     "points": [["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", 0]]},
+    {"name": "glass", "part": "window", "closed": true, "when": "glazing * (storage <= 0) * (1 - lit)",
+     "points": [["select(kind == 2, 0.065, 0.045) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, 0.065, 0.045)"],
+                ["width / 2 - select(kind == 2, 0.065, 0.045)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, 0.065, 0.045)"],
+                ["width / 2 - select(kind == 2, 0.065, 0.045)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"],
+                ["select(kind == 2, 0.065, 0.045) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"]]},
+    {"name": "runoff-head", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+     "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}]],
+     "zone": {"length": {"parameter": "height"}, "depth": "select(kind == 1, 0.018, 0.03)", "u0": "0 - width / 2"}},
+    {"name": "runoff-glass", "part": "window", "when": "glazing * (storage <= 0) * (1 - lit)",
+     "points": [["-width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"],
+                ["width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"]],
+     "zone": {"length": "height - 2 * select(kind == 2, 0.065, 0.045)", "depth": "select(kind == 1, 0.02, select(kind == 3, 0.03, 0.012))", "u0": "0 - width / 2"}}
   ]
 }

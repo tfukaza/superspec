@@ -628,8 +628,8 @@ fn planned_gates_doors_and_hung_goods_reach_their_fixtures() {
     check("back-door", &plain);
     let vented = generate(&natives, "kowloon/back-door", &Values::new()).unwrap();
     assert!(triangles(&plain) + 20 <= triangles(&vented));
-    // Hung goods: with a clear length they hang below it on cords, down to 1.05 m over the
-    // floor at most, and leave the way in at the middle of the opening free.
+    // Hung goods: with a clear length they hang below it on cords, plain goods down to 1.05 m
+    // over the floor at most, and leave the way in at the middle of the opening free.
     let room = |entries: &[(&str, Value)]| {
         let mut all = vec![("width", json!(6)), ("height", json!(2.7))];
         all.extend(entries.iter().cloned());
@@ -644,10 +644,13 @@ fn planned_gates_doors_and_hung_goods_reach_their_fixtures() {
             .collect()
     };
     let bare = points(&room(&[("hanging", json!(false))]));
-    let hung: Vec<[f64; 3]> = points(&room(&[("hangClear", json!(1.0))]))
-        .difference(&bare)
-        .map(|p| p.map(|v| v as f64 / 1e5))
-        .collect();
+    let hung_points = |entries: &[(&str, Value)]| -> Vec<[f64; 3]> {
+        points(&room(entries))
+            .difference(&bare)
+            .map(|p| p.map(|v| v as f64 / 1e5))
+            .collect()
+    };
+    let hung = hung_points(&[("hangClear", json!(1.0)), ("hangStyle", json!("plain"))]);
     assert!(hung.len() > 200, "{} hung vertices", hung.len());
     let (floor, head) = (0.03, 0.03 + 2.7);
     let line = head - 0.2;
@@ -666,14 +669,74 @@ fn planned_gates_doors_and_hung_goods_reach_their_fixtures() {
             p[1]
         );
     }
+    // Bold goods (the default) hang in a taller band, down to 0.85 m over the floor, with
+    // longer pieces at the opening's sides that stop 0.35 m further down; the way in keeps 2 m.
+    let bold = hung_points(&[("hangClear", json!(1.0))]);
+    assert!(bold.len() > 200, "{} bold hung vertices", bold.len());
+    let side = |p: &[f64; 3]| p[0].abs() > 3. - 1.05;
+    for p in &bold {
+        let lowest = if side(p) { 0.5 } else { 0.85 };
+        assert!(
+            p[2] >= floor + lowest - 1e-6,
+            "hangs to {} at x = {}",
+            p[2],
+            p[0]
+        );
+        assert!(p[0].abs() > 0.45, "goods over the way in at x = {}", p[0]);
+        if p[0].abs() < 0.6 {
+            assert!(
+                p[2] >= floor + 2. - 1e-6,
+                "{} under the way's headroom",
+                p[2]
+            );
+        }
+    }
+    let low = |keep: &dyn Fn(&[f64; 3]) -> bool, set: &[[f64; 3]]| {
+        set.iter()
+            .filter(|p| keep(p))
+            .map(|p| p[2])
+            .fold(f64::MAX, f64::min)
+    };
+    let all = |_: &[f64; 3]| true;
+    assert!(low(&side, &bold) < low(&|p: &[f64; 3]| !side(p), &bold) - 0.1);
+    assert!(low(&all, &bold) < low(&all, &hung) - 0.1);
+    // And they are coloured: their stock is more saturated, with fewer pale vertices.
+    let colours = |entries: &[(&str, Value)]| -> (f64, f64) {
+        let meshes = room(entries);
+        let colors: Vec<&[f64; 4]> = meshes
+            .iter()
+            .filter(|m| m.material_slot == "stock")
+            .flat_map(|m| &m.colors)
+            .collect();
+        let chroma = colors
+            .iter()
+            .map(|c| {
+                c[..3].iter().cloned().fold(0., f64::max)
+                    - c[..3].iter().cloned().fold(1., f64::min)
+            })
+            .sum::<f64>()
+            / colors.len() as f64;
+        let pale = colors
+            .iter()
+            .filter(|c| c[..3].iter().all(|v| *v > 0.45))
+            .count();
+        (chroma, pale as f64 / colors.len() as f64)
+    };
+    let (plain_chroma, plain_pale) =
+        colours(&[("hangClear", json!(1.0)), ("hangStyle", json!("plain"))]);
+    let (bold_chroma, bold_pale) = colours(&[("hangClear", json!(1.0))]);
     assert!(
-        generate(
-            &natives,
-            "kowloon/shop-room",
-            &values(&[("hangDrop", json!(9))])
-        )
-        .is_err()
+        bold_chroma > plain_chroma,
+        "{bold_chroma} <= {plain_chroma}"
     );
+    assert!(bold_pale <= plain_pale, "{bold_pale} > {plain_pale}");
+    for bad in [
+        ("hangDrop", json!(9)),
+        ("hangSides", json!(2)),
+        ("hangStyle", json!("loud")),
+    ] {
+        assert!(generate(&natives, "kowloon/shop-room", &values(&[bad])).is_err());
+    }
 }
 
 /// The positions of one slot's meshes.
@@ -1296,4 +1359,226 @@ fn a_party_neighbour_is_a_stained_wall_or_a_slice_of_a_building() {
         )
         .is_err()
     );
+}
+
+/// Every position of every mesh.
+fn all_points(meshes: &[ItemMesh]) -> Vec<[f64; 3]> {
+    meshes
+        .iter()
+        .flat_map(|m| m.positions.iter().copied())
+        .collect()
+}
+
+#[test]
+fn roof_kit_lamps_and_caged_units_take_their_options() {
+    let natives = Natives::new();
+    let make = |name: &str, entries: &[(&str, Value)]| {
+        let meshes = generate(&natives, name, &values(entries)).unwrap();
+        check(name, &meshes);
+        meshes
+    };
+    // Grab rails: the stiles rise 1 m over the ladder's head and come down behind the wall.
+    let ladder = make("kowloon/ladder", &[("height", json!(2.35))]);
+    assert_eq!(
+        fingerprint(&ladder),
+        fingerprint(&make(
+            "kowloon/ladder",
+            &[("height", json!(2.35)), ("grab", json!(0))]
+        ))
+    );
+    let grab = make(
+        "kowloon/ladder",
+        &[("height", json!(2.35)), ("grab", json!(1.0))],
+    );
+    let points = all_points(&grab);
+    assert!(
+        (highest(&points, 2) - (3.35 + 0.022)).abs() < 0.01,
+        "{}",
+        highest(&points, 2)
+    );
+    assert!(highest(&all_points(&ladder), 2) < 2.45);
+    // Behind the wall (+Y; the ladder stands at its front) the rails reach down to the roof.
+    assert!(points.iter().any(|p| p[1] > 0.1 && p[2] < 2.4));
+    for bad in [json!(0.1), json!(2)] {
+        assert!(generate(&natives, "kowloon/ladder", &values(&[("grab", bad)])).is_err());
+    }
+    // An aerial grows with its size and is guyed by its stays; left alone it is the seed's.
+    let aerial = make("kowloon/aerial", &[]);
+    assert_eq!(
+        fingerprint(&aerial),
+        fingerprint(&make(
+            "kowloon/aerial",
+            &[("size", json!(1)), ("stays", json!(0))]
+        ))
+    );
+    let reach = |meshes: &[ItemMesh]| {
+        all_points(meshes)
+            .iter()
+            .filter(|p| p[2] > 1.)
+            .map(|p| p[0].hypot(p[1]))
+            .fold(0., f64::max)
+    };
+    let large = make("kowloon/aerial", &[("size", json!(1.5))]);
+    assert!(
+        reach(&large) > reach(&aerial) * 1.3,
+        "{} {}",
+        reach(&large),
+        reach(&aerial)
+    );
+    let guyed = make(
+        "kowloon/aerial",
+        &[
+            ("stays", json!(3)),
+            ("spread", json!(0.7)),
+            ("bearing", json!(90)),
+        ],
+    );
+    let feet: Vec<_> = all_points(&guyed)
+        .into_iter()
+        .filter(|p| p[2] < 0.03 && p[0].hypot(p[1]) > 0.5)
+        .collect();
+    assert!(!feet.is_empty());
+    assert!(feet.iter().all(|p| p[0].hypot(p[1]) < 0.7 + 0.08));
+    // The first stay points along +Y; none of them along -Y.
+    assert!(feet.iter().any(|p| p[1] > 0.6) && feet.iter().all(|p| p[1] > -0.45));
+    for bad in [
+        ("size", json!(4)),
+        ("stays", json!(5)),
+        ("spread", json!(0.1)),
+    ] {
+        assert!(generate(&natives, "kowloon/aerial", &values(&[bad])).is_err());
+    }
+    // A tank's ladder turns to the side it is given; its shell takes a tint.
+    let head = |meshes: &[ItemMesh]| {
+        let points = all_points(meshes);
+        let top = highest(&points, 2);
+        let head: Vec<_> = points.into_iter().filter(|p| p[2] > top - 0.02).collect();
+        let n = head.len() as f64;
+        [
+            head.iter().map(|p| p[0]).sum::<f64>() / n,
+            head.iter().map(|p| p[1]).sum::<f64>() / n,
+        ]
+    };
+    let seeded = head(&make("kowloon/water-tank", &[]));
+    assert!(seeded[0] < -0.5 && seeded[1].abs() < 0.05, "{seeded:?}");
+    let street = head(&make("kowloon/water-tank", &[("ladder", json!(270))]));
+    assert!(street[1] < -0.5 && street[0].abs() < 0.05, "{street:?}");
+    let shade = |meshes: &[ItemMesh]| {
+        let colors: Vec<_> = meshes
+            .iter()
+            .filter(|m| m.material_slot == "brushed-metal")
+            .flat_map(|m| &m.colors)
+            .collect();
+        assert!(!colors.is_empty());
+        let n = colors.len() as f64;
+        [0, 2].map(|k| colors.iter().map(|c| c[k]).sum::<f64>() / n)
+    };
+    let plain = shade(&make("kowloon/water-tank", &[]));
+    assert!((plain[0] - plain[1]).abs() < 1e-9);
+    let warm = shade(&make("kowloon/water-tank", &[("shell", json!("#f7f0e6"))]));
+    assert!(warm[0] > warm[1], "{warm:?}");
+    for bad in [
+        vec![("ladder", json!(400))],
+        vec![("kind", json!("box")), ("shell", json!("#ffffff"))],
+    ] {
+        assert!(generate(&natives, "kowloon/water-tank", &values(&bad)).is_err());
+    }
+    // A round bulkhead: a domed glass on a round plate, wider and taller than the boxed one.
+    let boxed = make("kowloon/wall-lamp", &[]);
+    assert_eq!(
+        fingerprint(&boxed),
+        fingerprint(&make("kowloon/wall-lamp", &[("style", json!("bulkhead"))]))
+    );
+    let round = make("kowloon/wall-lamp", &[("style", json!("round"))]);
+    let span = |meshes: &[ItemMesh], slot: &str, axis: usize| {
+        let points = slot_points(meshes, slot);
+        highest(&points, axis) - lowest(&points, axis)
+    };
+    assert!(span(&round, "pane", 2) > span(&boxed, "pane", 2) + 0.03);
+    assert!((span(&round, "pane", 0) - 0.173).abs() < 0.01);
+    // The glass stands out of the wall (to -Y), off its plate.
+    assert!(highest(&slot_points(&round, "pane"), 1) < -0.02);
+    assert!(
+        generate(
+            &natives,
+            "kowloon/wall-lamp",
+            &values(&[("style", json!("square"))])
+        )
+        .is_err()
+    );
+    // A door bay can carry the round lamp over its door.
+    let door = |lamp: &str| {
+        make(
+            "kowloon/ground-bay",
+            &[
+                ("kind", json!("door")),
+                ("door", json!("double")),
+                ("lamp", json!(lamp)),
+            ],
+        )
+    };
+    let (boxed_door, round_door) = (door("bulkhead"), door("round"));
+    assert_ne!(fingerprint(&boxed_door), fingerprint(&round_door));
+    assert!(triangles(&round_door) > triangles(&boxed_door));
+    assert!(
+        generate(
+            &natives,
+            "kowloon/ground-bay",
+            &values(&[("lamp", json!("neon"))])
+        )
+        .is_err()
+    );
+    // A cage holding a unit has no middle rail across the unit's face (an empty cage's crosses
+    // the middle of its front).
+    let rails_across = |cage: &[ItemMesh], [z0, z1]: [f64; 2]| {
+        cage.iter()
+            .filter(|m| m.material_slot == "paint")
+            .flat_map(|m| {
+                m.indices.chunks_exact(3).map(|t| {
+                    t.iter()
+                        .map(|i| m.positions[*i as usize])
+                        .collect::<Vec<_>>()
+                })
+            })
+            .filter(|t| {
+                t.iter()
+                    .all(|p| p[1] < -0.52 + 0.04 && p[2] > z0 && p[2] < z1)
+                    && lowest(t, 0) < 0.
+                    && highest(t, 0) > 0.
+            })
+            .count()
+    };
+    let empty = make(
+        "kowloon/cage",
+        &[
+            ("contents", json!("empty")),
+            ("width", json!(0.98)),
+            ("height", json!(0.68)),
+            ("depth", json!(0.52)),
+        ],
+    );
+    assert!(rails_across(&empty, [0.1, 0.5]) > 0);
+    for seed in 0..6 {
+        for height in [0.68, 0.6] {
+            let cage = make(
+                "kowloon/cage",
+                &[
+                    ("contents", json!("aircon")),
+                    ("width", json!(0.98)),
+                    ("height", json!(height)),
+                    ("depth", json!(0.52)),
+                    ("seed", json!(seed)),
+                ],
+            );
+            let casing = slot_points(&cage, "aircon");
+            let (x0, x1) = (lowest(&casing, 0), highest(&casing, 0));
+            let (z0, z1) = (lowest(&casing, 2), highest(&casing, 2));
+            assert!(x0 < 0. && x1 > 0.);
+            let across = rails_across(&cage, [z0 + 0.02, z1 - 0.02]);
+            assert_eq!(
+                across, 0,
+                "seed {seed}, height {height}: a rail over the unit"
+            );
+        }
+    }
 }

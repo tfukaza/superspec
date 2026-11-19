@@ -112,12 +112,16 @@ pub struct ZoneHit {
     pub id: f64,
     pub limit: f64,
     pub scale: f64,
+    /// `u` where the zone's edge starts and where it ends.
+    pub span: [f64; 2],
 }
 
 /// The zones of one name over one receiver.
 #[derive(Default)]
 pub struct ZoneSet {
     zones: Vec<Zone>,
+    /// Each zone's `u` at its edge's start and end.
+    spans: Vec<[f64; 2]>,
     segments: Vec<Segment>,
 }
 
@@ -170,6 +174,7 @@ impl ZoneSet {
             u += length;
         }
         self.zones.push(zone.clone());
+        self.spans.push([zone.u0, u]);
         Ok(())
     }
 
@@ -216,10 +221,113 @@ impl ZoneSet {
                 id: zone.id,
                 limit,
                 scale: zone.scale,
+                span: self.spans[segment.zone],
             });
         }
         (best, self.segments.len())
     }
+}
+
+/// Texels of one row of [`pack`]: seven RGBA texels.
+pub const ZONE_ROW_TEXELS: usize = 7;
+
+/// A receiver's zones as a GPU bake reads them (`ms_zones`, `ms_zone_count`): every segment of
+/// every zone a layer that follows `follow` sees under one of `names` (its place in `names` is
+/// its kind), whose region (the segment swept down its zone's length, thickened by its depth)
+/// meets `bounds`, the receiver's world box; then the zones' stops and holes. 28 numbers a row:
+///
+/// - a segment: start and its `u`; along and its length; down and the zone's depth; across
+///   (unit) and the zone's length; id, scale, first clip row and clip rows; kind, along · down,
+///   the determinant and 0; the zone's span start and end, and 0, 0.
+/// - a clip: `[u from, u to, v (stop) or v from, v to (hole)]`, then `[0 stop or 1 hole, 0, 0,
+///   0]`, then zeros.
+///
+/// The second value is the number of segment rows; the clip rows follow them.
+pub fn pack(
+    named: &[NamedFeature],
+    names: &[String],
+    follow: &BTreeMap<String, super::Follow>,
+    bounds: [[f64; 3]; 2],
+) -> (Vec<f64>, usize) {
+    let mut segments: Vec<f64> = Vec::new();
+    let mut clips: Vec<f64> = Vec::new();
+    let mut count = 0;
+    for feature in named {
+        let Some(zone) = &feature.zone else {
+            continue;
+        };
+        let places: Vec<usize> = super::followed_names(&feature.name, follow)
+            .filter_map(|seen| names.iter().position(|name| name == seen))
+            .collect();
+        if places.is_empty() || zone.check().is_err() {
+            continue;
+        }
+        let mut set = ZoneSet::default();
+        if set.add(feature, zone).is_err() {
+            continue;
+        }
+        let mut clip_rows: Option<(usize, usize)> = None;
+        for segment in &set.segments {
+            // The region the segment's zone can cover, against the receiver's box.
+            let reach = zone.depth;
+            let corners = [
+                segment.start,
+                std::array::from_fn(|i| segment.start[i] + segment.along[i]),
+                std::array::from_fn(|i| segment.start[i] + zone.down[i] * zone.length),
+                std::array::from_fn(|i| {
+                    segment.start[i] + segment.along[i] + zone.down[i] * zone.length
+                }),
+            ];
+            let misses = (0..3).any(|axis| {
+                let low = corners.iter().map(|c: &[f64; 3]| c[axis]).fold(f64::INFINITY, f64::min);
+                let high = corners
+                    .iter()
+                    .map(|c: &[f64; 3]| c[axis])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                low - reach > bounds[1][axis] || high + reach < bounds[0][axis]
+            });
+            if misses {
+                continue;
+            }
+            let (first, rows) = *clip_rows.get_or_insert_with(|| {
+                let first = clips.len() / (ZONE_ROW_TEXELS * 4);
+                for stop in &zone.stops {
+                    clips.extend([stop[0], stop[1], stop[2], 0., 0., 0., 0., 0.]);
+                    clips.extend([0.; ZONE_ROW_TEXELS * 4 - 8]);
+                }
+                for hole in &zone.holes {
+                    clips.extend([hole[0], hole[1], hole[2], hole[3], 1., 0., 0., 0.]);
+                    clips.extend([0.; ZONE_ROW_TEXELS * 4 - 8]);
+                }
+                (first, zone.stops.len() + zone.holes.len())
+            });
+            let span = set.spans[0];
+            for place in &places {
+                segments.extend(segment.start);
+                segments.push(segment.u);
+                segments.extend(segment.along);
+                segments.push(segment.length);
+                segments.extend(zone.down);
+                segments.push(zone.depth);
+                segments.extend(segment.off);
+                segments.push(zone.length);
+                segments.extend([zone.id, zone.scale, first as f64, rows as f64]);
+                segments.extend([*place as f64, segment.along_down, segment.determinant, 0.]);
+                segments.extend([span[0], span[1], 0., 0.]);
+                count += 1;
+            }
+        }
+    }
+    // Clip rows are numbered after the segments.
+    let mut rows = segments;
+    let shift = count as f64;
+    for (index, value) in rows.iter_mut().enumerate() {
+        if index % (ZONE_ROW_TEXELS * 4) == 18 {
+            *value += shift;
+        }
+    }
+    rows.extend(clips);
+    (rows, count)
 }
 
 /// A receiver's zones by name, from the features that carry one.

@@ -657,6 +657,14 @@ is a rough base mesh shaded through a stroke-painted leaf normal map, with leafy
     DENSITY=5 COARSE=0.3 STRENGTH=1.2`, `FIELD_LEVEL` 0.6 (poplar) or 0.85 with `CARD_KEEP=0.5` (birch), the rest at
     the script's defaults. Still to do: these settings belong in each tree's definition (the shrub shares the core's),
     the bark does not droop with the sprays, and the blob is an ellipsoid, not the crown's own shape.
+    - In the viewer (2026-11-18): a plant batch's look may carry a painted mass (`FoliageMass` in
+      `superspec_types::batch`: the leaf cluster sites and leafy twigs in the batch mesh's space, the field's radius and
+      cell, the core's level and the card share). `foliage.ts` builds it once per placement with `painted-mass.ts` (the
+      milestone's other settings, `PAINTED_MASS`) as children of the batch that carries it, shown whenever that batch
+      draws, and drops the patch's leaves and hull. The lane's two birches (0.9 and 0.8 of the fixture, about 7.5 and
+      6.7 m) and its shrub are drawn this way (`write_lane_plants`, the mass on each plant's shadow proxy). Known gap:
+      with ambient occlusion on, its output pass tone maps the painted parts as it does every painted material, so they
+      read paler than the milestone's renders (made with `ao=off`).
   - **Milestone `painted-grass-milestone` (2026-11-17): the blade lawn.** Grass grows everywhere (no shade-boundary
     rejection), a calm meadow: blades 4 to 13 cm, about 105 clump sites a square meter, light clumping, its levels
     keeping 0.75 and 0.45 of the clumps from 12 and 20 m (two far levels of fewer, chubbier blades from 28 and 36 m,

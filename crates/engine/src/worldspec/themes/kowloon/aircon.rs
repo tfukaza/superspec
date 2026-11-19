@@ -507,6 +507,21 @@ pub fn air_conditioner(
 ) -> Result<Bounds, String> {
     air_conditioner_with(d, x, z, drop, rng, weathering, Options::default())
 }
+/// A window unit's model, wear, width and height: its stream's first draws.
+fn sized(rng: &mut SeededRng) -> (usize, usize, f64, f64) {
+    let model = rng.integer(0, 3);
+    let wear = wear(rng, [3., 4., 3.]);
+    let [narrowest, widest] = [[0.58, 0.68], [0.62, 0.72], [0.5, 0.58], [0.6, 0.7]][model];
+    let w = rng.float(narrowest, widest);
+    let h = w * rng.float(0.6, 0.67);
+    (model, wear, w, h)
+}
+/// The `[width, height]` of the window unit [`air_conditioner`] draws from a fresh copy of
+/// this stream, without drawing it.
+pub fn unit_size(mut rng: SeededRng) -> [f64; 2] {
+    let (_, _, w, h) = sized(&mut rng);
+    [w, h]
+}
 /// [`air_conditioner`] with what `options` adds.
 pub fn air_conditioner_with(
     d: &mut Fixture<'_, '_>,
@@ -524,11 +539,7 @@ pub fn air_conditioner_with(
     {
         return Err("Air conditioner needs bounded finite placement and nonnegative drop.".into());
     }
-    let model = rng.integer(0, 3);
-    let wear = wear(rng, [3., 4., 3.]);
-    let [narrowest, widest] = [[0.58, 0.68], [0.62, 0.72], [0.5, 0.58], [0.6, 0.7]][model];
-    let w = rng.float(narrowest, widest);
-    let h = w * rng.float(0.6, 0.67);
+    let (model, wear, w, h) = sized(rng);
     let depth = rng.float(0.3, 0.37);
     let body = mix(
         mix(

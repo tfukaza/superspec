@@ -94,6 +94,8 @@ pub struct Design {
     /// How many pressed panels a painted or steel leaf has, one above another (1 to 4; three
     /// when left to the door).
     pub panels: Option<usize>,
+    /// The lamp over the door is a round caged bulkhead instead of the boxed one.
+    pub round_lamp: bool,
 }
 pub fn entrance_bounds(unit: &Unit, rng: &mut SeededRng) -> Result<Bounds, String> {
     planned_bounds(unit, rng, &Design::default())
@@ -927,7 +929,11 @@ pub fn planned_entrance(
         frame.draw(d, [x0, 0.03, h + 0.19], [x1, 0.06, h + 0.208], "blr", tint)?;
     }
     if unit.height - h - transom > 0.5 {
-        wall_lamp(d, (x0 + x1) / 2., h + transom + 0.16, s)?;
+        if plan.round_lamp {
+            super::household::round_wall_lamp(d, (x0 + x1) / 2., h + transom + 0.1, &s.weathering)?;
+        } else {
+            wall_lamp(d, (x0 + x1) / 2., h + transom + 0.16, s)?;
+        }
     }
     let plate = if x1 + 0.16 < unit.u1 - 0.25 {
         x1 + 0.16

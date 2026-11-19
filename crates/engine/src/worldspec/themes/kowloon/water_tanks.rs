@@ -46,6 +46,7 @@ fn vessel(
     height: f64,
     paint: V3,
     settings: &Settings,
+    tint: V3,
 ) -> Result<(), String> {
     let profile = [
         [radius * 0.58, 0.],
@@ -109,7 +110,7 @@ fn vessel(
                 "brushed-metal",
                 &corners.map(|v| v.0),
                 corners[0].1,
-                &Tint::Color([1.; 3]),
+                &Tint::Color(tint),
                 repeat,
                 Some(&corners.map(|v| v.2.map(|u| u * repeat))),
                 Some(&corners.map(|v| v.1)),
@@ -162,15 +163,18 @@ fn vessel(
         mesh: drawing.mesh,
         repeats: drawing.repeats,
     };
-    polished.disc("metal", [0.; 3], radius * 0.58, [0., 0., -1.], [1.; 3], 48)?;
+    polished.disc("metal", [0.; 3], radius * 0.58, [0., 0., -1.], tint, 48)?;
     polished.disc(
         "metal",
         [0., 0., height + 0.01],
         radius * 0.24,
         [0., 0., 1.],
-        [1.; 3],
+        tint,
         48,
     )
+}
+fn tinted(value: f64, tint: V3) -> V3 {
+    tint.map(|t| value * t)
 }
 /// What a caller fixes of a round tank instead of leaving it to the seed. The default fixes
 /// nothing and draws the seeded tank; the seed's draws are made either way, so a fixed size
@@ -187,6 +191,8 @@ pub struct RoundShape {
     pub ribs: Option<usize>,
     /// Rise of a conical lid over the shoulder in meters; 0 keeps the flat top.
     pub lid: f64,
+    /// A tint over the stainless shell, its lid and ribs (none: the plain metal).
+    pub shell: Option<V3>,
 }
 impl RoundShape {
     fn validate(&self) -> Result<(), String> {
@@ -198,6 +204,10 @@ impl RoundShape {
             || !within(self.stand, 0.2..=3.)
             || self.ribs.is_some_and(|n| n > 24)
             || !(0. ..=1.).contains(&self.lid)
+            || self.shell.is_some_and(|tint| {
+                tint.iter()
+                    .any(|v| !v.is_finite() || !(0. ..=2.).contains(v))
+            })
         {
             return Err("Round tank needs radius 0.3–1.5 m, height 0.6–3 m, stand 0.2–3 m, at most 24 ribs and a lid of 0–1 m.".into());
         }
@@ -220,6 +230,7 @@ fn cone_lid(
     z: f64,
     rise: f64,
     top: f64,
+    tint: V3,
 ) -> Result<(), String> {
     let eave = radius + 0.025;
     // The skirt's foot, its eave, then the cone to its collar.
@@ -252,7 +263,7 @@ fn cone_lid(
                 "brushed-metal",
                 &corners.map(|v| v.0),
                 corners[0].1,
-                &Tint::Color([0.92; 3]),
+                &Tint::Color(tinted(0.92, tint)),
                 repeat,
                 Some(&corners.map(|v| v.2.map(|u| u * repeat))),
                 Some(&corners.map(|v| v.1)),
@@ -275,7 +286,7 @@ fn cone_lid(
                 at(inner, side + 1),
             ],
             [0., 0., -1.],
-            [0.55; 3],
+            tinted(0.55, tint),
         )?;
     }
     // The collar the manhole stands on.
@@ -284,7 +295,7 @@ fn cone_lid(
         [0., 0., z + rise],
         top,
         [0., 0., 1.],
-        [0.88; 3],
+        tinted(0.88, tint),
         48,
     )
 }
@@ -314,6 +325,7 @@ pub fn shaped_round_tank(
     // What stands on the top (the manhole, its bolts and handle, the ladder's head) rises
     // with a conical lid.
     let lift = shape.lid;
+    let tint = shape.shell.unwrap_or([1.; 3]);
     let steel = Steel {
         slot: "metal",
         tint: srgb("#626d64"),
@@ -404,6 +416,7 @@ pub fn shaped_round_tank(
         height,
         paint,
         settings,
+        tint,
     )?;
     let polished = drawing
         .pen
@@ -440,7 +453,7 @@ pub fn shaped_round_tank(
             mesh: drawing.mesh,
             repeats: drawing.repeats,
         }
-        .tube("metal", &path, rib, [0.85; 3], 6)?;
+        .tube("metal", &path, rib, tinted(0.85, tint), 6)?;
     }
     if lift > 0. {
         cone_lid(
@@ -453,6 +466,7 @@ pub fn shaped_round_tank(
             base + height - 0.01,
             lift + 0.01,
             0.23,
+            tint,
         )?;
     }
     let crown = base + height + lift;
@@ -461,7 +475,14 @@ pub fn shaped_round_tank(
         mesh: drawing.mesh,
         repeats: drawing.repeats,
     }
-    .drum("metal", [0., 0., crown + 0.01], 0.21, 0.045, [0.9; 3], 32)?;
+    .drum(
+        "metal",
+        [0., 0., crown + 0.01],
+        0.21,
+        0.045,
+        tinted(0.9, tint),
+        32,
+    )?;
     {
         let mut hd = Fixture {
             pen: hardware.clone(),

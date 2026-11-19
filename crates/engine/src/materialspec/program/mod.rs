@@ -25,7 +25,10 @@ pub use features::{
     followed_names, orient_relief, receiver_features, receiver_seams,
 };
 pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
-pub use zones::{DEFAULT_DEPTH as ZONE_DEPTH, Zone, ZoneHit, ZoneSet, zone_id};
+pub use zones::{
+    DEFAULT_DEPTH as ZONE_DEPTH, ZONE_ROW_TEXELS, Zone, ZoneHit, ZoneSet, pack as pack_zones,
+    zone_id,
+};
 pub use ts::{
     EditFailure, EditOp, Edited, Inspection, Patch, Span, apply as apply_edit,
     inspect as inspect_recipe,
@@ -139,6 +142,10 @@ pub struct Metadata {
     /// `feature_tangent`), ascending.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub named_features: Vec<String>,
+    /// Names of the receiver's zones the program queries (`zone_coord`, `zone_extent`,
+    /// `zone_span`), ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<String>,
     /// What the recipe is: a material, a decal's appearance or a weathering layer.
     #[serde(skip_serializing_if = "RecipeKind::is_material")]
     pub kind: RecipeKind,

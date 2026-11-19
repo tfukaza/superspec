@@ -90,4 +90,8 @@ argument would keep variety without separate bakes.
    driver compiling the scene's programs.
 3. An edit re-describes the whole project (2.0 s) and bakes every receiver whose inputs changed (2.0 s).
 4. No material of the merged building needs CPU fields any more (its feature-following layers have GPU plans), so
-   field bakes and their cache cost it nothing.
+   field bakes and their cache cost it nothing. The weathering zones (`zoneCoord`, `zoneExtent`) first came as CPU
+   fields of every layer that read them: 670 fields over 176 receivers, 180 M field texels, 14.8 s natively
+   (`item_building_bench`, `ITEM_BUILDING_FIELDS=once`) and a bake of 19 to 24 s of field time in the Studio. They
+   are now evaluated in the bake shaders from each receiver's packed zone segments (a short loop over the few
+   segments that can reach the receiver), with no CPU field left.

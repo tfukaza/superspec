@@ -26,6 +26,7 @@
     "awningSag": {"type": "number", "default": 0.28, "min": 0, "max": 0.8, "unit": "m"},
     "awningStripes": {"type": "integer", "default": 0, "min": 0, "max": 60},
     "lamp": {"type": "boolean", "default": true},
+    "lampStyle": {"type": "choice", "default": "bulkhead", "choices": ["bulkhead", "round"]},
     "awningLower": {"type": "number", "default": 0, "min": 0, "max": 1.2, "unit": "m"},
     "shutterColor": {"type": "color", "default": "#5a6f68"},
     "doorColor": {"type": "color", "default": "#2f4f43"},
@@ -52,7 +53,7 @@
         "parameters": {"kind": {"choose": ["shutter", "gate", "door", "shop", "service", "shutter"], "by": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "signs": false, "shutter": {"parameter": "shutterColor"}, "frame": {"parameter": "doorColor"}, "gate": {"parameter": "gateColor"},
                        "gateBars": {"parameter": "gateBars"}, "gateBacking": {"parameter": "gateBacking"}, "panels": {"parameter": "doorPanels"},
-                       "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "opening": {"parameter": "opening"},
+                       "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "opening": {"parameter": "opening"}, "lamp": {"parameter": "lampStyle"},
                        "head": {"parameter": "shutterHead"}, "headRust": {"parameter": "shutterHeadRust"}}}
     },
     {
@@ -117,12 +118,21 @@
     {
       "id": "lamp",
       "when": "lamp",
-      "generator": {"kind": "native", "name": "kowloon/wall-lamp", "parameters": {}},
+      "generator": {"kind": "native", "name": "kowloon/wall-lamp", "parameters": {"style": {"parameter": "lampStyle"}}},
       "placement": {"position": ["width / 2 + 0.05", 0, "height - 0.9"]}
     }
   ],
   "features": [
+    {"name": "foot", "part": "bay", "points": [["-width / 2", -0.06, 0.02], ["width / 2", -0.06, 0.02]]},
     {"name": "drip", "part": "awning", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind == 0)", "zone": {"length": 1.4}},
     {"name": "drip", "part": "tarp", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind >= 1)", "zone": {"length": 1.4}}
-  ]
+  ],
+  "layers": {
+    "metal": [
+      {"entry": "kowloon-foot-wear.material.ts", "parameters": {"reach": 0.45, "strength": 0.8, "chips": 0.4}, "seed": 31, "follow": {"foot": "foot"}}
+    ],
+    "paint": [
+      {"entry": "kowloon-foot-wear.material.ts", "parameters": {"color": [0.16, 0.1, 0.06], "reach": 0.32, "strength": 0.9, "chips": 1}, "seed": 32, "follow": {"foot": "foot"}}
+    ]
+  }
 }

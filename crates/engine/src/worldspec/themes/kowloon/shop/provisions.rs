@@ -802,6 +802,12 @@ pub(crate) struct Hang {
     /// 8 cm behind it, overlapping, and fills its gaps; a third, 4 cm in front, is sparse and
     /// half of it bright accents.
     pub rows: usize,
+    /// Stronger colours (fewer pale bags, more printed packets, dyed cloths and woven baskets)
+    /// instead of the faded, mostly pale mix.
+    pub bold: bool,
+    /// How much further than `drop` the long pieces at either end of the line reach (m, 0–3),
+    /// outside the way.
+    pub sides: f64,
 }
 
 /// Goods hung on cords from a line (see [`Hang`]), of varied length and shape: strings of
@@ -818,6 +824,8 @@ pub(crate) fn hung(
         drop,
         way,
         rows,
+        sides,
+        ..
     } = *hang;
     if [x0, x1, hang.line[2], ceiling, drop, clear]
         .iter()
@@ -827,10 +835,11 @@ pub(crate) fn hung(
         || !(0.2..=5.).contains(&drop)
         || !(0. ..=5.).contains(&clear)
         || !(1..=3).contains(&rows)
+        || !(0. ..=3.).contains(&sides)
     {
         return Err(
             "Hung goods require a bounded line, a drop of 0.2 to 5 meters, a clear length \
-             of 0 to 5 and one to three rows."
+             of 0 to 5, one to three rows and sides reaching 0 to 3 meters further."
                 .into(),
         );
     }
@@ -844,6 +853,19 @@ pub(crate) fn hung(
 const ACCENTS: [&str; 6] = [
     "#c4281f", "#e2b215", "#2a8a3a", "#d4501c", "#1f58a8", "#c4281f",
 ];
+/// [`Hang::bold`]'s palettes: printed packets, carrier bags (a few still pale), dyed cloths and
+/// the cane of woven baskets.
+const BOLD_LABELS: [&str; 12] = [
+    "#b8382c", "#d09a24", "#2f6f9a", "#3f8a4a", "#c8642a", "#7a3a6a", "#a82a3a", "#2a7a7a",
+    "#d8b84a", "#5a4a8a", "#d8c89a", "#8a3a24",
+];
+const BOLD_BAGS: [&str; 6] = [
+    "#c8483a", "#3a6aa8", "#d8a83a", "#4a8a5a", "#d6d0bf", "#a85046",
+];
+const BOLD_CLOTHS: [&str; 7] = [
+    "#d8a82a", "#c8482a", "#3a5a9a", "#e0c060", "#8a4a7a", "#cdc7b5", "#2f7a5a",
+];
+const CANE: [&str; 3] = ["#b08a4e", "#9c7640", "#c29a5a"];
 
 /// One row of [`hung`]: `row` 0 is the first, 1 behind it and 2 in front.
 fn hung_row(
@@ -857,11 +879,26 @@ fn hung_row(
         clear,
         drop,
         way,
+        bold,
+        sides,
         ..
     } = *hang;
     let y = y + [0., 0.08, -0.04][row];
     // The share of pieces in an accent colour, and the run of gaps between them.
-    let accent = [0.07, 0.05, 0.5][row];
+    let accent = if bold {
+        [0.3, 0.2, 0.6][row]
+    } else {
+        [0.07, 0.05, 0.5][row]
+    };
+    let labels: &[&str] = if bold { &BOLD_LABELS } else { &LABELS };
+    let cloths: &[&str] = if bold { &BOLD_CLOTHS } else { &CLOTHS };
+    let bags: &[&str] = if bold {
+        &BOLD_BAGS
+    } else {
+        &[
+            "#d6d0bf", "#cfcab9", "#b8984a", "#a85046", "#8a9cab", "#d6d0bf",
+        ]
+    };
     let gaps = [[0.005, 0.04], [-0.08, 0.], [0.3, 1.1]][row];
     let pick = |rng: &mut SeededRng, palette: &[&str]| accented(rng, palette, accent);
     let cord = srgb("#8f8468");
@@ -882,11 +919,22 @@ fn hung_row(
     while x < x1 - 0.08 {
         d.mesh.spend_work(1)?;
         // No piece is wider than 0.4 m: one starting that far before the way keeps clear of it.
+        let over_way = matches!(way, Some([a, b, _]) if x + 0.4 > a && x < b);
         let limit = match way {
             Some([a, b, low]) if x + 0.4 > a && x < b => low.min(drop),
             _ => drop,
         };
+        // At either end of the line, outside the way, long pieces may reach further down.
+        let side = sides > 0. && !over_way && (x < x0 + 0.45 || x > x1 - 0.75);
+        let limit = if side { drop + sides } else { limit };
         let sort = rng.integer(0, 12);
+        // Bold goods: more packets and cloths, one kind of bag in thirteen, woven baskets (13);
+        // at the sides mostly the long strings and cloths.
+        let sort = match (bold, side) {
+            (false, _) => sort,
+            (true, true) if rng.chance(0.75) => [0, 8, 9][rng.integer(0, 2)],
+            (true, _) => [0, 1, 2, 0, 3, 13, 13, 6, 8, 9, 8, 10, 11][sort],
+        };
         // The row behind hangs a little higher, so its pieces show over the first's.
         let start = clear
             + if row == 1 {
@@ -906,7 +954,7 @@ fn hung_row(
             0..=2 => {
                 // A string of packets, each with a printed band.
                 let (w, h) = (rng.float(0.1, 0.14), rng.float(0.13, 0.18));
-                let (color, band) = (pick(rng, &LABELS), pick(rng, &LABELS));
+                let (color, band) = (pick(rng, labels), pick(rng, labels));
                 let length = room * rng.float(0.6, 1.);
                 let mut z = top;
                 while z - h >= top - length.max(h) - 1e-9 {
@@ -936,12 +984,7 @@ fn hung_row(
                 // A bunch of carrier bags, mostly pale: a knotted neck over a full body,
                 // creased down its middle.
                 let (w, h) = (rng.float(0.24, 0.36), rng.float(0.34, 0.62).min(room));
-                let color = pick(
-                    rng,
-                    &[
-                        "#d6d0bf", "#cfcab9", "#b8984a", "#a85046", "#8a9cab", "#d6d0bf",
-                    ],
-                );
+                let color = pick(rng, bags);
                 let (cx, half, low) = (x + w / 2., w / 2., top - h);
                 for side in [-1., 1.] {
                     d.face(
@@ -963,7 +1006,7 @@ fn hung_row(
                 // A tied sack or a net of balls, banded.
                 let r = rng.float(0.07, 0.11);
                 let h = rng.float(0.32, 0.62).min(room);
-                let (color, band) = (pick(rng, &CLOTHS), pick(rng, &LABELS));
+                let (color, band) = (pick(rng, cloths), pick(rng, labels));
                 arc(
                     d,
                     [x + r, y, top - h],
@@ -976,7 +1019,7 @@ fn hung_row(
             8 | 9 => {
                 // A long cloth or a garment, folded over.
                 let (w, h) = (rng.float(0.26, 0.4), room * rng.float(0.7, 1.));
-                let color = pick(rng, &CLOTHS);
+                let color = pick(rng, cloths);
                 let lean = rng.float(-0.02, 0.02);
                 d.sheet(
                     "paint",
@@ -1017,10 +1060,74 @@ fn hung_row(
                 )?;
                 (w, top)
             }
+            13 => {
+                // A woven basket hung by its handle: a tapering front of cane, banded by its
+                // weave, under a rim.
+                let w = rng.float(0.26, 0.38);
+                let h = rng.float(0.16, 0.26).min(room * 0.7);
+                let handle = rng.float(0.1, 0.18).min(room - h);
+                let cane = tone(rng, &CANE);
+                let (low, inset) = (top - handle - h, w * 0.14);
+                // A point on the front at height share `t` and across share `s`.
+                let at = |t: f64, s: f64, out: f64| {
+                    let i = inset * (1. - t);
+                    [
+                        x + i + (w - 2. * i) * s,
+                        y - 0.05 * (1. - t) - out,
+                        low + h * t,
+                    ]
+                };
+                d.face(
+                    "paint",
+                    &[
+                        at(0., 0., 0.),
+                        at(0., 1., 0.),
+                        at(1., 1., 0.),
+                        at(1., 0., 0.),
+                    ],
+                    [0., -1., 0.3],
+                    cane,
+                )?;
+                for t in [0.3, 0.62] {
+                    d.face(
+                        "paint",
+                        &[
+                            at(t, 0.02, 0.004),
+                            at(t, 0.98, 0.004),
+                            at(t + 0.07, 0.98, 0.004),
+                            at(t + 0.07, 0.02, 0.004),
+                        ],
+                        [0., -1., 0.3],
+                        shade(cane, 0.72),
+                    )?;
+                }
+                d.bar(
+                    "paint",
+                    [x, y - 0.006, low + h],
+                    [x + w, y - 0.006, low + h],
+                    0.018,
+                    shade(cane, 0.85),
+                )?;
+                let cx = x + w / 2.;
+                d.tube(
+                    "paint",
+                    &[
+                        [x + w * 0.18, y, low + h],
+                        [x + w * 0.26, y, low + h + handle * 0.7],
+                        [cx, y, top],
+                        [x + w * 0.74, y, low + h + handle * 0.7],
+                        [x + w * 0.82, y, low + h],
+                    ],
+                    0.008,
+                    shade(cane, 0.8),
+                    5,
+                )?;
+                (w, top)
+            }
             _ => {
                 // A card of small wares in rows.
                 let (w, h) = (rng.float(0.2, 0.3), rng.float(0.4, 0.75).min(room));
-                let (first, second) = (pick(rng, &LABELS), pick(rng, &LABELS));
+                let (first, second) = (pick(rng, labels), pick(rng, labels));
                 front(d, [x, x + w, top - h, top], 0., srgb("#d9d2bd"))?;
                 let rows = ((h - 0.05) / 0.11) as usize;
                 for row in 0..rows {
@@ -1460,6 +1567,8 @@ pub(crate) fn street_fitted(
                     drop: 0.6,
                     way: None,
                     rows: 1,
+                    bold: false,
+                    sides: 0.,
                 },
                 &mut kit.rng(&format!("{key}/rack-hung-{i}"))?,
             )?;
