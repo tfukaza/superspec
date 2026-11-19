@@ -24,7 +24,7 @@ fn strips_and_tree_rows_follow_the_aml_and_keep_the_physical_base() {
         <road id="crossing" position="10 20 1" heading="90" length="8" width="3"/>
         <avenue id="walk" position="8 2 0.105" length="32" width="8.2"/>
         <sidewalk id="kerb" position="10 20 1.15" length="8" width="1.5"/>
-        <tree id="elm" position="8 3 0.3" count="3" step="-7 0 0"/>
+        <tree id="elm" position="8 3 0.3" count="3" step="-7 0 0" scale="0.45"/>
         <lamp id="lantern" position="12 2 0.15"/>
       </city></architecture>"#;
     let scene = compile(aml, 1).unwrap();
@@ -54,6 +54,16 @@ fn strips_and_tree_rows_follow_the_aml_and_keep_the_physical_base() {
     for (i, x) in [(1, 8.), (2, 1.), (3, -6.)] {
         let batch = tree(i);
         assert_eq!(scene.batches.placements[batch.instance_start * 10], x);
+        for level in scene
+            .manifest
+            .batches
+            .iter()
+            .filter(|b| b.object_id == batch.object_id)
+        {
+            let start = level.instance_start * 10;
+            assert_eq!(&scene.batches.placements[start..start + 3], &[x, 3., 0.3]);
+            assert_eq!(&scene.batches.placements[start + 7..start + 10], &[0.45; 3]);
+        }
         assert_eq!(batch.source.line, 7);
         assert!(
             !batch

@@ -318,7 +318,7 @@ document, subject to the scene geometry limits.
 | `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
 | `pillar`, `wall` | Closed concrete member with its lower corner at the placement. Width follows +X, depth +Y, and height +Z before heading rotation. Defaults are 0.5 × 0.5 × 3 m for a pillar and 4 × 0.28 × 2.2 m for a wall. Each member has its own metric concrete finish and shares the washroom weathering recipe. |
 | `avenue` | Starting corner at paving height. A pedestrian strip extends along +X, with its median halfway across its `width` toward −Y. Accepts `length` and `width`. |
-| `tree` | Trunk foot. The Kowloon theme supplies TreeSpec bark levels, illustrated foliage and a shadow proxy. |
+| `tree` | Trunk foot. The Kowloon theme supplies TreeSpec bark levels, illustrated foliage and a shadow proxy. Trees and shrubs accept a uniform `scale` from 0.05 to 5, default 1. Scaling preserves the root position. |
 | `shrub` | Root position for a low illustrated shrub. Supports the same heading and row controls as trees. |
 | `lamp` | Post foot. Optional `banner="true"` hangs a cloth banner. The arm points toward local −Y. |
 

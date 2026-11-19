@@ -94,6 +94,13 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 Value::Vector(vector)
             }
             "heading" if kind != "city" => Value::Number(number(text)?),
+            "scale" if matches!(kind, "tree" | "shrub") => {
+                let scale = quantize(number(text)?);
+                if !(0.05..=5.).contains(&scale) {
+                    return Err(invalid());
+                }
+                Value::Number(scale)
+            }
             "model" if kind == "building" && text == "reference-corner" => Value::Text(text.into()),
             "seed" if kind == "building" => Value::Number(
                 text.parse::<u8>()

@@ -354,6 +354,9 @@ pub(super) fn append(
             if node.kind != "avenue" {
                 for p in &mut level.batch.placements {
                     p.rotation = [0., 0., (angle / 2.).sin(), (angle / 2.).cos()];
+                    for axis in &mut p.scale {
+                        *axis *= node.number("scale", 1.);
+                    }
                 }
             }
             scene
