@@ -1171,6 +1171,12 @@ export class RustScene {
     baker.nodeKeys = new URLSearchParams(location.search).get("bakekeys") !== "whole";
     // `?intrinsic=off`: a layered slot's base is evaluated per receiver, not read from shared lattice tiles.
     baker.intrinsicTiles = new URLSearchParams(location.search).get("intrinsic") !== "off";
+    // `?bakekeep=all`: a mesh's maps hold every texture of its bake, not only the ones it shows (see `keepIntermediates`).
+    baker.keepIntermediates = new URLSearchParams(location.search).get("bakekeep") === "all";
+    // `?bakepace=timer`: the bands of a large bake are a timer apart, not paced by the GPU (see `bandPacing`).
+    baker.bandPacing = new URLSearchParams(location.search).get("bakepace") === "timer" ? "timer" : "gpu";
+    const band = Number(new URLSearchParams(location.search).get("bakeband"));
+    if (Number.isFinite(band) && band >= 1024) baker.bandTexels = band;
     baker.onLost = () => { this.gpuUniforms = undefined; this.inlineLooks.clear(); this.sceneBaker?.lost(); this.clearBakedPreview(); };
     return baker;
   }
