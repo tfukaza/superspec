@@ -726,15 +726,64 @@ pub(super) fn material_request(
     source: &str,
     receivers: Vec<Receiver>,
 ) -> Request {
+    // Features and anchors are part of a receiver's layout, which is also asked for one
+    // receiver at a time (`project_layouts`), so every mesh's are passed along.
+    request_with(
+        project,
+        assignment,
+        source,
+        receivers,
+        project.features.clone(),
+        project.anchors.clone(),
+    )
+}
+
+/// [`material_request`] over one receiver alone, with that receiver's named features and
+/// pattern anchor and no other mesh's: a bake or a layout reads them by the receiver's own
+/// identity, so the request describes the same bake. A host that bakes a scene's receivers one
+/// at a time (field bakes) would otherwise copy every mesh's features for each of them.
+pub(super) fn receiver_request(
+    project: &Project,
+    assignment: &MaterialAssignment,
+    source: &str,
+    receiver: Receiver,
+) -> Request {
+    let features = project
+        .features
+        .get_key_value(&receiver.id)
+        .map(|(id, features)| (id.clone(), features.clone()))
+        .into_iter()
+        .collect();
+    let anchors = project
+        .anchors
+        .get_key_value(&receiver.id)
+        .map(|(id, anchor)| (id.clone(), *anchor))
+        .into_iter()
+        .collect();
+    request_with(
+        project,
+        assignment,
+        source,
+        vec![receiver],
+        features,
+        anchors,
+    )
+}
+
+fn request_with(
+    project: &Project,
+    assignment: &MaterialAssignment,
+    source: &str,
+    receivers: Vec<Receiver>,
+    features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
+    anchors: BTreeMap<String, super::Anchor>,
+) -> Request {
     // What the project binds to these receivers: their planes and named features.
     let of = |receiver: &Receiver| receiver.id.clone();
     let planes: BTreeMap<_, _> = receivers
         .iter()
         .filter_map(|receiver| Some((of(receiver), project.planes.get(&receiver.id)?.clone())))
         .collect();
-    // Features and anchors are part of a receiver's layout, which is also asked for one
-    // receiver at a time (`project_layouts`), so every mesh's are passed along.
-    let features = project.features.clone();
     Request {
         kind: "material".into(),
         entry: assignment.entry.clone(),
@@ -754,7 +803,7 @@ pub(super) fn material_request(
         profile: project.profile,
         texel_density: project.texel_density,
         receivers,
-        anchors: project.anchors.clone(),
+        anchors,
         materials: if planes.is_empty() {
             BTreeMap::new()
         } else {

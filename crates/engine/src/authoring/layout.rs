@@ -5,7 +5,7 @@
 
 use super::{
     Diagnostic, FieldBake, Project, Request, Session,
-    project::{ContactScene, material_request, receivers},
+    project::{ContactScene, material_request, receiver_request, receivers},
     receiver::{Atlas, GUTTER},
 };
 use serde::Serialize;
@@ -326,7 +326,7 @@ impl Session {
             )));
         };
         receiver.contacts = touching.contacts(scene, &receiver);
-        let request = material_request(project, assignment, source, vec![receiver]);
+        let request = receiver_request(project, assignment, source, receiver);
         // The names by the stack's material they are fields of: 0 the slot's own, k its k-th layer.
         let mut groups: BTreeMap<usize, Vec<(usize, String)>> = BTreeMap::new();
         for (at, name) in names.iter().enumerate() {
