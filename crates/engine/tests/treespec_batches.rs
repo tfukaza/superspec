@@ -787,7 +787,7 @@ fn groundcover(
         form: 0.9,
         jitter: 0.1,
         leaf_scale: 1.,
-        soft_edges: true,
+        soft_edges: false,
         spray_scale: 1.,
         palette: GROUNDCOVER_PALETTE,
     });
@@ -853,7 +853,7 @@ fn write_lane_plants() {
             form: 0.9,
             jitter: 0.1,
             leaf_scale: 1.5,
-            soft_edges: true,
+            soft_edges: false,
             // Longer sprays of pointed leaves at the clusters' rims, so they read as leaves.
             spray_scale: 1.25,
             ..Default::default()
@@ -875,7 +875,7 @@ fn write_lane_plants() {
             form: 0.8,
             jitter: 0.15,
             leaf_scale: 1.3,
-            soft_edges: true,
+            soft_edges: false,
             ..Default::default()
         },
     );

@@ -36,6 +36,13 @@ item model's `slotDensities` states one for the meshes of one of its slots.
 density that fits. The CPU bake, the layouts the GPU bake draws from and field bakes read the same density
 (`Request::density_of`). Signs and posters at 640 cost the building 59 MiB more of 1868.
 
+The avenue scene (the building at 2048 px and 160 texels a meter with the pedestrian avenue, its far frontage, the near
+neighbour and the street furniture: 1003 receivers) holds about 4.0 GiB of maps on screen, so
+`tests/item-facade-browser.mjs` asks for 6144 MiB (`BAKE_MEMORY`). The secondary models are already baked coarse (the
+frontage at 32, the neighbour at 40, the avenue's paving at 48); the building's own receivers are what is left to
+save on. A project also holds at most 64 modules: the washroom's own item definitions stay out of a scene without the
+room, and layer recipes no item names are not added.
+
 ## Texture formats: what was checked
 
 - **Live argument textures** (RGBA16F, two per receiver of the metal and paint materials; 698 MiB of the 1868 MiB on
