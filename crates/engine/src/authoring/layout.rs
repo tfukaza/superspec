@@ -5,7 +5,7 @@
 
 use super::{
     Diagnostic, FieldBake, Project, Request, Session,
-    project::{contacts, material_request, receivers},
+    project::{ContactScene, material_request, receivers},
     receiver::{Atlas, GUTTER},
 };
 use serde::Serialize;
@@ -58,6 +58,8 @@ pub struct ProjectFields {
     /// The project with its item models resolved.
     project: Project,
     scene: superspec_model::Scene,
+    /// The scene's triangles as contacts are found among them.
+    touching: ContactScene,
     /// Object-to-world transforms of imported and placed receivers.
     transforms: BTreeMap<String, [f64; 16]>,
 }
@@ -279,9 +281,11 @@ impl Session {
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
             .map_err(&fail)?;
+        let touching = ContactScene::new(&scene);
         Ok(ProjectFields {
             project,
             scene,
+            touching,
             transforms,
         })
     }
@@ -299,6 +303,7 @@ impl Session {
         let ProjectFields {
             project,
             scene,
+            touching,
             transforms,
         } = prepared;
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
@@ -320,7 +325,7 @@ impl Session {
                 "Mesh {mesh} is not a visible mesh of the project's models."
             )));
         };
-        receiver.contacts = contacts(scene, &receiver);
+        receiver.contacts = touching.contacts(scene, &receiver);
         let request = material_request(project, assignment, source, vec![receiver]);
         // The names by the stack's material they are fields of: 0 the slot's own, k its k-th layer.
         let mut groups: BTreeMap<usize, Vec<(usize, String)>> = BTreeMap::new();

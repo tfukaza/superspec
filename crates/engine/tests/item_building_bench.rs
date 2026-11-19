@@ -81,21 +81,36 @@ fn bench_building_project() {
             .shade_project(project, revision, &asset, &|| false)
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let shade = started.elapsed().as_secs_f64() * 1e3;
-        let encoded = serde_json::to_string(&shaded.metadata).unwrap().len();
+        // What the description and the layouts hold, to compare two builds of the engine by.
+        let digest = |bytes: &[u8]| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        };
+        let described = serde_json::to_string(&shaded.metadata).unwrap();
+        let (encoded, described) = (described.len(), digest(described.as_bytes()));
         let started = Instant::now();
         let layouts = session
             .project_layouts(project, revision, &asset, &|| false)
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let layout = started.elapsed().as_secs_f64() * 1e3;
         let texels: usize = layouts.receivers.iter().map(|r| r.width * r.height).sum();
+        let records: Vec<u8> = layouts
+            .records
+            .iter()
+            .flat_map(|value| value.to_bits().to_le_bytes())
+            .collect();
         println!(
-            "{label}: shade_project {shade:.0} ms (metadata {:.1} MiB), project_layouts {layout:.0} ms; {} receivers, {:.1} M atlas texels, {} layout numbers",
+            "{label}: shade_project {shade:.0} ms (metadata {:.1} MiB, {described:016x}), project_layouts {layout:.0} ms; {} receivers, {:.1} M atlas texels, {} layout numbers ({:016x})",
             encoded as f64 / 1048576.,
             layouts.receivers.len(),
             texels as f64 / 1e6,
             layouts.records.len(),
+            digest(&records),
         );
-        if label != "cold" {
+        // ITEM_BUILDING_FIELDS=0 leaves the field bakes out (to profile the rest).
+        if label != "cold" || std::env::var("ITEM_BUILDING_FIELDS").is_ok_and(|v| v == "0") {
             continue;
         }
         // The CPU fields a GPU host asks for, mesh by mesh, as the Studio's scene bake does: a
@@ -134,33 +149,48 @@ fn bench_building_project() {
             }
         }
         let fields: usize = requests.iter().map(|(_, names)| names.len()).sum();
-        // Each way in a session of its own, so neither finds what the other baked.
-        let mut alone = Session::default();
-        let started = Instant::now();
-        let mut texels = 0;
-        let mut one_by_one = Vec::new();
-        for (mesh, names) in &requests {
-            let baked = alone
-                .bake_project_fields(project, mesh, names, 1, &asset, &|| false)
-                .unwrap_or_else(|errors| panic!("{mesh}: {errors:?}"));
-            texels += baked.width * baked.height * baked.fields.len();
-            one_by_one.push(baked);
-        }
-        println!(
-            "fields, the project prepared per mesh: {} meshes, {fields} fields, {:.1} M field texels in {:.0} ms",
-            requests.len(),
-            texels as f64 / 1e6,
-            started.elapsed().as_secs_f64() * 1e3
-        );
+        // Each way in a session of its own, so neither finds what the other baked. The project
+        // prepared once (what a host does), then, unless ITEM_BUILDING_FIELDS=once, prepared
+        // again for every mesh, which must give the same texels.
         let mut shared = Session::default();
         let started = Instant::now();
         let prepared = shared
             .prepare_project_fields(project, 1, &asset, &|| false)
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let preparing = started.elapsed().as_secs_f64() * 1e3;
-        for ((mesh, names), expected) in requests.iter().zip(&one_by_one) {
+        let mut texels = 0;
+        let mut content = 0u64;
+        let mut together = Vec::new();
+        for (mesh, names) in &requests {
             let baked = shared
                 .bake_prepared_fields(&prepared, mesh, names, 1, &asset, &|| false)
+                .unwrap_or_else(|errors| panic!("{mesh}: {errors:?}"));
+            texels += baked.width * baked.height * baked.fields.len();
+            together.push(baked);
+        }
+        let elapsed = started.elapsed().as_secs_f64() * 1e3;
+        for baked in &together {
+            for field in &baked.fields {
+                let bytes: Vec<u8> = field
+                    .iter()
+                    .flat_map(|v| v.to_bits().to_le_bytes())
+                    .collect();
+                content = content.rotate_left(7) ^ digest(&bytes);
+            }
+        }
+        println!(
+            "fields, the project prepared once: {} meshes, {fields} fields, {:.1} M field texels in {elapsed:.0} ms (preparing {preparing:.0} ms); texels {content:016x}",
+            requests.len(),
+            texels as f64 / 1e6,
+        );
+        if std::env::var("ITEM_BUILDING_FIELDS").is_ok_and(|v| v == "once") {
+            continue;
+        }
+        let mut alone = Session::default();
+        let started = Instant::now();
+        for ((mesh, names), expected) in requests.iter().zip(&together) {
+            let baked = alone
+                .bake_project_fields(project, mesh, names, 1, &asset, &|| false)
                 .unwrap_or_else(|errors| panic!("{mesh}: {errors:?}"));
             assert_eq!(
                 (baked.width, baked.height),
@@ -172,7 +202,7 @@ fn bench_building_project() {
             assert!(same, "{mesh}: a prepared project bakes other fields");
         }
         println!(
-            "fields, the project prepared once: {:.0} ms (preparing {preparing:.0} ms); every texel equal",
+            "fields, the project prepared per mesh: {:.0} ms; every texel equal",
             started.elapsed().as_secs_f64() * 1e3
         );
     }
