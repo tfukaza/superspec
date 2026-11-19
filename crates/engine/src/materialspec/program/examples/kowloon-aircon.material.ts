@@ -12,8 +12,10 @@ const dust = param.scalar({ default: 0.6, range: [0, 1], label: "Dust and streak
 const rust = param.scalar({ default: 0.5, range: [0, 1], label: "Rust" });
 const sheen = param.scalar({ default: 0.5, range: [0, 1], label: "Casing roughness" });
 
-// Images read from their top row; mesh UVs run upward.
-const print = sampleColor("superspec-material:aircon.png", vec2(uv.x, sub(1, uv.y)));
+// The casing cells are addressed from the sheet's top row, as the fixtures' meshes map them (as the sign lettering's
+// glyph cells are): turning v over showed each unit the row mirrored about the sheet's middle (a window unit's grille
+// as a condenser's fan port).
+const print = sampleColor("superspec-material:aircon.png", vec2(uv.x, uv.y));
 const unit = mul(boundsMin, 5.77);
 const aged = mul(yellowing, add(0.25, mul(0.75, hash(unit, seed("aircon-age")))));
 const casing = mul(print, mix(vec3(1), vec3(0.8, 0.74, 0.56), aged));

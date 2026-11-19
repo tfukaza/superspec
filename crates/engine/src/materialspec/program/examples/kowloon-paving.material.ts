@@ -17,6 +17,7 @@ const cracked = param.scalar({ default: 0.12, range: [0, 1], label: "Cracked fla
 const fractures = param.scalar({ default: 0.6, range: [0, 1], label: "Fractures across flags" });
 const spots = param.scalar({ default: 0.6, range: [0, 1], label: "Gum and oil spots" });
 const grime = param.scalar({ default: 0.6, range: [0, 1], label: "Grime" });
+const wet = param.scalar({ default: 0, range: [0, 1], label: "Wet patches" });
 
 const at = vec2(world.x, world.y);
 const grid = rectangularGrid({ position: at, size: flag, rowOffset: stagger });
@@ -51,6 +52,10 @@ const damp = smoothstep(0.42, 0.8, valueNoise(add(mul(at, 0.55), vec2(1.7, 6.1))
 const contact = creaseDistance("contact", 30, 0.6);
 const skirt = mul(sub(1, smoothstep(0.02, 0.45, contact)), add(0.45, mul(0.55, valueNoise(mul(at, 4.1), seed("skirt")))));
 const soiled = mul(grime, min(add(add(mul(damp, 0.35), mul(skirt, 0.75)), mul(oil, 0.5)), 0.9));
+// Wet after rain: broad puddled patches that dry last in the low spots, darker and glossy, the water lying longest in
+// the joints beside them.
+const puddled = smoothstep(0.5, 0.66, add(valueNoise(add(mul(at, 0.8), vec2(7.3, 2.2)), seed("wet")), mul(damp, 0.2)));
+const wetness = mul(wet, max(puddled, mul(joint, mul(0.7, smoothstep(0.35, 0.55, valueNoise(mul(at, 0.8), seed("wet")))))));
 
 export default defineMaterial({
   name: "Kowloon paving",
@@ -60,5 +65,6 @@ export default defineMaterial({
     layer({ id: "gum", mask: gumSpot, baseColor: vec3(0.035, 0.034, 0.03), roughness: 0.7 }),
     layer({ id: "joints", mask: joint, baseColor: vec3(0.055, 0.052, 0.042), roughness: 1, height: { add: -0.004 } }),
     layer({ id: "cracks", mask: crack, baseColor: vec3(0.03, 0.03, 0.025), roughness: 1, height: { add: -0.003 } }),
+    layer({ id: "wet", mask: mul(wetness, 0.85), baseColor: mul(faced, 0.62), roughness: 0.12 }),
   ],
 });

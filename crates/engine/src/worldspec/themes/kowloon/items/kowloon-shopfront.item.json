@@ -122,9 +122,7 @@
     }
   ],
   "features": [
-    {"name": "drip", "part": "awning", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind == 0)"},
-    {"name": "drip", "part": "tarp", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind >= 1)"},
-    {"name": "drip-above", "part": "awning", "points": [["-awningWidth / 2", 0, "height - 0.32"], ["awningWidth / 2", 0, "height - 0.32"]], "when": "awning * (awningKind == 0)"},
-    {"name": "drip-above", "part": "tarp", "points": [["-awningWidth / 2", 0, "height - 0.32"], ["awningWidth / 2", 0, "height - 0.32"]], "when": "awning * (awningKind >= 1)"}
+    {"name": "drip", "part": "awning", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind == 0)", "zone": {"length": 1.4}},
+    {"name": "drip", "part": "tarp", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind >= 1)", "zone": {"length": 1.4}}
   ]
 }

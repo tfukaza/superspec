@@ -48,7 +48,6 @@
     }
   ],
   "features": [
-    {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06},
-    {"name": "sill-above", "part": "window", "points": [["-width / 2", 0, 0.3], ["width / 2", 0, 0.3]]}
+    {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06}
   ]
 }

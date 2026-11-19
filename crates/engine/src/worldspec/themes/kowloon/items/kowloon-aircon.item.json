@@ -42,8 +42,6 @@
   ],
   "features": [
     {"name": "drip", "part": "unit", "points": [[-0.32, 0, 0], [0.32, 0, 0]], "width": 0.1, "zone": {"length": 1.5}},
-    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1, "zone": {"length": 1.5}},
-    {"name": "drip-above", "part": "unit", "points": [[-0.32, 0, 0.3], [0.32, 0, 0.3]]},
-    {"name": "drip-above", "part": "condenser", "points": [["-width / 2", 0, 0.3], ["width / 2", 0, 0.3]]}
+    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1, "zone": {"length": 1.5}}
   ]
 }

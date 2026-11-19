@@ -182,7 +182,13 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     assert_eq!(
         follows,
         [
-            json!(["drip", "ledge", "runoff-coping", "runoff-sill", "runoff-top"]),
+            json!([
+                "drip",
+                "ledge",
+                "runoff-coping",
+                "runoff-sill",
+                "runoff-top"
+            ]),
             json!(["runoff-coping", "runoff-sill", "runoff-top"]),
             json!(["fixing-drip", "rust"]),
         ]

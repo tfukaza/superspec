@@ -4,11 +4,13 @@
 // narrow line of grime fading out over a few centimeters; along every inside corner (concave creases, and edges lying
 // on another surface where a project build supplies them) the same grime, a little heavier. The lines are uneven and
 // broken along their length, never ruled, and upright edges carry more than level ones, so a corner reads as a soft
-// pencil line. Convex creases are also rounded over in shading, toward the face beyond them, without new geometry (an
-// open rim has no face beyond it to turn to). Nothing is read but the receiver's own edges and position.
+// pencil line. Where the slot follows `joint` (the seam where one surface of a wall meets the next, such as a rounded
+// corner's start and end), no line or arris is drawn within `jointClear` of it. Convex creases are also rounded over in
+// shading, toward the face beyond them, without new geometry (an open rim has no face beyond it to turn to). Nothing is
+// read but the receiver's own edges and position, and the joints it is given.
 import {
   defineLayer, param, vec2, vec3, add, sub, mul, div, mix, abs, max, min, smoothstep, dot, valueNoise, seed,
-  creaseDistance, creaseNormal, creaseTangent, surface, normal, footprint,
+  creaseDistance, creaseNormal, creaseTangent, featureDistance, surface, normal, footprint,
 } from "@superspec/material/v1";
 
 const inkColor = param.vec3({ default: vec3(0.15, 0.135, 0.115), range: [0, 1], label: "Grime line colour" });
@@ -20,6 +22,7 @@ const highlight = param.scalar({ default: 0.35, range: [0, 1], label: "Arris hig
 const highlightWidth = param.scalar({ default: 0.009, range: [0.002, 0.05], unit: "m", label: "Arris width" });
 const wear = param.scalar({ default: 0.4, range: [0, 1], label: "Arris chipping" });
 const radius = param.scalar({ default: 0.014, range: [0.002, 0.05], unit: "m", label: "Rounded edge radius" });
+const jointClear = param.scalar({ default: 0.06, range: [0.005, 0.5], unit: "m", label: "Clear of a joint" });
 const edgeAngle = param.scalar({ default: 35, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
 
 const limit = add(mul(inkWidth, 1.6), footprint);
@@ -48,12 +51,14 @@ const middle = creaseNormal("convex", edgeAngle, add(round, footprint));
 const beyond = sub(mul(middle, mul(2, dot(middle, normal))), normal);
 const turned = sub(1, smoothstep(0, round, creaseDistance("convex", edgeAngle, add(round, footprint))));
 
+// Beside a joint the wall runs on into the next surface: neither line nor arris.
+const clear = smoothstep(mul(jointClear, 0.5), jointClear, featureDistance("joint", add(jointClear, 0.01)));
 const both = max(add(ink, arris), 0.0001);
 
 export default defineLayer({
   name: "Kowloon edge ink",
-  coverage: min(max(ink, arris), 1),
+  coverage: mul(min(max(ink, arris), 1), clear),
   baseColor: mix(inkColor, vec3(0.82, 0.79, 0.72), div(arris, both)),
   roughness: mix(0.95, 0.45, div(arris, both)),
-  normalOffset: mul(beyond, turned),
+  normalOffset: mul(beyond, mul(turned, clear)),
 });

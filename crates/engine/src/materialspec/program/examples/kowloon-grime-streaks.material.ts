@@ -10,7 +10,7 @@
 // down it from the edge to the longest streak. Each zone takes its own place in the tile and its own length from its
 // identity, so storeys and sills do not repeat one another; a column fades out where its zone ends (at the next edge
 // or an opening's head below), and a dark lip lies right under every edge.
-import { defineLayer, param, zoneCoord, zoneExtent, sampleAlpha, smoothstep, clamp, max, min, add, mul, sub, div, fract, vec2, vec3 } from "@superspec/material/v1";
+import { defineLayer, param, zoneCoord, zoneExtent, sampleAlpha, valueNoise, seed, smoothstep, clamp, max, min, add, mul, sub, div, fract, vec2, vec3 } from "@superspec/material/v1";
 
 const color = param.vec3({ default: vec3(0.36, 0.34, 0.31), range: [0, 1], label: "Grime colour" });
 const strength = param.scalar({ default: 0.8, range: [0, 2], label: "Strength" });
@@ -20,6 +20,7 @@ const shift = param.scalar({ default: 0, range: [0, 100], unit: "m", label: "Pat
 const variety = param.scalar({ default: 0.5, range: [0, 1], label: "Length varies by zone" });
 const lip = param.scalar({ default: 0.55, range: [0, 1], label: "Lip under the edge" });
 const lipDepth = param.scalar({ default: 0.05, range: [0.005, 0.3], unit: "m", label: "Lip depth" });
+const longRuns = param.scalar({ default: 0.8, range: [0, 2], label: "Long dark runs" });
 
 const zone = zoneCoord("zone");
 const extent = zoneExtent("zone");
@@ -33,8 +34,17 @@ const tile = vec2(add(div(zone.x, period), place), clamp(sub(1, div(zone.y, reac
 const reached = sub(1, smoothstep(0.85, 1, div(zone.y, reach)));
 const ended = sub(1, smoothstep(0.7, 1, div(zone.y, max(extent.y, 0.05))));
 const under = mul(lip, sub(1, smoothstep(mul(lipDepth, 0.3), lipDepth, zone.y)));
-const streaks = mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), mul(reached, ended)), strength);
-const coverage = mul(extent.x, min(add(streaks, under), 1));
+// Density varies along the edge and from zone to zone: clusters and gaps a metre or two across, and each zone
+// weathered more or less than its neighbours.
+const cluster = smoothstep(0.25, 0.75, valueNoise(vec2(add(mul(zone.x, 0.7), mul(zone.z, 37)), 0.5), seed("streak-cluster")));
+const zoneWeight = add(0.55, mul(0.7, fract(mul(zone.z, 3.17))));
+const density = mul(add(0.25, mul(0.95, cluster)), zoneWeight);
+const streaks = mul(mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), mul(reached, ended)), strength), density);
+// A few long dark runs: sparse columns that reach twice as far and stay strong.
+const column = smoothstep(0.8, 0.9, valueNoise(vec2(add(mul(zone.x, 4.3), mul(zone.z, 71)), 2.5), seed("streak-long")));
+const longTile = vec2(add(mul(zone.x, 7), place), clamp(sub(1, div(zone.y, mul(reach, 2))), 0.03, 0.996));
+const longRun = mul(mul(mul(column, sampleAlpha("superspec-material:grime-streaks.png", longTile)), sub(1, smoothstep(0.6, 1, div(zone.y, max(extent.y, 0.05))))), mul(strength, longRuns));
+const coverage = mul(extent.x, min(add(add(streaks, longRun), under), 1));
 
 export default defineLayer({
   name: "Kowloon grime streaks",

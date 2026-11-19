@@ -42,6 +42,10 @@
     [[], ["window", "window"], ["window", "window"], ["window", "window"]]
   ],
   "/fixtures": "Rusty cages holding old window units on storey 2's left and middle banks and storey 3's middle one; split condensers at window height over the lower right corner of the wide bank. fixtureAtPlans moves a bank's fixture: [m along the bank from its centre, m of its foot above the sill].",
+  "/cages": "Welded of fine bars painted a rusty off-white: bar and frame-rail thickness and bar spacing in m; rust is the most the seed mixes into the paint.",
+  "cageColor": "#c9c3b2", "cageRust": 0.3, "cageBar": 0.008, "cageRail": 0.02, "cageSpacing": 0.09,
+  "/tank": "A ribbed galvanised water tank about 2.4 m tall right of the stair hut: shell radius and height, stand height, ribs and conical lid rise.",
+  "tankRadius": 0.62, "tankHeight": 1.4, "tankStand": 0.72, "tankRibs": 7, "tankLid": 0.24,
   "fixturesPlans": [
     [[], ["none", "none", "none"], ["caged-aircon", "caged-aircon", "split"], ["none", "caged-aircon", "split"]],
     [[], ["none", "none"], ["aircon", "none"], ["caged-aircon", "none"]]

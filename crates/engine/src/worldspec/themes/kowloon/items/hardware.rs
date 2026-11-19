@@ -378,6 +378,7 @@ pub(super) fn cable(
 /// and sleepers, tinted per vertex), `cable`. Parameters: `width` (m, 1–60, 9), `depth` (m,
 /// 1–60, 6), `vents` (0–12, 3), `ventSide` (`left` | `right` | `front` | `rear`, `right`),
 /// `parapet` (m of parapet the vent stubs stand clear of, by 0.2 to 0.75 m; 0–3, 0.3),
+/// `ventInset` (m from the deck's edge to the stubs, 0.05–3; the seed's 0.32–0.5 by default),
 /// `pipes` (0–6, 2), `pipeSide` (`rear`), `pots` (0–16, 4), `potSide` (`left`), `cable`
 /// (false), `cableX0`, `cableY0`, `cableZ0`, `cableX1`, `cableY1`, `cableZ1` (m, its ends;
 /// 0, 0, 1.5 and 2, 0, 2), `cableSag` (m, 0–3, 0.2), `color` (pipes and vents, #7d7b74),
@@ -395,6 +396,12 @@ pub(super) fn roof_clutter(
     let pipe_count = a.integer("pipes", 2, 0..=6)?;
     let pots = a.integer("pots", 4, 0..=16)?;
     let parapet = a.bounded("parapet", 0.3, 0. ..=3.)?;
+    // `ventInset`: how far onto the deck the vent stubs stand (m, 0.05–3; the seed's 0.32 to
+    // 0.5 when left out), each up to 5 cm more by the seed.
+    let vent_inset = a.optional_number("ventInset")?;
+    if vent_inset.is_some_and(|v| !(0.05..=3.).contains(&v)) {
+        return Err(format!("{name}: ventInset must lie in 0.05..3."));
+    }
     let sides = [
         a.text("ventSide", "right")?,
         a.text("pipeSide", "rear")?,
@@ -456,7 +463,9 @@ pub(super) fn roof_clutter(
         let side = frame(&sides[0]);
         for i in 0..vents {
             let s = side.3 * (0.18 + 0.68 * (i as f64 + rng.float(0.2, 0.8)) / vents as f64);
-            let base = at(side, s, rng.float(0.32, 0.5), 0.);
+            let inset = rng.float(0.32, 0.5);
+            let inset = vent_inset.map_or(inset, |v| v + (inset - 0.32) / 0.18 * 0.05);
+            let base = at(side, s, inset, 0.);
             let (r, tall) = (rng.float(0.04, 0.062), parapet + rng.float(0.2, 0.75));
             let tint = mix(color, srgb("#6b4a34"), rng.float(0., 0.45));
             d.cuboid(
