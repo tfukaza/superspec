@@ -5,6 +5,7 @@ import { attributeName } from "./batch.ts";
 import { followPaintedFinishing, programSun, programTime, type MaterialShading } from "./shade.ts";
 import { sceneFieldUniforms } from "./scene-fields.ts";
 import { paintedMass } from "./painted-mass.ts";
+import { animeTree, animeTreeLook } from "./anime-tree.ts";
 
 /**
  * Foliage in the viewer (roadmap stage 6, TreeSpec phase 4): instanced batches that carry a foliage look
@@ -805,7 +806,17 @@ export class FoliageView {
           parts = [];
           for (let instance = 0; instance < level.drawn; instance++) {
             placement.fromArray(level.source[0].values, instance * 16);
-            parts.push(...paintedMass(mass, placement));
+            // An illustrated look (`FoliageMass.look`, or the page's `?treelook`) draws distinct leaves on the mass's
+            // twigs in the painted mass's stead (anime-tree.ts); like its parts, theirs are painted output.
+            const look = animeTreeLook(mass);
+            if (!look) { parts.push(...paintedMass(mass, placement)); continue; }
+            const drawn = animeTree(mass, placement, look, programSun, programTime);
+            for (const part of drawn) {
+              followPaintedFinishing(part.material as THREE.Material);
+              // A look that draws from an atlas of its own draws it now, before the sun's shadow pass needs it.
+              (part.userData.animeTree?.bake as ((renderer: THREE.WebGLRenderer) => void) | undefined)?.(this.renderer);
+            }
+            parts.push(...drawn);
           }
           // Foliage to the passes that look for it (ambient occlusion leaves it out), drawn as leaves.
           for (const part of parts) { part.userData.foliage = { ...level.look, family: "leaves" }; mesh.add(part); }

@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ANIME_SHADE_GLSL, SPRAY_GRID, generator, sprayAtlas, type Crown } from "./anime-tree-crown.ts";
+import { ANIME_SHADE_GLSL, SPRAY_GRID, generator, keepTargetAlpha, sprayAtlas, type Crown } from "./anime-tree-crown.ts";
 
 /**
  * Illustrated tree, look `sprays`: a card at each station of the crown (anime-tree-crown.ts), textured with a painted
@@ -70,8 +70,8 @@ void main() {
   float alpha = clamp((leaf.a - 0.5) / max(fwidth(leaf.a), 1e-4) + 0.5, 0.0, 1.0);
   if (alpha < 0.02) discard;
   // The spray's tip leans into the light of where it points; leaves behind others sit a little deeper.
-  vec3 n = normalize(vNormal + vUp * (vUv.y - 0.4) * 0.45);
-  float light = atSeen(atLightValue(n, vOcclusion + (1.0 - leaf.r) * 0.3, leaf.g * 0.75 + vJitter * 0.25), normalize(vNormal), vToCamera);
+  vec3 n = normalize(vNormal + vUp * (vUv.y - 0.4) * 0.3);
+  float light = atSeen(atLightValue(n, vOcclusion + (1.0 - leaf.r) * 0.16, leaf.g * 0.75 + vJitter * 0.25), normalize(vNormal), vToCamera);
   vec3 colour = atRampColour(light);
   gl_FragColor = vec4(atBackLight(colour, n, vToCamera, vOcclusion), alpha);
   #include <colorspace_fragment>
@@ -118,6 +118,7 @@ export function animeSprays(cards: SprayCard[], uniforms: Record<string, THREE.I
   const material = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, alphaToCoverage: true });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "anime/sprays";
+  keepTargetAlpha(mesh);
   mesh.customDepthMaterial = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, defines: { AT_DEPTH: 1 } });
   mesh.userData.animeTree = { instances: cards.length, triangles: cards.length * 2 };
   return mesh;

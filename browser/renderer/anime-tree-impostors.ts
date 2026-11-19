@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ANIME_SHADE_GLSL, crownShade, generator, type Crown, type CrownStation } from "./anime-tree-crown.ts";
+import { ANIME_SHADE_GLSL, crownShade, generator, keepTargetAlpha, type Crown, type CrownStation } from "./anime-tree-crown.ts";
 import { animeLeaves } from "./anime-tree-leaves.ts";
 
 /**
@@ -177,7 +177,7 @@ export function animeImpostors(crown: Crown, uniforms: Record<string, THREE.IUni
   const centres = new Float32Array(clusters.length * 4), broads = new Float32Array(clusters.length * 4), turns = new Float32Array(clusters.length * 4);
   clusters.forEach((cluster, i) => {
     cluster.centre.toArray(centres, i * 4);
-    centres[i * 4 + 3] = 0.5 * (cluster.radii.x + cluster.radii.y) * 1.08;
+    centres[i * 4 + 3] = 0.5 * (cluster.radii.x + cluster.radii.y) * 1.3;
     // The crown's form and shade where the cluster stands: its top's, since the model brings its own underside.
     const shade = crownShade(crown, cluster, cluster.centre.clone().add(new THREE.Vector3(0, 0, 0.6 * cluster.radii.z)));
     const broad = cluster.centre.clone().sub(crown.centre).divide(crown.radii).divide(crown.radii).normalize();
@@ -202,6 +202,7 @@ export function animeImpostors(crown: Crown, uniforms: Record<string, THREE.IUni
   // shadow pass before that casts nothing from the cards.
   const ensure = (renderer: THREE.WebGLRenderer) => { if (!made.baked) bake(renderer, made, uniforms); };
   mesh.onBeforeRender = ensure;
+  keepTargetAlpha(mesh);
   mesh.userData.animeTree = { instances: clusters.length, triangles: clusters.length * 2, bake: (renderer: THREE.WebGLRenderer) => ensure(renderer) };
   return mesh;
 }

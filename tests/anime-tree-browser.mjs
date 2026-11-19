@@ -45,6 +45,11 @@ try {
   await page.waitForFunction(() => document.body.dataset.state === "ready", {}, { timeout: 120000 });
   await page.evaluate(() => window.lab.load("/plants.json"));
   const sun = (process.env.SUN ?? "135,40").split(",").map(Number);
+  // ATLAS=1 also writes the sprays' atlas, a picture a channel (spray-atlas-<r|g|a>.png).
+  if (process.env.ATLAS === "1") for (const channel of ["r", "g", "a"]) {
+    const url = await page.evaluate(channel => window.lab.atlas(channel), channel);
+    await writeFile(resolve(out, `spray-atlas-${channel}.png`), Buffer.from(url.split(",")[1], "base64"));
+  }
   const shoot = async (name, position, target, fov) => {
     await page.evaluate(({ position, target, fov }) => window.lab.view(position, target, fov), { position, target, fov });
     await waitForFrames(page, 2);

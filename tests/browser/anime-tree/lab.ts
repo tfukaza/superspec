@@ -7,6 +7,7 @@
 import * as THREE from "three";
 import type { FoliageMass } from "../../../browser/model/packet.ts";
 import { animeTree, type AnimeTreeLook } from "../../../browser/renderer/anime-tree.ts";
+import { sprayAtlas } from "../../../browser/renderer/anime-tree-crown.ts";
 import { paintedMass } from "../../../browser/renderer/painted-mass.ts";
 import { programSun } from "../../../browser/renderer/shade.ts";
 
@@ -106,15 +107,25 @@ const lab = {
     renderer.render(scene, camera);
   },
   wall(visible: boolean): void { wall.visible = visible; },
+  /** The spray atlas as a PNG data URL: `channel` r (tone), g (id) or a (coverage) as grey. */
+  atlas(channel: "r" | "g" | "a"): string {
+    const image = sprayAtlas().image as { data: Uint8Array; width: number; height: number };
+    const canvas = Object.assign(document.createElement("canvas"), { width: image.width, height: image.height }), context = canvas.getContext("2d")!;
+    const out = context.createImageData(image.width, image.height), at = { r: 0, g: 1, a: 3 }[channel];
+    for (let i = 0; i < image.width * image.height; i++) { const v = image.data[i * 4 + at]; out.data.set([v, v, v, 255], i * 4); }
+    context.putImageData(out, 0, 0);
+    return canvas.toDataURL("image/png");
+  },
   /** Median milliseconds a frame over `frames` draws (each finished by reading a pixel back), and what a frame draws. */
   measure(frames = 60, shadows = true) {
     const gl = renderer.getContext(), pixel = new Uint8Array(4), runs: number[] = [];
     renderer.shadowMap.autoUpdate = shadows;
-    for (let i = 0; i < frames + 8; i++) {
+    // Ten draws a sample, so a sample is long against the clock's step.
+    for (let i = 0; i < frames / 10 + 2; i++) {
       const start = performance.now();
-      renderer.render(scene, camera);
+      for (let k = 0; k < 10; k++) renderer.render(scene, camera);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-      if (i >= 8) runs.push(performance.now() - start);
+      if (i >= 2) runs.push((performance.now() - start) / 10);
     }
     renderer.shadowMap.autoUpdate = true;
     runs.sort((a, b) => a - b);
