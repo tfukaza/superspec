@@ -254,11 +254,13 @@ leaves the seeded result as it was):
   paint (its surface receiver's paint tints it, as a metal receiver's does). Cartons behind a storeroom
   window (`storagePlans`) stand under half its height, in the room's shade.
 - **Cloth.** `kowloon/sagging-tarp` (`items/cloth.rs`) is a sheet hung between wall eyelets and pole tops:
-  every edge hangs between its fixings by `sag`, the field bellies, pleats run out from the front fixings,
-  ropes tie it and a stay ties each post back to the wall. With `frame` it is a taut awning on a light
-  frame, with `stripes` bands and a `valance` whose hem is cut in `scallops`. `kowloon-shopfront` uses it
-  for its `tarp` and `striped` awnings (`awningSag`, `awningStripes`; a stripe is 0.18 m wide unless
-  counted). `kowloon/sheet-canopy` is a window hood of lapped corrugated sheets, each with its own seeded
+  every edge hangs between its fixings by `sag`, the field bellies, sharp creases run out from every
+  fixing (shaded in their troughs by the cloth's tints), a slack sheet gathers in a few seeded
+  round-bottomed folds that deepen toward its hem, ropes tie it and a stay ties each post back to the
+  wall. With `frame` it is a taut awning on a light frame, with `stripes` bands and a `valance` whose hem
+  is cut in `scallops` and bound. `kowloon-shopfront` uses it for its `tarp` and `striped` awnings
+  (`awningSag`, `awningStripes`; a stripe is 0.18 m wide unless counted), which a building plans per
+  edge and bay (`awningSagPlans`, `awningStripePlans`; 0 keeps the default). `kowloon/sheet-canopy` is a window hood of lapped corrugated sheets, each with its own seeded
   fall, rusted from the drip edge; `kowloon-floor`'s `canopy` projects it 0.5 m.
 - **Wires and hardware.** `kowloon/cable` (`items/hardware.rs`) strings a bundle of `count` cables along
   a wall, each hanging by `sag` between clips; `out` takes its far end off the wall to a sign's pole or
@@ -270,6 +272,17 @@ leaves the seeded result as it was):
   two-eared clips round a drain; `meterPlans` (`[x, z, meters]` per edge) places meters where the seed
   would not. A horizontal `kowloon/board-sign` hangs by two straps from one pole with two stays, and
   every sign fixing is a plate with bolts.
+- **Neighbours.** `partyPlans` (one per edge: `none`, `wall`, `stub`; street edges ignore it) stands
+  `kowloon/party` (`items/party.rs`) against a party edge. `wall` replaces that side by a neighbour's
+  plain stained wall 8 cm proud of it and a little past its ends, seeded somewhat taller or shorter than
+  the parapet, under a coping (its roof rail goes too). `stub` keeps the side behind a slice of the
+  adjoining building 1.1 to 1.9 m deep: storeys of its own (`partyStoreyPlans`, 0 for a seeded few about
+  the building's), rows of windows (some with units), string courses, a drain and a parapet. A party
+  edge has no seeded back door or cables. Either is a few hundred faces.
+- **Details.** `conduitColor` paints every conduit; `plaquePlans`' seventh column names a plate's
+  lettering face (the small warehouse's number is `heavy`: thin strokes vanish from across the street);
+  a rusted shutter head box (`shutterHeadRust` > 0) is streaked on its face, rust running down from its
+  top over patches of grey.
 - **Roof.** `roofRailPlan` gives each edge's parapet its share of rail (0 for none) in place of the
   seeded street rule. `roofClutter` (0 to 1) scales `kowloon/roof-clutter`: vent stubs with cowls or
   goosenecks along `roofVentSide`, pipes on sleepers along `roofPipeSide`, pots along `roofPotSide`, and

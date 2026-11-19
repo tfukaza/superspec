@@ -1,6 +1,6 @@
 {
   "//": "kowloon-building controls for the small three-storey warehouse of the second reference picture: a 6 by 6 m box with square corners, its front (edge 0) on the street. The other edges are planned bare: a few small barred windows and the seeded back door, no units, pipes or vents.",
-  "/view": {"azimuth": 14, "elevation": 14, "distance": 31, "fov": 26, "height": 4.5},
+  "/view": {"azimuth": 14, "elevation": 14, "distance": 31, "fov": 26, "height": 4.5, "sunElevation": 38},
   "seed": 12,
   "footprint": [[0, 0], [6, 0], [6, 6], [0, 6]],
   "streets": [true, false, false, false],

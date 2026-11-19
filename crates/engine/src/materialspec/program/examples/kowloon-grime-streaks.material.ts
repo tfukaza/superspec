@@ -1,55 +1,44 @@
-// Grime streaking down from an edge, as a weathering layer: a generic deposit that follows the feature the slot
-// names `source` (a ledge, a sill, a roofline, the drip line under an air conditioner: any polyline its geometry's
-// owner reports, so its endpoints are the edge's), with its colour, strength, length and how often it repeats.
+// Grime streaking down from an edge, as a weathering layer: a generic deposit that hangs in the zones the slot follows
+// as `zone` (runoff under a storey's top, a sill, a coping, a balcony ledge, the drip of an air conditioner: whatever
+// zones the geometry's owner states), with its colour, strength, length and how often it repeats.
 //
-// Nothing is evaluated per texel but the mapping: the streaks themselves are one cached tile,
-// `superspec-material:grime-streaks.png` (written by tools/grime/streak-pattern.mjs from the Kowloon wall
-// condition's runoff), in edge space: across it along the edge over one period, down it from the edge to the longest
-// streak. Each texel finds where it hangs from the edge: its distance to the edge, turned into a drop along the
-// surface's downhill direction (gravity projected onto the surface), and its position along the edge, moved back up
-// that downhill line. So streaks fall with gravity whatever the edge's slope (the tile is skewed on a sloping ledge),
-// a longer or shorter run stretches the same tile, and every edge of every wall repeats it. A point above its edge
-// reads the same distance: the feature the slot names `guard` (below) tells the two sides apart.
-import { defineLayer, param, featureDistance, featureTangent, sampleAlpha, smoothstep, select, lt, clamp, normalize, dot, cross, abs, max, min, add, mul, sub, div, vec2, vec3, world, normal, gravity } from "@superspec/material/v1";
+// The owner's zones say where every texel hangs: `u` metres along its edge (running on from side to side and round a
+// corner) and `v` metres below it along the surface's downhill, 0 at the edge. Nothing above an edge is in its zone,
+// so streaks always start at their edge and never climb, and where two zones overlap the nearest edge above wins.
+// The streaks themselves are one cached tile, `superspec-material:grime-streaks.png` (written by
+// tools/grime/streak-pattern.mjs from the Kowloon wall condition's runoff): across it along the edge over one period,
+// down it from the edge to the longest streak. Each zone takes its own place in the tile and its own length from its
+// identity, so storeys and sills do not repeat one another; a column fades out where its zone ends (at the next edge
+// or an opening's head below), and a dark lip lies right under every edge.
+import { defineLayer, param, zoneCoord, zoneExtent, sampleAlpha, smoothstep, clamp, max, min, add, mul, sub, div, fract, vec2, vec3 } from "@superspec/material/v1";
 
 const color = param.vec3({ default: vec3(0.36, 0.34, 0.31), range: [0, 1], label: "Grime colour" });
 const strength = param.scalar({ default: 0.8, range: [0, 2], label: "Strength" });
 const streakLength = param.scalar({ default: 2.8, range: [0.1, 10], unit: "m", label: "Longest streak" });
 const period = param.scalar({ default: 4, range: [0.5, 20], unit: "m", label: "Repeat along the edge" });
 const shift = param.scalar({ default: 0, range: [0, 100], unit: "m", label: "Pattern offset" });
+const variety = param.scalar({ default: 0.5, range: [0, 1], label: "Length varies by zone" });
+const lip = param.scalar({ default: 0.55, range: [0, 1], label: "Lip under the edge" });
+const lipDepth = param.scalar({ default: 0.05, range: [0.005, 0.3], unit: "m", label: "Lip depth" });
 
-const guardLift = param.scalar({ default: 0.3, range: [0.005, 1], unit: "m", label: "Guard offset above the edge" });
-
-const distance = featureDistance("source", 10);
-const along = featureTangent("source", 10);
-// Which side of the edge: a distance alone cannot say. Where the owner also draws the same edge `guardLift` (0.3 m) uphill as
-// the feature the slot names `guard`, the two distances differ by the cosine of the angle off straight below: 1 under
-// the edge, 0 level with its ends, negative above it. Streaks then hang only below the edge, fanning out a little past
-// its ends as they fall, instead of ringing each end and climbing the wall above. Without a guard every side is below.
-const guarded = featureDistance("guard", 12);
-// (Where the nearest guard is another edge's, further down the wall, it is much nearer than this edge: the texel is
-// below this edge all the same.)
-const side = div(sub(guarded, distance), guardLift);
-const beneath = select(lt(guarded, 11.5), select(lt(side, -1.3), 1, clamp(side, 0, 1)), 1);
-// (The lift is large and the threshold loose because an edge is often not in the plane of the face below it: a panel
-// reports its top along the middle of its thickness, which shortens the difference close under the edge.)
-const under = smoothstep(0.45, 0.75, beneath);
-// Downhill on the surface (straight down a flat one, so it is never zero), and the direction across the edge in the
-// surface: a unit vector where the receiver has the edge, zero where it has none (then nothing is drawn).
-const downhill = normalize(add(sub(gravity, mul(normal, dot(gravity, normal))), vec3(0, 0, -1e-4)));
-const across = cross(normal, along);
-const facing = dot(across, downhill);
-// The drop along the downhill line from the edge to this point, and where on the edge that line starts.
-const drop = div(distance, max(abs(facing), 0.2));
-const start = sub(dot(world, along), mul(drop, dot(downhill, along)));
-const tile = vec2(div(add(start, shift), period), min(div(drop, streakLength), 0.999));
-// Beyond the longest streak, or where the receiver has no such edge, nothing.
-const reached = sub(1, smoothstep(0.97, 1, div(drop, streakLength)));
-const coverage = mul(mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), reached), under), strength);
+const zone = zoneCoord("zone");
+const extent = zoneExtent("zone");
+// Each zone's own length (from 1 - variety to 1 + variety of the longest streak) and place in the tile.
+const reach = mul(streakLength, add(sub(1, mul(variety, 0.5)), mul(variety, fract(mul(zone.z, 7.31)))));
+const place = add(div(shift, period), fract(mul(zone.z, 13.7)));
+// The tile is read from its last row up (an image's rows run upward here): its first row, the streaks' heads, at the
+// edge. Both ends are kept clear of its wrap, so a streak is full strength right under its edge.
+const tile = vec2(add(div(zone.x, period), place), clamp(sub(1, div(zone.y, reach)), 0.03, 0.996));
+// Faded out toward the longest streak and toward where the zone ends in this column.
+const reached = sub(1, smoothstep(0.85, 1, div(zone.y, reach)));
+const ended = sub(1, smoothstep(0.7, 1, div(zone.y, max(extent.y, 0.05))));
+const under = mul(lip, sub(1, smoothstep(mul(lipDepth, 0.3), lipDepth, zone.y)));
+const streaks = mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), mul(reached, ended)), strength);
+const coverage = mul(extent.x, min(add(streaks, under), 1));
 
 export default defineLayer({
   name: "Kowloon grime streaks",
-  coverage: min(coverage, 1),
+  coverage,
   baseColor: color,
   blend: { baseColor: "multiply" },
 });

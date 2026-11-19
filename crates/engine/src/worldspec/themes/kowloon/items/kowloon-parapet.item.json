@@ -55,16 +55,14 @@
   ],
   "features": [
     {"name": "drip", "part": "outlet", "points": [["outletX - 0.14", 0, 0.1], ["outletX + 0.14", 0, 0.1]], "when": "outlet", "zone": {"length": 1.5}},
-    {"name": "drip-above", "part": "outlet", "points": [["outletX - 0.14", 0, 0.4], ["outletX + 0.14", 0, 0.4]], "when": "outlet"},
-    {"name": "coping", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
-    {"name": "coping-above", "part": "parapet", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]}
+    {"name": "coping", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]}
   ],
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.24, 0.215, 0.18], "streakLength": 2.2, "period": 3.6}, "seed": 3, "follow": {"source": ["drip", "eave", "ledge", "sill"], "guard": ["drip-above", "eave-above", "ledge-above", "sill-above"]}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.15], "streakLength": 1.5, "shift": 1.7, "period": 2.3}, "seed": 5, "follow": {"source": "coping", "guard": "coping-above"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 3.6, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.1, "color": [0.29, 0.26, 0.22], "streakLength": 1.4, "shift": 1.7, "period": 2.3, "variety": 0.4, "lip": 0.6}, "seed": 5, "follow": {"zone": ["runoff-coping", "runoff-sill", "runoff-top"]}}
     ]
   }
 }

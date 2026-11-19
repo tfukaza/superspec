@@ -15,10 +15,13 @@ const ink = sampleColor("superspec-material:lettering.png", sheet);
 const stroke = sampleAlpha("superspec-material:lettering.png", sheet);
 const round = surface.x;
 const at = vec2(surface.x, surface.y);
-// Flakes: clustered, fine-edged; a stroke survives where the field stays under the threshold.
-const cluster = valueNoise(mul(at, 6.5), seed("letter-cluster"));
-const chips = valueNoise(mul(at, 70), seed("letter-chips"));
-const kept = sub(1, smoothstep(sub(0.86, mul(wear, 0.34)), sub(0.9, mul(wear, 0.3)), add(mul(cluster, 0.62), mul(chips, 0.38))));
+// Flakes: small and fine-edged, so a stroke loses paint along its length and at its edges (where the cutout is
+// thin) but never a whole stroke; a stroke survives where the field stays under the threshold.
+const cluster = valueNoise(mul(at, 14), seed("letter-cluster"));
+const chips = valueNoise(mul(at, 90), seed("letter-chips"));
+const edge = sub(1, smoothstep(0.5, 0.85, stroke));
+const flake = add(add(mul(cluster, 0.45), mul(chips, 0.55)), mul(edge, 0.25));
+const kept = sub(1, smoothstep(sub(0.9, mul(wear, 0.34)), sub(0.93, mul(wear, 0.3)), flake));
 const cloud = valueNoise(mul(at, 3.1), seed("letter-fade"));
 const chalked = mix(ink, add(mul(ink, 0.7), vec3(0.22, 0.21, 0.19)), mul(fading, add(0.3, mul(0.7, cloud))));
 

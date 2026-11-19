@@ -173,14 +173,19 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     );
     let follows: Vec<_> = floor.layers["wall"][2..]
         .iter()
-        .filter_map(|layer| layer.follow.get("source"))
-        .map(|source| serde_json::to_value(source).expect("a followed feature"))
+        .filter_map(|layer| layer.follow.get("zone"))
+        .map(|zone| serde_json::to_value(zone).expect("followed zones"))
         .collect();
-    // One layer of runoff streaks from the nearest of its drips, eave, ledges and sills, and
-    // the fringe under a parapet's coping; on the tiled spandrels from the sills and drips.
+    // Runoff streaks hang in every runoff zone the items state (under the storey's top, its
+    // sills, a parapet's coping, a balcony's ledge, the fixtures' drips), a finer fringe under
+    // the tops, sills and copings, and rust runs from the fixings.
     assert_eq!(
         follows,
-        [json!(["drip", "eave", "ledge", "sill"]), json!("coping")]
+        [
+            json!(["drip", "ledge", "runoff-coping", "runoff-sill", "runoff-top"]),
+            json!(["runoff-coping", "runoff-sill", "runoff-top"]),
+            json!(["fixing-drip", "rust"]),
+        ]
     );
     // The soot band follows the pavement line, which only a storey at street level has.
     let soot = floor.layers["wall"]

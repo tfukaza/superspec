@@ -1,30 +1,30 @@
-// A stain that runs along a line, as a weathering layer: rust washed down a wall from a bracket, a bolt or a fixing,
-// following the feature the slot names `run` (a polyline its owner draws from the source downward: where the water
-// goes). The run is a few centimeters wide, wider and fainter in places, broken into threads, with a pale wash of the
-// same colour spreading beside it. It darkens the surface beneath by multiplication, so paint and grime show through;
-// a receiver without the feature shows nothing. Give it any stain's colour: rust by default, verdigris, tar, lime.
-import { defineLayer, param, featureDistance, smoothstep, valueNoise, add, mul, sub, min, max, vec2, vec3, seed, surface } from "@superspec/material/v1";
+// A stain washed down from a fixing, as a weathering layer: rust from a bracket, a bolt, a cage's foot or a sign's
+// fixing plate, in the zones the slot follows as `zone` (each a short edge where the water leaves the fixing, its owner
+// says how far it runs). The run is as wide as its zone's edge at the top, breaks into threads and thins as it falls,
+// and fades out where its zone ends. It darkens the surface beneath by multiplication, so paint and grime show
+// through; a receiver without such a zone shows nothing. Give it any stain's colour: rust by default, verdigris, tar,
+// lime.
+import { defineLayer, param, zoneCoord, zoneExtent, smoothstep, valueNoise, add, mul, sub, div, min, max, vec2, vec3, seed } from "@superspec/material/v1";
 
 const color = param.vec3({ default: vec3(0.43, 0.23, 0.095), range: [0, 1], label: "Stain colour" });
 const strength = param.scalar({ default: 0.95, range: [0, 1], label: "Strength" });
-const thickness = param.scalar({ default: 0.045, range: [0.005, 0.3], unit: "m", label: "Run width" });
-const wash = param.scalar({ default: 0.45, range: [0, 1], label: "Wash beside the run" });
-const washReach = param.scalar({ default: 0.18, range: [0.01, 1], unit: "m", label: "Wash reach" });
+const breakup = param.scalar({ default: 0.6, range: [0, 1], label: "Threads" });
 
-const away = featureDistance("run", 2);
-const at = vec2(surface.x, surface.y);
-// The run: its width and weight wander along its fall; fine threads break it across.
-const swell = valueNoise(mul(at, vec2(6, 2.6)), seed("run-swell"));
-const breadth = mul(thickness, add(0.6, mul(0.9, swell)));
-const threads = add(0.75, mul(0.25, smoothstep(0.3, 0.75, valueNoise(mul(at, vec2(90, 5)), seed("run-threads")))));
-const weight = add(0.7, mul(0.3, valueNoise(mul(at, vec2(3, 1.4)), seed("run-weight"))));
-const core = mul(mul(sub(1, smoothstep(mul(breadth, 0.15), breadth, away)), threads), weight);
-// The wash: a soft halo, patchy.
-const halo = mul(mul(wash, sub(1, smoothstep(0, washReach, away))), add(0.3, mul(0.7, valueNoise(mul(at, vec2(11, 3)), seed("run-wash")))));
+const zone = zoneCoord("zone");
+const extent = zoneExtent("zone");
+const fall = div(zone.y, max(extent.y, 0.05));
+// Threads across the run, each wandering a little as it falls; fewer of them survive further down.
+const at = vec2(add(mul(zone.x, 70), mul(zone.z, 53)), mul(zone.y, 3));
+const threads = valueNoise(at, seed("run-threads"));
+const kept = smoothstep(sub(0.25, mul(0.5, mul(breakup, sub(1, fall)))), add(0.5, mul(breakup, 0.25)), add(threads, mul(0.35, sub(1, fall))));
+const weight = add(0.65, mul(0.35, valueNoise(vec2(mul(zone.z, 91), mul(zone.y, 1.5)), seed("run-weight"))));
+const fade = sub(1, smoothstep(0.55, 1, fall));
+// Darkest right under the fixing.
+const head = sub(1, smoothstep(0, 0.06, zone.y));
 
 export default defineLayer({
   name: "Kowloon rust run",
-  coverage: mul(strength, min(max(core, halo), 1)),
+  coverage: mul(mul(strength, extent.x), min(add(mul(mul(kept, weight), fade), mul(head, 0.5)), 1)),
   baseColor: color,
   blend: { baseColor: "multiply" },
 });

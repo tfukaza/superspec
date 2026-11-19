@@ -129,7 +129,7 @@ function facadeMaterials() {
     { id: "poster-print", entry: "kowloon-poster-print.material.ts", parameters: {}, seed: 7, meshes: [] },
     // Signs: the painted ground, worn and stained, and its lettering with paint lost from the strokes (both tinted).
     { id: "sign-board", entry: "kowloon-sign-board.material.ts", parameters: { flaking: 0.8, fading: 0.65, grime: 0.75, rust: 0.7 }, seed: 7, meshes: [] },
-    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.3, fading: 0.3 }, seed: 7, meshes: [] },
+    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.12, fading: 0.3 }, seed: 7, meshes: [] },
     // Lit tubes in the shops, and a shop's concrete floor: grey, lightly soiled, never dark.
     { id: "tube-light", entry: "kowloon-tube-light.material.ts", parameters: {}, seed: 7, meshes: [] },
     // A lit upper room's walls and ceiling (tinted): a soft warm glow under its own tube, far dimmer than the tube.
