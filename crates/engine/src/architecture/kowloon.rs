@@ -153,13 +153,16 @@ impl ThemeAdapter for Kowloon<'_> {
             .iter()
             .filter(|node| node.kind == "city")
             .flat_map(|city| &city.children);
-        city::place(
+        let scene = city::place(
             scene,
-            placements,
+            placements
+                .clone()
+                .filter(|n| !matches!(n.kind.as_str(), "tree" | "shrub")),
             catalog::request,
             &catalog::asset,
             physical.compiler.cancelled,
-        )
+        )?;
+        catalog::finish(scene, placements, physical.compiler.cancelled)
     }
     fn fallback_source(&self) -> Option<&Node> {
         self.source.as_ref()

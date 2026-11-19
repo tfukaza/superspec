@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import type { CpuField, MaterialShading } from "./shade.ts";
-import { GpuBaker, SCENE_MAP_BYTES, gpuBakeUnsupported, type AtlasMaps, type FieldTexels, type StackInput } from "./bake.ts";
+import { GpuBaker, gpuBakeUnsupported, type AtlasMaps, type FieldTexels, type StackInput } from "./bake.ts";
 import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { shareInstanceAttributes } from "./batch.ts";
 
@@ -194,11 +194,6 @@ interface Run {
 
 /** Pause after the last parameter change before its materials are baked again. */
 const SETTLE_MS = 160;
-/**
- * GPU memory the maps on screen may take; meshes beyond it stay on the per-pixel look. What the graph keeps after a
- * node's last user is bounded by the same number (`SCENE_MAP_BYTES` in bake.ts).
- */
-const SCENE_BAKE_BYTES = SCENE_MAP_BYTES;
 const NO_TOTALS = { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0, nodesDrawn: 0, nodesReused: 0 };
 /**
  * `?bakedtints=on`: a baked look is multiplied by the vertex tints of the mesh it replaces, as the unbaked mesh is. A
@@ -262,7 +257,7 @@ export class SceneBaker {
    * baked look ready or is known not to get one; the scene may be committed before that (the rest follows on screen).
    * A scene prepared earlier and never committed is given up.
    */
-  prepare(targets: SceneBakeTarget[], fields?: FieldSource): PreparedScene {
+  prepare(targets: SceneBakeTarget[], fields?: FieldSource, vertexTints: boolean | ((id: string) => boolean) = BAKED_TINTS): PreparedScene {
     this.discard();
     const baker = this.host.baker();
     const run: Run = { entries: [], fields, fieldsInFlight: false, fieldRetries: 0, attached: false, shaderReady: false, closed: false, pumping: false,
@@ -284,7 +279,7 @@ export class SceneBaker {
       entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout);
       shareInstanceAttributes(entry.shaderGeometry, entry.display);
       // An instanced batch is tinted per instance, not per vertex.
-      if (BAKED_TINTS && !(entry.target.mesh as THREE.InstancedMesh).isInstancedMesh && carryTints(entry.shaderGeometry, entry.display)) entry.material.vertexColors = true;
+      if ((typeof vertexTints === "function" ? vertexTints(entry.target.mesh.name) : vertexTints) && !(entry.target.mesh as THREE.InstancedMesh).isInstancedMesh && carryTints(entry.shaderGeometry, entry.display)) entry.material.vertexColors = true;
     }
     run.materials = this.host.compile(fresh.map(entry => ({ mesh: entry.target.mesh, geometry: entry.display!, material: entry.material! }))).catch(() => {});
     const settled = new Promise<void>(resolve => {
@@ -629,7 +624,7 @@ export class SceneBaker {
     const options = {
       fields: entry.fields, current, inPlace: !onScreen,
       allocate: (bytes: number) => {
-        if (this.bytesHeld(run) + bytes > SCENE_BAKE_BYTES) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
+        if (this.bytesHeld(run) + bytes > this.host.baker().sceneAllowance) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
       },
       beforeOverwrite: () => this.showShader(run, entry),
     };

@@ -317,8 +317,9 @@ document, subject to the scene geometry limits.
 | `road` | Near starting corner at road surface. `length` extends along +X and `width` toward −Y. |
 | `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
 | `avenue` | Starting corner at paving height. A pedestrian strip extends along +X, with its median halfway across its `width` toward −Y. Accepts `length` and `width`. |
-| `tree` | Trunk foot, using a static TreeSpec trunk, branch and canopy mesh. |
-| `lamp` | Post foot, with the arm pointing toward local −Y. |
+| `tree` | Trunk foot. The Kowloon theme supplies TreeSpec bark levels, illustrated foliage and a shadow proxy. |
+| `shrub` | Root position for a low illustrated shrub. Supports the same heading and row controls as trees. |
+| `lamp` | Post foot. Optional `banner="true"` hangs a cloth banner. The arm points toward local −Y. |
 
 These theme props contribute visual geometry. Author AML slabs, walls or collision
 proxies independently where the layout requires walking surfaces or obstructions.

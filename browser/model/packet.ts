@@ -143,6 +143,7 @@ export function readBatches(view: DataView, offset: number, counts: BatchCounts)
     attributes: floats(counts.attributes ?? 0) };
 }
 export interface Manifest {
+  lighting?: unknown;
   architecture?: { metadata?: { kind: string; attributes: Record<string, unknown> }[] };
   schemaVersion: 3; revision: number; success: boolean; id: string; name: string;
   units: "meters"; axes: "right-handed-z-up";

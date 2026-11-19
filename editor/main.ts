@@ -1,3 +1,4 @@
+import { CityAppearance } from "./city-appearance.ts";
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, megabytes } from "../browser/model/limits.ts";
 import "./style.css";
 import sample from "./starter.aml?raw";
@@ -23,6 +24,8 @@ const assets: Record<string, Uint8Array> = Object.create(null);
 let assetImport = 0;
 let pendingOpen: (AmlSelection & { revision: number }) | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
+const cityAppearance = new CityAppearance();
+window.addEventListener("pagehide", () => cityAppearance.close(), { once: true });
 const scene = new RustScene(viewport, mesh => {
   selection.textContent = mesh ? `${mesh.id} · source ${mesh.source.line}:${mesh.source.column}` : "Click a model to inspect its source.";
 });
@@ -59,7 +62,7 @@ const compiler = new BrowserCompiler(async result => {
       return;
     }
     status.textContent = `Preparing preview · Rust compilation ${(result.compileMs ?? 0).toFixed(1)} ms…`;
-    if (!await scene.apply(packet, () => revision === result.revision)) return;
+    if (!await cityAppearance.apply(scene, packet, () => revision === result.revision)) return;
     if (pendingOpen?.revision === result.revision) {
       source.value = pendingOpen.source;
       for (const name of Object.keys(assets)) delete assets[name];

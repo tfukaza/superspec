@@ -24,6 +24,7 @@ pub static EXTENSION: Extension = Extension {
         tag("avenue", "city"),
         tag("sidewalk", "city"),
         tag("tree", "city"),
+        tag("shrub", "city"),
         tag("lamp", "city"),
     ],
     decode: read,
@@ -112,6 +113,11 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 }
                 Value::Number(value)
             }
+            "banner" if kind == "lamp" => Value::Boolean(match text {
+                "true" | "1" => true,
+                "false" | "0" => false,
+                _ => return Err(invalid()),
+            }),
             "floors" if kind == "building" => Value::Number(
                 text.parse::<u8>()
                     .ok()

@@ -92,7 +92,7 @@ type LayeredShading = MaterialShading & { layers?: LayerShading[]; channels?: Re
  * Asks `prepareShading` for GPU-baked maps once the first look is shown: the receivers' atlas layouts from the engine
  * (`layout_project`) and, for programs with CPU-only parts, a source of their CPU-baked fields.
  */
-export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSource }
+export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSource; vertexTints?: boolean | ((id: string) => boolean); allowanceMiB?: number }
 /** Materials prepared for a scene's meshes while the scene before it is still displayed: put on them, or given up. */
 export interface SceneLook { commit(): void; discard(): void }
 /** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
@@ -332,6 +332,11 @@ export class RustScene {
     this.foliage.invalidate();
     this.fitShadows();
     this.stateLighting();
+    this.invalidate();
+  }
+
+  setBackdrop(color: string): void {
+    (this.scene.background as THREE.Color).set(color);
     this.invalidate();
   }
 
@@ -733,6 +738,7 @@ export class RustScene {
       // The programs the bakes will draw with start compiling at once (the driver compiles them off the page's thread).
       if (bake) {
         const baker = this.bakerInstance ??= this.newBaker();
+        baker.setSceneAllowance(bake.allowanceMiB);
         for (const entry of prepared.values()) {
           // A painted material is never shown with GPU-baked maps, so nothing bakes its program here.
           if (entry.material.shader.painted) continue;
@@ -805,7 +811,7 @@ export class RustScene {
       const started = performance.now();
       let shaderReady = false;
       // The baked looks are prepared from here on, while the scene before this one stays on screen.
-      const baked = bake ? (this.sceneBaker ??= this.newSceneBaker()).prepare(targets, bake.fields) : undefined;
+      const baked = bake ? (this.sceneBaker ??= this.newSceneBaker()).prepare(targets, bake.fields, bake.vertexTints) : undefined;
       if (!baked) { await compileShaders(); shaderReady = true; }
       else if (this.shaderFirst) {
         // `?firstlook=shader`: the per-pixel look always comes first and the maps follow it.

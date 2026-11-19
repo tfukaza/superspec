@@ -5,7 +5,8 @@
     <sidewalk id="far-pavement" position="8.25 20 0.15" heading="-90" length="40" width="4"/>
     <avenue id="promenade" position="-3.05 3 0.105" heading="180" length="32" width="8.2"/>
     <tree id="median" position="-7.55 7.1 0.315" count="4" step="-7 0 0"/>
-    <lamp id="near-lights" position="-11.05 4.9 0.105" heading="180" count="4" step="-7 0 0"/>
+    <shrub id="understory" position="-11.05 7.1 0.35" count="3" step="-7 0 0"/>
+    <lamp id="near-lights" banner="true" position="-11.05 4.9 0.105" heading="180" count="4" step="-7 0 0"/>
     <lamp id="far-lights" position="-11.05 10 0.105" count="4" step="-7 0 0"/>
   </city>
 </architecture>

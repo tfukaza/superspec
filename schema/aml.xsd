@@ -1132,8 +1132,10 @@
   </xs:extension></xs:complexContent></xs:complexType>
   <xs:element name="city"><xs:complexType><xs:choice minOccurs="0" maxOccurs="unbounded">
     <xs:element name="road" type="cityStrip"/><xs:element name="avenue" type="cityStrip"/>
-    <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlacement"/>
-    <xs:element name="lamp" type="cityPlacement"/>
+    <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlacement"/><xs:element name="shrub" type="cityPlacement"/>
+    <xs:element name="lamp"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="banner" type="xs:boolean"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
     <xs:element name="building"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
       <xs:attribute name="floors" type="xs:positiveInteger"/>
     </xs:extension></xs:complexContent></xs:complexType></xs:element>

@@ -34,8 +34,20 @@
           "course": 0.75,
           "stagger": false,
           "bands": 0,
-          "benches": 0,
-          "seed": 7
+          "benches": 3,
+          "seed": 7,
+          "medianStart": {
+            "expr": "min(2.5, length / 4)"
+          },
+          "medianEnd": {
+            "expr": "length - min(3.5, length / 4)"
+          },
+          "benchSpacing": 7,
+          "benchFirst": 8,
+          "bins": true,
+          "binColor": "#7d8778",
+          "bollardColor": "#1d1e1c",
+          "bollardSpacing": 1.3
         }
       }
     }

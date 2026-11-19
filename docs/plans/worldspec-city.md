@@ -15,14 +15,13 @@ a lamp in local coordinates.
    Both the native CLI and the browser worker consume the same Rust implementation.
 3. Port the corner building, carriageway, pedestrian avenue, far sidewalk, median
    trees and lamp rows. The avenue and sidewalk reuse the existing stone generators.
-   The tree prop uses the street tree’s backing canopy for static mesh delivery.
+   The tree and shrub placements use the street study’s illustrated TreeSpec foliage batches.
    The [compiler fixture](../../crates/engine/src/worldspec/fixtures/corner-avenue.aml)
    exercises the reference positions and dimensions.
 4. Verify rotated strip bounds, row spacing and ancestry, source errors and recovery,
    nested building assets, physical independence, and native/Wasm delivery.
 
-The MVP handles explicit straight segments and repeated placements. The studio
-study remains the reference for baked facade and paving finishes, illustrated
-foliage, shops, clutter, grass and shrubs. Later slices can bind those materials
-and foliage batches to the AML layout, then add path-following and intersection
-rules once their placement and physical contracts are specified.
+The MVP handles explicit straight segments and repeated placements. The AML
+preview uses the shop-house material recipes for city receivers, the avenue
+median's planted groundcover, and the study's lighting and shadow settings.
+Path-following and intersections require further placement and physical contracts.

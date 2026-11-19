@@ -34,9 +34,9 @@ export const GPU_PREVIEW_PROFILE = "gpu-preview";
  */
 export const SCENE_MAP_BYTES = sceneMapMebibytes() * 1024 * 1024;
 /** 512 MiB, or what the page asks for with `?bakememory=<MiB>` (64 to 8192): a large scene on a real GPU wants more. */
-function sceneMapMebibytes(): number {
+function sceneMapMebibytes(fallback = 512): number {
   const asked = typeof location === "undefined" ? NaN : Number(new URLSearchParams(location.search).get("bakememory"));
-  return Number.isFinite(asked) && asked >= 64 && asked <= 8192 ? asked : 512;
+  return Number.isFinite(asked) && asked >= 64 && asked <= 8192 ? asked : fallback;
 }
 /**
  * The least an idle node is charged: a render target is a texture and a framebuffer object to the driver whatever
@@ -1102,6 +1102,11 @@ export class GpuBaker {
    * The pass graph every atlas bake is realized in: it owns the baked textures (one per node), shares a node between
    * all the bakes that want the same texels, and keeps complete nodes for a while after their last user.
    */
+  private readonly sceneLimits = { idleBytes: SCENE_MAP_BYTES, nodeFloorBytes: NODE_FLOOR_BYTES, totalBytes: SCENE_MAP_BYTES };
+  get sceneAllowance() { return this.sceneLimits.totalBytes; }
+  setSceneAllowance(mebibytes?: number) {
+    this.sceneLimits.idleBytes = this.sceneLimits.totalBytes = sceneMapMebibytes(mebibytes) * 1024 * 1024;
+  }
   readonly graph = new BakeGraph({
     generation: () => this.generation,
     mips: (textures, specs) => this.mips(textures, specs),
@@ -1121,7 +1126,7 @@ export class GpuBaker {
     // screen (`SCENE_MAP_BYTES`): a scene that may be displayed may also be kept whole while it is not. The same
     // number bounds the two together: the maps on screen come first, and what is kept besides them (a scene's
     // intermediates, the scene before it) is what still fits, so the allowance is what the bakes take of the GPU.
-  }, { idleBytes: SCENE_MAP_BYTES, nodeFloorBytes: NODE_FLOOR_BYTES, totalBytes: SCENE_MAP_BYTES });
+  }, this.sceneLimits);
   /** Whether `renderInto` is called from the graph's batch, which saves and restores the renderer's state around it. */
   private batching = false;
 

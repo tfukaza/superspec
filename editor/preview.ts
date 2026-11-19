@@ -1,3 +1,4 @@
+import { CityAppearance } from "./city-appearance.ts";
 import "./style.css";
 import { decodePacket } from "../browser/model/packet.ts";
 import { RustScene } from "../browser/renderer/scene.ts";
@@ -17,6 +18,8 @@ const output = document.querySelector<HTMLOutputElement>("#status")!;
 const diagnostics = document.querySelector<HTMLElement>("#diagnostics")!;
 const selection = document.querySelector<HTMLElement>("#selection")!;
 const title = document.querySelector<HTMLElement>("#title")!;
+const cityAppearance = new CityAppearance();
+window.addEventListener("pagehide", () => cityAppearance.close(), { once: true });
 const scene = new RustScene(viewport, mesh => {
   selection.textContent = mesh ? `${mesh.id} · source ${mesh.source.line}:${mesh.source.column}` : "Click a model to inspect its source.";
 });
@@ -72,7 +75,7 @@ async function loadScene(session: string, revision: number): Promise<void> {
     const packet = decodePacket(await response.arrayBuffer());
     if (!current()) return;
     if (packet.manifest.revision !== revision || !packet.manifest.success) throw new Error("Preview scene revision mismatch.");
-    if (await scene.apply(packet, current)) { loadError = undefined; appliedSession = session; viewport.dataset.session = session; title.textContent = packet.manifest.name; showStatus(); }
+    if (await cityAppearance.apply(scene, packet, current)) { loadError = undefined; appliedSession = session; viewport.dataset.session = session; title.textContent = packet.manifest.name; showStatus(); }
   } catch (error) {
     if (!current()) return;
     target = undefined;

@@ -66,3 +66,5 @@ pub mod windows;
 pub mod authoring;
 
 pub(crate) mod city;
+
+mod planting;

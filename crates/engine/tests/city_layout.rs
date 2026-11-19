@@ -26,13 +26,41 @@ fn strips_and_tree_rows_follow_the_aml_and_keep_the_physical_base() {
         assert!((got - want).abs() < 1e-5, "{:?}", road.bounds);
     }
     let tree = |i| {
-        meshes
+        scene
+            .manifest
+            .batches
             .iter()
-            .find(|m| m.object_id == format!("city/elm/{i}"))
+            .find(|b| {
+                b.object_id == format!("city/elm/{i}") && b.foliage.as_ref().unwrap().mass.is_some()
+            })
             .unwrap()
     };
-    assert!((tree(1).bounds[0][0] - tree(3).bounds[0][0] - 14.).abs() < 1e-5);
-    assert_eq!(tree(1).source.line, 7);
+    for (i, x) in [(1, 8.), (2, 1.), (3, -6.)] {
+        let batch = tree(i);
+        assert_eq!(scene.batches.placements[batch.instance_start * 10], x);
+        assert_eq!(batch.source.line, 7);
+        assert!(
+            !batch
+                .foliage
+                .as_ref()
+                .unwrap()
+                .mass
+                .as_ref()
+                .unwrap()
+                .sites
+                .is_empty()
+        );
+    }
+    assert!(scene.manifest.lighting.is_some());
+    assert!(scene.manifest.batches.iter().any(|b| {
+        b.object_id == "city/walk"
+            && b.foliage
+                .as_ref()
+                .unwrap()
+                .mass
+                .as_ref()
+                .is_some_and(|m| m.look == "sprays")
+    }));
     for id in ["walk", "kerb", "lantern"] {
         assert!(meshes.iter().any(|m| m.object_id == format!("city/{id}")));
     }
@@ -51,6 +79,26 @@ fn strips_and_tree_rows_follow_the_aml_and_keep_the_physical_base() {
 fn corner_building_resolves_its_nested_item_definitions() {
     let aml = include_str!("../src/worldspec/fixtures/corner-avenue.aml");
     let scene = compile(aml, 1).unwrap();
+    // Leaf-site counts from the original ItemSpec avenue's lane-plants document.
+    let mass = |owner: &str| {
+        scene
+            .manifest
+            .batches
+            .iter()
+            .filter(|b| b.object_id == owner)
+            .find_map(|b| b.foliage.as_ref()?.mass.as_ref())
+            .unwrap()
+    };
+    for (i, sites) in [1844, 1880, 1982, 1978].into_iter().enumerate() {
+        let canopy = mass(&format!("city/median/{}", i + 1));
+        assert_eq!(
+            (canopy.look.as_str(), canopy.sites.len()),
+            ("leaves", sites)
+        );
+    }
+    assert_eq!(mass("city/understory/1").sites.len(), 608);
+    let bed = mass("city/promenade");
+    assert_eq!((bed.look.as_str(), bed.sites.len()), ("sprays", 52194));
     assert!(
         scene
             .manifest
