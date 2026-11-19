@@ -928,7 +928,13 @@ fn an_item_asks_for_its_slots_densities_under_what_its_host_states() {
 
 #[test]
 fn native_item_scene_packet_for_parity() {
-    let project = tiled(2.7, 0.1);
+    let mut project = tiled(2.7, 0.1);
+    redefine(&mut project, |definition| {
+        let panel = &mut definition["parts"][0]["generator"];
+        panel["miters"] = json!([1, 0]);
+        panel["arris"] = json!(0.025);
+        panel["arrisStart"] = json!(1);
+    });
     let output = Session::default()
         .build_project(&project, 1, &asset, &|| false)
         .unwrap_or_else(|errors| panic!("{}", messages(errors)));

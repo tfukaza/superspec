@@ -60,11 +60,12 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
   page.on("pageerror", error => errors.push(error.message));
   // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
   page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
+  // Use the screen-space edge blur for captures. QUERY can override it or set its threshold.
+  const query = new URLSearchParams(process.env.QUERY);
+  if (!query.has("edgeblur")) query.set("edgeblur", "on");
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 6144}${
     // TREE_LOOK=<leaves|sprays|shells|impostors>: every tree's and shrub's mass drawn in that illustrated look (anime-tree.ts).
-    process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}${
-    // QUERY adds page parameters (for example QUERY="aoshare=off").
-    process.env.QUERY ? `&${process.env.QUERY}` : ""}`);
+    process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}&${query}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   // The project is handed over as a file: a building with its images can pass the 50 MB an in-memory upload may hold.
   const projectFile = resolve(out, "washroom-facade.studio.json");
@@ -143,13 +144,13 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
       ambientOcclusion: { enabled: true, radius: 0.55, intensity: 0.8, thickness: 0.3 },
     };
     // >>> ILLUSTRATION EXPERIMENTS: two switchable settings of the same global record (docs/plans/lighting-settings.md,
-    // "Illustration experiments"), both off in the shipped look and on here.
+    // "Illustration experiments").
     // FORM=<0 to 1> is the sun's form light in shadow (`shadow.form`, default 0.35; 0 is off) and FORM_FILL its fill
-    // (`shadow.formFill`, default 0); CONTOURS=0 leaves the contour lines out (`contours`, default on).
+    // (`shadow.formFill`, default 0); CONTOURS=1 enables the optional contour pass for comparison.
     const form = Number(process.env.FORM ?? 0.35), formFill = Number(process.env.FORM_FILL ?? 0);
     if (form > 0) softSun.shadow.form = form;
     if (formFill > 0) softSun.shadow.formFill = formFill;
-    if (process.env.CONTOURS !== "0") softScene.contours = { enabled: true };
+    softScene.contours = { enabled: process.env.CONTOURS === "1" };
     // <<< ILLUSTRATION EXPERIMENTS
     const lit = await page.evaluate(({ sun, soft, extra, keep, scene }) => {
       const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
@@ -167,6 +168,7 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
     console.log(`sun before ${lit.before}`);
     if (lit.after) console.log(`sun after  ${lit.after}\nscene ${lit.scene}`);
     await waitForFrames(page, 6);
+    console.log(`rendering: ${await page.locator("#viewport").getAttribute("data-rendering")}`);
     const info = await page.evaluate(id => {
       const s = window.__scene, T = window.__three, box = new T.Box3();
       let meshes = 0;

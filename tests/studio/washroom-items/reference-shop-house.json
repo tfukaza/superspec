@@ -80,10 +80,10 @@
   "/roof": "A rail on the rear and left parapets only (roofRailPlan: the share of each edge's parapet that carries one); vent stubs along the right, a few pipes along the rear parapet, pots at the front and a cable from the aerial to the stair hut (roofClutter).",
   "roofRailPlan": [0, 0, 1, 1],
   "roofClutter": 0.8,
-  "boardTexts": ["永昌藥行", "興隆五金", "電器修理"],
+  "boardTexts": ["永昌藥行", "興隆五金", "電器修理", "WING CHEONG", "HING LUNG", "ELECTRIC"],
   "boardPlans": [
-    [[-1.03, 4.72, 0.94, 2.82, 0, 0, 0, 0.85, 1.18, -0.08, 0]],
-    [[0.02, 6.05, 0.94, 3.33, 1, 0, 53.13, 0.78, 0, 0, 1], [-0.02, 4.95, 1.95, 0.64, 0, 1, 0, 0.83, -0.12, 2.05, 2, 0, 0, 0, 1]],
+    [[0.15, 4.72, 0.94, 2.82, 0, 0, 90, 0.85, 0, 0, 0, 0, 0, 0, 0, 5, 3]],
+    [[0.02, 6.05, 0.94, 3.33, 1, 0, 90, 0.78, 0, 0, 1, 0, 0, 0, 7, 1, 4], [-0.02, 4.95, 1.95, 0.64, 3, 1, 0, 0.83, -0.12, 2.05, 2, 0, 0, 0, 0, 3, 5]],
     [],
     []
   ]

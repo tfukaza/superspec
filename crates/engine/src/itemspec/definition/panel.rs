@@ -56,6 +56,9 @@ pub(super) struct Opening {
     /// A recess another part is laid in: no features, and zones run on behind it.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     seat: bool,
+    /// Keeps a seat's mouth in place while pulling its rear jambs inside an end miter.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    seat_inset: Option<P2>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Panel {
@@ -68,6 +71,8 @@ pub(super) struct Panel {
     bevel: Bevel,
     #[serde(skip_serializing_if = "Arris::none")]
     arris: Arris,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    miters: Option<P2>,
 }
 fn is_zero(value: &f64) -> bool {
     *value == 0.
@@ -180,6 +185,28 @@ pub(super) fn resolve(
         ],
     };
     let setbacks = arris.setbacks();
+    let miters = match &definition.miters {
+        Some(angles) => [
+            context.scalar(&angles[0], &format!("{pointer}/miters/0"))?,
+            context.scalar(&angles[1], &format!("{pointer}/miters/1"))?,
+        ],
+        None => [0.; 2],
+    };
+    let back_setbacks = miters.map(|miter| miter * thickness);
+    if miters != [0.; 2]
+        && (miters.iter().any(|miter| miter.abs() > 8.)
+            || back_setbacks.iter().sum::<f64>() > width - SLIVER
+            || radius > 0.
+            || (0..2).any(|end| {
+                setbacks[end] > 0. && miters[end] != 0. && miters[end] != arris.turns[end]
+            }))
+    {
+        return Err(context.fail(
+            &format!("{pointer}/miters"),
+            "ITEM_GEOMETRY",
+            "Panel miters fit inside its width, match any rounded end's turn, and require a square front rim.",
+        ));
+    }
     if arris.radius < 0.
         || arris.turns.iter().any(|turn| !(0. ..=8.).contains(turn))
         || setbacks.iter().any(|setback| *setback > thickness - SLIVER)
@@ -289,6 +316,31 @@ pub(super) fn resolve(
             &pointer,
         )?;
         resolved.id = id;
+        let depth = resolved.recess.unwrap_or(thickness);
+        let reach = miters.map(|miter| depth * miter.max(0.));
+        let end_margin = if resolved.seat { seat_margin } else { margin };
+        let clearance = [resolved.x, width - resolved.x - resolved.width];
+        let inset = [0, 1].map(|end| {
+            if reach[end] > 0. {
+                (reach[end] + end_margin - clearance[end]).max(0.)
+            } else {
+                0.
+            }
+        });
+        if inset.iter().any(|inset| *inset > 1e-9) {
+            if !resolved.seat
+                || resolved.arch
+                || resolved.jambs > 0.
+                || inset[0] + inset[1] > resolved.width - SLIVER
+            {
+                return Err(context.fail(
+                    &pointer,
+                    "ITEM_OPENING",
+                    "An opening must leave room for the end miter at its full depth.",
+                ));
+            }
+            resolved.seat_inset = Some(inset);
+        }
         if resolved.jambs > 0. && radius > 0. {
             return Err(context.fail(
                 &format!("{pointer}/jambs"),
@@ -349,6 +401,7 @@ pub(super) fn resolve(
         anchor,
         bevel,
         arris,
+        miters: (miters != [0.; 2]).then_some(miters),
     })
 }
 
@@ -524,6 +577,7 @@ fn resolve_opening(
         sill,
         jambs,
         seat: opening.seat,
+        seat_inset: None,
     })
 }
 
@@ -642,6 +696,9 @@ impl Panel {
     }
     pub(super) fn build(&self, surfaces: &mut Surfaces<'_>) -> Result<(), String> {
         let (w, h, t) = (self.width, self.height, self.thickness);
+        let miters = self.miters.unwrap_or([0.; 2]);
+        let back_setbacks = miters.map(|miter| miter * t);
+        let back = [back_setbacks[0], w - back_setbacks[1]];
         // A bevel rounds the front's rim: the front face shrinks by its radius, and the edge
         // faces and reveals start that far behind it.
         let (r, chords) = (self.bevel.radius, self.bevel.segments);
@@ -662,7 +719,7 @@ impl Panel {
             let [start, end] = if front {
                 self.arris.setbacks()
             } else {
-                [0.; 2]
+                back_setbacks
             };
             let mut loops: Vec<Vec<V3>> = vec![vec![
                 [g + start, g, 0.],
@@ -712,25 +769,37 @@ impl Panel {
         let corners = [[0., 0.], [w, 0.], [w, h], [0., h]];
         let halves = [self.arris.half(0, w), self.arris.half(1, w)];
         let setbacks = self.arris.setbacks();
+        let ends = [0, 1].map(|end| {
+            if miters[end] != 0. {
+                if let Some([_, middle, _]) = halves[end] {
+                    return middle;
+                }
+            }
+            [[0., setbacks[0]], [w, setbacks[1]]][end]
+        });
         let mut along = 0.;
         for side in 0..4 {
             let (a, b): (P2, P2) = (corners[side], corners[(side + 1) % 4]);
             let span = (b[0] - a[0]).abs() + (b[1] - a[1]).abs();
             let outward = [(b[1] - a[1]) / span, 0., -(b[0] - a[0]) / span];
-            if !self.arris.none() && side % 2 == 0 {
+            if (!self.arris.none() || self.miters.is_some()) && side % 2 == 0 {
                 // The bottom and the top lose the corners their rounded ends cut off: the front
                 // edge from the start's round to the end's, then the back edge.
                 let mut outline: Vec<P2> = match halves[0] {
-                    Some([leaves, middle, _]) => vec![[0., setbacks[0]], middle, leaves],
+                    Some([leaves, middle, _]) if miters[0] == 0. => vec![ends[0], middle, leaves],
+                    Some([leaves, middle, _]) => vec![middle, leaves],
                     None => vec![[0., 0.]],
                 };
                 match halves[1] {
                     Some([leaves, middle, _]) => {
-                        outline.extend([leaves, middle, [w, setbacks[1]]]);
+                        outline.extend([leaves, middle]);
+                        if miters[1] == 0. {
+                            outline.push(ends[1]);
+                        }
                     }
                     None => outline.push([w, 0.]),
                 }
-                outline.extend([[w, t], [0., t]]);
+                outline.extend([[back[1], t], [back[0], t]]);
                 surfaces.polygon(
                     "edge",
                     &outline
@@ -746,6 +815,27 @@ impl Panel {
                 )?;
                 along += span;
                 continue;
+            }
+            if side % 2 == 1 {
+                let end = usize::from(side == 1);
+                let miter = miters[end];
+                if miter != 0. {
+                    let [x, y] = ends[end];
+                    surfaces.polygon(
+                        "edge",
+                        &[
+                            [x, y, a[1]],
+                            [x, y, b[1]],
+                            [back[end], t, b[1]],
+                            [back[end], t, a[1]],
+                        ],
+                        [outward[0], miter, 0.],
+                        &[[along, y], [along + span, y], [along + span, t], [along, t]],
+                        None,
+                    )?;
+                    along += span;
+                    continue;
+                }
             }
             // An end face starts behind its round.
             let lift = match side {
@@ -809,6 +899,15 @@ impl Panel {
         }
         for opening in &self.openings {
             let ring = opening.outline(0.);
+            let inset_ring = opening.seat_inset.map(|[start, end]| {
+                let mut points = ring.clone();
+                points[0][0] += start;
+                points[3][0] += start;
+                points[1][0] -= end;
+                points[2][0] -= end;
+                points
+            });
+            let back_ring = inset_ring.as_deref().unwrap_or(&ring);
             let depth = opening.recess.unwrap_or(t);
             let center = [
                 opening.x + opening.width / 2.,
@@ -817,6 +916,7 @@ impl Panel {
             let mut along = 0.;
             for i in 0..ring.len() {
                 let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                let (back_a, back_b) = (back_ring[i], back_ring[(i + 1) % ring.len()]);
                 let span = superspec_geometry::math::hypot(b[0] - a[0], b[1] - a[1]);
                 let middle = [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2.];
                 // A rounded jamb's reveal starts behind its round (a rectangle's jambs are its
@@ -835,8 +935,8 @@ impl Panel {
                     &[
                         [a[0], r, a[1]],
                         [b[0], r, b[1]],
-                        [b[0], depth, b[1]],
-                        [a[0], depth, a[1]],
+                        [back_b[0], depth, back_b[1]],
+                        [back_a[0], depth, back_a[1]],
                     ],
                     [center[0] - middle[0], 0., center[1] - middle[1]],
                     &[
@@ -868,9 +968,12 @@ impl Panel {
             if opening.recess.is_some() {
                 surfaces.polygon(
                     "reveal",
-                    &ring.iter().map(|p| [p[0], depth, p[1]]).collect::<Vec<_>>(),
+                    &back_ring
+                        .iter()
+                        .map(|p| [p[0], depth, p[1]])
+                        .collect::<Vec<_>>(),
                     [0., -1., 0.],
-                    &ring,
+                    back_ring,
                     None,
                 )?;
             }

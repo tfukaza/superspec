@@ -1,6 +1,6 @@
 //! Complete sign panels. Geometry, reader orientation and artwork are shared by all mounting styles.
 use super::{
-    Construction, Outline,
+    Construction, Outline, graphics,
     lettering::{self, Direction, Face, Mapping, Paint, Style, Surface},
     weathering,
 };
@@ -157,6 +157,50 @@ pub fn outline_points(outline: Outline, width: f64, height: f64) -> Vec<[f64; 2]
             })
             .collect(),
         Outline::Rectangle => vec![[0., 0.], [width, 0.], [width, height], [0., height]],
+        Outline::Clipped => {
+            let c = 0.22 * width.min(height);
+            vec![
+                [c, 0.],
+                [width - c, 0.],
+                [width, c],
+                [width, height - c],
+                [width - c, height],
+                [c, height],
+                [0., height - c],
+                [0., c],
+            ]
+        }
+        Outline::Rounded => {
+            let r = 0.43 * width.min(height);
+            [
+                [width - r, r],
+                [width - r, height - r],
+                [r, height - r],
+                [r, r],
+            ]
+            .into_iter()
+            .enumerate()
+            .flat_map(|(corner, [x, z])| {
+                (0..=5).map(move |step| {
+                    let a = (corner as f64 - 1. + step as f64 / 5.) * std::f64::consts::FRAC_PI_2;
+                    [x + r * cos(a), z + r * sin(a)]
+                })
+            })
+            .collect()
+        }
+        Outline::Shield => {
+            let c = 0.18 * width.min(height);
+            vec![
+                [width * 0.29, 0.],
+                [width * 0.71, 0.],
+                [width, height * 0.24],
+                [width, height - c],
+                [width - c, height],
+                [c, height],
+                [0., height - c],
+                [0., height * 0.24],
+            ]
+        }
     }
 }
 fn frame_width(c: Construction) -> f64 {
@@ -465,6 +509,18 @@ pub fn draw_art(
     s: &Settings,
     art: Art,
 ) -> Result<(), String> {
+    draw_styled_art(d, design, sides, hardware, s, art, None)
+}
+
+pub(in crate::worldspec::themes::kowloon) fn draw_styled_art(
+    d: &mut Fixture<'_, '_>,
+    design: &Design,
+    sides: Sides,
+    hardware: &Hardware,
+    s: &Settings,
+    art: Art,
+    graphics: Option<graphics::Artwork<'_>>,
+) -> Result<(), String> {
     design.validate()?;
     s.weathering.validate()?;
     if !(1. ..=16.).contains(&art.lift) || !(0.5..=6.).contains(&art.line) {
@@ -602,7 +658,25 @@ pub fn draw_art(
         } else {
             w.min(h) * 0.22
         };
-        let area = [inset, inset, w - 2. * inset, h - 2. * inset];
+        let mut area = [inset, inset, w - 2. * inset, h - 2. * inset];
+        if let Some(graphics) = graphics {
+            let (text_area, artwork) =
+                graphics.draw(design, area, art, s.lettering, d.repeat("paint"))?;
+            area = text_area;
+            for p in artwork {
+                if raster {
+                    paints.push(p);
+                } else {
+                    polygon(
+                        d,
+                        &surface,
+                        &p,
+                        &Tint::Field(&|point| Ok(blend(p.tint, tone(design, s, point)))),
+                        p.slot == "lettering" && s.lettering,
+                    )?;
+                }
+            }
+        }
         let total = design.blocks.iter().map(|b| b.share).sum::<f64>();
         let mut used = 0.;
         for b in &design.blocks {

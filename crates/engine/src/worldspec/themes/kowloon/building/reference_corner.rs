@@ -1,8 +1,10 @@
 //! The reference shop house in its authored front-left Z-up frame.
 use super::placement::Site;
+use crate::itemspec::definition::Values;
 use crate::worldspec::themes::kowloon::{
-    aircon, facade_material, facade_plan, fixture::Fixture, kit::Kit, massing::Rect,
-    metal::Binding, palette::srgb, pen::Pen, shop, signs::book::Book, skin, wall, windows,
+    aircon, appearance, facade_material, facade_plan, fixture::Fixture, items, kit::Kit,
+    massing::Rect, metal::Binding, palette::srgb, pen::Pen, shop, signs::book::Book, skin, wall,
+    windows,
 };
 use superspec_geometry::V3;
 #[path = "reference_details.rs"]
@@ -371,34 +373,9 @@ pub(super) fn draw(
                     &mut kit.rng("balcony-plants")?,
                     d.mesh.has_source_material("balcony-plants"),
                 )?;
-                sign(
-                    d,
-                    kit,
-                    [-1.03, 0.85, 4.72],
-                    [0.94, 2.82],
-                    "永昌藥行",
-                    false,
-                    false,
-                )?;
+                signs_on_edge(d, kit, 0)?;
             } else {
-                sign(
-                    d,
-                    kit,
-                    [0.02, 0.78, 6.05],
-                    [0.94, 3.33],
-                    "興隆五金",
-                    true,
-                    false,
-                )?;
-                sign(
-                    d,
-                    kit,
-                    [-0.02, 0.83, 4.95],
-                    [1.95, 0.64],
-                    "電器修理",
-                    false,
-                    true,
-                )?;
+                signs_on_edge(d, kit, 1)?;
             }
         }
         if name == "front" {
@@ -501,121 +478,88 @@ pub(super) fn draw(
     Ok(signs)
 }
 
-fn sign(
-    d: &mut Fixture<'_, '_>,
-    kit: &Kit,
-    at: V3,
-    [width, height]: [f64; 2],
-    text: &str,
-    red: bool,
-    horizontal: bool,
-) -> Result<(), String> {
-    use crate::worldspec::themes::kowloon::signs::{
-        Construction, Outline,
-        lettering::{Direction, Face},
-        panel,
-    };
-    let ivory = srgb("#dfcfaa");
-    let oxblood = srgb("#793f32");
-    let (ground, ink) = if red {
-        (oxblood, ivory)
-    } else {
-        (ivory, oxblood)
-    };
-    let mut pen = d
-        .pen
-        .into_part(&format!("{}/sign-{text}", d.pen.part))?
-        .moved(at)?;
-    if red {
-        pen = pen.facing([0.; 3], [0.6, 0.8, 0.], [-0.8, 0.6, 0.])?;
-    }
-    let hardware = panel::Hardware {
-        slot: "metal".into(),
-        tint: srgb("#504d3d"),
-        weathering: Some(kit.settings().weathering.clone()),
-    };
-    panel::draw(
-        &mut Fixture {
-            pen,
-            mesh: d.mesh,
-            repeats: d.repeats,
-        },
-        &panel::Design {
-            width,
-            height,
-            depth: 0.045,
-            construction: Construction::Sheet,
-            outline: Outline::Rectangle,
-            ground,
-            border: Some(ink),
-            stack: panel::Stack::Down,
-            blocks: vec![panel::Block {
-                text: text.into(),
-                face: Face::Kai,
-                direction: if horizontal {
-                    Direction::Ltr
-                } else {
-                    Direction::Ttb
-                },
-                ink,
-                share: 1.,
-                shadow: None,
-            }],
-            age: 0.7,
-            phase: at[0] * 5. + at[2],
-        },
-        panel::Sides::Both,
-        &hardware,
-        kit.settings(),
-    )?;
-    for z in [at[2] + 0.12, at[2] + height - 0.12] {
-        if red {
-            let end = [at[0] + width * 0.6, at[1] + width * 0.8, z];
-            d.tube(
-                "metal",
-                &[[at[0], 0.02, z], [at[0], at[1], z], end],
-                0.027,
-                hardware.tint,
-                10,
-            )?;
-            d.tube(
-                "metal",
-                &[[at[0] + 0.5, 0.02, z + 0.25], end],
-                0.018,
-                hardware.tint,
-                8,
-            )?;
-            continue;
-        }
-        let anchor = if at[0] < 0. && !horizontal {
-            0.15
-        } else {
-            at[0] - 0.12
+/// Adapt the shared building plan's sign rows to the reference model's receiving wall frames.
+fn signs_on_edge(d: &mut Fixture<'_, '_>, kit: &Kit, edge: usize) -> Result<(), String> {
+    use serde_json::json;
+    let preset = appearance::reference_building();
+    let rows = preset["boardPlans"][edge]
+        .as_array()
+        .ok_or("Reference building sign plan needs a row for each street edge.")?;
+    let schemes = ["ivory", "red", "green", "blue", "yellow", "black", "white"];
+    let faces = [
+        "auto", "kai", "hei", "song", "brush", "heavy", "round", "slim",
+    ];
+    let colors = [
+        "#d2a23a", "#2f7a4a", "#b23a2c", "#2c4a6e", "#dcd8cc", "#1f1d1b",
+    ];
+    let seed = preset["seed"]
+        .as_u64()
+        .ok_or("Reference building needs a seed.")?;
+    for (index, row) in rows.iter().enumerate() {
+        let number = |index: usize| {
+            row[index].as_f64().ok_or_else(|| {
+                format!("Reference sign on edge {edge} needs a number in column {index}.")
+            })
         };
-        let y = at[1] + if horizontal { 0.08 } else { 0. };
-        let endpoint = if horizontal {
-            at[0] + width + 0.1
-        } else {
-            at[0] - 0.08
+        let choice = |index: usize, choices: &[&'static str]| {
+            let value = row[index].as_u64().unwrap_or(0) as usize;
+            choices.get(value).copied().ok_or_else(|| {
+                format!("Reference sign on edge {edge} has an invalid choice in column {index}.")
+            })
         };
-        d.tube(
-            "metal",
-            &[[anchor, 0.02, z], [anchor, y, z], [endpoint, y, z]],
-            0.023,
-            hardware.tint,
-            8,
-        )?;
-        let brace = if horizontal {
-            anchor
-        } else {
-            at[0] + width - 0.05
-        };
-        d.tube(
-            "metal",
-            &[[anchor, 0.02, z + 0.3], [brace, y, z]],
-            0.018,
-            hardware.tint,
-            8,
+        let text_index = row[10]
+            .as_u64()
+            .ok_or("Reference sign needs a board text index.")? as usize;
+        let text = preset["boardTexts"][text_index]
+            .as_str()
+            .ok_or("Reference sign points to missing board text.")?;
+        let secondary_color = if row[13].is_null() { 12 } else { 13 };
+        let subtitle = row[16]
+            .as_u64()
+            .map(|index| &preset["boardTexts"][index as usize]);
+        let values = Values::from([
+            ("text".into(), json!(text)),
+            ("width".into(), row[2].clone()),
+            ("height".into(), row[3].clone()),
+            ("scheme".into(), json!(choice(4, &schemes)?)),
+            ("horizontal".into(), json!(number(5)? != 0.)),
+            ("angle".into(), row[6].clone()),
+            ("reach".into(), row[7].clone()),
+            ("anchor".into(), row[8].clone()),
+            ("end".into(), row[9].clone()),
+            ("panels".into(), json!(row[11].as_u64().unwrap_or(0))),
+            ("panel".into(), json!(choice(12, &colors)?)),
+            ("panel2".into(), json!(choice(secondary_color, &colors)?)),
+            ("face".into(), json!(choice(14, &faces)?)),
+            (
+                "design".into(),
+                json!(choice(
+                    15,
+                    &crate::worldspec::themes::kowloon::signs::graphics::STYLES
+                )?),
+            ),
+            (
+                "subtitle".into(),
+                json!(subtitle.and_then(|text| text.as_str()).unwrap_or("")),
+            ),
+            (
+                "seed".into(),
+                json!(seed * 11 + edge as u64 * 7 + index as u64),
+            ),
+        ]);
+        let pen = d
+            .pen
+            .into_part(&format!("{}/sign-{text}", d.pen.part))?
+            .moved([number(0)?, 0., number(1)?])?;
+        items::draw_board_sign(
+            &mut Fixture {
+                pen,
+                mesh: d.mesh,
+                repeats: d.repeats,
+            },
+            "kowloon/board-sign",
+            &values,
+            Some(kit.settings()),
         )?;
     }
     Ok(())

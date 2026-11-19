@@ -1,6 +1,7 @@
 //! Kowloon theme recipes, content, spatial planning and procedural placement.
 pub(crate) use crate::materialspec::{bake, noise, surface};
 pub mod aircon;
+mod appearance;
 pub(crate) mod assembly;
 mod bake_jobs;
 pub mod balconies;

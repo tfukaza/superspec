@@ -1,3 +1,4 @@
+import * as THREE from "three";
 import { CityAppearance } from "./city-appearance.ts";
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, megabytes } from "../browser/model/limits.ts";
 import "./style.css";
@@ -29,6 +30,7 @@ window.addEventListener("pagehide", () => cityAppearance.close(), { once: true }
 const scene = new RustScene(viewport, mesh => {
   selection.textContent = mesh ? `${mesh.id} · source ${mesh.source.line}:${mesh.source.column}` : "Click a model to inspect its source.";
 });
+if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: scene, __three: THREE });
 document.querySelector("#walk")!.addEventListener("click", () => scene.toggleWalk());
 viewport.addEventListener("walkstatus", event => { selection.textContent = (event as CustomEvent<string>).detail; });
 const walkHelper = document.querySelector<HTMLSelectElement>("#walk-helper")!;

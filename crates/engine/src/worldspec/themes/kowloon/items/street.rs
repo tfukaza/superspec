@@ -147,6 +147,7 @@ pub(super) fn shop_room(
     let hang_sides = hang_sides.unwrap_or(if bold { 0.35 } else { 0. });
     // `fade`: how much of their saturation the stock's colours have lost (0–1, 0.5).
     let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
+    let atlas = a.boolean("catalogStock", false)?;
     let key = a.seed()?;
     a.finish()?;
     // Timber is tinted per vertex here: the shipped atlas is not bound to an item's slots.
@@ -174,16 +175,16 @@ pub(super) fn shop_room(
         style: lot_style(&mut SeededRng::from_text(&format!("{key}/style"))),
         key: key.clone(),
     };
-    let plain = shop::room::Assets {
-        posters: false,
-        grocer_props: false,
-        snack_packets: false,
-        market_apple: false,
-        shop_register: false,
-        market_trays: false,
+    let shelf_assets = shop::room::Assets {
+        posters: atlas,
+        grocer_props: atlas,
+        snack_packets: atlas,
+        market_apple: atlas,
+        shop_register: atlas,
+        market_trays: atlas,
     };
     let assets = shop::shell::Assets {
-        room: plain,
+        room: shelf_assets,
         restaurant: shop::roast::Assets {
             food: false,
             metal: false,
@@ -246,7 +247,21 @@ pub(super) fn shop_room(
         }
         Ok(())
     })?;
-    let mut output = as_stock(output, &["interior", "concrete", "tube-light"], fade);
+    let mut output = as_stock(
+        output,
+        &[
+            "interior",
+            "concrete",
+            "tube-light",
+            "grocer-props",
+            "snack-packet",
+            "market-apple",
+            "market-trays",
+            "shop-register",
+            "posters",
+        ],
+        fade,
+    );
     floor_slot(&mut output, floor);
     Ok(output)
 }
@@ -362,6 +377,7 @@ pub(super) fn street_stock(
     let kind: shop::provisions::Street =
         a.choice("kind", "shop", &["shop", "crates", "cartons", "mixed"])?;
     let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
+    let atlas = a.boolean("catalogStock", false)?;
     let key = a.seed()?;
     a.finish()?;
     let kit = Kit::new(sign_settings(&key), 1)?;
@@ -372,9 +388,10 @@ pub(super) fn street_stock(
             &key,
             width,
             kind,
+            atlas,
         )
     })?;
-    Ok(as_stock(output, &[], fade))
+    Ok(as_stock(output, &["grocer-props"], fade))
 }
 
 /// `kowloon/pavement`: a raised pavement along a wall: seeded paving stones on a bed, a kerb

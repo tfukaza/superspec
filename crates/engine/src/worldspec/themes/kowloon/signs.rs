@@ -3,6 +3,7 @@ pub mod book;
 pub mod copy;
 pub mod designs;
 pub mod frontage;
+pub(super) mod graphics;
 pub mod lettering;
 pub mod mounts;
 pub mod panel;
@@ -27,4 +28,7 @@ pub enum Outline {
     Rectangle,
     Diamond,
     Round,
+    Clipped,
+    Rounded,
+    Shield,
 }

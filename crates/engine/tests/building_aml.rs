@@ -10,6 +10,29 @@ mod shop_contract;
 
 const SOURCE: &str = include_str!("../../../tests/fixtures/aml/rust-building-dressing.aml");
 const GOLDEN: &str = include_str!("../../../tests/fixtures/rust/building-aml.json");
+
+#[test]
+fn the_reference_corner_uses_the_projecting_sign_props() {
+    let source = r#"<architecture version="1" id="reference" validation="premap">
+      <box id="host" width="9.8" depth="7" height="13.1" collidable="false"/>
+      <dressing theme="kowloon-street@1" seed="reference">
+        <building host="host" model="reference-corner" material="builtin:plaster" texture-density="16"/>
+      </dressing>
+    </architecture>"#;
+    let scene = compile_with_assets(source, 1, &assets).unwrap();
+    for (text, axis, expected) in [("永昌藥行", 1, -1.79), ("興隆五金", 0, 11.52)] {
+        let bounds = scene
+            .manifest
+            .meshes
+            .iter()
+            .filter(|mesh| mesh.object_id.contains(&format!("/sign-{text}")))
+            .map(|mesh| mesh.bounds[usize::from(axis == 0)][axis])
+            .reduce(if axis == 0 { f64::max } else { f64::min })
+            .unwrap_or_else(|| panic!("Missing reference sign {text}"));
+        assert!((bounds - expected).abs() < 0.08, "{text}: {bounds}");
+    }
+}
+
 #[test]
 fn parallel_host_emission_matches_serial_packets() {
     let source = include_str!("../../../tests/fixtures/aml/rust-multiple-buildings.aml")

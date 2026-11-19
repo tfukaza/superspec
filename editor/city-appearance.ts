@@ -17,6 +17,7 @@ import type { FieldSource } from "../browser/renderer/scene-bake.ts";
 import type { RustScene } from "../browser/renderer/scene.ts";
 import catalog from "../crates/engine/src/worldspec/themes/kowloon/appearance/street-materials.json";
 import reference from "../crates/engine/src/worldspec/themes/kowloon/appearance/reference-building.json";
+import families from "../crates/engine/src/worldspec/themes/kowloon/appearance/building-families.json";
 
 const raw = import.meta.glob<string>(
   [
@@ -54,6 +55,9 @@ type CityNode = {
     length?: number;
     width?: number;
     floors?: number;
+    depth?: number;
+    seed?: number;
+    model?: string;
     banner?: boolean;
   };
 };
@@ -74,9 +78,17 @@ function modelsOf(packet: ScenePacket) {
       for (let i = 0; i < count; i++) {
         const id = "p" + models.length;
         owners.set(id, "city/" + node.id + (count > 1 ? "/" + (i + 1) : ""));
-        const params: Record<string, unknown> =
-          node.kind === "building" && (a.floors ?? 4) === 4 ? { ...reference } : {};
-        for (const key of ["floors", "length", "width", "banner"] as const)
+        const params: Record<string, unknown> = {};
+        if (node.kind === "building") {
+          if (a.model === "reference-corner") Object.assign(params, reference);
+          else {
+            const seed = a.seed ?? a.floors ?? 4, w = a.width ?? 9.8, d = a.depth ?? 7;
+            Object.assign(params, families[seed % families.length], {
+              seed, footprint: [[0, 0], [w, 0], [w, d], [0, d]],
+            });
+          }
+        } else if (a.width !== undefined) params.width = a.width;
+        for (const key of ["floors", "length", "banner"] as const)
           if (a[key] !== undefined) params[key] = a[key];
         models.push({
           id,

@@ -162,7 +162,14 @@ impl ThemeAdapter for Kowloon<'_> {
             &catalog::asset,
             physical.compiler.cancelled,
         )?;
-        catalog::finish(scene, placements, physical.compiler.cancelled)
+        let first_building = placements.clone().find(|node| node.kind == "building");
+        let mut scene = catalog::finish(scene, placements, physical.compiler.cancelled)?;
+        if let Some(building) = first_building {
+            physical
+                .compiler
+                .load_material_assets(&mut scene, Some(building))?;
+        }
+        Ok(scene)
     }
     fn fallback_source(&self) -> Option<&Node> {
         self.source.as_ref()

@@ -11,7 +11,9 @@
     "scheme": {"type": "choice", "default": "red", "choices": ["ivory", "red", "green", "blue", "yellow", "black", "white"]},
     "horizontal": {"type": "boolean", "default": false},
     "face": {"type": "choice", "default": "auto", "choices": ["auto", "kai", "hei", "song", "brush", "heavy", "round", "slim"]},
-    "angle": {"type": "number", "default": 0, "min": -80, "max": 80, "unit": "deg"},
+    "design": {"type": "choice", "default": "plain", "choices": ["plain", "hardware", "grocery", "electrical", "wholesale", "pharmacy"]},
+    "subtitle": {"type": "text", "default": ""},
+    "angle": {"type": "number", "default": 0, "min": -90, "max": 90, "unit": "deg"},
     "reach": {"type": "number", "default": 0.8, "min": 0.05, "max": 4, "unit": "m"},
     "anchor": {"type": "number", "default": 0, "min": -8, "max": 8, "unit": "m"},
     "end": {"type": "number", "default": -100, "min": -100, "max": 8, "unit": "m"},
@@ -32,7 +34,8 @@
                        "angle": {"parameter": "angle"}, "reach": {"parameter": "reach"}, "anchor": {"parameter": "anchor"},
                        "end": {"expr": "select(end <= -99, width, end)"}, "ties": {"parameter": "ties"},
                        "panels": {"parameter": "panels"}, "panel": {"parameter": "panel"}, "panel2": {"parameter": "panel2"},
-                       "face": {"parameter": "face"}, "age": {"parameter": "age"}, "seed": {"parameter": "seed"}}}
+                       "face": {"parameter": "face"}, "design": {"parameter": "design"}, "subtitle": {"parameter": "subtitle"},
+                       "age": {"parameter": "age"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "blade",
@@ -59,7 +62,7 @@
     }
   ],
   "features": [
-    {"name": "top", "part": "board", "points": [[0, "-reach", {"parameter": "height"}], [{"parameter": "width"}, "-reach", {"parameter": "height"}]], "when": "(mount == 0) * (angle == 0)", "zone": {"length": {"parameter": "height"}}},
+    {"name": "top", "part": "board", "points": [[0, "-reach", {"parameter": "height"}], ["select(angle == 0, width, 0)", "-reach - width * angle / 90", {"parameter": "height"}]], "when": "(mount == 0) * ((angle == 0) + (abs(angle) == 90))", "zone": {"length": {"parameter": "height"}}},
     {"name": "fixing-drip", "part": "board", "points": [["anchor - 0.03", 0, -0.12], ["anchor + 0.03", 0, -0.12]], "when": "mount == 0", "reach": "item", "within": 1, "zone": {"length": 0.8}},
     {"name": "fixing", "part": "board", "points": [[{"parameter": "anchor"}, 0, -0.12], [{"parameter": "anchor"}, 0, 0.06]], "when": "mount == 0"},
     {"name": "fixing", "part": "board", "points": [[{"parameter": "anchor"}, 0, "height - 0.06"], [{"parameter": "anchor"}, 0, "height + 0.12"]], "when": "mount == 0"},

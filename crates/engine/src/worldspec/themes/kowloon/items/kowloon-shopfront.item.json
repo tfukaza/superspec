@@ -67,7 +67,7 @@
       "id": "room",
       "when": "open",
       "generator": {"kind": "native", "name": "kowloon/shop-room",
-        "parameters": {"trade": {"parameter": "trade"}, "width": {"parameter": "width"}, "height": {"expr": "height - 0.5"},
+        "parameters": {"catalogStock": true, "trade": {"parameter": "trade"}, "width": {"parameter": "width"}, "height": {"expr": "height - 0.5"},
                        "depth": {"parameter": "depth"}, "storey": {"expr": "height + 0.05"}, "seed": {"parameter": "seed"},
                        "hangClear": {"expr": "select(awning, min(0.74 + awningLower, height - 2.1), 0)"}}}
     },
@@ -75,13 +75,13 @@
       "id": "stock",
       "when": "open * stock",
       "generator": {"kind": "native", "name": "kowloon/street-stock",
-        "parameters": {"width": {"parameter": "width"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"catalogStock": true, "width": {"parameter": "width"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "clutter",
       "when": "cluttered",
       "generator": {"kind": "native", "name": "kowloon/street-stock",
-        "parameters": {"width": {"derived": "clutterWidth"}, "seed": {"expr": "seed + 5"},
+        "parameters": {"catalogStock": true, "width": {"derived": "clutterWidth"}, "seed": {"expr": "seed + 5"},
                        "kind": {"choose": ["crates", "crates", "crates", "cartons", "mixed"], "by": "select(clutter == 1, 2 + random(seed, 24) * 3, clutter)"}}},
       "placement": {"position": ["select(clutterOnRight, width / 2 + min(clutterRight, clutterWidth * 0.6) - clutterWidth / 2, -width / 2 - min(clutterLeft, clutterWidth * 0.6) + clutterWidth / 2)", 0, 0]}
     },

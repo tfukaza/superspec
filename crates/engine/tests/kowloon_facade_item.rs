@@ -1003,7 +1003,7 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         })
     };
     // A shutter and a door over a tiled dado, a number plate, two caged windows (one roofed),
-    // three panelled boards, the corner drain, a tiled roof deck, and paving on all four sides;
+    // four lettered blade signs, the corner drain, a tiled roof deck, and paving on all four sides;
     // planned vents, a second conduit to its junction box, and a string course on every side.
     for piece in [
         "side-0/ground/shop-0/bay/",
@@ -1082,6 +1082,31 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         }
         bounds
     };
+    // Each sign face stays over its pier in X and extends from its stand-off out into
+    // the street (-Y). A wall-parallel board or missing lettering fails these bounds.
+    for (index, ([pier, reach, width, depth], slot)) in [
+        ([0.18, 0.32, 0.76, 0.055], "board"),
+        ([2.90, 0.32, 0.76, 0.036], "paint"),
+        ([5.29, 0.30, 0.60, 0.105], "paint"),
+        ([5.65, 0.36, 0.64, 0.055], "board"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("board-0-{index}");
+        let board = extent(&id, slot);
+        assert!(
+            board[0][0] > pier - 0.08 && board[1][0] < pier + depth + 0.08,
+            "{id}: {board:?}"
+        );
+        assert!(
+            (board[0][1] + reach + width).abs() < 0.05,
+            "{id}: {board:?}"
+        );
+        assert!((board[1][1] + reach).abs() < 0.05, "{id}: {board:?}");
+        let letters = extent(&id, "lettering");
+        assert!(letters[0][2] < letters[1][2], "{id} is missing lettering");
+    }
     let shutter = extent("side-0/ground/shop-0/bay", "metal");
     assert!(
         (shutter[0][0] - 0.45).abs() < 1e-6
@@ -1090,7 +1115,8 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         "{shutter:?}"
     );
     let wall = extent("side-0/ground/wall", "wall");
-    assert!((wall[1][0] - 6.).abs() < 1e-6, "{wall:?}");
+    let miter_tip = 6. - 0.025 * (1. - 0.5f64.sqrt());
+    assert!((wall[1][0] - miter_tip).abs() < 1e-6, "{wall:?}");
     // Three storeys: 3.3 m and two of 3 m, a 0.45 m parapet and its 8 cm coping.
     assert!((top_of(&building, "side-0") - 9.83).abs() < 0.03);
     // The deck is tiled in its own slot, and the dado in one of its own (the spandrels' tiles are `tile`).
@@ -1191,6 +1217,49 @@ fn a_sign_is_an_item_of_its_own() {
     // An angled board stands off the wall along its angle.
     let angled = sign(&[("angle", json!(53.13))]);
     assert!(extent(&angled, 1) > extent(&words, 1) + 0.3);
+
+    let styled = |design: &str, subtitle: &str| {
+        sign(&[
+            ("design", json!(design)),
+            ("scheme", json!("green")),
+            ("text", json!("興隆五金")),
+            ("subtitle", json!(subtitle)),
+        ])
+    };
+    for design in ["hardware", "grocery", "electrical", "wholesale", "pharmacy"] {
+        let with_caption = styled(design, "HARDWARE");
+        let painted = |item: &GeneratedItem| {
+            item.geometry
+                .meshes
+                .iter()
+                .any(|mesh| mesh.material_slot == "paint")
+        };
+        assert!(painted(&with_caption), "{design} has artwork");
+        let text_vertices = |item: &GeneratedItem| {
+            item.geometry
+                .meshes
+                .iter()
+                .find(|mesh| mesh.material_slot == "lettering")
+                .unwrap()
+                .uvs
+                .len()
+        };
+        assert!(text_vertices(&with_caption) > text_vertices(&styled(design, "")));
+    }
+    let board_corners = |item: &GeneratedItem| {
+        item.geometry
+            .meshes
+            .iter()
+            .filter(|mesh| mesh.material_slot == "board")
+            .any(|mesh| {
+                mesh.positions
+                    .iter()
+                    .any(|p| p[0].abs() < 1e-9 && p[2].abs() < 1e-9)
+            })
+    };
+    assert!(board_corners(&words));
+    assert!(!board_corners(&styled("hardware", "")));
+    assert!(!board_corners(&styled("wholesale", "")));
 }
 
 #[test]
@@ -2868,14 +2937,6 @@ fn no_two_receivers_of_the_planned_buildings_lie_on_one_another() {
     // Pairs drawn by fixtures, frames and signs whose own makers have yet to part them, by the
     // names in their two mesh ids: they are listed rather than hidden, so none is added.
     const PENDING: &[(&str, &str)] = &[
-        // Square corners: one side's wall end lies in the next side's front plane (and the
-        // seats both sides cut for their bands meet in the corner, behind the bands).
-        ("/wall/wall/edge", "/wall/wall/front"),
-        ("/wall/wall/edge", "/wall/wall/edge"),
-        ("/wall/wall/reveal", "/wall/wall/reveal"),
-        ("/parapet/parapet/edge", "/parapet/parapet/front"),
-        ("/parapet/parapet/edge", "/parapet/parapet/edge"),
-        ("/coping/coping/", "/coping/coping/"),
         ("/wall/wall/edge", "roof/top"),
         ("/wall/wall/reveal", "/room/room/"),
         ("/fascia/fascia/", "/balcony/balcony/"),

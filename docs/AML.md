@@ -313,7 +313,7 @@ document, subject to the scene geometry limits.
 
 | Element | Local anchor and controls |
 | --- | --- |
-| `building` | Corner building footprint origin at pavement height. Optional `floors` selects 2–12 storeys. |
+| `building` | Lot origin at pavement height. `floors` selects 2–12 storeys (default 4). `width` and `depth` are 6–14 m (defaults 9.8 × 7). `seed` selects repeatable architecture and dressing (0–31, defaults to floor count). The same intrinsic attributes share a design across placements. For the authored four-storey demo use `model="reference-corner"` with its original dimensions and seed. |
 | `road` | Near starting corner at road surface. `length` extends along +X and `width` toward −Y. |
 | `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
 | `avenue` | Starting corner at paving height. A pedestrian strip extends along +X, with its median halfway across its `width` toward −Y. Accepts `length` and `width`. |

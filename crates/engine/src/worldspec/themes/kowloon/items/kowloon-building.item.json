@@ -87,6 +87,7 @@
     "awningSagPlans": {"type": "grid", "default": []},
     "awningStripePlans": {"type": "grid", "default": []},
     "conduitColor": {"type": "color", "default": "#4d5048"},
+    "infill": {"type":"boolean", "default":false},
     "partyPlans": {"type": "grid", "default": [], "choices": ["none", "wall", "stub"]},
     "partyStoreyPlans": {"type": "grid", "default": []},
     "partyLanePlans": {"type": "grid", "default": []},
@@ -133,13 +134,14 @@
   },
   "derived": {
     "height": "groundHeight + (floors - 1) * storyHeight",
-    "round": "cornerStyle * cornerSegments"
+    "round": "cornerStyle * cornerSegments",
+    "towerParty": "infill * (floors > 8) * (count(partyPlans) == 0)"
   },
   "parts": [
     {
       "id": "side",
       "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}, "round": {"derived": "round"}}}],
-      "when": "(e_length >= 0.3) * ((1 - e_street) * cell(partyPlans, e) != 1)",
+      "when": "(e_length >= 0.3) * ((1 - e_street) * (cell(partyPlans, e) + towerParty * (1 - e_street)) != 1)",
       "generator": {"kind": "item", "entry": "kowloon-facade-side.item.json",
         "parameters": {"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"expr": "e_length"}, "u0": {"expr": "e_perimeter"}, "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + e"},
@@ -159,9 +161,10 @@
                        "backDoorColor": {"parameter": "backDoorColor"}, "backDoorLouvres": {"parameter": "backDoorLouvres"},
                        "glazing": {"parameter": "glazing"}, "hoods": {"parameter": "hoods"},
                        "plinth": {"expr": "select(count(plinthPlans) > e, cell(plinthPlans, e), select(e_street, plinth, 0))"}, "ledge": {"choose": [false, true], "by": "e_street"},
-                       "miterStart": {"expr": "select(e_street * e_previous_street, select(round > 0, select(e_previous_cut > 0, 0.0001, max(0, e_miter_start)), 0.4142), min(1, e_street + bandsAround))"}, "miterEnd": {"expr": "select(e_cut > 0, select(round > 0, 0.0001, 0.4142), min(1, e_street + bandsAround))"},
+                       "miterStart": {"expr": "select((round > 0) * (e_previous_cut > 0), 0, e_miter_start)"},
+                       "miterEnd": {"expr": "select((round > 0) * (e_cut > 0), 0, e_miter_end)"}, "joinWalls": true,
                        "copingFlush": {"choose": [false, true], "by": "round > 0"},
-                       "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, clamp(e_miter_start, 0, 2))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, clamp(e_miter_end, 0, 2))"},
+                       "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, select(e_miter_start <= 2, max(0, e_miter_start), 0))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, select(e_miter_end <= 2, max(0, e_miter_end), 0))"},
                        "tileStart": {"choose": [false, true], "by": "cornerTiles * (e_previous_cut > 0)"}, "tileEnd": {"choose": [false, true], "by": "cornerTiles * (e_cut > 0)"},
                        "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "fitted": {"parameter": "fittedBays"}, "lampStyle": {"parameter": "lampStyle"},
                        "shutterHead": {"parameter": "shutterHead"}, "shutterHeadRust": {"parameter": "shutterHeadRust"}, "meters": {"parameter": "meters"},
@@ -169,12 +172,12 @@
                        "cagesPlan": {"element": "cagePlans", "at": "e"}, "storagePlan": {"element": "storagePlans", "at": "e"}, "windowTransom": {"parameter": "windowTransom"},
                        "ventPlan": {"element": "ventPlans", "at": "e"}, "downpipe": {"parameter": "downpipes"},
                        "meterPlan": {"element": "meterPlans", "at": "e"}, "cablePlan": {"element": "cablePlans", "at": "e"},
-                       "cables": {"expr": "select(e_street, cables, select(cell(partyPlans, e) > 0, 0, min(1, cables)))"}, "cornerRadius": {"expr": "select(e_street * (e_cut > 0), e_cut, 0)"},
+                       "cables": {"expr": "select(e_street, cables, select((cell(partyPlans, e) + towerParty * (1 - e_street)) > 0, 0, min(1, cables)))"}, "cornerRadius": {"expr": "select(e_street * (e_cut > 0), e_cut, 0)"},
                        "balconyFrom": {"expr": "select(count(balconyPlans, e) >= 2, cell(balconyPlans, e, 0), 0.6)"},
                        "balconyTo": {"expr": "select(count(balconyPlans, e) >= 2, cell(balconyPlans, e, 1), -0.6)"},
                        "balconyDepth": {"expr": "select(count(balconyPlans, e) >= 3, cell(balconyPlans, e, 2), 1.0)"},
                        "balconyFan": {"expr": "select(count(balconyPlans, e) >= 4, cell(balconyPlans, e, 3), -1)"},
-                       "bayWidth": {"expr": "select(e_street, 2.35, 2.1)"}, "edge": {"expr": "select(e_street, 0.5, 0.9)"},
+                       "bayWidth": {"expr": "select(towerParty, max(select(e_street, 2.35, 2.1), min(4, (e_length - select(e_street, 1, 1.8)) / 3)), select(e_street, 2.35, 2.1))"}, "edge": {"expr": "select(e_street, 0.5, 0.9)"},
                        "windowWidth": {"expr": "select(e_street, 1.85, 0.9)"}, "windowHeight": {"expr": "select(e_street, streetWindowHeight, 1.1)"},
                        "sill": {"expr": "select(e_street, streetSill, 1.1)"},
                        "windowChance": {"expr": "select(e_street, 1, backWindowChance)"},
@@ -191,7 +194,7 @@
                        "tileBands": {"choose": [false, true], "by": "e_street * spandrels"},
                        "dado": {"parameter": "dado"}, "awningLower": {"parameter": "awningLower"}, "spandrelsPlan": {"element": "spandrelPlans", "at": "e"}, "fullCages": {"parameter": "fullCages"}, "cageColor": {"parameter": "cageColor"}, "cageRust": {"parameter": "cageRust"}, "cageBar": {"parameter": "cageBar"}, "cageRail": {"parameter": "cageRail"}, "cageSpacing": {"parameter": "cageSpacing"}, "shutterColor": {"parameter": "shutterColor"}, "doorColor": {"parameter": "doorColor"}, "cageChance": {"expr": "select(e_street, 0.35, 0.1)"},
                        "balcony": {"choose": [false, true], "by": "e_street * (e_length > 8)"},
-                       "backDoor": {"choose": [true, false], "by": "min(1, e_street + (cell(partyPlans, e) > 0))"},
+                       "backDoor": {"choose": [true, false], "by": "min(1, e_street + ((cell(partyPlans, e) + towerParty * (1 - e_street)) > 0))"},
                        "pipes": {"expr": "select(e_street, 0, backPipes)"},
                        "riser": {"choose": [false, true], "by": "services * (1 - e_street)"}, "riserRight": {"choose": [true, false], "by": "e_next_street"},
                        "ductRun": {"choose": [false, true], "by": "services * (1 - e_street)"}, "ducts": {"expr": "select(e_street, 0, services)"}}},
@@ -206,7 +209,8 @@
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + 100 + c"},
                        "edge": 0.2, "windows": false, "groundShops": false, "downpipe": false, "riser": false,
                        "sill": {"parameter": "streetSill"}, "tileStrip": {"parameter": "cornerTiles"},
-                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}, "ledge": true, "miterStart": 0.4142, "miterEnd": 0.4142}},
+                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}, "ledge": true,
+                       "miterStart": {"expr": "c_cmiter_start"}, "miterEnd": {"expr": "c_cmiter_end"}, "joinWalls": true}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_cdx", "c_cdy"]}
     },
     {
@@ -233,10 +237,14 @@
     {
       "id": "streetSign",
       "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}, "round": {"derived": "round"}}}],
-      "when": "signs * (count(boardPlans) == 0) * e_street * (e_length > 6)",
+      "when": "signs * (count(boardPlans) == 0) * e_street * (e_length >= 4)",
       "generator": {"kind": "item", "entry": "kowloon-sign.item.json",
-        "parameters": {"mount": "hung", "height": 2.4, "reach": 1.0, "seed": {"expr": "seed * 7 + 50 + e"}}},
-      "placement": {"position": ["e_x + e_dx * e_length * 0.5", "e_y + e_dy * e_length * 0.5", "groundHeight + 0.3"], "along": ["e_dx", "e_dy"]}
+        "parameters": {"mount": "board", "angle": 90, "height": {"expr": "min(storyHeight, 2.4 + 0.4 * random(seed, e, 87))"}, "width": 0.82, "reach": 0.85,
+                       "text": {"choose": ["永昌藥行", "興隆五金", "電器修理", "廣源雜貨"], "by": "(seed + e) % 4"},
+                       "design": {"choose": ["pharmacy", "hardware", "electrical", "grocery"], "by": "(seed + e) % 4"},
+                       "scheme": {"choose": ["ivory", "red", "blue", "green"], "by": "(seed + e) % 4"},
+                       "seed": {"expr": "seed * 7 + 50 + e"}}},
+      "placement": {"position": ["e_x + e_dx * e_length * 0.18", "e_y + e_dy * e_length * 0.18", "groundHeight + 0.3"], "along": ["e_dx", "e_dy"]}
     },
     {
       "id": "board",
@@ -251,6 +259,8 @@
                        "panel2": {"choose": ["#d2a23a", "#2f7a4a", "#b23a2c", "#2c4a6e", "#dcd8cc", "#1f1d1b"], "by": "select(count(boardPlans, e, k) > 13, cell(boardPlans, e, k, 13), cell(boardPlans, e, k, 12))"},
                        "horizontal": {"choose": [false, true], "by": "cell(boardPlans, e, k, 5)"},
                        "face": {"choose": ["auto", "kai", "hei", "song", "brush", "heavy", "round", "slim"], "by": "cell(boardPlans, e, k, 14)"},
+                       "design": {"choose": ["plain", "hardware", "grocery", "electrical", "wholesale", "pharmacy"], "by": "cell(boardPlans, e, k, 15)"},
+                       "subtitle": {"element": "boardTexts", "at": "select(count(boardPlans, e, k) > 16, cell(boardPlans, e, k, 16), -1)"},
                        "angle": {"expr": "cell(boardPlans, e, k, 6)"}, "reach": {"expr": "cell(boardPlans, e, k, 7)"},
                        "anchor": {"expr": "cell(boardPlans, e, k, 8)"}, "end": {"expr": "cell(boardPlans, e, k, 9)"},
                        "seed": {"expr": "seed * 11 + e * 7 + k"}}},
@@ -273,9 +283,9 @@
     {
       "id": "party",
       "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}, "round": {"derived": "round"}}}],
-      "when": "(e_length >= 0.3) * ((1 - e_street) * cell(partyPlans, e) > 0)",
+      "when": "(e_length >= 0.3) * ((1 - e_street) * (cell(partyPlans, e) + towerParty * (1 - e_street)) > 0)",
       "generator": {"kind": "native", "name": "kowloon/party",
-        "parameters": {"kind": {"choose": ["wall", "stub"], "by": "cell(partyPlans, e) - 1"}, "length": {"expr": "e_length"},
+        "parameters": {"kind": {"choose": ["wall", "stub"], "by": "(cell(partyPlans, e) + towerParty * (1 - e_street)) - 1"}, "length": {"expr": "e_length"},
                        "top": {"expr": "height + parapet"}, "ground": {"parameter": "groundHeight"}, "storey": {"parameter": "storyHeight"},
                        "storeys": {"parameter": "floors"}, "own": {"expr": "clamp(round(cell(partyStoreyPlans, e)), 0, 12)"},
                        "color": {"parameter": "paint"}, "frame": {"parameter": "frame"}, "seed": {"expr": "seed * 29 + e"},
@@ -284,7 +294,7 @@
                        "cables": {"expr": "select(count(partyLanePlans, e) >= 3, cell(partyLanePlans, e, 2), 2)"},
                        "bars": {"expr": "select(count(partyLanePlans, e) >= 4, cell(partyLanePlans, e, 3), 0.3)"},
                        "units": {"expr": "select(count(partyLanePlans, e) >= 5, cell(partyLanePlans, e, 4), 0.45)"},
-                       "plinth": {"expr": "clamp((cell(partyPlans, e) == 2) * select(e_previous_street, select((e > 0) * (count(plinthPlans) >= e), cell(plinthPlans, e - 1), plinth), select(e_next_street, select(count(plinthPlans) > e + 1, cell(plinthPlans, e + 1), select(count(plinthPlans) > 0, cell(plinthPlans, 0), plinth)), 0)), 0, 1.3)"}}},
+                       "plinth": {"expr": "clamp(((cell(partyPlans, e) + towerParty * (1 - e_street)) == 2) * select(e_previous_street, select((e > 0) * (count(plinthPlans) >= e), cell(plinthPlans, e - 1), plinth), select(e_next_street, select(count(plinthPlans) > e + 1, cell(plinthPlans, e + 1), select(count(plinthPlans) > 0, cell(plinthPlans, 0), plinth)), 0)), 0, 1.3)"}}},
       "placement": {"position": ["e_x", "e_y", 0], "along": ["e_dx", "e_dy"]},
       "zones": [
         {"name": "runoff-coping", "below": "top", "length": "height + parapet + 1", "u0": "e_perimeter"},
@@ -352,7 +362,7 @@
     {
       "id": "roofRail",
       "repeat": [{"name": "e", "footprint": {"points": "footprint", "streets": "streets", "cut": {"parameter": "cut"}, "round": {"derived": "round"}}}],
-      "when": "roofKit * select(count(roofRailPlan) > 0, cell(roofRailPlan, e) > 0, roofRail * e_street) * (e_length >= 2) * ((1 - e_street) * cell(partyPlans, e) != 1)",
+      "when": "roofKit * select(count(roofRailPlan) > 0, cell(roofRailPlan, e) > 0, roofRail * e_street) * (e_length >= 2) * ((1 - e_street) * (cell(partyPlans, e) + towerParty * (1 - e_street)) != 1)",
       "generator": {"kind": "native", "name": "kowloon/rail",
         "parameters": {"length": {"expr": "max(0.6, (e_length - 0.5) * select(count(roofRailPlan) > 0, min(1, cell(roofRailPlan, e)), roofRailShare))"}, "height": 0.5, "color": {"parameter": "frame"}}},
       "placement": {"position": ["e_x + e_dx * (0.25 + select(random(seed, e, 36) < 0.5, 0, (e_length - 0.5) * (1 - select(count(roofRailPlan) > 0, min(1, cell(roofRailPlan, e)), roofRailShare)))) - e_dy * 0.125", "e_y + e_dy * (0.25 + select(random(seed, e, 36) < 0.5, 0, (e_length - 0.5) * (1 - select(count(roofRailPlan) > 0, min(1, cell(roofRailPlan, e)), roofRailShare)))) + e_dx * 0.125", "height + parapet + 0.08"], "along": ["e_dx", "e_dy"]}

@@ -1,0 +1,14 @@
+[
+  {"infill":true,
+    "shopWidth":3.25, "shopPlans":[["open","open"],["gate","open"]], "tradePlans":[["provisions","grocer"],["auto","hardware"]], "awningPlans":[["striped","auto"],["auto","tarp"]], "clutterPlans":[["mixed-left"]], "paint":"#bcb09a", "frame":"#536559", "cut":0.55, "cornerStyle":"round", "cornerTiles":true, "cornerSegments":10, "fittedBays":true, "fullCages":true, "streetSill":1.05, "roofTiles":true, "awningLower":0.35, "roofRailShare":0.7, "peeling":0.26
+  },
+  {"infill":true,
+    "paint":"#a49a87", "frame":"#4b5257", "streets":[true,false,false,false], "cut":0, "fittedBays":true, "dado":1.0, "plinth":0, "door":"double", "transom":"mesh", "doorPanels":2, "doorColor":"#7f90a6", "shutterHead":0.42, "shutterHeadRust":0.75, "shopPlans":[["shutter","door"]], "awningPlans":[["none","none"]], "lampStyle":"round", "roofKit":false, "tankRadius":0.5, "cables":1, "backWindowChance":0.25
+  },
+  {"infill":true,
+    "shopPlans":[["open","auto"]], "awningPlans":[["awning","auto"]], "paint":"#aab3a3", "frame":"#425650", "cut":0.38, "cornerStyle":"round", "cornerTiles":true, "fittedBays":true, "roofTiles":true, "roofRailShare":0.8, "cageRust":0.55, "peeling":0.22, "dado":0.85, "plinth":0, "gateColor":"#406957", "awningLower":0.22
+  },
+  {"infill":true,
+    "paint":"#b4977f", "frame":"#505852", "cut":0.32, "cornerStyle":"chamfer", "fittedBays":true, "bandsAround":true, "cageRust":0.65, "fullCages":true, "shutterHeadRust":0.6, "peeling":0.28, "roofRailShare":0.35, "tankShell":"#b99a6f", "lampStyle":"round"
+  }
+]

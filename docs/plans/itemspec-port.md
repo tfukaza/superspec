@@ -177,8 +177,18 @@ items. Nothing is particular to the corner shop: the plan file names what goes w
   two poles) or `striped` (the fitted canvas with stripes and a valance). `kowloon/awning` and
   `kowloon/tarp` take `poles` and `stand`.
 - **Signs.** `kowloon-sign` (above) is the only sign a building places: its boards (`boardPlans`, whose
-  fifth column is now a scheme index: ivory, red, green, blue, yellow, black, white, and whose twelfth is a
-  number of coloured squares), its corner and street signs and each shopfront's fascia sign.
+  fifth column is a scheme index: ivory, red, green, blue, yellow, black, white, and whose twelfth is a
+  number of coloured squares), its corner and street signs and each shopfront's fascia sign. The seventh
+  column sets the board's angle from the wall. Use 90° for a board that projects squarely into the street.
+  The sixteenth column selects a design (0 plain, 1 hardware, 2 grocery, 3 electrical, 4 wholesale,
+  5 pharmacy). The optional seventeenth column indexes a subtitle in `boardTexts`. A design supplies
+  the casing, trade emblem and default lettering face. Column 15 or the item's `face` control can
+  override that face. Both the City ItemSpec and AML reference corner read the same shipping preset.
+  The shaped casings, trade emblems and bilingual lettering draw on Hong Kong's shop-sign traditions.
+  The boards use original procedural artwork and the shipped font atlas.
+  [M+ Nam Wah Neon archive](https://www.mplus.org.hk/en/collection/archives/nam-wah-neon-company-archive-ca13/),
+  [M+ China Neonlight archive](https://www.mplus.org.hk/en/collection/archives/china-neonlight-advertising-company-archive-ca14/),
+  [PolyU study of vernacular Hong Kong neon signs](https://ira.lib.polyu.edu.hk/bitstream/10397/92486/1/Kwok_Vernacular_Design_History.pdf).
 - **Facade.** Floors are divided by a moulded string course (`kowloon/cornice`, mitred at the corners by
   `miterStart` and `miterEnd`) in place of a box; the parapet has one at the roof line (`ledge`). Street
   walls stand on a dark `plinth` (a slot of its own, 1.02 m). `pipePlan` stands drain pipes where a plan
@@ -206,8 +216,8 @@ items. Nothing is particular to the corner shop: the plan file names what goes w
 **A second plan.** `tests/studio/washroom-items/small-warehouse.json` builds the small three-storey
 warehouse of the second reference picture from the same building item: a 6 by 6 m box with square corners
 (`cut` 0), a roller shutter and a door over a tiled `dado`, a number plate (`plaquePlans`: flat signs),
-full window cages (`fullCages`) with a corrugated hood, three panelled boards (the `boardPlans` columns
-for squares and their two colours), a drain with a `hopper`, a tiled roof deck (`roofTiles`:
+full window cages (`fullCages`) with a corrugated hood, four lettered blade signs, a drain with a
+`hopper`, a tiled roof deck (`roofTiles`:
 `kowloon/tile-deck`, slot `roof-tile`), and large paving slabs on all four sides (`pavementAround`,
 `pavingStone`, `manholes`). `services: false` leaves the back sides without their riser and ducts. Further
 controls from the same round: `spandrelPlans` (which window banks have tiled spandrels), `awningLower`,

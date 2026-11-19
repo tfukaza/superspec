@@ -94,8 +94,8 @@ message.
 
 | Generator | Fields | Face groups |
 | --- | --- | --- |
-| `box` | `size` (spans from the part origin), `bevel`, `bevelSegments`, `bevelAxis` | `side`, `top`, `bottom` |
-| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments`, `arris`, `arrisStart`, `arrisEnd` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
+| `box` | `size` (spans from the part origin), `bevel`, `bevelSegments`, `bevelAxis`, `miters` | `side`, `top`, `bottom` |
+| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments`, `arris`, `arrisStart`, `arrisEnd`, `miters` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
 | `prism` | `footprint`, `height`, `inset`, `bevel`, `bevelSegments` (see Footprints) | `side`, `top`, `bottom` |
 | `arc` | `radius`, `turn`, `segments`, `section[]`, `closed`, `bevel`, `bevelSegments`, `step`, `patternAnchor`, `rings[]` | `side`, `end` |
 | `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
@@ -142,6 +142,14 @@ laid along the whole wall leaves only hairlines of wall behind its ends. It has 
 the part on the wall with its front `t` proud and its back face left out (a panel with only
 its `front` and `edge` mapped), and cut the seat a few centimeters deep, so that nothing lies
 behind the part's front within the recess's depth plus `t`.
+
+*Miters.* A panel or an X-axis box (`bevelAxis: "x"`) takes optional `miters: [start, end]`.
+Each value is the signed tangent of half the plan turn. At a square outside corner, both
+joining pieces use 1. Each end moves inward by its value times the depth from `y = 0`, so the
+pieces share the joint plane. Negative values extend the ends at an inside corner. A panel
+miter must agree with any arris turn on that end. Openings need clearance from the miter
+through their full depth. A rectangular seat with square jambs can taper at the back to
+keep its opening in place. Panel miters require a square front rim.
 
 *Arrises.* Two flat receivers that meet at a corner cannot be rounded by a material, and a
 `bevel` rounds a panel's whole rim. `arris` (a radius) rounds only the panel's upright end

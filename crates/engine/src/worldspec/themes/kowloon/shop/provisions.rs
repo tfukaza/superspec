@@ -519,35 +519,48 @@ fn plastic_crate(
     color: V3,
     open: bool,
     loaded: bool,
+    catalog: bool,
 ) -> Result<(), String> {
     let [x, y, z] = at;
-    d.cuboid("paint", at, [x + w, y + depth, z + h], color, "df")?;
-    let dark = shade(color, 0.42);
-    for band in [0.2, 0.58] {
-        let (z0, z1) = (z + h * band, z + h * (band + 0.2));
-        d.face(
-            "paint",
-            &[
-                [x + 0.035, y - 0.003, z0],
-                [x + w - 0.035, y - 0.003, z0],
-                [x + w - 0.035, y - 0.003, z1],
-                [x + 0.035, y - 0.003, z1],
-            ],
-            [0., -1., 0.],
-            dark,
+    if catalog {
+        grocer_props::fitted_crate(
+            d,
+            [x + w / 2., y + depth / 2., z],
+            [w, depth, h],
+            &grocer_props::Options {
+                tint: color,
+                ..Default::default()
+            },
         )?;
-        for (side, out) in [(x - 0.003, -1.), (x + w + 0.003, 1.)] {
+    } else {
+        d.cuboid("paint", at, [x + w, y + depth, z + h], color, "df")?;
+        let dark = shade(color, 0.42);
+        for band in [0.2, 0.58] {
+            let (z0, z1) = (z + h * band, z + h * (band + 0.2));
             d.face(
                 "paint",
                 &[
-                    [side, y + 0.035, z0],
-                    [side, y + depth - 0.035, z0],
-                    [side, y + depth - 0.035, z1],
-                    [side, y + 0.035, z1],
+                    [x + 0.035, y - 0.003, z0],
+                    [x + w - 0.035, y - 0.003, z0],
+                    [x + w - 0.035, y - 0.003, z1],
+                    [x + 0.035, y - 0.003, z1],
                 ],
-                [out, 0., 0.],
+                [0., -1., 0.],
                 dark,
             )?;
+            for (side, out) in [(x - 0.003, -1.), (x + w + 0.003, 1.)] {
+                d.face(
+                    "paint",
+                    &[
+                        [side, y + 0.035, z0],
+                        [side, y + depth - 0.035, z0],
+                        [side, y + depth - 0.035, z1],
+                        [side, y + 0.035, z1],
+                    ],
+                    [out, 0., 0.],
+                    dark,
+                )?;
+            }
         }
     }
     if open {
@@ -587,8 +600,30 @@ fn plastic_crate(
 }
 
 /// A carton with its low front-left corner at `at`, taped along its top.
-fn carton(d: &mut Fixture<'_, '_>, at: V3, [w, depth, h]: V3, color: V3) -> Result<(), String> {
+fn carton(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    [w, depth, h]: V3,
+    color: V3,
+    catalog: bool,
+) -> Result<(), String> {
     let [x, y, z] = at;
+    if catalog {
+        let variant =
+            1 + (w * 1000.).round() as usize % grocer_props::variants("stock-box")?.max(1);
+        return grocer_props::draw(
+            d,
+            "stock-box",
+            [x + w / 2., y + depth / 2., z],
+            [w, depth, h],
+            0.,
+            &grocer_props::Options {
+                variant,
+                ..Default::default()
+            },
+        )
+        .map(|_| ());
+    }
     d.cuboid("paint", at, [x + w, y + depth, z + h], color, "df")?;
     let tape = shade(color, 1.22);
     d.face(
@@ -632,6 +667,18 @@ fn pile(
     reach: f64,
     rng: &mut SeededRng,
 ) -> Result<f64, String> {
+    pile_finish(d, kind, at, across, reach, rng, false)
+}
+
+fn pile_finish(
+    d: &mut Fixture<'_, '_>,
+    kind: Pile,
+    at: V3,
+    across: f64,
+    reach: f64,
+    rng: &mut SeededRng,
+    catalog: bool,
+) -> Result<f64, String> {
     let [x, y, z] = at;
     match kind {
         Pile::Crates => {
@@ -660,6 +707,7 @@ fn pile(
                     own,
                     last && top < 4,
                     last && (4..7).contains(&top),
+                    catalog,
                 )?;
                 if last && top >= 7 {
                     carton(
@@ -667,6 +715,7 @@ fn pile(
                         [low[0] + 0.04, low[1] + 0.03, low[2] + h],
                         [w - 0.1, depth - 0.07, rng.float(0.18, 0.3)],
                         tone(rng, &CARDBOARD),
+                        catalog,
                     )?;
                 }
             }
@@ -693,6 +742,7 @@ fn pile(
                     [-w / 2., -depth / 2., 0.],
                     [w, depth, h],
                     tone(rng, &CARDBOARD),
+                    catalog,
                 )?;
                 top += h;
                 w *= rng.float(0.82, 0.97);
@@ -1449,6 +1499,7 @@ pub(crate) fn street_fitted(
     key: &str,
     width: f64,
     kind: Street,
+    catalog: bool,
 ) -> Result<(), String> {
     if !width.is_finite() || !(0.6..=40.).contains(&width) || key.len() > 1024 {
         return Err("Street stock requires a frontage of 0.6 to 40 meters.".into());
@@ -1504,20 +1555,21 @@ pub(crate) fn street_fitted(
         } else {
             rng.float(0.95, 1.55)
         };
-        let stood = pile(
+        let stood = pile_finish(
             &mut on(d, facing(x, out)?),
             sort,
             [0.; 3],
             across,
             reach,
             &mut rng,
+            catalog,
         )?;
         if shop && !behind {
             // A shop's front row is one line of plastic crates, one or two high, with a
             // carton here and there.
             if rng.chance(0.9) {
                 let low = rng.float(0.3, 0.68);
-                pile(
+                pile_finish(
                     &mut on(d, facing(x, (out + 0.4).min(1.))?),
                     if rng.chance(0.85) {
                         Pile::Crates
@@ -1528,12 +1580,13 @@ pub(crate) fn street_fitted(
                     stood.min(across),
                     low,
                     &mut rng,
+                    catalog,
                 )?;
             }
         } else if !behind && rng.chance(0.5) {
             // A heap's second row in front is half as high.
             let low = rng.float(0.35, 0.7);
-            pile(
+            pile_finish(
                 &mut on(d, facing(x + rng.float(0., 0.08), (out + 0.4).min(1.))?),
                 if sort == Pile::Crates && kind != Street::Crates {
                     Pile::Cartons
@@ -1544,6 +1597,7 @@ pub(crate) fn street_fitted(
                 across,
                 low,
                 &mut rng,
+                catalog,
             )?;
         }
         x += stood + rng.float(0.02, if shop { 0.05 } else { 0.1 });
@@ -1634,13 +1688,14 @@ pub(crate) fn street_fitted(
         )?;
         // Its load of cartons leans back on the frame.
         let mut load = on(d, facing(0.14, 0.56)?);
-        pile(
+        pile_finish(
             &mut load,
             Pile::Cartons,
             [0., 0., 0.095],
             0.4,
             1.05,
             &mut rng,
+            catalog,
         )?;
     }
     Ok(())

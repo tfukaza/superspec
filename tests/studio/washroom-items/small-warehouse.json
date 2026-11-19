@@ -33,7 +33,7 @@
   "backDoorPlans": [0, 1.1],
   "backDoorColor": "#6a4a38",
   "backDoorLouvres": false,
-  "boardTexts": ["12"],
+  "boardTexts": ["12", "永安五金", "廣源雜貨", "電器修理", "批發零售", "WING ON", "KWONG YUEN", "REPAIRS", "WHOLESALE"],
   "/plate": "plaquePlans per edge: x, z, width, height, scheme, text, face (kai, hei, song, brush, heavy, round, slim): bold strokes so the digits still read from across the street.",
   "plaquePlans": [[[3.24, 1.53, 0.27, 0.21, 3, 0, 4]]],
   "/upper": "Two window banks a storey, three lights by three, without hoods; full cages over the first floor's: washing under a corrugated roof (canopiesPlans) in one, cartons in the other; cartons stacked behind the top storey's glass (storagePlans: a share per storey). The other edges per storey and bay.",
@@ -60,12 +60,12 @@
   "canopiesPlans": [[[], [1, 0], [0, 0]], [[], [0, 0], [0, 0]], [[], [0, 0], [0, 0]], [[], [0, 0], [0, 0]]],
   "storagePlans": [[0, 0, 0.5]],
   "bandsAround": true,
-  "/signs": "Three panelled boards flat to the wall on outriggers, read from the front: x, z, width, height, scheme, horizontal, angle, reach, anchor, end, text, panels, panel colour, second panel colour.",
+  "/signs": "Four double-sided blade signs on the front piers, square to the wall. Their traditional Chinese lettering reads Wing On Hardware, Kwong Yuen Groceries, Electrical Repairs, and Wholesale and Retail. Rows give x, z, width, height, scheme, horizontal, angle, reach, anchor, end, and text.",
   "boardPlans": [[
-    [-0.12, 3.75, 0.55, 3.6, 5, 0, 0, 0.32, 0.3, 0.55, 0, 6, 0],
-    [2.65, 3.75, 0.5, 4.0, 6, 0, 0, 0.32, 0.25, 0.5, 0, 6, 1, 2],
-    [5.14, 3.55, 0.3, 2.5, 6, 0, 0, 0.3, 0.15, 0.3, 0, 5, 5],
-    [5.47, 3.62, 0.36, 2.6, 6, 0, 0, 0.36, 0.18, 0.36, 0, 5, 2]
+    [0.18, 3.75, 0.76, 3.6, 5, 0, 90, 0.32, 0, 0, 1, 0, 0, 0, 0, 1, 5],
+    [2.90, 3.75, 0.76, 4.0, 2, 0, 90, 0.32, 0, 0, 2, 0, 0, 0, 0, 2, 6],
+    [5.29, 3.55, 0.60, 2.5, 3, 0, 90, 0.30, 0, 0, 3, 0, 0, 0, 0, 3, 7],
+    [5.65, 6.20, 0.64, 2.6, 1, 0, 90, 0.36, 0, 0, 4, 0, 0, 0, 0, 4, 8]
   ]],
   "/services": "A drain with its hopper at the right corner and no other pipes; a conduit from the meter to the lamp and one up to a junction box under the parapet (conduitPlans: x, z, rise, run, second rise, end box width; pale grey, conduitColor); wall vents where the plan says (ventPlans: x, z, width, height).",
   "pipePlans": [[5.72]],

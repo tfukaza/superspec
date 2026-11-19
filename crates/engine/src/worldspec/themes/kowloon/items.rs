@@ -42,7 +42,7 @@ mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "11";
+const VERSION: &str = "12";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 /// The default `weight` of a fixture's small hardware (clips, straps, brackets, bolts, lines):
@@ -1097,8 +1097,20 @@ fn board_sign(
     values: &Values,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<NativeOutput, String> {
+    draw(cancelled, |mesh| {
+        draw_board_sign(&mut on(mesh, pen("sign")?)?, name, values, None)
+    })
+}
+
+/// Draw the ItemSpec sign prop directly into a theme fixture's wall frame.
+pub(super) fn draw_board_sign(
+    fixture: &mut Fixture<'_, '_>,
+    name: &str,
+    values: &Values,
+    settings: Option<&signs::panel::Settings>,
+) -> Result<(), String> {
     use signs::{
-        Construction, Outline,
+        Construction, Outline, graphics,
         lettering::{Direction, Face},
         panel,
     };
@@ -1130,6 +1142,11 @@ fn board_sign(
     if !FACES.contains(&face.as_str()) {
         return Err(format!("{name}: face must be one of {}.", FACES.join(", ")));
     }
+    let style = graphics::style(&a.text("design", "plain")?)?;
+    let subtitle = a.text("subtitle", "")?;
+    if style.is_some() && panels != 0 {
+        return Err(format!("{name}: a trade design requires a lettered board."));
+    }
     let key = a.seed()?;
     a.finish()?;
     let scheme = scheme.unwrap_or_else(|| if red { "red" } else { "ivory" }.to_owned());
@@ -1158,209 +1175,243 @@ fn board_sign(
         text
     };
     let face: Face = if face == "auto" {
-        auto_face(sign_em(width, height, &text, !horizontal))
+        style.map_or_else(
+            || auto_face(sign_em(width, height, &text, !horizontal)),
+            |style| style.face,
+        )
     } else {
         serde_json::from_value(Value::String(face)).map_err(|e| format!("{name}: face: {e}"))?
     };
     let hardware = panel::Hardware {
         slot: "metal".into(),
         tint: srgb("#504d3d"),
-        weathering: None,
+        weathering: settings.map(|settings| settings.weathering.clone()),
     };
-    let settings = sign_settings(&key);
-    // The frame's face stands this far off the board's (see `SIGN_ART`).
-    let proud = 0.009 * SIGN_ART.lift.min(3.5);
-    draw(cancelled, |mesh| {
-        let root = pen("sign")?;
-        let (sin, cos) = angle.sin_cos();
-        // The board's own frame: its face along the direction `angle` off the wall, its body
-        // standing `reach` out from the wall.
-        let pen = root.facing([0., reach, 0.], [cos, sin, 0.], [-sin, cos, 0.])?;
-        panel::draw_art(
-            &mut on(mesh, pen.clone())?,
-            &panel::Design {
-                width,
-                height,
-                depth: 0.045,
-                construction: Construction::Sheet,
-                outline: Outline::Rectangle,
-                ground,
-                border: Some(ink),
-                stack: panel::Stack::Down,
-                blocks: if panels > 0 {
-                    vec![]
-                } else {
-                    vec![panel::Block {
-                        text: text.clone(),
-                        face,
-                        direction: if horizontal {
-                            Direction::Ltr
-                        } else {
-                            Direction::Ttb
-                        },
-                        ink,
-                        share: 1.,
-                        shadow: None,
-                    }]
-                },
-                age,
-                phase: SeededRng::from_text(&key).float(0., 100.),
+    let default_settings;
+    let settings = match settings {
+        Some(settings) => settings,
+        None => {
+            default_settings = sign_settings(&key);
+            &default_settings
+        }
+    };
+    let outline = style.map_or(Outline::Rectangle, |style| style.outline);
+    let construction = style.map_or(Construction::Sheet, |style| style.construction);
+    let depth = style.map_or(0.045, |style| style.depth);
+    let half_depth = depth / 2.;
+    // Cover the deepest frame or artwork that the clips span.
+    let proud = if construction == Construction::Lightbox {
+        0.006
+    } else {
+        0.009
+    } * SIGN_ART.lift.min(3.5);
+    let root = fixture.pen.clone();
+    let (sin, cos) = angle.sin_cos();
+    // The board's own frame: its face along the direction `angle` off the wall, its body
+    // standing `reach` out from the wall.
+    let pen = root.facing([0., reach, 0.], [cos, sin, 0.], [-sin, cos, 0.])?;
+    let d = &mut Fixture {
+        pen: pen.clone(),
+        mesh: fixture.mesh,
+        repeats: fixture.repeats,
+    };
+    panel::draw_styled_art(
+        d,
+        &panel::Design {
+            width,
+            height,
+            depth,
+            construction,
+            outline,
+            ground,
+            border: Some(ink),
+            stack: panel::Stack::Down,
+            blocks: if panels > 0 {
+                vec![]
+            } else {
+                vec![panel::Block {
+                    text: text.clone(),
+                    face,
+                    direction: if horizontal {
+                        Direction::Ltr
+                    } else {
+                        Direction::Ttb
+                    },
+                    ink,
+                    share: 1.,
+                    shadow: None,
+                }]
             },
-            panel::Sides::Both,
-            &hardware,
-            &settings,
-            SIGN_ART,
-        )?;
-        if panels > 0 {
-            // Enamelled squares riveted to both faces, evenly spaced along the board.
-            let face = &mut on(mesh, pen.clone())?;
-            let long = if horizontal { width } else { height };
-            let across = if horizontal { height } else { width };
-            let pitch = (long - 0.16) / panels as f64;
-            let side = (pitch - 0.07).min(across - 0.2).max(0.05);
-            for i in 0..panels {
-                let centre = long - 0.08 - (i as f64 + 0.5) * pitch;
-                let color = panel_colors[usize::from(i * 2 >= panels)];
-                let (x, z) = if horizontal {
-                    (long - centre, across / 2.)
-                } else {
-                    (across / 2., centre)
-                };
-                face.cuboid(
-                    "paint",
-                    [x - side / 2., -0.045 - proud * 0.7, z - side / 2.],
-                    [x + side / 2., proud * 0.7, z + side / 2.],
-                    color,
-                    "",
-                )?;
-            }
-        }
-        let d = &mut on(mesh, root)?;
-        if horizontal && angle == 0. {
-            // A level board hangs by two straps from one pole, which leaves the wall at
-            // `anchor` and turns along the board; one stay from the wall above carries its far
-            // end and a second, square to the wall, steadies it.
-            let (top, y) = (height + 0.1, reach - 0.0225);
-            let far = [end_at, y, top];
-            d.tube(
-                "metal",
-                &[[anchor, 0.012, top], [anchor, y, top], far],
-                SIGN_RAIL,
-                hardware.tint,
-                10,
+            age,
+            phase: SeededRng::from_text(&key).float(0., 100.),
+        },
+        panel::Sides::Both,
+        &hardware,
+        settings,
+        SIGN_ART,
+        style.map(|style| graphics::Artwork {
+            style,
+            subtitle: &subtitle,
+        }),
+    )?;
+    if panels > 0 {
+        // Enamelled squares riveted to both faces, evenly spaced along the board.
+        let long = if horizontal { width } else { height };
+        let across = if horizontal { height } else { width };
+        let pitch = (long - 0.16) / panels as f64;
+        let side = (pitch - 0.07).min(across - 0.2).max(0.05);
+        for i in 0..panels {
+            let centre = long - 0.08 - (i as f64 + 0.5) * pitch;
+            let color = panel_colors[usize::from(i * 2 >= panels)];
+            let (x, z) = if horizontal {
+                (long - centre, across / 2.)
+            } else {
+                (across / 2., centre)
+            };
+            d.cuboid(
+                "paint",
+                [x - side / 2., -depth - proud * 0.7, z - side / 2.],
+                [x + side / 2., proud * 0.7, z + side / 2.],
+                color,
+                "",
             )?;
-            hardware::wall_plate(d, [anchor, top], 0.07, 0.07, hardware.tint)?;
-            // The straps grip the board's top edge over its frame, above the lettering.
-            let grip = 0.0225 + proud + 0.006;
-            for share in [0.1, 0.9] {
-                let x = width * share;
-                d.cuboid(
-                    "metal",
-                    [x - 0.022, y - grip, height - 0.05],
-                    [x + 0.022, y + grip, top + 0.034],
-                    hardware.tint,
-                    "",
-                )?;
-            }
-            if ties {
-                let side = if end_at >= anchor { -0.25 } else { 0.25 };
-                for fixing in [
-                    [anchor, top + 0.3 + 0.3 * (end_at - anchor).abs().min(2.)],
-                    [end_at + side, top + 0.42],
-                ] {
-                    d.tube(
-                        "metal",
-                        &[[fixing[0], 0.012, fixing[1]], far],
-                        SIGN_TIE,
-                        hardware.tint,
-                        6,
-                    )?;
-                    hardware::wall_plate(d, fixing, 0.05, 0.05, hardware.tint)?;
-                }
-            }
-            return Ok(());
         }
-        // The board stands between two outriggers, one under its foot and one over its head,
-        // in the middle of its depth: no steel crosses either lettered face. Each is braced
-        // from the wall on the side away from the board, and clips grip the board's edges.
-        let rail = SIGN_RAIL;
-        let rails = [(-rail, -1.), (height + rail, 1.)];
-        // The middle of the board's depth, behind its face line.
-        let middle = [0.0225 * sin, -0.0225 * cos];
-        let (knee, end) = if angle != 0. {
-            (
-                [anchor + middle[0], reach + middle[1]],
-                [width * cos + middle[0], reach + width * sin + middle[1]],
-            )
+    }
+    d.pen = root;
+    if horizontal && angle == 0. {
+        // A level board hangs by two straps from one pole, which leaves the wall at
+        // `anchor` and turns along the board; one stay from the wall above carries its far
+        // end and a second, square to the wall, steadies it.
+        let (top, y) = (height + 0.1, reach - half_depth);
+        let far = [end_at, y, top];
+        d.tube(
+            "metal",
+            &[[anchor, 0.012, top], [anchor, y, top], far],
+            SIGN_RAIL,
+            hardware.tint,
+            10,
+        )?;
+        hardware::wall_plate(d, [anchor, top], 0.07, 0.07, hardware.tint)?;
+        // The straps grip the board's top edge over its frame, above the lettering.
+        let grip = half_depth + proud + 0.006;
+        let straps = if outline == Outline::Rectangle {
+            [0.1, 0.9]
         } else {
-            ([anchor, reach - 0.0225], [end_at, reach - 0.0225])
+            [0.39, 0.61]
         };
-        // A bolted fixing plate where each outrigger meets the wall.
-        for (z, _) in rails {
-            hardware::wall_plate(d, [anchor, z], 0.07, 0.09, hardware.tint)?;
+        for share in straps {
+            let x = width * share;
+            d.cuboid(
+                "metal",
+                [x - 0.022, y - grip, height - 0.05],
+                [x + 0.022, y + grip, top + 0.034],
+                hardware.tint,
+                "",
+            )?;
         }
         if ties {
-            let fixing = [
-                anchor,
-                0.012,
-                height + 0.35 + 0.25 * (end[0] - anchor).abs().min(2.),
-            ];
-            d.tube(
-                "metal",
-                &[fixing, [end[0], end[1], height + rail]],
-                SIGN_TIE,
-                hardware.tint,
-                6,
-            )?;
-            hardware::wall_plate(d, [fixing[0], fixing[2]], 0.05, 0.05, hardware.tint)?;
-        }
-        for (z, away) in rails {
-            d.tube(
-                "metal",
-                &[
-                    [anchor, 0.02, z],
-                    [knee[0], knee[1], z],
-                    [end[0], end[1], z],
-                ],
-                rail,
-                hardware.tint,
-                10,
-            )?;
-            let (from, to) = if angle != 0. {
-                ([anchor + 0.5, 0.02, z + away * 0.25], end)
-            } else {
-                let brace = if anchor > width / 2. {
-                    width - 0.05
-                } else {
-                    0.05
-                };
-                ([anchor, 0.02, z + away * 0.3], [brace, reach - 0.0225])
-            };
-            d.tube(
-                "metal",
-                &[from, [to[0], to[1], z]],
-                SIGN_BRACE,
-                hardware.tint,
-                8,
-            )?;
-        }
-        // Clips over the frame at the board's foot and head, in the board's own frame.
-        let grip = proud + 0.006;
-        let face = &mut on(mesh, pen)?;
-        for share in [0.14, 0.86] {
-            let x = width * share;
-            for (z0, z1) in [(-rail, 0.05), (height - 0.05, height + rail)] {
-                face.cuboid(
+            let side = if end_at >= anchor { -0.25 } else { 0.25 };
+            for fixing in [
+                [anchor, top + 0.3 + 0.3 * (end_at - anchor).abs().min(2.)],
+                [end_at + side, top + 0.42],
+            ] {
+                d.tube(
                     "metal",
-                    [x - 0.022, -0.045 - grip, z0],
-                    [x + 0.022, grip, z1],
+                    &[[fixing[0], 0.012, fixing[1]], far],
+                    SIGN_TIE,
                     hardware.tint,
-                    "",
+                    6,
                 )?;
+                hardware::wall_plate(d, fixing, 0.05, 0.05, hardware.tint)?;
             }
         }
-        Ok(())
-    })
+        return Ok(());
+    }
+    // The board stands between two outriggers, one under its foot and one over its head,
+    // in the middle of its depth: no steel crosses either lettered face. Each is braced
+    // from the wall on the side away from the board, and clips grip the board's edges.
+    let rail = SIGN_RAIL;
+    let rails = [(-rail, -1.), (height + rail, 1.)];
+    // The middle of the board's depth, behind its face line.
+    let middle = [half_depth * sin, -half_depth * cos];
+    let (knee, end) = if angle != 0. {
+        (
+            [anchor + middle[0], reach + middle[1]],
+            [width * cos + middle[0], reach + width * sin + middle[1]],
+        )
+    } else {
+        ([anchor, reach - half_depth], [end_at, reach - half_depth])
+    };
+    // A bolted fixing plate where each outrigger meets the wall.
+    for (z, _) in rails {
+        hardware::wall_plate(d, [anchor, z], 0.07, 0.09, hardware.tint)?;
+    }
+    if ties {
+        let fixing = [
+            anchor,
+            0.012,
+            height + 0.35 + 0.25 * (end[0] - anchor).abs().min(2.),
+        ];
+        d.tube(
+            "metal",
+            &[fixing, [end[0], end[1], height + rail]],
+            SIGN_TIE,
+            hardware.tint,
+            6,
+        )?;
+        hardware::wall_plate(d, [fixing[0], fixing[2]], 0.05, 0.05, hardware.tint)?;
+    }
+    for (z, away) in rails {
+        d.tube(
+            "metal",
+            &[
+                [anchor, 0.02, z],
+                [knee[0], knee[1], z],
+                [end[0], end[1], z],
+            ],
+            rail,
+            hardware.tint,
+            10,
+        )?;
+        let (from, to) = if angle != 0. {
+            ([anchor + 0.5, 0.02, z + away * 0.25], end)
+        } else {
+            let brace = if anchor > width / 2. {
+                width - 0.05
+            } else {
+                0.05
+            };
+            ([anchor, 0.02, z + away * 0.3], [brace, reach - half_depth])
+        };
+        d.tube(
+            "metal",
+            &[from, [to[0], to[1], z]],
+            SIGN_BRACE,
+            hardware.tint,
+            8,
+        )?;
+    }
+    // Clips over the frame at the board's foot and head, in the board's own frame.
+    let grip = proud + 0.006;
+    d.pen = pen;
+    let clips = if outline == Outline::Rectangle {
+        [0.14, 0.86]
+    } else {
+        [0.44, 0.56]
+    };
+    for share in clips {
+        let x = width * share;
+        for (z0, z1) in [(-rail, 0.05), (height - 0.05, height + rail)] {
+            d.cuboid(
+                "metal",
+                [x - 0.022, -depth - grip, z0],
+                [x + 0.022, grip, z1],
+                hardware.tint,
+                "",
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// How the item signs draw their artwork: the frame, border and lettering stand some

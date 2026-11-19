@@ -53,6 +53,11 @@ pub fn library_assets(source: &str) -> String {
     if document.metadata.iter().any(|n| n.kind == "dressing") {
         images.extend(superspec_catalog::images());
     } else {
+        if document.metadata.iter().any(|node| {
+            node.kind == "city" && node.children.iter().any(|child| child.kind == "building")
+        }) {
+            images.extend(worldspec::shipped::stock_images());
+        }
         for node in document
             .declarations
             .values()

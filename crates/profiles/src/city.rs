@@ -92,6 +92,20 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 Value::Vector(vector)
             }
             "heading" if kind != "city" => Value::Number(number(text)?),
+            "model" if kind == "building" && text == "reference-corner" => Value::Text(text.into()),
+            "seed" if kind == "building" => Value::Number(
+                text.parse::<u8>()
+                    .ok()
+                    .filter(|v| *v <= 31)
+                    .ok_or_else(invalid)? as f64,
+            ),
+            "width" | "depth" if kind == "building" => {
+                let metres = quantize(number(text)?);
+                if !(6.0..=14.0).contains(&metres) {
+                    return Err(invalid());
+                }
+                Value::Number(metres)
+            }
             "count" if kind != "city" => Value::Number(
                 text.parse::<u16>()
                     .ok()
@@ -129,6 +143,17 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         node.attributes.insert(key.into(), value);
     }
     if kind != "city" {
+        if node.text("model") == Some("reference-corner")
+            && (node.number("floors", 4.) != 4.
+                || ["width", "depth", "seed"]
+                    .iter()
+                    .any(|k| node.attributes.contains_key(*k)))
+        {
+            return Err(node.fail(
+                "AML_CITY",
+                "The reference corner uses its authored four-storey lot.",
+            ));
+        }
         if node.id.is_empty() || !node.attributes.contains_key("position") {
             return Err(node.fail(
                 "AML_CITY",

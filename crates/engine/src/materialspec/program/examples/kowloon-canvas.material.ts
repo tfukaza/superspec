@@ -36,7 +36,7 @@ const woven = mul(dyed, clamp(mul(div(dot(weave, vec3(0.3333)), 0.42), 1), 0.55,
 
 // Bleached in clouds toward old cloth; soiled down the fall and at the hem; stained in a few places.
 const clouds = valueNoise(mul(vec2(along, world.z), 1.7), seed("canvas-bleach"));
-const bleached = mix(woven, vec3(0.4, 0.35, 0.26), mul(bleaching, add(0.15, mul(0.45, smoothstep(0.35, 0.8, clouds)))));
+const bleached = clamp(mix(woven, vec3(0.4, 0.35, 0.26), mul(bleaching, add(0.15, mul(0.45, smoothstep(0.35, 0.8, clouds))))), 0, 1);
 const runs = smoothstep(0.4, 0.82, valueNoise(vec2(mul(along, 13), mul(world.z, 1.2)), seed("canvas-runs")));
 const hem = sub(1, smoothstep(0, 0.3, upIt));
 const stains = smoothstep(0.66, 0.82, valueNoise(add(mul(vec2(along, world.z), 3.1), vec2(7.3, 2.2)), seed("canvas-stains")));

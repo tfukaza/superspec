@@ -1,6 +1,6 @@
 <architecture version="1" id="corner-avenue" units="meters">
   <city>
-    <building id="corner" position="-4.5 -6.8 0.15" heading="90"/>
+    <building id="corner" model="reference-corner" position="-4.5 -6.8 0.15" heading="90"/>
     <road id="carriageway" position="-3.05 -20 0" heading="90" length="40" width="7.3"/>
     <sidewalk id="far-pavement" position="8.25 20 0.15" heading="-90" length="40" width="4"/>
     <avenue id="promenade" position="-3.05 3 0.105" heading="180" length="32" width="8.2"/>

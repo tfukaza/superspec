@@ -1448,6 +1448,7 @@ fn cables_sag_round_corners_and_hardware_is_bolted() {
     // No outrigger, brace, tie rod or clip passes over either lettered face: every metal
     // triangle, sampled across its area, stays clear of the faces within their artwork.
     for (angle, anchor, horizontal) in [
+        (90., 0., false),
         (53.13, 0., false),
         (-40., 0.3, false),
         (0., 0., false),

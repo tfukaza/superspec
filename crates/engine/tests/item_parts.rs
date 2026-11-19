@@ -1475,6 +1475,21 @@ fn a_bevel_rounds_a_box_inside_the_same_bounds_and_face_groups() {
         }
     }
 
+    let length = a + 2. * b;
+    for bevel in [0., r] {
+        let bar = solid(json!({
+            "kind": "box", "size": [length, b, c], "bevel": bevel, "bevelAxis": "x", "miters": [1, 1]
+        }))
+        .unwrap();
+        // Both ends lie on a 45-degree cut. Across the symmetric section the average
+        // sweep length is a - b, even when the longitudinal edges have a bevel.
+        close(
+            closed_volume(&meshes(&bar, &all)),
+            (b * c - 2. * bevel * bevel) * (length - b),
+            1e-12,
+        );
+    }
+
     // A radius that leaves no face, and a third chord, are refused at their field.
     for (bevel, segments, pointer) in [
         (0.1, 1, "/parts/0/generator/bevel"),
@@ -1770,8 +1785,8 @@ fn arrises_round_a_corner_between_two_panels_and_jambs_an_openings_sides() {
     // turn about that point, starts. Each rounds its own half of the corner in one chord.
     let corner = generate(
         &item(json!([
-            {"id": "a", "generator": wall(json!({"arris": r, "arrisEnd": 1}))},
-            {"id": "b", "generator": wall(json!({"arris": r, "arrisStart": 1})),
+            {"id": "a", "generator": wall(json!({"arris": r, "arrisEnd": 1, "miters": [0, 1]}))},
+            {"id": "b", "generator": wall(json!({"arris": r, "arrisStart": 1, "miters": [1, 0]})),
              "placement": {"position": [w, 0, 0], "rotation": [0, 0, 90]}}
         ])),
         &[],
@@ -1820,12 +1835,27 @@ fn arrises_round_a_corner_between_two_panels_and_jambs_an_openings_sides() {
         // The flat front gives up the radius, and the chord takes its place.
         let chord = (r * half).hypot(r * (1. - half));
         close(area(front), (w - r + chord) * h, 1e-12);
-        // The end face starts behind the round, and the top and bottom lose its corner.
-        let (edge, _) = placed(part, "edge");
-        let corner_cut = (1. - half) * r * r;
+        // The top and bottom partition the junction at the bisector, from the midpoint
+        // of the round to the shared inside corner. Each side owns one half of the joint.
+        let (edge, matrix) = placed(part, "edge");
+        let inset = middle[1];
+        for p in &edge.positions {
+            let [x, y, _] = matrix.point(*p);
+            let distance = x + y - w;
+            assert!(if part == "a" {
+                distance <= 1e-12
+            } else {
+                distance >= -1e-12
+            });
+        }
+        assert!(edge.positions.iter().any(|p| {
+            let [x, y, z] = matrix.point(*p);
+            (x - (w - t)).abs() < 1e-12 && (y - t).abs() < 1e-12 && (z - h).abs() < 1e-12
+        }));
+        let corner_cut = t * t / 2. + r * inset / 2.;
         close(
             area(edge),
-            2. * (w * t - corner_cut) + h * t + h * (t - r),
+            2. * (w * t - corner_cut) + h * t + h * (t - inset) * 2f64.sqrt(),
             1e-12,
         );
     }
@@ -1844,6 +1874,30 @@ fn arrises_round_a_corner_between_two_panels_and_jambs_an_openings_sides() {
     ))
     .unwrap_err();
     assert_eq!(error.code, "ITEM_OPENING");
+    let error = solid(wall(
+        json!({"miters": [1, 0], "openings": [window(0.1, json!({}))]}),
+    ))
+    .unwrap_err();
+    assert_eq!(error.code, "ITEM_OPENING");
+    assert_eq!(error.pointer, "/parts/0/generator/openings/0");
+    assert!(
+        solid(wall(json!({"miters": [1, 0], "openings": [window(
+            0.1, json!({"mode": "recess", "depth": 0.05})
+        )]})))
+        .is_ok()
+    );
+    let seat = solid(wall(json!({"miters": [1, 0], "openings": [window(
+        0.003, json!({"mode": "recess", "depth": 0.05, "seat": true})
+    )]})))
+    .unwrap();
+    let reveal = meshes(&seat, &["s/reveal"])[0];
+    assert!(reveal.positions.contains(&[0.003, 0., 0.02]));
+    assert!(
+        reveal
+            .positions
+            .iter()
+            .any(|p| { (p[0] - 0.052).abs() < 1e-12 && p[1] == 0.05 && p[2] == 0.02 })
+    );
     assert!(
         solid(wall(
             json!({"arris": r, "arrisStart": 1, "openings": [window(0.05, json!({}))]})

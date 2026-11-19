@@ -564,13 +564,22 @@ pub(super) fn bar(
     along_x: bool,
     radius: f64,
     segments: usize,
+    miters: P2,
 ) -> Result<(), String> {
     let (length, across) = if along_x { (sx, sy) } else { (sy, sx) };
-    let section = Outline::rounded_rectangle([0., 0.], [across, sz], radius, segments);
-    let normals = section.normals.clone().unwrap_or_default();
+    let section = if radius > 0. {
+        Outline::rounded_rectangle([0., 0.], [across, sz], radius, segments)
+    } else {
+        Outline::rectangle([0., 0.], [across, sz])
+    };
     let at = |a: f64, p: P2| {
         if along_x {
-            [a, p[0], p[1]]
+            let x = if a == 0. {
+                miters[0] * p[0]
+            } else {
+                a - miters[1] * p[0]
+            };
+            [x, p[0], p[1]]
         } else {
             [p[0], a, p[1]]
         }
@@ -617,7 +626,15 @@ pub(super) fn bar(
     let count = section.points.len();
     for i in 0..count {
         let j = (i + 1) % count;
-        let (p, q, n, m) = (section.points[i], section.points[j], normals[i], normals[j]);
+        let (p, q) = (section.points[i], section.points[j]);
+        let (n, m) = match &section.normals {
+            Some(normals) => (normals[i], normals[j]),
+            None => {
+                let span = (q[0] - p[0]).abs() + (q[1] - p[1]).abs();
+                let normal = [(q[1] - p[1]) / span, (p[0] - q[0]) / span];
+                (normal, normal)
+            }
+        };
         let group = if n == m && n[1] == 1. {
             "top"
         } else if n == m && n[1] == -1. {
@@ -632,10 +649,10 @@ pub(super) fn bar(
             &corners.map(|(a, p, _)| at(a, p)),
             add(direction(n), direction(m)),
             &corners.map(|(a, p, n)| {
+                let position = at(a, p);
                 if group == "side" {
-                    [round(high, a), v(p, n)]
+                    [round(high, position[usize::from(!along_x)]), v(p, n)]
                 } else {
-                    let position = at(a, p);
                     [position[0], position[1]]
                 }
             }),
@@ -648,7 +665,7 @@ pub(super) fn bar(
             "side",
             &section.points.iter().map(|p| at(a, *p)).collect::<Vec<_>>(),
             if along_x {
-                [outward, 0., 0.]
+                [outward, miters[usize::from(last)], 0.]
             } else {
                 [0., outward, 0.]
             },

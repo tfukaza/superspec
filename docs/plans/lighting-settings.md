@@ -481,10 +481,12 @@ material.
 
 ## Illustration experiments (2026-11-19, pending review)
 
-Two switchable settings for an illustrated look, both off in the shipped record, so every existing picture is unchanged,
-and both on in `tests/item-facade-browser.mjs` (`FORM=<0 to 1>`, `FORM_FILL=<0 to 1>`, `CONTOURS=0|1`). They follow the
-standing rule: one is a setting of the light, the other of the scene, neither of a material. Like `painted`, each is
-written only when it differs from its default, so records and exports that never set them keep their bytes.
+The shipped lighting record leaves form light and contour lines off. The facade capture
+script supports `FORM=<0 to 1>` and `FORM_FILL=<0 to 1>`. Contours are an opt-in
+comparison with `CONTOURS=1`. Captures use screen-space edge blur by default.
+Set `QUERY="edgeblur=off"` to disable it or set `edgethreshold` to tune the sensitivity.
+Form light belongs to the light record and contours belong to the scene record. Like
+`painted`, each is written only when it differs from its default.
 
 ```jsonc
 {
