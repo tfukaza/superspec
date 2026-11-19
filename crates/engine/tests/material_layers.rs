@@ -188,7 +188,7 @@ fn layer(entry: &str, parameters: &[(&str, serde_json::Value)], follow: Option<&
             .collect(),
         seed: 7,
         follow: follow
-            .map(|feature| [("follow".to_owned(), feature.to_owned())].into())
+            .map(|feature| [("follow".to_owned(), feature.into())].into())
             .unwrap_or_default(),
     }
 }

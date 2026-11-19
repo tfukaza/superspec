@@ -655,6 +655,106 @@ pub struct NamedFeature {
     pub closed: bool,
 }
 
+/// The receiver features one of a layer's own feature names follows: one name, or several whose
+/// polylines the layer sees together under its one name (a query finds the nearest segment of
+/// any of them). One name is written as a string, as it always was, so what describes a layer
+/// that follows one feature (its identity, its cache keys) is unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum Follow {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// Receiver features one layer name may follow at most.
+pub const MAX_FOLLOWED: usize = 16;
+
+impl Follow {
+    /// The receiver's names followed, as written.
+    pub fn names(&self) -> &[String] {
+        match self {
+            Self::One(name) => std::slice::from_ref(name),
+            Self::Many(names) => names,
+        }
+    }
+    /// Whether the receiver's `name` is one of them.
+    pub fn includes(&self, name: &str) -> bool {
+        self.names().iter().any(|known| known == name)
+    }
+    /// The same set in one spelling, so equal sets are equal values: one name as a string,
+    /// several ascending without repeats.
+    pub fn normalized(&self) -> Self {
+        let mut names = self.names().to_vec();
+        names.sort();
+        names.dedup();
+        if names.len() == 1 {
+            Self::One(names.remove(0))
+        } else {
+            Self::Many(names)
+        }
+    }
+}
+impl Default for Follow {
+    fn default() -> Self {
+        Self::Many(Vec::new())
+    }
+}
+impl From<&str> for Follow {
+    fn from(name: &str) -> Self {
+        Self::One(name.to_owned())
+    }
+}
+impl From<String> for Follow {
+    fn from(name: String) -> Self {
+        Self::One(name)
+    }
+}
+impl PartialEq<str> for Follow {
+    fn eq(&self, other: &str) -> bool {
+        matches!(self.names(), [only] if only == other)
+    }
+}
+impl PartialEq<&str> for Follow {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
+/// The names a layer that follows `follow` (its own names to the receiver's) sees the
+/// receiver's feature `name` by: each of its own names that follows it, and the receiver's name
+/// itself unless the layer uses that name as its own.
+pub fn followed_names<'a>(
+    name: &'a str,
+    follow: &'a BTreeMap<String, Follow>,
+) -> impl Iterator<Item = &'a str> {
+    let own = (!follow.contains_key(name)).then_some(name);
+    own.into_iter().chain(
+        follow
+            .iter()
+            .filter(move |(_, theirs)| theirs.includes(name))
+            .map(|(own, _)| own.as_str()),
+    )
+}
+
+/// A receiver's named features as a layer that follows `follow` sees them ([`followed_names`]):
+/// every polyline of every feature a layer name follows is a copy under that name, in the
+/// receiver's order, so the name measures to the union of them.
+pub fn followed_features(
+    features: &[NamedFeature],
+    follow: &BTreeMap<String, Follow>,
+) -> Vec<NamedFeature> {
+    let mut renamed = Vec::new();
+    for feature in features {
+        for seen in followed_names(&feature.name, follow) {
+            renamed.push(NamedFeature {
+                name: seen.to_owned(),
+                ..feature.clone()
+            });
+        }
+    }
+    renamed
+}
+
 /// Segments of every named feature one receiver may hold. More are refused, never dropped.
 pub const MAX_NAMED_SEGMENTS: usize = 65_536;
 /// Names one receiver's features may have.

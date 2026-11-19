@@ -4,7 +4,7 @@
 // kowloon-sign-lettering.
 import {
   defineMaterial, layer, param, vec2, vec3, add, sub, mul, div, mix, max, min, clamp, smoothstep, valueNoise, sampleColor,
-  creaseDistance, seed, uv, world, boundsMin, boundsMax,
+  creaseDistance, seed, uv, surface, world, boundsMin, boundsMax,
 } from "@superspec/material/v1";
 
 const fading = param.scalar({ default: 0.5, range: [0, 1], label: "Chalking and fading" });
@@ -13,8 +13,8 @@ const grime = param.scalar({ default: 0.6, range: [0, 1], label: "Grime" });
 const rust = param.scalar({ default: 0.5, range: [0, 1], label: "Rim rust" });
 
 const board = sampleColor("superspec-material:signboard.png", vec2(uv.x, sub(1, uv.y)));
-const round = add(world.x, world.y);
-const at = vec2(round, world.z);
+const round = surface.x;
+const at = vec2(surface.x, surface.y);
 const upIt = clamp(div(sub(world.z, boundsMin.z), max(sub(boundsMax.z, boundsMin.z), 0.01)), 0, 1);
 const rim = creaseDistance("exposed", 30, 0.2);
 

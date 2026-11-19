@@ -1,4 +1,5 @@
 //! Persistent ItemSpec definitions, local generation and bounded scene-preserving GLB ingestion.
+mod arc;
 mod compose;
 mod decal;
 pub mod expression;
@@ -146,6 +147,9 @@ pub struct PreparedItem {
     pub handles: Vec<ItemHandle>,
     /// Weathering layers per slot, the item's own first, then its sub-items'.
     pub layers: BTreeMap<String, Vec<LayerRequest>>,
+    /// Texels per meter each slot asks for: the item's own, else the greatest any sub-item
+    /// states for a slot landing there.
+    pub densities: BTreeMap<String, f64>,
     /// Authored features, in definition coordinates (before the item transform).
     authored: Vec<Feature>,
     definition: ItemDefinition,
@@ -245,6 +249,9 @@ pub fn prepare_in(
     let parameters = definition.resolve_parameters(overrides)?;
     let mut materials = definition.materials(&parameters)?;
     let mut layers = definition.resolved_layers(&parameters)?;
+    let mut densities = definition.slot_densities()?;
+    // What sub-items ask for, kept apart so the item's own statement comes first.
+    let mut inherited = BTreeMap::<String, f64>::new();
     let derived = definition.resolve_derived(&parameters)?;
     let context = parts::Context {
         definition,
@@ -363,7 +370,18 @@ pub fn prepare_in(
                             }
                         }
                     }
+                    // Several sub-items may land in one slot: the finest request holds, in
+                    // whatever order the parts are listed.
+                    for (slot, density) in &child.densities {
+                        if let Some(target) = part.slot(slot) {
+                            let held = inherited.entry(target).or_insert(*density);
+                            *held = held.max(*density);
+                        }
+                    }
                 }
+            }
+            for (slot, density) in inherited {
+                densities.entry(slot).or_insert(density);
             }
             part_keys = prepared
                 .iter()
@@ -379,6 +397,7 @@ pub fn prepare_in(
         | Generator::Panel(_)
         | Generator::Route(_)
         | Generator::Prism { .. }
+        | Generator::Arc(_)
         | Generator::Item(_)
         | Generator::Native(_) => {
             return Err(fail(
@@ -463,6 +482,7 @@ pub fn prepare_in(
         decals,
         handles,
         layers,
+        densities,
         authored,
         definition: definition.clone(),
         shape,
@@ -618,6 +638,7 @@ impl PreparedItem {
             decals: self.decals.clone(),
             handles: self.handles.clone(),
             layers: self.layers.clone(),
+            densities: self.densities.clone(),
         })
     }
 }

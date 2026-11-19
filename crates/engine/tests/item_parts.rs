@@ -1592,6 +1592,321 @@ fn a_bevel_rounds_a_panel_front_and_its_openings_and_keeps_its_features() {
     assert!(volume < w * h * t && volume > w * h * t - 0.5 * 0.6 * 0.08 - 0.01);
 }
 
+/// Every triangle has area and every vertex normal is a unit vector on its triangle's side.
+fn sound(mesh: &ItemMesh) {
+    assert_eq!(mesh.positions.len(), mesh.normals.len(), "{}", mesh.id);
+    assert_eq!(mesh.positions.len(), mesh.uvs.len(), "{}", mesh.id);
+    for corners in triangles(mesh) {
+        let [a, b, c] = corners.map(|i| mesh.positions[i]);
+        let facing = cross(sub(b, a), sub(c, a));
+        assert!(length(facing) > 1e-12, "{}: degenerate triangle", mesh.id);
+        for corner in corners {
+            close(length(mesh.normals[corner]), 1., 1e-9);
+            assert!(
+                dot(facing, mesh.normals[corner]) > 0.,
+                "{}: a vertex normal opposes its triangle",
+                mesh.id
+            );
+        }
+    }
+}
+
+#[test]
+fn an_arc_sweeps_a_section_round_a_plan_arc_as_one_smooth_surface() {
+    // A slab 0.25 m thick and 3 m high round a quarter turn of radius 0.55 m, in 8 chords.
+    let (radius, t, h, n) = (0.55, 0.25, 3., 8usize);
+    let slab = json!([[-t, 0], [0, 0], [0, h], [-t, h]]);
+    let arc = |more: Value| {
+        let mut generator =
+            json!({"kind": "arc", "radius": radius, "turn": 90, "segments": n, "section": slab});
+        generator
+            .as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        solid(generator)
+    };
+    let built = arc(json!({})).unwrap();
+    assert_eq!(groups(&built), [("s/end", "end"), ("s/side", "side")]);
+    // It starts at the origin along +x and ends a radius on, running along +y.
+    close3(built.geometry.bounds[0], [0.; 3], 1e-12);
+    close3(built.geometry.bounds[1], [radius, radius, h], 1e-12);
+    // In plan it is n wedges between two radii: n * sin(turn / n) / 2 * (R^2 - r^2).
+    let step = PI / 2. / n as f64;
+    let plan = n as f64 * step.sin() / 2. * (radius * radius - (radius - t) * (radius - t));
+    close(
+        closed_volume(&meshes(&built, &["s/side", "s/end"])),
+        plan * h,
+        1e-12,
+    );
+    // Four faces of n quads, each vertex named once along the arc; two caps.
+    let side = meshes(&built, &["s/side"])[0];
+    assert_eq!(side.indices.len() / 3, 4 * n * 2);
+    assert_eq!(side.positions.len(), 4 * 2 * (n + 1));
+    assert_eq!(triangle_count(&built), 4 * n * 2 + 2 * 2);
+    // Its outer and inner faces are smooth: every normal there points along its vertex's own
+    // radius about the axis at (0, R), outward on the outside and inward on the inside.
+    let chord = 2. * radius * (step / 2.).sin();
+    let mut outer = 0;
+    for ((p, normal), uv) in side.positions.iter().zip(&side.normals).zip(&side.uvs) {
+        if normal[2] != 0. {
+            continue;
+        }
+        let spoke = [p[0], p[1] - radius];
+        let reach = spoke[0].hypot(spoke[1]);
+        let along = (normal[0] * spoke[0] + normal[1] * spoke[1]) / reach;
+        let outside = (reach - radius).abs() < 1e-12;
+        close(along, if outside { 1. } else { -1. }, 1e-12);
+        if outside {
+            outer += 1;
+            // Pattern coordinates: the distance along the chords of the arc, and the height.
+            let k = (p[0] / radius).clamp(-1., 1.).asin() / step;
+            close(uv[0], k.round() * chord, 1e-9);
+            close(uv[1], t + p[2], 1e-12);
+        }
+    }
+    assert_eq!(outer, 2 * (n + 1));
+    // A pattern anchor moves the coordinates, as a wall before the arc measures its own.
+    let anchored = arc(json!({"patternAnchor": [-9.25, -3.35]})).unwrap();
+    let u = meshes(&anchored, &["s/side"])[0]
+        .uvs
+        .iter()
+        .fold([f64::MAX, f64::MIN], |m, uv| {
+            [m[0].min(uv[0]), m[1].max(uv[0])]
+        });
+    close(u[0], 9.25, 1e-12);
+    close(u[1], 9.25 + n as f64 * chord, 1e-12);
+    assert_eq!(anchored.geometry.anchors[0].origin, [-9.25, 0., -3.35]);
+    // `base` and `top` follow the arc at the section's foot and head; a ring where it is put.
+    let ringed = arc(json!({"rings": [{"name": "eave-above", "at": [0, h + 0.3]}]})).unwrap();
+    let names: Vec<&str> = ringed
+        .geometry
+        .features
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["base", "top", "eave-above", "start", "end"]);
+    // `start` and `end` are the section where the arc begins and ends, facing along it.
+    let end = &ringed.geometry.features[4];
+    assert!(end.closed && end.points.len() == 4);
+    close3(end.points[1], [radius, radius, 0.], 1e-12);
+    close3(end.normal, [0., 1., 0.], 1e-12);
+    close3(ringed.geometry.features[3].normal, [-1., 0., 0.], 1e-12);
+    for (feature, (out, up)) in
+        ringed
+            .geometry
+            .features
+            .iter()
+            .zip([(-t, 0.), (0., h), (0., h + 0.3)])
+    {
+        assert_eq!(feature.points.len(), n + 1);
+        for p in &feature.points {
+            close(p[0].hypot(p[1] - radius), radius + out, 1e-12);
+            close(p[2], up, 1e-12);
+        }
+        close3(feature.normal, [0.5f64.sqrt(), -(0.5f64.sqrt()), 0.], 1e-12);
+    }
+    // An open section is one face group without ends: a wall's outer face, split into rows
+    // no taller than a meter, is n by 3 quads of shared vertices.
+    let face = solid(
+        json!({"kind": "arc", "radius": radius, "turn": 90, "segments": n,
+        "closed": false, "step": 1, "section": [[0, 0], [0, h]]}),
+    )
+    .unwrap();
+    assert_eq!(groups(&face), [("s/side", "side")]);
+    let wall = meshes(&face, &["s/side"])[0];
+    sound(wall);
+    assert_eq!(wall.indices.len() / 3, n * 3 * 2);
+    assert_eq!(wall.positions.len(), (n + 1) * 4);
+    close(area(wall), n as f64 * chord * h, 1e-12);
+    // A bevel rounds the section's corners in one or two chords a corner, inside the solid.
+    for (segments, strips) in [(1, 4), (2, 8)] {
+        let round = arc(json!({"bevel": 0.02, "bevelSegments": segments})).unwrap();
+        assert_eq!(round.geometry.bounds, built.geometry.bounds);
+        assert_eq!(
+            meshes(&round, &["s/side"])[0].indices.len() / 3,
+            (4 + strips) * n * 2
+        );
+        let volume = closed_volume(&meshes(&round, &["s/side", "s/end"]));
+        assert!(volume < plan * h && volume > plan * h - 4. * 0.02 * 0.02 * 2.);
+    }
+    // A turn, a section through the axis and a bevel longer than half an edge are refused.
+    for (more, pointer) in [
+        (json!({"turn": 0}), "/parts/0/generator/turn"),
+        (json!({"radius": 0.2}), "/parts/0/generator/section"),
+        (json!({"bevel": 0.13}), "/parts/0/generator/bevel"),
+        (json!({"segments": 65}), "/parts/0/generator/segments"),
+    ] {
+        let error = arc(more).unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_GEOMETRY", pointer)
+        );
+    }
+}
+
+#[test]
+fn arrises_round_a_corner_between_two_panels_and_jambs_an_openings_sides() {
+    let (w, h, t, r) = (2., 1.5, 0.2, 0.03);
+    let half = 0.5f64.sqrt();
+    let wall = |more: Value| {
+        let mut generator = json!({"kind": "panel", "width": w, "height": h, "thickness": t});
+        generator
+            .as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        generator
+    };
+    let plain = solid(wall(json!({}))).unwrap();
+    // A radius without a turn, or a turn without a radius, is the panel as it was.
+    for more in [json!({"arris": r}), json!({"arrisStart": 1, "arrisEnd": 1})] {
+        let same = solid(wall(more)).unwrap();
+        assert_eq!(part_key(&same, "s"), part_key(&plain, "s"));
+        assert_eq!(
+            serde_json::to_vec(&same.geometry.meshes).unwrap(),
+            serde_json::to_vec(&plain.geometry.meshes).unwrap()
+        );
+    }
+    // Two walls meet at a square corner: the first ends where the second, turned a quarter
+    // turn about that point, starts. Each rounds its own half of the corner in one chord.
+    let corner = generate(
+        &item(json!([
+            {"id": "a", "generator": wall(json!({"arris": r, "arrisEnd": 1}))},
+            {"id": "b", "generator": wall(json!({"arris": r, "arrisStart": 1})),
+             "placement": {"position": [w, 0, 0], "rotation": [0, 0, 90]}}
+        ])),
+        &[],
+    )
+    .unwrap();
+    close3(corner.geometry.bounds[0], [0.; 3], 1e-12);
+    close3(corner.geometry.bounds[1], [w, w, h], 1e-12);
+    let transforms = corner.geometry.world_transforms().unwrap();
+    let placed = |part: &str, group: &str| {
+        let (node, matrix) = corner
+            .geometry
+            .nodes
+            .iter()
+            .zip(&transforms)
+            .find(|(node, _)| node.name.as_deref() == Some(part))
+            .unwrap();
+        let mesh = node
+            .meshes
+            .iter()
+            .map(|index| &corner.geometry.meshes[*index])
+            .find(|mesh| mesh.id == format!("{part}/{group}"))
+            .unwrap();
+        sound(mesh);
+        (mesh, *matrix)
+    };
+    // The middle of the round, where the two halves meet with one normal: on the bisector,
+    // r (sqrt 2 - 1) from the corner.
+    let middle = [w - r * (1. - half), r * (1. - half)];
+    for part in ["a", "b"] {
+        let (front, matrix) = placed(part, "front");
+        let turned: Vec<[f64; 3]> = front
+            .positions
+            .iter()
+            .zip(&front.normals)
+            .filter(|(_, n)| **n != [0., -1., 0.])
+            .map(|(p, n)| {
+                close3(matrix.direction(*n), [half, -half, 0.], 1e-12);
+                matrix.point(*p)
+            })
+            .collect();
+        assert_eq!(turned.len(), 2, "{part}");
+        for p in turned {
+            close(p[0], middle[0], 1e-12);
+            close(p[1], middle[1], 1e-12);
+        }
+        // The flat front gives up the radius, and the chord takes its place.
+        let chord = (r * half).hypot(r * (1. - half));
+        close(area(front), (w - r + chord) * h, 1e-12);
+        // The end face starts behind the round, and the top and bottom lose its corner.
+        let (edge, _) = placed(part, "edge");
+        let corner_cut = (1. - half) * r * r;
+        close(
+            area(edge),
+            2. * (w * t - corner_cut) + h * t + h * (t - r),
+            1e-12,
+        );
+    }
+    // An opening keeps clear of a rounded end by the round and the margin.
+    let window = |offset: f64, more: Value| {
+        let mut opening = json!({"id": "window", "width": 0.6, "height": 0.5,
+            "u": {"from": "start", "offset": offset}, "v": {"from": "start", "offset": 0.02}});
+        opening
+            .as_object_mut()
+            .unwrap()
+            .extend(more.as_object().unwrap().clone());
+        opening
+    };
+    let error = solid(wall(
+        json!({"arris": r, "arrisStart": 1, "openings": [window(0.04, json!({}))]}),
+    ))
+    .unwrap_err();
+    assert_eq!(error.code, "ITEM_OPENING");
+    assert!(
+        solid(wall(
+            json!({"arris": r, "arrisStart": 1, "openings": [window(0.05, json!({}))]})
+        ))
+        .is_ok()
+    );
+    // More round than the panel is thick, and a bevel beside an arris, are refused.
+    for more in [
+        json!({"arris": 0.25, "arrisEnd": 1}),
+        json!({"arris": r, "arrisEnd": 1, "bevel": 0.01}),
+    ] {
+        let error = solid(wall(more)).unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_GEOMETRY", "/parts/0/generator/arris")
+        );
+    }
+
+    // Rounded jambs: an opening 2 cm above the panel's foot keeps its place; each upright
+    // arris gives way to a quarter round in two chords, and the solid stays closed.
+    let (ow, oh, j) = (0.6, 0.5, 0.03);
+    let sharp = solid(wall(json!({"openings": [window(0.5, json!({}))]}))).unwrap();
+    let round = solid(wall(
+        json!({"openings": [window(0.5, json!({"jambs": j}))]}),
+    ))
+    .unwrap();
+    assert_eq!(round.geometry.bounds, sharp.geometry.bounds);
+    assert_eq!(groups(&round), groups(&sharp));
+    assert_eq!(round.geometry.features, sharp.geometry.features);
+    assert_eq!(triangle_count(&round), triangle_count(&sharp) + 2 * (4 + 4));
+    let all = ["s/front", "s/back", "s/edge", "s/reveal"];
+    // Each jamb loses its corner square less the two triangles the chords keep.
+    close(
+        closed_volume(&meshes(&round, &all)),
+        (w * h - ow * oh) * t - 2. * oh * j * j * (1. - half),
+        1e-12,
+    );
+    // The rounds are part of the front, turning to the reveals' normals.
+    let front = meshes(&round, &["s/front"])[0];
+    let turning: Vec<[f64; 3]> = front
+        .normals
+        .iter()
+        .copied()
+        .filter(|n| *n != [0., -1., 0.])
+        .collect();
+    assert!(turning.contains(&[1., 0., 0.]) && turning.contains(&[-1., 0., 0.]));
+    assert!(turning.contains(&[half, -half, 0.]) && turning.contains(&[-half, -half, 0.]));
+    // A jamb's round needs its radius of wall beside it; an arch has no upright arris to its head.
+    let error = solid(wall(
+        json!({"openings": [window(0.04, json!({"jambs": j}))]}),
+    ))
+    .unwrap_err();
+    assert_eq!(error.code, "ITEM_OPENING");
+    let error = solid(wall(
+        json!({"openings": [window(0.5, json!({"jambs": j, "shape": "arch"}))]}),
+    ))
+    .unwrap_err();
+    assert_eq!(
+        (error.code.as_str(), error.pointer.as_str()),
+        ("ITEM_OPENING", "/parts/0/generator/openings/0/jambs")
+    );
+}
+
 #[test]
 fn generation_is_deterministic_and_cancellable() {
     for text in [WALL, WALL_LOW, PIPE, DUCT] {

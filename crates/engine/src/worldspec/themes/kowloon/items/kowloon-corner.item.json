@@ -1,0 +1,100 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-corner",
+  "parameters": {
+    "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
+    "paint": {"type": "color", "default": "#c0b49e"},
+    "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
+    "radius": {"type": "number", "default": 0.55, "min": 0.05, "max": 10, "unit": "m"},
+    "turn": {"type": "number", "default": 90, "min": 5, "max": 175, "unit": "deg"},
+    "segments": {"type": "integer", "default": 8, "min": 2, "max": 16},
+    "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
+    "storyHeight": {"type": "number", "default": 3.0, "min": 2.6, "max": 4.5, "unit": "m"},
+    "groundHeight": {"type": "number", "default": 3.35, "min": 2.6, "max": 6, "unit": "m"},
+    "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
+    "parapet": {"type": "number", "default": 0.95, "min": 0.3, "max": 2, "unit": "m"},
+    "sill": {"type": "number", "default": 0.95, "min": 0.3, "max": 1.6, "unit": "m"},
+    "plinth": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "tileStrip": {"type": "boolean", "default": false},
+    "bands": {"type": "boolean", "default": true},
+    "ledge": {"type": "boolean", "default": true},
+    "copingBevel": {"type": "number", "default": 0.02, "min": 0, "max": 0.035, "unit": "m"}
+  },
+  "derived": {
+    "height": "groundHeight + (floors - 1) * storyHeight",
+    "top": "height + parapet"
+  },
+  "parts": [
+    {
+      "id": "wall",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "closed": false, "step": {"parameter": "storyHeight"},
+        "section": [[0, 0], [0, {"derived": "top"}], ["-thickness", {"derived": "top"}], ["-thickness", "height - 0.22"]],
+        "patternAnchor": ["-u0", 0],
+        "rings": [{"name": "pavement", "at": [0, 0]},
+                  {"name": "coping", "at": [0, {"derived": "top"}]}, {"name": "coping-above", "at": [0, "top + 0.3"]}]},
+      "slots": {"side": "wall-round"}
+    },
+    {
+      "id": "plinth",
+      "when": "plinth > 0",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "closed": false, "bevel": "min(0.008, plinth / 4)",
+        "section": [[0, 0], [0.018, 0], [0.018, {"parameter": "plinth"}], [0, {"parameter": "plinth"}]],
+        "patternAnchor": ["-u0", 0]},
+      "slots": {"side": "plinth"}
+    },
+    {
+      "id": "tiles",
+      "repeat": [{"name": "j", "count": "floors - 1"}],
+      "when": "tileStrip",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "closed": false,
+        "section": [[0, 0], [0.015, 0], [0.015, "sill - 0.12"], [0, "sill - 0.12"]],
+        "patternAnchor": ["-u0", "-(groundHeight + j * storyHeight + 0.06)"]},
+      "placement": {"position": [0, 0, "groundHeight + j * storyHeight + 0.06"]},
+      "slots": {"side": "tile"}
+    },
+    {
+      "id": "band",
+      "repeat": [{"name": "j", "count": "floors - 1"}],
+      "when": "bands",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "bevel": 0.012, "bevelSegments": 2,
+        "section": [[-0.01, -0.06], [0.07, -0.06], [0.11, -0.02], [0.11, 0.035], [0.02, 0.06]],
+        "patternAnchor": ["-u0", "-(groundHeight + j * storyHeight)"],
+        "rings": [{"name": "eave", "at": [0, 0]}, {"name": "eave-above", "at": [0, 0.3]}]},
+      "placement": {"position": [0, 0, "groundHeight + j * storyHeight"]},
+      "slots": {"side": "trim"}
+    },
+    {
+      "id": "ledge",
+      "when": "ledge",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "bevel": 0.012, "bevelSegments": 2,
+        "section": [[-0.01, -0.06], [0.07, -0.06], [0.11, -0.02], [0.11, 0.035], [0.02, 0.06]],
+        "patternAnchor": ["-u0", "-height"],
+        "rings": [{"name": "eave", "at": [0, 0]}, {"name": "eave-above", "at": [0, 0.3]}]},
+      "placement": {"position": [0, 0, {"derived": "height"}]},
+      "slots": {"side": "trim"}
+    },
+    {
+      "id": "coping",
+      "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
+        "bevel": {"parameter": "copingBevel"}, "bevelSegments": 2,
+        "section": [["-thickness - 0.05", 0], [0.05, 0], [0.05, 0.08], ["-thickness - 0.05", 0.08]],
+        "patternAnchor": ["-u0", "-top"]},
+      "placement": {"position": [0, 0, {"derived": "top"}]},
+      "slots": {"side": "trim"}
+    }
+  ],
+  "layers": {
+    "wall-round": [
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.15], "streakLength": 1.5, "shift": 1.7, "period": 2.3}, "seed": 5, "follow": {"source": "coping", "guard": "coping-above"}},
+      {"entry": "kowloon-soot-band.material.ts", "parameters": {"reach": 1.02, "haze": 0.6, "hazeStrength": 0.3, "ragged": 0.22}, "seed": 2, "follow": {"base": "pavement"}}
+    ]
+  }
+}

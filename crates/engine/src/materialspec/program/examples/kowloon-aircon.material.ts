@@ -4,7 +4,7 @@
 // edge and climbs in runs. Nothing is read but the image, position and the receiver's bounds.
 import {
   defineMaterial, layer, param, vec2, vec3, add, sub, mul, div, mix, max, min, clamp, smoothstep, hash, valueNoise,
-  sampleColor, seed, uv, world, boundsMin, boundsMax,
+  sampleColor, seed, uv, surface, world, boundsMin, boundsMax,
 } from "@superspec/material/v1";
 
 const yellowing = param.scalar({ default: 0.6, range: [0, 1], label: "Yellowing" });
@@ -20,7 +20,7 @@ const casing = mul(print, mix(vec3(1), vec3(0.8, 0.74, 0.56), aged));
 
 // Height in the unit, 0 at its foot and 1 at its top, and a coordinate round it for streaks.
 const upIt = clamp(div(sub(world.z, boundsMin.z), max(sub(boundsMax.z, boundsMin.z), 0.01)), 0, 1);
-const round = add(world.x, world.y);
+const round = surface.x;
 const threads = valueNoise(vec2(mul(round, 70), mul(world.z, 4)), seed("aircon-threads"));
 const washed = smoothstep(0.35, 0.8, valueNoise(vec2(mul(round, 21), mul(world.z, 1.6)), seed("aircon-streaks")));
 const film = mul(dust, min(add(add(0.18, mul(0.42, washed)), mul(0.35, sub(1, smoothstep(0, 0.45, upIt)))), 0.85));

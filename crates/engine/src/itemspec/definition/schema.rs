@@ -3,7 +3,7 @@ use super::{
     expression::{Expression, ExpressionError},
     fail,
 };
-use crate::materialspec::program::MaterialRequest;
+use crate::materialspec::program::{Follow, MAX_FOLLOWED, MaterialRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -13,6 +13,9 @@ pub type Values = BTreeMap<String, Value>;
 /// Evaluated derived values by name.
 pub type Derived = BTreeMap<String, f64>;
 pub type Transform = [[f64; 3]; 4];
+/// The texel densities a slot may declare, in texels per meter (those a bake request accepts).
+const MIN_DENSITY: f64 = 1.;
+const MAX_DENSITY: f64 = 100_000.;
 pub fn identity() -> Transform {
     Matrix::default().0
 }
@@ -55,6 +58,11 @@ pub struct ItemDefinition {
     /// recipe, its parameters and the features it follows.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub layers: BTreeMap<String, Vec<LayerRequest>>,
+    /// Texels per meter a slot asks for where its host states none: a sign's lettering or a
+    /// notice needs more than a wall, stacked goods less. It is a default; a scene's own
+    /// density for the slot, its material or a mesh comes first.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub densities: BTreeMap<String, f64>,
     #[serde(skip)]
     pub source: String,
 }
@@ -77,7 +85,37 @@ pub struct FeatureDefinition {
     pub width: Scalar,
     pub repeat: Option<RepeatAxis>,
     pub when: Option<Scalar>,
+    /// Whose receivers are given the feature (see [`Reach`]); its own part's by default.
+    #[serde(default, skip_serializing_if = "Reach::is_part")]
+    pub reach: Reach,
+    /// With a wider reach: how near a receiver of another part or item must come to the
+    /// feature to be given it, in meters (3 by default, at most 50).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<Scalar>,
 }
+
+/// Whose receivers a feature is given to. A generated feature reaches its part. An authored
+/// one may reach further, to the receivers that come within its `within` distance: those of
+/// every part of the placed item it ends up in (`item`: through any depth of sub-items, a
+/// building's other sides and its pavement), or those of every item of the scene (`scene`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Reach {
+    #[default]
+    Part,
+    Item,
+    Scene,
+}
+impl Reach {
+    pub fn is_part(&self) -> bool {
+        *self == Self::Part
+    }
+}
+/// How near a receiver must come to a feature of wider reach when the feature does not say.
+pub const REACH_WITHIN: f64 = 3.;
+/// The furthest a feature of wider reach may be given.
+pub const MAX_REACH_WITHIN: f64 = 50.;
+
 fn front_face() -> String {
     "front".into()
 }
@@ -96,8 +134,10 @@ pub struct LayerRequest {
     pub parameters: BTreeMap<String, Value>,
     #[serde(default)]
     pub seed: u32,
+    /// Each of the layer's names to the receiver feature it follows, or to a list of them: the
+    /// name then measures to the nearest of all their polylines.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub follow: BTreeMap<String, String>,
+    pub follow: BTreeMap<String, Follow>,
 }
 
 /// The part and face a decal sits on. `face` is `front` (default) or `back` on a panel,
@@ -330,6 +370,9 @@ pub enum Generator {
         #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
         bevel_segments: Scalar,
     },
+    /// Version 2 part generator: a section swept round a plan arc (a wall, band or moulding
+    /// that turns a round corner as one smooth surface).
+    Arc(ArcDefinition),
     /// Version 2 part generator: another item definition, placed as a sub-item.
     Item(ItemReference),
     /// Version 2 part generator: a generator supplied by the host (for example a theme's
@@ -508,6 +551,61 @@ pub struct PanelDefinition {
     pub bevel: Scalar,
     #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
     pub bevel_segments: Scalar,
+    /// Rounds the panel's upright end edges where it meets a neighbour at a corner, with this
+    /// radius: each of the two panels draws its half of the round as one chord of its `front`.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub arris: Scalar,
+    /// The tangent of half the plan turn at the panel's start and end (1 at a square corner);
+    /// 0 leaves that end sharp.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub arris_start: Scalar,
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub arris_end: Scalar,
+}
+
+/// A section swept round a plan arc. The part's origin is where the arc starts; it leaves
+/// along +X, turns to the left (toward +Y) by `turn` degrees about an upright axis `radius`
+/// away, in `segments` chords, and its outside faces -Y at the start, as a panel's front does.
+/// `section` lists `[out, up]` points: meters outside the arc of `radius`, and height. A closed
+/// section runs counterclockwise in (out, up); an open one keeps its visible side on its right
+/// (an outer face is listed from its foot to its head).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArcDefinition {
+    pub radius: Scalar,
+    pub turn: Scalar,
+    #[serde(default = "arc_segments")]
+    pub segments: Scalar,
+    pub section: Vec<[Scalar; 2]>,
+    #[serde(default = "yes")]
+    pub closed: bool,
+    /// Rounds every corner of the section, set back this far along both of its edges, in
+    /// `bevelSegments` (1 or 2) chords.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub bevel: Scalar,
+    #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
+    pub bevel_segments: Scalar,
+    /// Section edges longer than this are split evenly (0: never), so a tall face is rows of
+    /// faces no taller.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub step: Scalar,
+    /// `[u, v]` of the pattern anchor: along the arc at `radius` and up.
+    pub pattern_anchor: Option<[Scalar; 2]>,
+    /// Named features that follow the arc at `[out, up]`, beside `base` and `top`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rings: Vec<RingDefinition>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RingDefinition {
+    pub name: String,
+    pub at: [Scalar; 2],
+}
+fn arc_segments() -> Scalar {
+    Scalar::Number(8.)
+}
+fn yes() -> bool {
+    true
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -539,6 +637,10 @@ pub struct OpeningDefinition {
     pub frame: Option<FrameDefinition>,
     pub glazing: Option<GlazingDefinition>,
     pub sill: Option<SillDefinition>,
+    /// Rounds the two upright front arrises of a rectangular opening (its jambs: the edges of
+    /// the piers beside it) with this radius, in two chords of the panel's `front`.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub jambs: Scalar,
     /// Copies of the opening along one axis, named `<id>-<i>`; the index reads as a number.
     pub repeat: Option<RepeatAxis>,
     /// The opening (or each copy) is cut only when this is positive.
@@ -1304,6 +1406,28 @@ impl ItemDefinition {
         }
         Ok(result)
     }
+    /// The texel density each slot declares, in texels per meter.
+    pub(super) fn slot_densities(&self) -> Result<BTreeMap<String, f64>, ItemDiagnostic> {
+        if self.densities.len() > 128 {
+            return Err(fail(
+                &self.source,
+                "/densities",
+                "ITEM_LIMIT",
+                "An item states at most 128 slot densities.",
+            ));
+        }
+        for (slot, density) in &self.densities {
+            if !bounded_name(slot) || !(MIN_DENSITY..=MAX_DENSITY).contains(density) {
+                return Err(fail(
+                    &self.source,
+                    &format!("/densities/{}", super::pointer_key(slot)),
+                    "ITEM_DENSITY",
+                    "A slot density is 1 to 100000 texels per meter for a bounded slot name.",
+                ));
+            }
+        }
+        Ok(self.densities.clone())
+    }
     /// The weathering layers of every slot, with `{"parameter": name}` values bound to the
     /// item's controls (any role: a layer is appearance, never geometry).
     pub(super) fn resolved_layers(
@@ -1328,19 +1452,25 @@ impl ItemDefinition {
                     || layer.entry.len() > 1024
                     || layer.parameters.len() > 64
                     || layer.follow.len() > 16
-                    || layer
-                        .follow
-                        .iter()
-                        .any(|(a, b)| !bounded_name(a) || !bounded_name(b))
+                    || layer.follow.iter().any(|(own, theirs)| {
+                        !bounded_name(own)
+                            || theirs.names().is_empty()
+                            || theirs.names().len() > MAX_FOLLOWED
+                            || theirs.names().iter().any(|name| !bounded_name(name))
+                    })
                 {
                     return Err(fail(
                         &self.source,
                         &pointer,
                         "ITEM_LAYER",
-                        "Invalid layer entry, parameters or followed features.",
+                        "Invalid layer entry, parameters or followed features (a name follows one feature or a list of 1 to 16).",
                     ));
                 }
                 let mut layer = layer.clone();
+                // One spelling per set of followed features, so equal layers of sub-items merge.
+                for theirs in layer.follow.values_mut() {
+                    *theirs = theirs.normalized();
+                }
                 for (name, value) in &mut layer.parameters {
                     if let Some(reference) = value
                         .as_object()

@@ -172,13 +172,14 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  * render is the anchored concrete, an intrinsic base: their grime, ground stain and moss are the weathering layers the
  * items declare on their `wall` slot.
  */
-const kowloonSlots = { wall: "render-paint", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile",
+const kowloonSlots = { wall: "render-paint", "wall-round": "render-paint-round", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile",
   glass: "window-glass", pane: "room-dark",
   galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
   opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",
   tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
-  // A sign's lettering stays the shipped glyph sheet (crisp at any size); its ground is worn and stained.
-  rust: "rusted-pipe", board: "sign-board",
+  // A sign's ground is worn and stained. Its lettering stays the shipped glyph sheet: bound to `sign-lettering` and
+  // baked (even at 800 texels a meter) the strokes come out as smears and the cutout is lost, so that recipe waits.
+  rust: "rusted-pipe", board: "sign-board", lettering: "sign-lettering", "tube-light": "tube-light", "shop-floor": "shop-floor",
   // The pavement's stones and kerb, and the plastered walls inside an open shop (tinted per vertex).
   paving: "paving", kerb: "kerb", "roof-tile": "paving", interior: "shop-plaster" };
 export const facade = {

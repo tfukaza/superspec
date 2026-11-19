@@ -678,6 +678,254 @@ fn an_items_layers_weather_its_slot_in_an_assignment_of_their_own() {
         rows.len() / 12
     );
 }
+/// The rows of named features (kind 5 and up) among a receiver's feature rows.
+fn named_rows(rows: &Value) -> Vec<Vec<f64>> {
+    rows.as_array()
+        .unwrap_or_else(|| panic!("{rows}"))
+        .chunks_exact(12)
+        .map(|row| row.iter().map(|v| v.as_f64().unwrap()).collect::<Vec<_>>())
+        .filter(|row| row[3] >= 5.)
+        .collect()
+}
+
+#[test]
+fn a_layer_follows_several_features_under_one_name() {
+    let layered = |follow: Value| {
+        let mut project = washroom();
+        for (name, text) in [
+            (
+                "kowloon-noise.material.ts",
+                include_str!("../src/materialspec/program/examples/kowloon-noise.material.ts"),
+            ),
+            (
+                "kowloon-top-grime.material.ts",
+                include_str!("../src/materialspec/program/examples/kowloon-top-grime.material.ts"),
+            ),
+        ] {
+            project.modules.insert(name.into(), text.into());
+        }
+        let mut definition: Value = serde_json::from_str(WALL).unwrap();
+        definition["layers"] = json!({"concrete": [
+            {"entry": "kowloon-top-grime.material.ts", "parameters": {"amount": 0.7}, "seed": 3, "follow": {"top": follow}}
+        ]});
+        project
+            .modules
+            .insert("wall.item.json".into(), definition.to_string());
+        project
+    };
+    let rows = |follow: Value| {
+        let shaded = Session::default()
+            .shade_project(&layered(follow), 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+        let front = &shaded.metadata["shading"]["wall/part/wall/wall/front"];
+        let described = &shaded.metadata["materials"]["concrete.wall.concrete"]["layers"][0];
+        (
+            named_rows(&front["layerFeatures"][0]),
+            described["follow"]["top"].clone(),
+        )
+    };
+    let (sill, _) = rows(json!("sill"));
+    let (base, _) = rows(json!("base"));
+    let (both, described) = rows(json!(["sill", "base"]));
+    assert!(!sill.is_empty() && !base.is_empty());
+    // The one name holds the segments of both features, each exactly once, under one kind.
+    assert_eq!(both.len(), sill.len() + base.len());
+    for row in sill.iter().chain(&base) {
+        assert!(both.contains(row), "{row:?} is missing");
+    }
+    assert!(both.iter().all(|row| row[3] == both[0][3]));
+    // A set of features has one spelling: ascending, and one name alone is the name.
+    assert_eq!(described, json!(["base", "sill"]));
+    assert_eq!(rows(json!(["sill"])).1, json!("sill"));
+    assert_eq!(rows(json!(["sill", "sill"])).0, sill);
+    // The CPU bake composes the same layer, and what it follows is part of what it bakes.
+    let image = |follow: Value| {
+        let output = Session::default()
+            .build_project(&layered(follow), 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+        let model = output.scene(1).unwrap();
+        serde_json::to_string(&model.manifest.materials).unwrap()
+    };
+    let (one, two) = (image(json!("sill")), image(json!(["sill", "base"])));
+    assert_ne!(one, two, "following the base too changes what is baked");
+    assert_eq!(two, image(json!(["base", "sill", "base"])));
+    // A name follows a feature or a list of 1 to 16 of them.
+    let refused = Session::default()
+        .shade_project(&layered(json!([])), 1, &asset, &|| false)
+        .err()
+        .expect("an empty list is refused");
+    assert_eq!(refused[0].code, "ITEM_LAYER");
+}
+
+/// Reads `drip`, so receivers are given the features of that name.
+const DRIPS: &str = "material 1;
+let drip = feature_distance(\"drip\", 0.3);
+output base_color = vec3(drip / 0.3, 0.5, 0.5);
+output roughness = 0.8;
+output metalness = 0;";
+
+#[test]
+fn a_feature_reaches_other_parts_and_items_only_as_far_as_it_says() {
+    // The tile panel reports a drip line along its foot; the wall behind it is another part, and
+    // the pipe (2 m away) another item.
+    let scene = |feature: Value| {
+        let mut project = tiled(2.7, 0.1);
+        project.modules.insert("drips.ms".into(), DRIPS.into());
+        project.materials = vec![assignment("concrete", "drips.ms")];
+        redefine(&mut project, |definition| {
+            let mut drip = json!({"name": "drip", "part": "tiles", "points": [[1.2, -0.012, 0.75], [2.4, -0.012, 0.75]]});
+            for (key, value) in feature.as_object().unwrap() {
+                drip[key] = value.clone();
+            }
+            definition["features"] = json!([drip]);
+        });
+        project.models[0].slots = [("concrete", "concrete"), ("tile", "concrete")]
+            .map(|(a, b)| (a.into(), b.into()))
+            .into();
+        project.models.push(item(
+            "pipe",
+            "pipe.item.json",
+            &[("steel", "concrete")],
+            [1., 0., 0.],
+        ));
+        project
+    };
+    let drips = |feature: Value| {
+        let shaded = Session::default()
+            .shade_project(&scene(feature), 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+        let count = |mesh: &str| {
+            let described = &shaded.metadata["shading"][mesh];
+            assert!(described.is_object(), "{mesh} is not shaded");
+            named_rows(&described["features"])
+        };
+        (
+            count("wall/part/tiles/tiles/side"),
+            count("wall/part/wall/wall/front"),
+            count("pipe/part/riser/riser/body"),
+            shaded.metadata["items"]["wall"]["reachDropped"].clone(),
+        )
+    };
+    // By default a feature reaches its own part alone.
+    let (own, wall, pipe, _) = drips(json!({}));
+    assert_eq!((own.len(), wall.len(), pipe.len()), (1, 0, 0));
+    // Reach `item`: the wall behind the tiles is given the same line, in world meters (the item
+    // stands at (1, 2, 0)); another item is not.
+    let (tiles, wall, pipe, dropped) = drips(json!({"reach": "item"}));
+    assert_eq!(wall, own);
+    assert_eq!((tiles.len(), pipe.len()), (1, 0));
+    assert!((wall[0][0] - 2.2).abs() < 1e-9 && (wall[0][2] - 0.75).abs() < 1e-9);
+    assert_eq!(dropped, 0);
+    // Reach `scene`: the pipe, 2 m in front, is within the 3 m a feature reaches by default,
+    // and not within 0.5 m.
+    let (_, wall, pipe, _) = drips(json!({"reach": "scene"}));
+    assert_eq!((wall.len(), pipe.len()), (1, 1));
+    assert_eq!(pipe, own);
+    let (_, wall, pipe, _) = drips(json!({"reach": "scene", "within": 0.5}));
+    assert_eq!((wall.len(), pipe.len()), (1, 0));
+    // A distance needs a wider reach, and is more than 0 and at most 50 m.
+    for feature in [
+        json!({"within": 1}),
+        json!({"reach": "item", "within": 0}),
+        json!({"reach": "item", "within": 51}),
+    ] {
+        let refused = Session::default()
+            .shade_project(&scene(feature.clone()), 1, &asset, &|| false)
+            .err()
+            .unwrap_or_else(|| panic!("{feature} is accepted"));
+        assert_eq!(refused[0].code, "ITEM_FEATURE", "{feature}");
+    }
+    // A layout or a bake of a receiver holds the features it was given: the CPU build agrees.
+    Session::default()
+        .build_project(&scene(json!({"reach": "scene"})), 1, &asset, &|| false)
+        .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+}
+
+/// An item's own `densities` sizes its slots' receivers under what the project and the model
+/// state, and over a material's density; a bake of the receiver changes with it.
+#[test]
+fn an_item_asks_for_its_slots_densities_under_what_its_host_states() {
+    // A receiver's layout (its size and density) is what its bakes are keyed by.
+    let layouts = |project: &Project| -> BTreeMap<String, (String, f64, (usize, usize))> {
+        Session::default()
+            .project_layouts(project, 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)))
+            .receivers
+            .into_iter()
+            .map(|layout| {
+                (
+                    layout.id,
+                    (
+                        layout.material,
+                        layout.density,
+                        (layout.width, layout.height),
+                    ),
+                )
+            })
+            .collect()
+    };
+    let mut project = washroom();
+    project.resolution = 512;
+    project.texel_density = Some(16.);
+    project.texel_densities.insert("steel".into(), 64.);
+    let before = layouts(&project);
+    // The wall asks for 128 texels a meter on its frame; the pipe (steel too) is not the wall.
+    let mut definition: Value = serde_json::from_str(WALL).unwrap();
+    definition["densities"] = json!({"frame": 128});
+    project
+        .modules
+        .insert("wall.item.json".into(), definition.to_string());
+    let asked = layouts(&project);
+    let frames: Vec<String> = asked
+        .iter()
+        .filter(|(id, _)| id.starts_with("wall/") && id.ends_with("/frame"))
+        .map(|(id, _)| id.clone())
+        .collect();
+    assert!(!frames.is_empty());
+    for (id, (material, density, key)) in &asked {
+        if frames.contains(id) {
+            // Over the material's 64.
+            assert_eq!((material.as_str(), *density), ("steel", 128.), "{id}");
+            // (A receiver too small to fill the smallest atlas keeps it.)
+            assert!(key.0 * key.1 >= before[id].2.0 * before[id].2.1, "{id}");
+        } else {
+            assert_eq!((*density, key), (before[id].1, &before[id].2), "{id}");
+        }
+    }
+    assert!(frames.iter().any(|id| asked[id].2 != before[id].2));
+    // What is baked on the frame changes with the density the item asks for.
+    let baked = |project: &Project| {
+        let output = Session::default()
+            .build_project(project, 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)));
+        serde_json::to_string(&output.metadata["materials"]).unwrap()
+    };
+    let mut plain = project.clone();
+    plain
+        .modules
+        .insert("wall.item.json".into(), WALL.to_owned());
+    assert_ne!(baked(&plain), baked(&project));
+    // The model's slot density comes before the item's, and a mesh's own before both.
+    project.models[0].slot_densities.insert("frame".into(), 32.);
+    let model = layouts(&project);
+    assert!(frames.iter().all(|id| model[id].1 == 32.));
+    project.texel_densities.insert(frames[0].clone(), 24.);
+    let mesh = layouts(&project);
+    assert_eq!(mesh[&frames[0]].1, 24.);
+    assert!(frames[1..].iter().all(|id| mesh[id].1 == 32.));
+    // An item density out of range is refused at its slot.
+    let mut definition: Value = serde_json::from_str(WALL).unwrap();
+    definition["densities"] = json!({"frame": 0});
+    project
+        .modules
+        .insert("wall.item.json".into(), definition.to_string());
+    assert!(
+        Session::default()
+            .project_layouts(&project, 1, &asset, &|| false)
+            .is_err()
+    );
+}
+
 #[test]
 fn native_item_scene_packet_for_parity() {
     let project = tiled(2.7, 0.1);

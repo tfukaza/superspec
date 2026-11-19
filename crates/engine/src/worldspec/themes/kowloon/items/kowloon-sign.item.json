@@ -2,6 +2,7 @@
   "format": "itemspec",
   "version": 2,
   "id": "kowloon-sign",
+  "densities": {"lettering": 800, "board": 320},
   "parameters": {
     "mount": {"type": "choice", "default": "board", "choices": ["board", "blade", "hung", "flat"]},
     "width": {"type": "number", "default": 0.94, "min": 0.2, "max": 8, "unit": "m"},

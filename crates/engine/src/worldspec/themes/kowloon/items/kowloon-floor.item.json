@@ -31,8 +31,21 @@
     "rackChance": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "plantChance": {"type": "number", "default": 0.12, "min": 0, "max": 1},
     "band": {"type": "boolean", "default": true},
-    "windowPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "window", "barred"]},
-    "fixturePlan": {"type": "grid", "default": [], "choices": ["auto", "none", "aircon", "split", "cage", "rack", "plants"]},
+    "windowPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "window", "barred", "grille"]},
+    "fixturePlan": {"type": "grid", "default": [], "choices": ["auto", "none", "aircon", "split", "cage", "rack", "plants", "caged-aircon"]},
+    "fixtureAt": {"type": "grid", "default": []},
+    "cagedChance": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "openChance": {"type": "number", "default": 0.3, "min": 0, "max": 8},
+    "openPlan": {"type": "grid", "default": []},
+    "litChance": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "litPlan": {"type": "grid", "default": []},
+    "narrowBay": {"type": "number", "default": 0, "min": 0, "max": 10, "unit": "m"},
+    "narrowLightWidth": {"type": "number", "default": 0.7, "min": 0.2, "max": 2, "unit": "m"},
+    "louvreChance": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "louvrePlan": {"type": "grid", "default": [], "choices": ["auto", "none", "left", "right"]},
+    "serviceDoorAt": {"type": "number", "default": 0, "min": 0, "max": 40, "unit": "m"},
+    "serviceDoorWidth": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "serviceDoorHeight": {"type": "number", "default": 2.05, "min": 1.8, "max": 3.2, "unit": "m"},
     "tileBands": {"type": "boolean", "default": false},
     "cageChance": {"type": "number", "default": 0, "min": 0, "max": 1},
     "spanPlan": {"type": "grid", "default": []},
@@ -50,7 +63,10 @@
     "storage": {"type": "number", "default": 0, "min": 0, "max": 1},
     "windowTransom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
     "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
-    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4}
+    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
+    "arrisStart": {"type": "number", "default": 0, "min": 0, "max": 2},
+    "arrisEnd": {"type": "number", "default": 0, "min": 0, "max": 2}
   },
   "derived": {
     "banks": "count(spanPlan)",
@@ -67,13 +83,17 @@
         "height": {"parameter": "height"},
         "thickness": {"parameter": "thickness"},
         "patternAnchor": ["-u0", "-z0"],
+        "arris": {"parameter": "arris"}, "arrisStart": {"parameter": "arrisStart"}, "arrisEnd": {"parameter": "arrisEnd"},
         "openings": [
           {"id": "window", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)",
            "width": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)", "height": {"parameter": "windowHeight"},
            "u": {"from": "start", "offset": "select(banks > 0, cell(spanPlan, i, 0), start + i * bayWidth + inset)"}, "v": {"from": "start", "offset": {"parameter": "sill"}}},
           {"id": "door", "when": "count(doorPlan) >= 2",
            "width": "cell(doorPlan, 1) - cell(doorPlan, 0)", "height": {"parameter": "doorHeight"},
-           "u": {"from": "start", "offset": "cell(doorPlan, 0)"}, "v": {"from": "start", "offset": 0.03}}
+           "u": {"from": "start", "offset": "cell(doorPlan, 0)"}, "v": {"from": "start", "offset": 0.03}},
+          {"id": "serviceDoor", "when": "serviceDoorWidth > 0",
+           "width": {"parameter": "serviceDoorWidth"}, "height": {"parameter": "serviceDoorHeight"},
+           "u": {"from": "start", "offset": "serviceDoorAt - serviceDoorWidth / 2"}, "v": {"from": "start", "offset": 0.03}}
         ]
       },
       "slots": {"front": "wall", "edge": "wall", "reveal": "wall"}
@@ -88,8 +108,14 @@
                        "glazing": {"parameter": "glazing"}, "hood": {"parameter": "hoods"},
                        "transom": {"parameter": "windowTransom"}, "storage": {"parameter": "storage"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"},
-                       "bars": {"choose": [false, true], "by": "select(cell(windowPlan, i) == 0, random(seed, level, i, 3) < barsChance, cell(windowPlan, i) == 3)"},
-                       "barsPattern": {"choose": ["bars", "grid", "diamond"], "by": "random(seed, i, 6) * 3"}}},
+                       "bars": {"choose": [false, true], "by": "select(cell(windowPlan, i) == 0, random(seed, level, i, 3) < barsChance, cell(windowPlan, i) >= 3)"},
+                       "barsPattern": {"choose": ["bars", "grid", "diamond"], "by": "select(cell(windowPlan, i) == 4, 2, random(seed, i, 6) * 3)"},
+                       "barsShare": {"expr": "select(cell(windowPlan, i) == 4, 0.5, 1)"},
+                       "openChance": {"expr": "select(count(openPlan) > 0, cell(openPlan, i), openChance * (1 - select(cell(windowPlan, i) == 0, random(seed, level, i, 3) < barsChance, cell(windowPlan, i) >= 3)))"},
+                       "lit": {"choose": [false, true], "by": "select(count(litPlan) > 0, cell(litPlan, i), random(seed, level, i, 41) < litChance)"},
+                       "lightWidth": {"expr": "select(select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth) < narrowBay, narrowLightWidth, 0.5)"},
+                       "midRail": {"choose": [false, true], "by": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth) < narrowBay"},
+                       "louvre": {"choose": ["none", "left", "right"], "by": "select(cell(louvrePlan, i) == 0, 2 * (random(seed, level, i, 42) < louvreChance), cell(louvrePlan, i) - 1)"}}},
       "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)", 0, {"parameter": "sill"}]}
     },
     {
@@ -103,8 +129,15 @@
     {
       "id": "dado",
       "when": "(dado > 0) * (level == 0)",
-      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.015, {"parameter": "dado"}]},
+      "generator": {"kind": "box", "size": ["select(serviceDoorWidth > 0, serviceDoorAt - serviceDoorWidth / 2, width)", 0.015, {"parameter": "dado"}]},
       "placement": {"position": [0, -0.015, 0]},
+      "slots": {"side": "tile"}
+    },
+    {
+      "id": "dadoEnd",
+      "when": "(dado > 0) * (level == 0) * (serviceDoorWidth > 0)",
+      "generator": {"kind": "box", "size": ["width - serviceDoorAt - serviceDoorWidth / 2", 0.015, {"parameter": "dado"}]},
+      "placement": {"position": ["serviceDoorAt + serviceDoorWidth / 2", -0.015, 0]},
       "slots": {"side": "tile"}
     },
     {
@@ -117,12 +150,12 @@
     {
       "id": "aircon",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) < airconChance + condenserChance, (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
+      "when": "select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance + condenserChance) * (1 - (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))), (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
       "generator": {"kind": "item", "entry": "kowloon-aircon.item.json",
         "parameters": {"split": {"choose": [false, true], "by": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) >= airconChance, cell(fixturePlan, i) == 3)"},
                        "clearance": {"expr": "select(level == 0, 0.45, 1.6)"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
-      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)", 0, "sill - 0.72"]}
+      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) + cell(fixtureAt, i, 0)", 0, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72)"]}
     },
     {
       "id": "vent",
@@ -135,10 +168,10 @@
       "id": "canopy",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
       "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(count(canopyPlan) > 0, cell(canopyPlan, i) * (1 - cageFull * (cell(fixturePlan, i) == 4)), random(seed, level, i, 17) < canopyChance)",
-      "generator": {"kind": "native", "name": "kowloon/awning",
-        "parameters": {"width": {"expr": "(select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.76"}, "depth": 0.34, "drop": 0.1, "canvas": false,
-                       "color": "#6c6a5a", "hem": {"parameter": "frame"}, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
-      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.1", 0, "sill + windowHeight + 0.2"]}
+      "generator": {"kind": "native", "name": "kowloon/sheet-canopy",
+        "parameters": {"width": {"expr": "(select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.9"}, "depth": 0.5, "drop": 0.12, "sag": 0.04, "tilt": 0.11,
+                       "color": "#7f7b6e", "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
+      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.03", 0, "sill + windowHeight + 0.2"]}
     },
     {
       "id": "rack",
@@ -188,14 +221,16 @@
     {
       "id": "cage",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",
+      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, (random(seed, level, i, 16) < cageChance) + (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance) > 0, (cell(fixturePlan, i) == 4) + (cell(fixturePlan, i) == 7))",
       "generator": {"kind": "native", "name": "kowloon/cage",
-        "parameters": {"width": {"expr": "select(cageFull, (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) + 0.16, min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2))"},
-                       "height": {"expr": "select(cageFull, windowHeight + 0.05, min(windowHeight * 0.4, 0.8))"}, "depth": {"expr": "select(cageFull, 0.7, 0.48)"},
-                       "color": {"choose": ["#857a61", "#b9bdb8"], "by": "cageFull"}, "stocked": {"parameter": "cageFull"}, "seed": {"expr": "seed * 1000 + level * 37 + i"},
-                       "contents": {"choose": ["auto", "plants", "washing", "storage", "mixed", "empty"], "by": "cell(cagePlan, i)"},
+        "parameters": {"width": {"expr": "select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), 0.98, select(cageFull, (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) + 0.16, min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2)))"},
+                       "height": {"expr": "select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), 0.68, select(cageFull, windowHeight + 0.05, min(windowHeight * 0.4, 0.8)))"},
+                       "depth": {"expr": "select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), 0.52, select(cageFull, 0.7, 0.48))"},
+                       "color": {"choose": ["#857a61", "#b9bdb8", "#7c6a54"], "by": "select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), 2, cageFull)"},
+                       "stocked": {"parameter": "cageFull"}, "seed": {"expr": "seed * 1000 + level * 37 + i"},
+                       "contents": {"choose": ["auto", "plants", "washing", "storage", "mixed", "empty", "aircon"], "by": "select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), 6, cell(cagePlan, i))"},
                        "roof": {"choose": ["auto", "none", "sheet"], "by": "select(cageFull * (count(canopyPlan) > 0) * (cell(fixturePlan, i) == 4), 1 + cell(canopyPlan, i), 0)"}}},
-      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)", 0, {"parameter": "sill"}]}
+      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) + select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), cell(fixtureAt, i, 0), 0)", 0, "sill + select(select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance), cell(fixturePlan, i) == 7), cell(fixtureAt, i, 1), 0)"]}
     },
     {
       "id": "band",
@@ -210,6 +245,14 @@
     {"name": "pavement", "part": "wall", "points": [[0, 0, 0], [{"parameter": "width"}, 0, 0]], "when": "level == 0"},
     {"name": "eave", "part": "wall", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
     {"name": "eave-above", "part": "wall", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]},
+    {"name": "repair", "part": "wall", "repeat": {"name": "k", "count": "max(1, floor(width / 2.6))"}, "when": "(random(seed, level, k, 55) < 0.5) * ((k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 < width - 0.6)",
+     "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52))",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52))",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"]]},
+    {"name": "repair-inner", "part": "wall", "repeat": {"name": "k", "count": "max(1, floor(width / 2.6))"}, "when": "(random(seed, level, k, 55) < 0.5) * ((k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 < width - 0.6)",
+     "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52)) - 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52)) - 0.05",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"]]},
+    {"name": "peel", "part": "wall", "repeat": {"name": "k", "count": "max(1, floor(width / 2.6))"}, "when": "(random(seed, level, k, 65) < 0.45) * ((k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 < width - 0.6)",
+     "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.5 + 0.7 * random(seed, level, k, 62))",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.5 + 0.7 * random(seed, level, k, 62))",0,"min(height - 0.08, 0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.4 + 0.6 * random(seed, level, k, 64))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6",0,"min(height - 0.08, 0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.4 + 0.6 * random(seed, level, k, 64))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63)"]]},
+    {"name": "peel-inner", "part": "wall", "repeat": {"name": "k", "count": "max(1, floor(width / 2.6))"}, "when": "(random(seed, level, k, 65) < 0.45) * ((k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 < width - 0.6)",
+     "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.5 + 0.7 * random(seed, level, k, 62)) - 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.5 + 0.7 * random(seed, level, k, 62)) - 0.05",0,"min(height - 0.08, 0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.4 + 0.6 * random(seed, level, k, 64)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.05",0,"min(height - 0.08, 0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.4 + 0.6 * random(seed, level, k, 64)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 61)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 63) + 0.05"]]},
     {"name": "sill", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"]]},
     {"name": "sill-above", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill + 0.24"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill + 0.24"]]},
     {"name": "sill-above", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)", "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", 0, "sill + 0.3"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", 0, "sill + 0.3"]]},
@@ -222,21 +265,21 @@
      "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2) / 2 - 0.03", -0.008, "sill - 0.01"],
                 ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2) / 2 - 0.03", -0.008, "sill - 0.3 - 0.45 * random(seed, level, i, 32)"]]},
     {"name": "rust", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}},
-     "when": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) < airconChance + condenserChance, (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
-     "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - 0.24", -0.008, "sill - 0.74"],
-                ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - 0.24 - 0.03 * random(seed, level, i, 33)", -0.008, "sill - 1.15 - 0.6 * random(seed, level, i, 34)"]]},
+     "when": "select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance + condenserChance) * (1 - (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))), (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
+     "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + cell(fixtureAt, i, 0) - 0.24", -0.008, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72) - 0.02"],
+                ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + cell(fixtureAt, i, 0) - 0.24 - 0.03 * random(seed, level, i, 33)", -0.008, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72) - 0.43 - 0.6 * random(seed, level, i, 34)"]]},
     {"name": "rust", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}},
-     "when": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) < airconChance + condenserChance, (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
-     "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + 0.24", -0.008, "sill - 0.74"],
-                ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + 0.24 + 0.03 * random(seed, level, i, 35)", -0.008, "sill - 1.05 - 0.6 * random(seed, level, i, 36)"]]}
+     "when": "select(cell(fixturePlan, i) == 0, (random(seed, level, i, 1) < airconChance + condenserChance) * (1 - (random(seed, level, i, 1) < airconChance) * (random(seed, level, i, 18) < cagedChance) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))), (cell(fixturePlan, i) == 2) + (cell(fixturePlan, i) == 3))",
+     "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + cell(fixtureAt, i, 0) + 0.24", -0.008, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72) - 0.02"],
+                ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + cell(fixtureAt, i, 0) + 0.24 + 0.03 * random(seed, level, i, 35)", -0.008, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72) - 0.33 - 0.6 * random(seed, level, i, 36)"]]}
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-repairs.material.ts", "parameters": {"color": {"parameter": "paint"}}, "seed": 4, "follow": {"repair": "repair", "repairInner": "repair-inner", "peel": "peel", "peelInner": "peel-inner"}},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.22, 0.2, 0.17], "period": 3.6}, "seed": 3, "follow": {"source": "top", "guard": "eave-above"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.7, "shift": 1.3, "period": 3.1}, "seed": 5, "follow": {"source": "sill", "guard": "sill-above"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.3, "streakLength": 1.5, "shift": 2.7, "period": 3.3, "color": [0.4, 0.33, 0.25]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.24, 0.215, 0.18], "streakLength": 2.2, "period": 3.6}, "seed": 3, "follow": {"source": ["drip", "eave", "ledge", "sill"], "guard": ["drip-above", "eave-above", "ledge-above", "sill-above"]}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.15], "streakLength": 1.5, "shift": 1.7, "period": 2.3}, "seed": 5, "follow": {"source": "coping", "guard": "coping-above"}},
       {"entry": "kowloon-soot-band.material.ts", "parameters": {"reach": 1.02, "haze": 0.6, "hazeStrength": 0.3, "ragged": 0.22}, "seed": 2, "follow": {"base": "pavement"}},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"run": "rust"}}
     ],

@@ -1,10 +1,10 @@
 {
   "//": "kowloon-building controls that recreate the reference shop house bay by bay (the authored model=\"reference-corner\"), from that model's own numbers. Edge 0 is the front, edge 1 the right side from the cut corner; storey 0 is the ground floor. The back and left edges are left to the seed.",
   "seed": 3,
-  "/corner": "The street corner is rounded with a radius of 0.55 m (four facets), and the green mosaic band runs through it. The front's wall ends 0.55 m before the corner (at 9.25 m) and the side's starts 0.55 m after it, so the front's wide bank and shop end at 8.75 m.",
+  "/corner": "The street corner is rounded with a radius of 0.55 m (one smooth surface of ten chords), and the green mosaic band runs through it. The front's wall ends 0.55 m before the corner (at 9.25 m) and the side's starts 0.55 m after it, so the front's wide bank and shop end at 8.75 m.",
   "cornerStyle": "round",
   "cut": 0.55,
-  "cornerSegments": 4,
+  "cornerSegments": 10,
   "cornerTiles": true,
   "shopWidth": 2.9,
   "signs": false,
@@ -22,21 +22,32 @@
   "shopPlans": [["gate", "open"], ["gate", "open"]],
   "tradePlans": [["auto", "provisions"], ["auto", "hardware"]],
   "awningPlans": [["tarp", "striped"], ["none", "tarp"]],
-  "/clutter": "Crates and cartons stacked to the left of the front's gate and round the corner on the side street; the gates are galvanised.",
+  "/clutter": "Crates and cartons stacked to the left of the front's gate and round the corner on the side street; the gates are galvanised: wide lattice bars (gateBars) over closed sheet steel leaves a little darker than the lattice (gateBacking), both light enough to read grey in the tarp's shade.",
   "clutterPlans": [["mixed-left", "none"], ["cartons-left", "none"]],
-  "gateColor": "#7d7b74",
+  "gateColor": "#c4c2b8",
+  "gateBars": 1.8,
+  "gateBacking": 0.7,
   "spansPlans": [
     [[], [[0.55, 2.65], [3.2, 4.15], [5.95, 8.75]], [[0.55, 2.65], [3.2, 5.4], [5.95, 8.75]], [[0.55, 2.65], [3.2, 5.4], [5.95, 8.75]]],
     [[], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]]]
   ],
   "windowsPlans": [
-    [[], ["window", "window", "window"], ["window", "window", "window"], ["window", "window", "window"]],
+    [[], ["window", "grille", "grille"], ["window", "window", "window"], ["window", "window", "window"]],
     [[], ["window", "window"], ["window", "window"], ["window", "window"]]
   ],
+  "/fixtures": "Rusty cages holding old window units on storey 2's left and middle banks and storey 3's middle one; split condensers at window height over the lower right corner of the wide bank. fixtureAtPlans moves a bank's fixture: [m along the bank from its centre, m of its foot above the sill].",
   "fixturesPlans": [
-    [[], ["none", "none", "none"], ["cage", "cage", "split"], ["none", "aircon", "split"]],
-    [[], ["none", "none"], ["aircon", "none"], ["aircon", "none"]]
+    [[], ["none", "none", "none"], ["caged-aircon", "caged-aircon", "split"], ["none", "caged-aircon", "split"]],
+    [[], ["none", "none"], ["aircon", "none"], ["caged-aircon", "none"]]
   ],
+  "fixtureAtPlans": [
+    [[], [], [[0.4, 0.04], [0.45, 0.04], [1.0, 0.1]], [[], [0.45, 0.04], [1.0, 0.1]]]
+  ],
+  "/sashes": "Banks narrower than 2.4 m have three lights across and a mid rail. Lights standing open per bank (the seed's elsewhere), a louvred top light at the right of the wide bank, lit rooms, and diamond grilles over the upper half of the windows beside the balcony door (windowsPlans).",
+  "narrowBay": 2.4,
+  "openPlans": [[[], [1, 0, 0], [0, 0, 1], [1, 0, 1]]],
+  "louvrePlans": [[[], ["none", "none", "none"], ["none", "none", "right"], ["none", "none", "right"]]],
+  "litPlans": [[[], [0, 0, 0], [0, 1, 0], [0, 1, 0]], [[], [0, 0], [0, 1], [0, 0]]],
   "/balcony": "Per edge: from, to, depth, and where its fan-shaped divider stands. The door to it is in storey 1's wall.",
   "balconyPlans": [[0.42, 9.25, 1.13, 2.64]],
   "doorsPlans": [[[], [4.43, 5.4]]],
@@ -45,6 +56,15 @@
   "/services": "Drain pipes at these distances along each edge; conduits as [x, z, rise, run, rise2].",
   "pipePlans": [[5.65], [2.76]],
   "conduitPlans": [[[2.85, 0.18, 2.82, 2.71, 9.2]], [[0.2, 6.2, 0, 2.48, 0], [2.68, 3.01, 3.19, 0, 0]]],
+  "/cables": "Per edge: x0, z0, x1, z1, sag, distance from the wall at the far end, cables in the bundle, radius of the corner it rounds (x1 is then measured on round it), junction boxes (0 none, 1 start, 2 end, 3 both). Front: from the 永昌藥行 bracket and a junction box to the conduit's pier, on round the corner, and up to the top storey's condenser. Side: from the conduit to the 電器修理 pole, and a pair under the top storey.",
+  "cablePlans": [
+    [[0.15, 7.3, 3.0, 6.78, 0.22], [3.0, 6.78, 5.5, 6.85, 0.2, 0.03, 2, 0, 1], [5.5, 6.85, 12.7, 6.6, 0.16, 0.03, 1, 0.55, 0],
+     [2.9, 9.85, 5.5, 9.92, 0.22, 0.03, 2, 0, 3], [5.56, 10.2, 7.95, 10.5, 0.12, 0.2]],
+    [[2.68, 6.2, 0.6, 5.72, 0.1, 0.8], [3.0, 9.8, 6.2, 9.9, 0.28, 0.03, 2, 0, 1]]
+  ],
+  "/roof": "A rail on the rear and left parapets only (roofRailPlan: the share of each edge's parapet that carries one); vent stubs along the right, a few pipes along the rear parapet, pots at the front and a cable from the aerial to the stair hut (roofClutter).",
+  "roofRailPlan": [0, 0, 1, 1],
+  "roofClutter": 0.8,
   "boardTexts": ["永昌藥行", "興隆五金", "電器修理"],
   "boardPlans": [
     [[-1.03, 4.72, 0.94, 2.82, 0, 0, 0, 0.85, 1.18, -0.08, 0]],

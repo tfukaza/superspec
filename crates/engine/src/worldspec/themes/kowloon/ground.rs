@@ -298,12 +298,26 @@ fn gate(
     unit: &Unit,
     s: &Settings<'_>,
     rng: &mut SeededRng,
-    lattice: Option<V3>,
+    plan: &Plan,
 ) -> Result<Vec<Proposal>, String> {
+    if plan.gate_bars.is_some_and(|k| !(0.5..=3.).contains(&k))
+        || plan
+            .gate_backing
+            .is_some_and(|c| c.iter().any(|v| !v.is_finite() || !(0. ..=1.).contains(v)))
+    {
+        return Err(
+            "A gate's bars scale by 0.5 to 3 and its backing is a normalized color.".into(),
+        );
+    }
     let o = opening(Kind::Gate, unit, rng)?.unwrap();
     let (x0, x1, head) = (o.u0, o.u1, o.z1);
     rng.float(0.1, 0.6);
-    let steel = lattice.unwrap_or(srgb("#647a6b"));
+    let steel = plan.gate.unwrap_or(srgb("#647a6b"));
+    // The widths of the lattice's uprights and links.
+    let (upright, link) = match plan.gate_bars {
+        Some(k) => (0.018 * k, 0.012 * k),
+        None => (0.018, 0.012),
+    };
     let drawn = rng.pick(&[1., 1., 0.55, 0.35]);
     let galvanized = srgb("#a4a9aa");
     d.panel("paint", [x0, x1, 0., head], 0.004, srgb("#2a2927"))?;
@@ -334,6 +348,20 @@ fn gate(
             &door,
         )?;
     }
+    if let Some(sheet) = plan.gate_backing {
+        // Sheet steel leaves closed behind the lattice, in upright strips.
+        let strips = ((x1 - x0 - 0.12) / 0.3).round().max(2.) as usize;
+        let wide = (x1 - x0 - 0.12) / strips as f64;
+        for i in 0..strips {
+            let left = x0 + 0.06 + i as f64 * wide;
+            d.panel(
+                "paint",
+                [left + 0.004, left + wide - 0.004, 0.06, head - 0.06],
+                0.04 + (i % 2) as f64 * 0.006,
+                shade(sheet, 1. - (i % 3) as f64 * 0.05),
+            )?;
+        }
+    }
     let pen = hardware(d, s, MetalKind::Cage)?;
     let count = ((x1 - x0) / 0.14).round().max(5.) as usize;
     let end = x0 + (x1 - x0 - 0.05) * drawn;
@@ -344,7 +372,7 @@ fn gate(
         on(d, &pen).cuboid(
             "paint",
             [x, 0.065, 0.075],
-            [x + 0.018, 0.085, head - 0.08],
+            [x + upright, 0.085, head - 0.08],
             steel,
             "bd",
         )?;
@@ -388,14 +416,14 @@ fn gate(
                 "paint",
                 [x + 0.009, 0.094, low],
                 [x + pitch + 0.009, 0.094, high],
-                0.012,
+                link,
                 steel,
             )?;
             on(d, &pen).bar(
                 "paint",
                 [x + 0.009, 0.109, high],
                 [x + pitch + 0.009, 0.109, low],
-                0.012,
+                link,
                 steel,
             )?;
             d.disc(
@@ -610,6 +638,10 @@ pub struct Plan {
     pub head_rust: f64,
     /// The paint of a gate's lattice (a grey green).
     pub gate: Option<V3>,
+    /// How many times as wide the lattice's uprights and links are (1; 0.5 to 3).
+    pub gate_bars: Option<f64>,
+    /// Closed sheet steel leaves of this colour behind the lattice, hiding the timber doors.
+    pub gate_backing: Option<V3>,
 }
 /// [`draw`] with whatever `plan` fixes of the bay; an empty plan draws the seeded bay.
 pub fn planned(
@@ -631,7 +663,7 @@ pub fn planned(
     }
     match kind {
         Kind::Shutter => shutter(d, unit, s, rng, plan),
-        Kind::Gate => gate(d, unit, s, rng, plan.gate),
+        Kind::Gate => gate(d, unit, s, rng, plan),
         Kind::Shop => shop(d, unit, s, rng),
         Kind::Door => {
             let design = doors::Design {

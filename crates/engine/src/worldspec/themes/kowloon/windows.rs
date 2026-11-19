@@ -46,19 +46,50 @@ pub struct Look {
     pub timber_textured: bool,
 }
 
+/// Which top light of a bank is a louvre of glass slats instead of a pane.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Louvre {
+    Left,
+    Right,
+}
+/// What a caller may fix beyond a [`Look`]; the default draws exactly the look's window.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// How many lights (sliding leaves) stand open: the whole part is a count and the
+    /// fraction the chance of one more. `None` is the usual single light, three times in ten.
+    /// Casement lights then open side-hung or, seeded, top-hung.
+    pub open: Option<f64>,
+    /// The width a casement's lights aim at (0.5 m when `None`).
+    pub light_width: Option<f64>,
+    /// A rail as heavy as the transom halfway up the lower lights, instead of their glazing bars.
+    pub mid_rail: bool,
+    pub louvre: Option<Louvre>,
+    /// Lever handles on the closed casement lights.
+    pub handles: bool,
+    /// The tint of a lit room's back panel (the unlit room's dark when `None`), and the slot
+    /// it is drawn in instead of `interior-lit`.
+    pub glow: Option<V3>,
+    pub glow_slot: Option<&'static str>,
+}
+
 fn interior(
     drawing: &mut Fixture<'_, '_>,
     span: [f64; 4],
     look: &Look,
+    options: &Options,
     rng: &mut SeededRng,
 ) -> Result<(), String> {
     let [x0, x1, z0, z1] = span;
     let depth = look.recess;
     drawing.panel(
-        if look.lit { "interior-lit" } else { "pane" },
+        if look.lit {
+            options.glow_slot.unwrap_or("interior-lit")
+        } else {
+            "pane"
+        },
         span,
         if depth > 0. { -depth + 0.003 } else { 0.012 },
-        srgb("#1b2225"),
+        options.glow.filter(|_| look.lit).unwrap_or(srgb("#1b2225")),
     )?;
     let curtained = rng.chance(0.6);
     let width = (x1 - x0) * rng.float(0.12, 0.24);
@@ -121,6 +152,27 @@ pub fn window_sized(
     look: &Look,
     rng: &mut SeededRng,
 ) -> Result<(), String> {
+    window_with(drawing, rectangle, look, &Options::default(), rng)
+}
+
+/// [`window_sized`] with whatever `options` fix of it.
+pub fn window_with(
+    drawing: &mut Fixture<'_, '_>,
+    rectangle: [f64; 4],
+    look: &Look,
+    options: &Options,
+    rng: &mut SeededRng,
+) -> Result<(), String> {
+    if options.open.is_some_and(|v| !(0. ..=16.).contains(&v))
+        || options
+            .light_width
+            .is_some_and(|v| !(0.15..=10.).contains(&v))
+        || options
+            .glow
+            .is_some_and(|c| c.iter().any(|v| !v.is_finite() || *v < 0.))
+    {
+        return Err("Window options need a bounded open count, light width and glow.".into());
+    }
     let [x, z, w, h] = rectangle;
     let (x1, z1) = (x + w, z + h);
     let span = [x, x1, z, z1];
@@ -284,6 +336,7 @@ pub fn window_sized(
         span,
         [w, h],
         look,
+        options,
         rng,
         member,
         transom,
@@ -300,6 +353,7 @@ fn frame_and_leaves(
     span: [f64; 4],
     dimensions: [f64; 2],
     look: &Look,
+    options: &Options,
     rng: &mut SeededRng,
     member: f64,
     transom: f64,
@@ -394,7 +448,7 @@ fn frame_and_leaves(
     }
     let moved = drawing.pen.clone();
     drawing.pen = original.clone();
-    let result = interior(drawing, inner, look, rng);
+    let result = interior(drawing, inner, look, options, rng);
     drawing.pen = moved;
     result?;
     if look.kind == Kind::Louver {
@@ -418,11 +472,7 @@ fn frame_and_leaves(
     if look.kind == Kind::Slider {
         let leaves = if w > 1.7 { 3 } else { 2 };
         let pitch = (inner[1] - inner[0]) / leaves as f64;
-        let open = if !look.fixed && rng.chance(0.3) {
-            Some(rng.integer(0, leaves - 1))
-        } else {
-            None
-        };
+        let open = opened(options, !look.fixed, leaves, rng);
         for y in [d * 0.3, d * 0.7] {
             drawing.frame_box(
                 [inner[0], y - 0.004, inner[2]],
@@ -439,7 +489,7 @@ fn frame_and_leaves(
             let l0 = inner[0] + i as f64 * pitch;
             let l1 = l0 + pitch;
             let y = if i % 2 != 0 { d * 0.4 } else { d * 0.8 };
-            if Some(i) == open {
+            if open.contains(&i) {
                 continue;
             }
             drawing.frame_box(
@@ -480,14 +530,29 @@ fn frame_and_leaves(
     let lights = if look.kind == Kind::Timber {
         2
     } else {
-        ((inner[1] - inner[0]) / 0.5).round().max(2.) as usize
+        ((inner[1] - inner[0]) / options.light_width.unwrap_or(0.5))
+            .round()
+            .max(2.) as usize
     };
     let pitch = (inner[1] - inner[0]) / lights as f64;
-    let open = if !look.fixed && look.reach >= 0.6 + look.recess && rng.chance(0.3) {
-        Some(rng.integer(0, lights - 1))
-    } else {
-        None
-    };
+    let open = opened(
+        options,
+        !look.fixed && look.reach >= 0.6 + look.recess,
+        lights,
+        rng,
+    );
+    // A mid rail takes the glazing bars' place, and an opened sash is then the light above it.
+    let middle = inner[2] + (transom - inner[2]) * 0.5;
+    let railed = options.mid_rail && transom - inner[2] > 0.3;
+    let bars = if railed { &[][..] } else { bars };
+    let foot = if railed { middle + 0.018 } else { inner[2] };
+    let louvre = options
+        .louvre
+        .filter(|_| transom + 0.1 < inner[3])
+        .map(|side| match side {
+            Louvre::Left => 0,
+            Louvre::Right => lights - 1,
+        });
     for i in 0..lights {
         let l0 = inner[0] + i as f64 * pitch;
         let l1 = l0 + pitch;
@@ -498,7 +563,46 @@ fn frame_and_leaves(
                 look.frame,
             )?;
         }
-        if Some(i) == open {
+        if open.contains(&i) && options.open.is_some() && rng.chance(0.5) {
+            // Top-hung: hinged under the transom, pushed out at its foot on a stay.
+            let drop = transom - foot;
+            let out = sin(rng.float(0.3, 0.6)).min(0.45 / drop);
+            let tip = [d + out * drop, transom - (1. - out * out).sqrt() * drop];
+            let (a, b) = (l0 + 0.018, l1 - 0.018);
+            drawing.sheet(
+                "glass",
+                &[
+                    [a, d, transom],
+                    [b, d, transom],
+                    [b, tip[0], tip[1]],
+                    [a, tip[0], tip[1]],
+                ],
+                [0.85, 0.9, 0.9],
+            )?;
+            for x in [a + 0.012, b - 0.012] {
+                drawing.bar(
+                    "paint",
+                    [x, d, transom - 0.015],
+                    [x, tip[0], tip[1]],
+                    0.03,
+                    look.frame,
+                )?;
+            }
+            drawing.bar(
+                "paint",
+                [a, tip[0], tip[1]],
+                [b, tip[0], tip[1]],
+                0.03,
+                look.frame,
+            )?;
+            drawing.tube(
+                "metal",
+                &[[b - 0.03, d, foot + 0.02], [b - 0.03, tip[0], tip[1]]],
+                0.004,
+                shade(look.frame, 0.6),
+                5,
+            )?;
+        } else if open.contains(&i) {
             let angle = rng.float(0.7, 1.3);
             let left = (i as f64) < lights as f64 / 2.;
             let hinge = if left { l0 } else { l1 };
@@ -507,14 +611,14 @@ fn frame_and_leaves(
             drawing.sheet(
                 "glass",
                 &[
-                    [hinge, d, inner[2]],
-                    [tip[0], tip[1], inner[2]],
+                    [hinge, d, foot],
+                    [tip[0], tip[1], foot],
                     [tip[0], tip[1], transom],
                     [hinge, d, transom],
                 ],
                 [0.85, 0.9, 0.9],
             )?;
-            for zb in [inner[2] + 0.015, transom - 0.015] {
+            for zb in [foot + 0.015, transom - 0.015] {
                 drawing.bar(
                     "paint",
                     [hinge, d, zb],
@@ -525,13 +629,34 @@ fn frame_and_leaves(
             }
             drawing.bar(
                 "paint",
-                [tip[0], tip[1], inner[2]],
+                [tip[0], tip[1], foot],
                 [tip[0], tip[1], transom],
                 0.03,
                 look.frame,
             )?;
         }
-        if transom < inner[3] {
+        if Some(i) == louvre {
+            // Glass slats in clips down both sides, tilted to shed rain.
+            let (a, b, z0, z1) = (l0 + 0.018, l1 - 0.018, transom + 0.02, inner[3] - 0.012);
+            let slats = ((z1 - z0) / 0.075).round().max(2.) as usize;
+            let rise = (z1 - z0) / slats as f64;
+            for slat in 0..slats {
+                let base = z0 + slat as f64 * rise;
+                drawing.sheet(
+                    "glass",
+                    &[
+                        [a, 0.015, base + rise * 0.95],
+                        [b, 0.015, base + rise * 0.95],
+                        [b, d, base + rise * 0.1],
+                        [a, d, base + rise * 0.1],
+                    ],
+                    shade(srgb("#2a3a40"), 2.6),
+                )?;
+            }
+            for x in [a, b - 0.012] {
+                drawing.frame_box([x, 0.01, z0], [x + 0.012, d, z1], bead)?;
+            }
+        } else if transom < inner[3] {
             drawing.panel(
                 "glass",
                 [l0 + 0.018, l1 - 0.018, transom + 0.02, inner[3] - 0.012],
@@ -539,7 +664,15 @@ fn frame_and_leaves(
                 [0.88, 0.94, 0.93],
             )?;
         }
-        if Some(i) == open {
+        if open.contains(&i) {
+            if railed {
+                drawing.panel(
+                    "glass",
+                    [l0 + 0.018, l1 - 0.018, inner[2] + 0.012, middle - 0.02],
+                    d * 0.4 - 0.003,
+                    [0.88, 0.94, 0.93],
+                )?;
+            }
             continue;
         }
         drawing.panel(
@@ -554,6 +687,19 @@ fn frame_and_leaves(
             [l1 - 0.006, d, latch + 0.032],
             bead,
         )?;
+        if options.handles {
+            drawing.tube(
+                "metal",
+                &[
+                    [l1 - 0.015, d, latch + 0.012],
+                    [l1 - 0.015, d + 0.024, latch + 0.012],
+                    [l1 - 0.015, d + 0.024, latch - 0.075],
+                ],
+                0.0055,
+                srgb("#8d8468"),
+                6,
+            )?;
+        }
         for t in bars {
             let bar = inner[2] + (transom - inner[2]) * t;
             drawing.frame_box(
@@ -570,7 +716,39 @@ fn frame_and_leaves(
             look.frame,
         )?;
     }
+    if railed {
+        drawing.frame_box(
+            [inner[0], 0., middle - 0.018],
+            [inner[1], d * 0.9, middle + 0.018],
+            look.frame,
+        )?;
+    }
     Ok(())
+}
+
+/// The lights that stand open among `count`. Without an option: one, three times in ten,
+/// drawing from `rng` exactly as before the options existed.
+fn opened(options: &Options, free: bool, count: usize, rng: &mut SeededRng) -> Vec<usize> {
+    let Some(share) = options.open else {
+        return if free && rng.chance(0.3) {
+            vec![rng.integer(0, count - 1)]
+        } else {
+            vec![]
+        };
+    };
+    if !free {
+        return vec![];
+    }
+    let wanted =
+        share.floor() as usize + usize::from(share.fract() > 0. && rng.chance(share.fract()));
+    let mut open = vec![];
+    for _ in 0..wanted.min(count) * 4 {
+        let light = rng.integer(0, count - 1);
+        if !open.contains(&light) && open.len() < wanted {
+            open.push(light);
+        }
+    }
+    open
 }
 
 #[derive(Clone, Copy, Deserialize)]

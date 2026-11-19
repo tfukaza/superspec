@@ -288,10 +288,14 @@ fn ware(
     let r = w / 2.;
     match kind {
         Ware::Tins => {
-            let profile: Vec<_> = (0..=levels).map(|i| [r, i as f64 * h]).collect();
-            let tints: Vec<_> = (0..levels)
-                .map(|_| shade(label, rng.float(0.85, 1.08)))
-                .collect();
+            // A paper label under a band of its second colour.
+            let mut profile = vec![[r, 0.]];
+            let mut tints = vec![];
+            for i in 0..levels {
+                let z0 = i as f64 * h;
+                profile.extend([[r, z0 + h * 0.6], [r, z0 + h]]);
+                tints.extend([shade(label, rng.float(0.85, 1.08)), body]);
+            }
             arc(d, centre, &profile, &tints, 3)?;
             d.disc(
                 "paint",
@@ -305,10 +309,17 @@ fn ware(
         Ware::Jars | Ware::BigJars => {
             let mut profile = vec![];
             let mut tints = vec![];
+            // What the jar holds shows above its label band; the lid is the label's colour.
+            let lid = shade(label, 0.7);
             for i in 0..levels {
                 let z0 = i as f64 * h;
-                profile.extend([[r, z0], [r, z0 + h * 0.76], [r * 0.9, z0 + h * 0.76]]);
-                tints.extend([body, body, label]);
+                profile.extend([
+                    [r, z0],
+                    [r, z0 + h * 0.46],
+                    [r, z0 + h * 0.76],
+                    [r * 0.9, z0 + h * 0.76],
+                ]);
+                tints.extend([label, shade(body, 0.62), lid, lid]);
             }
             profile.push([r * 0.9, levels as f64 * h]);
             arc(d, centre, &profile, &tints, 3)?;
@@ -321,28 +332,45 @@ fn ware(
                 6,
             )
         }
+        // Glass with a label band round its body and a cap on its neck.
         Ware::Bottles => arc(
             d,
             centre,
             &[
                 [r, 0.],
-                [r, h * 0.5],
-                [r, h * 0.6],
+                [r, h * 0.2],
+                [r, h * 0.54],
                 [r * 0.4, h * 0.76],
-                [r * 0.4, h],
+                [r * 0.4, h * 0.9],
+                [r * 0.48, h * 0.9],
+                [r * 0.48, h],
             ],
-            &[label, body, body, shade(label, 0.7)],
+            &[body, label, body, body, body, shade(label, 0.75)],
             3,
         ),
         Ware::Boxes | Ware::TallBoxes => {
             for level in 0..levels {
                 let inset = rng.float(0., 0.006);
+                let (z0, z1) = (z + level as f64 * h, z + (level + 1) as f64 * h - 0.002);
                 d.cuboid(
                     "paint",
-                    [x - r + inset, y + inset, z + level as f64 * h],
-                    [x + r - inset, y + depth, z + (level + 1) as f64 * h - 0.002],
+                    [x - r + inset, y + inset, z0],
+                    [x + r - inset, y + depth, z1],
                     shade(label, rng.float(0.86, 1.06)),
                     if level + 1 == levels { "df" } else { "dfu" },
+                )?;
+                // Its printed panel.
+                let front = y + inset - 0.002;
+                d.face(
+                    "paint",
+                    &[
+                        [x - r * 0.62, front, z0 + h * 0.24],
+                        [x + r * 0.62, front, z0 + h * 0.24],
+                        [x + r * 0.62, front, z0 + h * 0.74],
+                        [x - r * 0.62, front, z0 + h * 0.74],
+                    ],
+                    [0., -1., 0.],
+                    body,
                 )?;
             }
             Ok(())
@@ -379,7 +407,21 @@ fn ware(
                 [1., 0., 0.2],
                 shade(label, 0.85),
             )?;
-            d.face("paint", &head, [0., 0., 1.], shade(body, 0.9))
+            d.face("paint", &head, [0., 0., 1.], shade(body, 0.9))?;
+            // The print on its front.
+            let at = |u: f64, t: f64| {
+                let (a, b) = (
+                    [x - r + (r - top) * t, y + lean * t - 0.003, z + h * t],
+                    [x + r - (r - top) * t, y + lean * t - 0.003, z + h * t],
+                );
+                [a[0] + (b[0] - a[0]) * u, a[1], a[2]]
+            };
+            d.face(
+                "paint",
+                &[at(0.2, 0.3), at(0.8, 0.3), at(0.8, 0.72), at(0.2, 0.72)],
+                [0., -1., 0.3],
+                body,
+            )
         }
     }
 }
@@ -645,140 +687,294 @@ fn bucket(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Result<(), St
     let nest = rng.integer(1, 3);
     for i in 0..nest {
         let z = at[2] + i as f64 * 0.07;
+        let own = shade(color, 1. - i as f64 * 0.06);
         forms::lathe(
             d,
             "paint",
             [at[0], at[1], z],
-            &[[0.105, 0.], [0.14, 0.26]],
-            &forms::Tints::Uniform(&Tint::Color(shade(color, 1. - i as f64 * 0.06))),
+            &[[0.125, 0.], [0.168, 0.27], [0.18, 0.275], [0.18, 0.31]],
+            &forms::Tints::Bands(&[
+                Tint::Color(own),
+                Tint::Color(own),
+                Tint::Color(shade(own, 1.25)),
+            ]),
             8,
             None,
         )?;
     }
     d.disc(
         "paint",
-        [at[0], at[1], at[2] + (nest - 1) as f64 * 0.07 + 0.2],
-        0.13,
+        [at[0], at[1], at[2] + (nest - 1) as f64 * 0.07 + 0.26],
+        0.165,
         [0., 0., 1.],
         shade(color, 0.3),
         8,
     )
 }
 
-/// A broom leaning back against whatever stands behind `foot`.
+/// A broom leaning back against whatever stands behind `foot`: a long handle and a wide head
+/// of bristles under its coloured stock.
 fn broom(d: &mut Fixture<'_, '_>, foot: V3, rng: &mut SeededRng) -> Result<(), String> {
     let [x, y, z] = foot;
-    let lean = rng.float(0.12, 0.2);
-    let slide = rng.float(-0.08, 0.08);
+    let lean = rng.float(0.14, 0.22);
+    let slide = rng.float(-0.1, 0.1);
     d.bar(
         "paint",
-        [x, y, z + 0.16],
-        [x + slide, y + lean, z + rng.float(1.25, 1.45)],
-        0.024,
-        srgb("#b89a62"),
+        [x, y, z + 0.2],
+        [x + slide, y + lean, z + rng.float(1.4, 1.6)],
+        0.032,
+        srgb("#c2a56c"),
     )?;
     d.cuboid(
         "paint",
-        [x - 0.14, y - 0.035, z],
-        [x + 0.14, y + 0.035, z + 0.17],
-        tone(rng, &["#b08a4a", "#7a8f6a", "#a55a48"]),
+        [x - 0.17, y - 0.04, z],
+        [x + 0.17, y + 0.04, z + 0.17],
+        tone(rng, &["#c9a85a", "#b89a55", "#a58a4a"]),
+        "d",
+    )?;
+    d.cuboid(
+        "paint",
+        [x - 0.18, y - 0.045, z + 0.17],
+        [x + 0.18, y + 0.045, z + 0.23],
+        tone(rng, &["#a8554a", "#557f66", "#71899a"]),
         "d",
     )
 }
 
-/// Goods hung on strings from a line at `ceiling` across `[x0, x1]`, in the plane `y`: packets
-/// one below another, carrier bags and cloths, none reaching more than `drop` down.
+/// A plastic stool standing at `at` (the centre of its foot).
+fn stool(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Result<(), String> {
+    let [x, y, z] = at;
+    let color = tone(rng, &["#a8554a", "#71899a", "#d6cba8", "#557f66"]);
+    let (seat, spread, high) = (0.15, 0.18, 0.44);
+    for (sx, sy) in [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)] {
+        d.bar(
+            "paint",
+            [x + sx * spread, y + sy * spread, z],
+            [x + sx * (seat - 0.02), y + sy * (seat - 0.02), z + high],
+            0.035,
+            shade(color, 0.85),
+        )?;
+    }
+    d.cuboid(
+        "paint",
+        [x - seat, y - seat, z + high],
+        [x + seat, y + seat, z + high + 0.035],
+        color,
+        "d",
+    )
+}
+
+/// Where goods hang: from a line at `ceiling` across `[x0, x1]`, in the plane `y`.
+#[derive(Clone, Copy)]
+pub(crate) struct Hang {
+    /// `[x0, x1, y, ceiling]`.
+    pub line: [f64; 4],
+    /// Only cords run this far below the line: the goods hang beneath whatever hides it (a
+    /// lintel, an awning's edge).
+    pub clear: f64,
+    /// No piece reaches further below the line than this.
+    pub drop: f64,
+    /// A way through, `[x0, x1, drop]`: over it nothing reaches further down than its own drop.
+    pub way: Option<[f64; 3]>,
+}
+
+/// Goods hung on cords from a line (see [`Hang`]), of varied length and shape: strings of
+/// packets with a printed band, bunches of carrier bags, tied sacks, cloths, brushes and
+/// cards of small wares. Each is a few faces towards the street (-Y).
 pub(crate) fn hung(
     d: &mut Fixture<'_, '_>,
-    [x0, x1, y, ceiling]: [f64; 4],
-    drop: f64,
+    hang: &Hang,
     rng: &mut SeededRng,
 ) -> Result<(), String> {
-    if [x0, x1, y, ceiling, drop]
+    let Hang {
+        line: [x0, x1, y, ceiling],
+        clear,
+        drop,
+        way,
+    } = *hang;
+    if [x0, x1, y, ceiling, drop, clear]
         .iter()
+        .chain(way.iter().flatten())
         .any(|v| !v.is_finite() || v.abs() > 1000.)
         || x1 - x0 > 40.
         || !(0.2..=5.).contains(&drop)
+        || !(0. ..=5.).contains(&clear)
     {
-        return Err("Hung goods require a bounded line and a drop of 0.2 to 5 meters.".into());
+        return Err(
+            "Hung goods require a bounded line, a drop of 0.2 to 5 meters and a clear length \
+             of 0 to 5."
+                .into(),
+        );
     }
     let cord = srgb("#8f8468");
+    let front = |d: &mut Fixture<'_, '_>, [a, b, low, high]: [f64; 4], depth: f64, tint: V3| {
+        d.face(
+            "paint",
+            &[
+                [a, y - depth, low],
+                [b, y - depth, low],
+                [b, y - depth, high],
+                [a, y - depth, high],
+            ],
+            [0., -1., 0.],
+            tint,
+        )
+    };
     let mut x = x0 + rng.float(0.02, 0.1);
     while x < x1 - 0.08 {
         d.mesh.spend_work(1)?;
-        let reach = drop * rng.float(0.55, 1.);
-        let lean = rng.float(-0.02, 0.02);
-        let sort = rng.integer(0, 9);
-        let width = match sort {
-            0..=5 => {
-                // A string of packets.
-                let (w, h) = (rng.float(0.1, 0.13), rng.float(0.14, 0.18));
-                let color = tone(rng, &LABELS);
-                let other = tone(rng, &LABELS);
-                let mut z = ceiling - 0.07;
-                let mut index = 0;
-                while z - h > ceiling - reach {
+        let limit = match way {
+            Some([a, b, low]) if x + 0.3 > a && x < b => low.min(drop),
+            _ => drop,
+        };
+        let sort = rng.integer(0, 12);
+        let start = clear + rng.float(0.02, 0.14);
+        let gap = rng.float(0.015, 0.06);
+        // The height its body may take.
+        let room = limit - start;
+        if room < 0.2 {
+            x += 0.24 + gap;
+            continue;
+        }
+        let top = ceiling - start;
+        let (width, hung_from) = match sort {
+            0..=2 => {
+                // A string of packets, each with a printed band.
+                let (w, h) = (rng.float(0.1, 0.14), rng.float(0.13, 0.18));
+                let (color, band) = (tone(rng, &LABELS), tone(rng, &LABELS));
+                let length = room * rng.float(0.5, 1.);
+                let mut z = top;
+                while z - h >= top - length.max(h) - 1e-9 {
                     let tilt = rng.float(-0.012, 0.012);
-                    d.sheet(
+                    d.face(
                         "paint",
                         &[
                             [x, y + tilt, z - h],
                             [x + w, y - tilt, z - h],
-                            [x + w, y - tilt + lean, z],
-                            [x, y + tilt + lean, z],
+                            [x + w, y - tilt, z],
+                            [x, y + tilt, z],
                         ],
-                        if index % 3 == 2 { other } else { color },
+                        [0., -1., 0.],
+                        color,
+                    )?;
+                    front(
+                        d,
+                        [x + 0.012, x + w - 0.012, z - h * 0.62, z - h * 0.2],
+                        0.016,
+                        band,
                     )?;
                     z -= h + 0.012;
-                    index += 1;
                 }
-                w
+                (w, top)
             }
-            6 | 7 => {
-                // A bunch of carrier bags or a hung bundle.
-                let (w, h) = (rng.float(0.2, 0.3), rng.float(0.26, 0.4).min(reach - 0.1));
-                let z = ceiling - (reach - h).max(0.1);
+            3..=5 => {
+                // A bunch of carrier bags, mostly pale: a knotted neck over a full body,
+                // creased down its middle.
+                let (w, h) = (rng.float(0.22, 0.32), rng.float(0.3, 0.48).min(room));
                 let color = tone(
                     rng,
-                    &["#c9534a", "#e6e0cf", "#5f86a8", "#d9b04a", "#e6e0cf"],
-                );
-                d.cuboid(
-                    "paint",
-                    [x, y - 0.05, z - h],
-                    [x + w, y + 0.05, z],
-                    color,
-                    "f",
-                )?;
-                d.face(
-                    "paint",
                     &[
-                        [x + w / 2. - 0.004, y, z],
-                        [x + w / 2. + 0.004, y, z],
-                        [x + w / 2. + 0.004, y, ceiling],
-                        [x + w / 2. - 0.004, y, ceiling],
+                        "#e6e0cf", "#e9e4d4", "#d9b04a", "#c9534a", "#9db4c4", "#e6e0cf",
                     ],
-                    [0., -1., 0.],
-                    cord,
-                )?;
-                w
+                );
+                let (cx, half, low) = (x + w / 2., w / 2., top - h);
+                for side in [-1., 1.] {
+                    d.face(
+                        "paint",
+                        &[
+                            [cx, y - 0.07, low],
+                            [cx + side * half * 0.8, y, low + h * 0.04],
+                            [cx + side * half, y, low + h * 0.42],
+                            [cx + side * half * 0.22, y, top],
+                            [cx, y - 0.02, top],
+                        ],
+                        [side * 0.5, -1., 0.],
+                        shade(color, 1. - (side + 1.) * 0.06),
+                    )?;
+                }
+                (w, top)
             }
-            _ => {
-                // A cloth or a garment over the line.
-                let (w, h) = (rng.float(0.26, 0.4), reach.max(0.3));
+            6 | 7 => {
+                // A tied sack or a net of balls, banded.
+                let r = rng.float(0.07, 0.11);
+                let h = rng.float(0.28, 0.5).min(room);
+                let (color, band) = (tone(rng, &CLOTHS), tone(rng, &LABELS));
+                arc(
+                    d,
+                    [x + r, y, top - h],
+                    &[[r * 0.4, 0.], [r, h * 0.2], [r, h * 0.6], [r * 0.18, h]],
+                    &[color, band, color],
+                    3,
+                )?;
+                (r * 2., top)
+            }
+            8 | 9 => {
+                // A long cloth or a garment, folded over.
+                let (w, h) = (rng.float(0.26, 0.4), room * rng.float(0.7, 1.));
+                let color = tone(rng, &CLOTHS);
+                let lean = rng.float(-0.02, 0.02);
                 d.sheet(
                     "paint",
                     &[
-                        [x, y + lean, ceiling - h],
-                        [x + w, y + lean, ceiling - h],
-                        [x + w, y, ceiling - 0.02],
-                        [x, y, ceiling - 0.02],
+                        [x, y + lean, top - h],
+                        [x + w, y + lean, top - h],
+                        [x + w, y, top],
+                        [x, y, top],
                     ],
-                    tone(rng, &CLOTHS),
+                    color,
                 )?;
-                w
+                front(
+                    d,
+                    [x + w * 0.52, x + w, top - h * 0.8, top],
+                    0.012,
+                    shade(color, 0.8),
+                )?;
+                (w, top)
+            }
+            10 => {
+                // A brush or a duster hung by its handle.
+                let h = rng.float(0.4, 0.62).min(room);
+                let w = rng.float(0.16, 0.24);
+                let cx = x + w / 2.;
+                d.bar(
+                    "paint",
+                    [cx, y, top - h + 0.1],
+                    [cx, y, top],
+                    0.026,
+                    srgb("#b89a62"),
+                )?;
+                d.cuboid(
+                    "paint",
+                    [x, y - 0.035, top - h],
+                    [x + w, y + 0.035, top - h + 0.11],
+                    tone(rng, &["#b08a4a", "#7a8f6a", "#a55a48", "#d6cba8"]),
+                    "f",
+                )?;
+                (w, top)
+            }
+            _ => {
+                // A card of small wares in rows.
+                let (w, h) = (rng.float(0.2, 0.3), rng.float(0.35, 0.6).min(room));
+                let (first, second) = (tone(rng, &LABELS), tone(rng, &LABELS));
+                front(d, [x, x + w, top - h, top], 0., srgb("#d9d2bd"))?;
+                let rows = ((h - 0.05) / 0.11) as usize;
+                for row in 0..rows {
+                    let z = top - 0.05 - row as f64 * 0.11;
+                    front(
+                        d,
+                        [x + 0.025, x + w - 0.025, z - 0.075, z],
+                        0.014,
+                        if row % 2 == 0 { first } else { second },
+                    )?;
+                }
+                (w, top)
             }
         };
-        x += width + rng.float(0.015, 0.06);
+        if ceiling - hung_from > 0.01 {
+            let cx = x + width / 2.;
+            front(d, [cx - 0.004, cx + 0.004, hung_from, ceiling], 0., cord)?;
+        }
+        x += width + gap;
     }
     Ok(())
 }
@@ -883,7 +1079,7 @@ fn shelf_wares(z: f64, height: f64) -> &'static [Ware] {
 }
 
 /// A provisions shop fitted to any room, packed: shelf banks to the ceiling along the back
-/// (one per 3 m) and both side walls, a counter where there is room, goods hung across it,
+/// (one per 3 m) and both side walls, a counter where there is room, a display rack,
 /// crates and cartons stacked on the floor either side of the way in, buckets, brooms and a
 /// stool, and up to three tube lights (slot `tube-light`). Goods are low-detail (see above).
 pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
@@ -965,14 +1161,8 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
         )?;
         fittings::stool(d, [w - 2.4, depth - 1.75, 0.], shade(wood, 1.15))?;
     }
-    if w >= 2.2 && h >= 2.4 {
-        hung(
-            d,
-            [0.5, w - 0.5, (depth * 0.42).min(1.5), h - 0.02],
-            (h - 1.95).clamp(0.3, 0.8),
-            &mut room.stream("hung-goods")?,
-        )?;
-    }
+    // Goods hang across the opening, which is its host's to draw (see [`hung`]): a second line
+    // under the ceiling would show as a band over an awning.
     let tubes = ((w / 1.8).round() as usize).clamp(1, 3);
     for i in 0..tubes {
         tube_light(
@@ -1073,10 +1263,11 @@ pub(crate) enum Street {
 }
 
 /// Street stock along a frontage of `width`, in the wall's frame (x along it from 0, y out
-/// from the wall, the pavement at z = 0), within a metre of the wall. A `Shop` leaves the way
-/// in clear at its middle: stacked plastic crates and cartons either side, a sack truck by the
-/// left jamb, wire racks packed with goods at the pavement edge on the right, buckets and
-/// brooms. The other kinds are a heap of crates, cartons or both across the whole width.
+/// from the wall, the pavement at z = 0), within 1.1 m of the wall. A `Shop` leaves the way
+/// in clear at its middle: stacked plastic crates and cartons either side behind one front row
+/// of crates, a sack truck by the left jamb, wire racks packed with goods at the pavement edge
+/// on the right, and buckets, a stool and brooms by the way in. The other kinds are a heap of
+/// crates, cartons or both across the whole width.
 pub(crate) fn street_fitted(
     d: &mut Fixture<'_, '_>,
     kit: &Kit,
@@ -1146,13 +1337,27 @@ pub(crate) fn street_fitted(
             reach,
             &mut rng,
         )?;
-        if !behind && rng.chance(0.5) {
-            // A second, lower row in front: a heap's is half as high, a shop's a single piece.
-            let low = if shop {
-                rng.float(0.34, 0.45)
-            } else {
-                rng.float(0.35, 0.7)
-            };
+        if shop && !behind {
+            // A shop's front row is one line of plastic crates, one or two high, with a
+            // carton here and there.
+            if rng.chance(0.9) {
+                let low = rng.float(0.3, 0.68);
+                pile(
+                    &mut on(d, facing(x, (out + 0.4).min(1.))?),
+                    if rng.chance(0.85) {
+                        Pile::Crates
+                    } else {
+                        Pile::Cartons
+                    },
+                    [0.; 3],
+                    stood.min(across),
+                    low,
+                    &mut rng,
+                )?;
+            }
+        } else if !behind && rng.chance(0.5) {
+            // A heap's second row in front is half as high.
+            let low = rng.float(0.35, 0.7);
             pile(
                 &mut on(d, facing(x + rng.float(0., 0.08), (out + 0.4).min(1.))?),
                 if sort == Pile::Crates && kind != Street::Crates {
@@ -1166,12 +1371,12 @@ pub(crate) fn street_fitted(
                 &mut rng,
             )?;
         }
-        x += stood + rng.float(0.02, 0.1);
+        x += stood + rng.float(0.02, if shop { 0.05 } else { 0.1 });
     }
     for i in 0..racks {
         let mut rack = on(
             d,
-            facing(rack_start + i as f64 * 0.9, 0.97)?.into_part(&format!("rack-{i}"))?,
+            facing(rack_start + i as f64 * 0.9, 0.93)?.into_part(&format!("rack-{i}"))?,
         );
         wire_rack(
             &mut rack,
@@ -1183,13 +1388,28 @@ pub(crate) fn street_fitted(
         if rng.chance(0.6) {
             hung(
                 &mut rack,
-                [0.04, 0.78, -0.03, 1.6],
-                0.5,
+                &Hang {
+                    line: [0.04, 0.78, -0.03, 1.6],
+                    clear: 0.,
+                    drop: 0.6,
+                    way: None,
+                },
                 &mut kit.rng(&format!("{key}/rack-hung-{i}"))?,
             )?;
         }
     }
-    if shop && width >= 2.4 {
+    if shop && way1 < width {
+        // By the way in: buckets and a stool at its sides, brooms leaning on the stock.
+        bucket(&mut on(d, facing(way0 + 0.2, 0.86)?), [0.; 3], &mut rng)?;
+        if rng.chance(0.6) {
+            bucket(&mut on(d, facing(way0 + 0.22, 0.44)?), [0.; 3], &mut rng)?;
+        }
+        stool(&mut on(d, facing(way1 - 0.2, 0.6)?), [0.; 3], &mut rng)?;
+        broom(&mut on(d, facing(way0 - 0.2, 1.04)?), [0.; 3], &mut rng)?;
+        if racks == 0 || way1 + 0.5 < rack_start {
+            broom(&mut on(d, facing(way1 + 0.25, 1.04)?), [0.; 3], &mut rng)?;
+        }
+    } else if shop && width >= 2.4 {
         let at = if racks > 0 {
             rack_start - 0.2
         } else {

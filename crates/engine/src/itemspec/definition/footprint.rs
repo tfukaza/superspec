@@ -45,6 +45,10 @@ pub(super) struct Edge {
     /// facet does: what a moulding mitres by.
     pub miters: [f64; 2],
     pub facet_miters: [f64; 2],
+    /// The plan turn at the end corner in degrees (positive at a convex corner), and the radius
+    /// of the arc that touches both edges where its cut starts and ends (0 when not cut).
+    pub turn: f64,
+    pub radius: f64,
 }
 
 /// One flat side of a cut corner.
@@ -141,6 +145,15 @@ pub(super) fn edges(
             } else {
                 arc(end, next, direction, onward, round)
             };
+            let turn = atan2(
+                cross(direction, onward),
+                direction[0] * onward[0] + direction[1] * onward[1],
+            );
+            let radius = if after > 0. {
+                chamfer_length / (2. * sin(turn / 2.))
+            } else {
+                0.
+            };
             let facet = facet.min(facets.len().saturating_sub(1));
             let read = facets.get(facet).copied().unwrap_or(Facet {
                 start: end,
@@ -164,6 +177,8 @@ pub(super) fn edges(
                 facets,
                 miters: [0.; 2],
                 facet_miters: [0.; 2],
+                turn: turn * (180. / std::f64::consts::PI),
+                radius,
             }
         })
         .collect();
@@ -390,6 +405,8 @@ pub(super) fn locals(name: &str, edges: &[Edge], index: usize) -> Vec<(String, f
         ("miter_end", edge.miters[1]),
         ("cmiter_start", edge.facet_miters[0]),
         ("cmiter_end", edge.facet_miters[1]),
+        ("turn", edge.turn),
+        ("cradius", edge.radius),
         ("min_x", bounds[0]),
         ("min_y", bounds[1]),
         ("max_x", bounds[2]),

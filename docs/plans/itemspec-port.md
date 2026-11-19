@@ -238,6 +238,42 @@ leaves the seeded result as it was):
   `fixturesPlans` rows for the back edges a plan leaves a side wall bare.
 - **Camera.** A plan's `"/view"` key (`azimuth`, `elevation`, `fov` in degrees, `distance` and target
   `height` in metres) replaces the `reference` view of `tests/item-facade-browser.mjs`.
+- **Shop goods.** The fitted shop's wares are two-tone at the same low detail: tins with a band, jars
+  with a label under what they hold, bottles with a label band and a cap, boxes and bags with a printed
+  panel. Goods hung across an open shop's front (`kowloon/shop-room` `hangClear`, `hangDrop`) are strings
+  of packets, bunches of carrier bags, tied sacks, cloths, brushes and cards of small wares on cords of
+  varied length; a shopfront with an awning passes the awning's reach as `hangClear`, so they hang
+  beneath its edge, and the way in at the middle keeps 2 m of headroom. A shop's street stock has one
+  front row of plastic crates, and buckets, a stool and brooms stand by the way in.
+- **Gates.** `gateBars` widens a gate's lattice bars (0.5 to 3 times) and `gateBacking` closes sheet
+  steel leaves behind it (the lattice's paint times this factor; 0 shows the timber doors), so a
+  galvanised gate reads grey from across the street (`ground::Plan::gate_bars`, `gate_backing`).
+- **Doors.** `doorPanels` (1 to 4; 0 leaves the door's three) is the number of pressed panels of each
+  named leaf (`doors::Design::panels`). `backDoorColor` paints a back side's service door apart from
+  `doorColor`, and `backDoorLouvres: false` leaves its leaf plain. An unbaked seeded leaf keeps its
+  paint (its surface receiver's paint tints it, as a metal receiver's does). Cartons behind a storeroom
+  window (`storagePlans`) stand under half its height, in the room's shade.
+- **Cloth.** `kowloon/sagging-tarp` (`items/cloth.rs`) is a sheet hung between wall eyelets and pole tops:
+  every edge hangs between its fixings by `sag`, the field bellies, pleats run out from the front fixings,
+  ropes tie it and a stay ties each post back to the wall. With `frame` it is a taut awning on a light
+  frame, with `stripes` bands and a `valance` whose hem is cut in `scallops`. `kowloon-shopfront` uses it
+  for its `tarp` and `striped` awnings (`awningSag`, `awningStripes`; a stripe is 0.18 m wide unless
+  counted). `kowloon/sheet-canopy` is a window hood of lapped corrugated sheets, each with its own seeded
+  fall, rusted from the drip edge; `kowloon-floor`'s `canopy` projects it 0.5 m.
+- **Wires and hardware.** `kowloon/cable` (`items/hardware.rs`) strings a bundle of `count` cables along
+  a wall, each hanging by `sag` between clips; `out` takes its far end off the wall to a sign's pole or
+  an air conditioner, and `corner` with `cornerRadius` clips it round the end of the wall and on along
+  the next. A side places `cablePlan` rows `[x0, z0, x1, z1, sag, out, count, corner radius, boxes]`
+  (`kowloon-building` `cablePlans`, one list per edge), or `cables` seeded ones above its string courses
+  where no plan is given, the first rounding a street corner. `kowloon/junction-box` stands alone; a
+  cable's `boxes` adds them at its fixings. `kowloon/downpipe` `clips` (a side's `pipeClips`) bolts
+  two-eared clips round a drain; `meterPlans` (`[x, z, meters]` per edge) places meters where the seed
+  would not. A horizontal `kowloon/board-sign` hangs by two straps from one pole with two stays, and
+  every sign fixing is a plate with bolts.
+- **Roof.** `roofRailPlan` gives each edge's parapet its share of rail (0 for none) in place of the
+  seeded street rule. `roofClutter` (0 to 1) scales `kowloon/roof-clutter`: vent stubs with cowls or
+  goosenecks along `roofVentSide`, pipes on sleepers along `roofPipeSide`, pots along `roofPotSide`, and
+  a cable from the first aerial to the stair hut.
 
 ItemSpec itself gained two things for this: a choice control reads as its index among its choices in
 expressions (so a `when` can test a kind), and an item may have 128 controls and a placed item a million
@@ -296,6 +332,17 @@ The building's look is recipes and layers that any item can use; none is tied to
 - **Limits.** The wall slot is at its eight layers. `kowloon/tarp`'s mesh has a triangle without a direction, which a
   bound receiver refuses, so awning cloth stays unbound (plain tints). Lettering stays the shipped glyph sheet: baked
   at 160 texels a meter its cutout breaks up. Notices are baked at the wall's density, so their print is soft.
+- **Cutouts and lettering (later round).** A program's cutout (`alphaCutout` as its opacity) is now drawn by both
+  looks: the shader record states `alphaCutoff`, the per-pixel look tests it, and a bake keeps the opacity in its base
+  colour map's alpha (`AtlasProgramLayout.cutout`). Sign lettering is therefore bound to `kowloon-sign-lettering` and
+  baked (800 texels a meter). Its earlier smears were the recipe's: it read the glyph sheet upside down, and its wear
+  was measured on world x + y, which is constant across a sign turned 45 degrees; the sign, poster, air conditioner,
+  ink and dirt recipes read `surface` instead.
+- **Repairs.** `kowloon-repairs` draws hard-edged repair panels and crisp peel patches only inside frames the owner
+  draws (`repair`/`repair-inner`, `peel`/`peel-inner`: an outline and the same outline 5 cm in, which together say
+  which side a texel is on). Floors and ground floors seed a few per storey; the paint coat's own peeling and lattice
+  patches are off. The walls' streaks are one layer following a list (drip, eave, ledge, sill) and a fringe under the
+  parapet's `coping`.
 - **Edges.** `kowloon-edge-ink` draws every exposed edge of a receiver (convex creases and open rims) as a worn pale
   arris with a narrow, broken line of grime beside it, heavier on upright edges and in inside corners, and rounds
   convex creases over in shading. It took the place of the all-over dirt on walls: plaster is calm, and its marks are
@@ -323,8 +370,13 @@ receiver, about 21 per meter on a 12 m wall.
   project places no vertex colors, so their look comes from the bound project materials.
   Atlas-textured slots (lettering, posters, shop timber) need atlas materials bound to show
   their art.
-- A feature reaches only the receivers of its own top-level part: an AC unit's drip stains the
-  wall of the floor it is in, but a duct run's would not reach the floors below it.
+- A feature reaches the receivers of its own top-level part unless it is authored with a wider
+  `reach` (`item` or `scene`, bounded by `within` meters; see the ItemSpec definition README):
+  generated features (`top`, `sill`) cannot be flagged, so a feature is authored along them.
+- A layer measures to the nearest feature of the names it follows among all its receiver was
+  given: on a building side every storey's `top` reaches every wall, so under a parapet's
+  coping the streaks from its `top` end where the storey's `top` at its foot becomes nearer
+  (halfway down). A layer for one edge should follow a name only that edge has (`eave`).
 - Back doors stand in front of the ground storey's wall, not in an opening of it.
 - Sub-item decals and pattern anchors are not carried into the parent yet.
 - Every sub-item entry is resolved against one root (the project, or the top definition's

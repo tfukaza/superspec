@@ -98,11 +98,11 @@ export function buildMaterials({ weathering = true } = {}) {
 const anchoredConcrete = "kowloon-concrete-anchored.material.ts";
 /** The weathering layer recipes the Kowloon items name, and the base they go over. */
 export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-runoff.material.ts", "kowloon-grime-streaks.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts",
-  "kowloon-wall-dirt.material.ts", "kowloon-soot-band.material.ts", "kowloon-notices.material.ts", "kowloon-rust-run.material.ts",
+  "kowloon-wall-dirt.material.ts", "kowloon-soot-band.material.ts", "kowloon-notices.material.ts", "kowloon-rust-run.material.ts", "kowloon-repairs.material.ts",
   // The fixtures' own recipes: glazing, wall tiles, air conditioner casings and awning canvas; the street's paving and asphalt.
   "kowloon-window-glass.material.ts", "kowloon-wall-tile.material.ts", "kowloon-aircon.material.ts", "kowloon-canvas.material.ts",
   "kowloon-paving.material.ts", "kowloon-asphalt.material.ts", "kowloon-poster-print.material.ts",
-  "kowloon-concrete-edges.material.ts", "kowloon-edge-ink.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts"];
+  "kowloon-concrete-edges.material.ts", "kowloon-edge-ink.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts", "kowloon-tube-light.material.ts"];
 function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
@@ -127,7 +127,10 @@ function facadeMaterials() {
     { id: "poster-print", entry: "kowloon-poster-print.material.ts", parameters: {}, seed: 7, meshes: [] },
     // Signs: the painted ground, worn and stained, and its lettering with paint lost from the strokes (both tinted).
     { id: "sign-board", entry: "kowloon-sign-board.material.ts", parameters: { flaking: 0.8, fading: 0.65, grime: 0.75, rust: 0.7 }, seed: 7, meshes: [] },
-    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: {}, seed: 7, meshes: [] },
+    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.3, fading: 0.3 }, seed: 7, meshes: [] },
+    // Lit tubes in the shops, and a shop's concrete floor: grey, lightly soiled, never dark.
+    { id: "tube-light", entry: "kowloon-tube-light.material.ts", parameters: {}, seed: 7, meshes: [] },
+    { id: "shop-floor", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, fractures: 0.3, stone: [0.62, 0.61, 0.58], variation: 0.04, grime: 0.25, spots: 0.25 }, seed: 4, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.7, surfaceRust: 0.3, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
     { id: "aged-metal", entry: steel, parameters: { ...plain, substrate: [0.72, 0.72, 0.7], metalness: 0.35, roughness: 0.6, edgeRust: 0.75, surfaceRust: 0.3, rainRust: 0.7 }, seed: 5, meshes: [] },
@@ -137,7 +140,7 @@ function facadeMaterials() {
     // (The pavement item lays its own stones, so the recipe's flags are made too large to show: one stone a receiver.)
     { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.52, 0.51, 0.48], variation: 0.05, grime: 1 }, seed: 7, meshes: [] },
     { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
-    { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.2, wearing: 0.12, stains: 0.6 }, seed: 7, meshes: [] },
+    { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.1, wearing: 0.12, stains: 0.12 }, seed: 7, meshes: [] },
     { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
   ];
 }
@@ -178,10 +181,17 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     for (const [name, text] of Object.entries(model.definitions)) modules[name] = text;
     for (const name of kowloonLayerModules) modules[name] ??= example(name);
     mappings["render-paint"] = "anchored";
+    // A round corner's wall (`kowloon-corner`, slot `wall-round`) is the same render read by the wall's own texture
+    // coordinates: the distance round the building's outline and the height, in meters, which the anchored walls on
+    // either side of the corner measure too, so the pattern runs through it.
+    mappings["render-paint-round"] = "uv";
     // The signs' own slots stay plain, as the shipped catalog materials: the glyph atlas and the board.
     for (const name of ["lettering.png", "signboard.png", "grime-streaks.png"]) assets[`superspec-material:${name}`] = readFileSync(resolve(here, "../../../assets/materials", name));
     materials.push(...facadeMaterials());
-    scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots });
+    materials.push({ ...materials.find(material => material.id === "render-paint"), id: "render-paint-round", meshes: [] });
+    scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots,
+      // Small printed surfaces are baked finer than the walls (texels a meter): lettering strokes and poster print.
+      slotDensities: { lettering: 800, posters: 640 } });
   }
   let batchList;
   if (batches && room) {
@@ -203,10 +213,11 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
       assets["lane.glb"] = writeGlb([lawnGround(new Mesh("lawn", [0.3, 0.48, 0.14]), lane.ground)]);
       scene.push({ id: "lane", kind: "glb", name: "lane.glb" });
     }
+    // The road: a thin slab with a rounded rim, so its open edge does not read as a thick floating block.
     const paving = { format: "itemspec", version: 2, id: "lane-paving",
-      parts: [{ id: "paving", generator: { kind: "box", size: [13, 15, 0.2] }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
+      parts: [{ id: "paving", generator: { kind: "box", size: [13, 15, 0.06], bevel: 0.025, bevelSegments: 2 }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
     modules["items/lane-paving.item.json"] = JSON.stringify(paving, null, 2) + "\n";
-    scene.push({ id: "paving", kind: "item", entry: "items/lane-paving.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-13.6, -9.5, -0.2]], slots: { concrete: withFacade ? "asphalt" : "concrete-slab" } });
+    scene.push({ id: "paving", kind: "item", entry: "items/lane-paving.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-13.6, -9.5, -0.06]], slots: { concrete: withFacade ? "asphalt" : "concrete-slab" } });
     materials.push(...(grass ? lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0") })) : []),
       ...treeMaterials.map(material => ({ ...material, seed: 7 })));
     batchList = [...(batchList ?? []), ...lane.batches.filter(batch => grass || batch.objectId !== "lane")];

@@ -8,7 +8,7 @@
 // open rim has no face beyond it to turn to). Nothing is read but the receiver's own edges and position.
 import {
   defineLayer, param, vec2, vec3, add, sub, mul, div, mix, abs, max, min, smoothstep, dot, valueNoise, seed,
-  creaseDistance, creaseNormal, creaseTangent, world, normal, footprint,
+  creaseDistance, creaseNormal, creaseTangent, surface, normal, footprint,
 } from "@superspec/material/v1";
 
 const inkColor = param.vec3({ default: vec3(0.15, 0.135, 0.115), range: [0, 1], label: "Grime line colour" });
@@ -28,7 +28,7 @@ const inside = min(creaseDistance("concave", edgeAngle, limit), creaseDistance("
 const along = creaseTangent("exposed", edgeAngle, limit);
 
 // The line's width and weight wander along it; in places it breaks off.
-const at = vec2(add(world.x, world.y), world.z);
+const at = vec2(surface.x, surface.y);
 const wide = mul(inkWidth, add(0.55, mul(0.9, valueNoise(mul(at, 2.7), seed("ink-width")))));
 const broken = sub(1, mul(breakup, smoothstep(0.42, 0.72, valueNoise(add(mul(at, 5.3), vec2(3.1, 7.7)), seed("ink-breaks")))));
 const grain = add(0.75, mul(0.25, valueNoise(mul(at, 38), seed("ink-grain"))));

@@ -1090,6 +1090,8 @@ impl Route {
                     closed: true,
                     normal: scale(station.tangent, sign),
                     width,
+                    reach: Default::default(),
+                    within: 0.,
                 }
             };
         let start = self.path.at(0.);
@@ -1137,6 +1139,8 @@ impl Route {
                     closed: true,
                     normal: scale(*direction, -1.),
                     width: 0.,
+                    reach: Default::default(),
+                    within: 0.,
                 });
             }
         }

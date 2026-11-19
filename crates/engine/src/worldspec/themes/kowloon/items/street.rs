@@ -28,7 +28,9 @@ use superspec_types::rng::SeededRng;
 /// `herbalist`, `provisions`), `width` (m, 1.8–40, 3), `height` (m from the floor to the
 /// opening's head, 2–10, 2.7), `depth` (m, 2.4–20, 3.1), `floor` (m of threshold above the
 /// anchor, 0.03), `storey` (m of the ground storey, at least 0.5 above the head, 3.35),
-/// `shutter` (#758077), `seed`.
+/// `shutter` (#758077), `hanging` (goods hung across the opening, true), `hangClear` and
+/// `hangDrop` (m below the head where they start and end, so they hang under an awning's
+/// edge), `fade`, `seed`.
 pub(super) fn shop_room(
     name: &str,
     values: &Values,
@@ -54,6 +56,15 @@ pub(super) fn shop_room(
     let shutter = a.color("shutter", "#758077")?;
     // `hanging`: goods hung on strings across the whole opening, under its head (true).
     let hanging = a.boolean("hanging", true)?;
+    // `hangClear`: m below the head that only the cords cross, so the goods hang beneath an
+    // awning's edge (0–3, 0). `hangDrop`: m below the head the longest reach (0.4–4; by
+    // default to 1.05 m above the floor at most, 0.8 m below the clear length). Over the way
+    // in at the middle of an opening 3 m wide or more they keep 2 m of headroom.
+    let hang_clear = a.bounded("hangClear", 0., 0. ..=3.)?;
+    let hang_drop = a.optional_number("hangDrop")?;
+    if hang_drop.is_some_and(|drop| !(0.4..=4.).contains(&drop)) {
+        return Err(format!("{name}: hangDrop must lie in 0.4..4."));
+    }
     // `fade`: how much of their saturation the stock's colours have lost (0–1, 0.5).
     let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
     let key = a.seed()?;
@@ -121,10 +132,20 @@ pub(super) fn shop_room(
             let inside = pen("shop-hanging")?
                 .moved([-width / 2., 0., floor])?
                 .facing([0.; 3], [1., 0., 0.], [0., -1., 0.])?;
+            // The line is 0.2 m under the head, behind the raised shutter.
+            let headroom = (height - 2.).clamp(0.3, 0.95);
+            let clear = (hang_clear - 0.2).max(0.);
+            let drop = hang_drop
+                .map_or((clear + 0.8).min(height - 1.25), |drop| drop - 0.2)
+                .max(headroom);
             shop::provisions::hung(
                 &mut on(mesh, inside)?,
-                [0.2, width - 0.2, 0.16, height - 0.2],
-                (height - 2.).clamp(0.3, 0.95),
+                &shop::provisions::Hang {
+                    line: [0.2, width - 0.2, 0.16, height - 0.2],
+                    clear: clear.min(drop),
+                    drop,
+                    way: (width >= 3.).then_some([width / 2. - 0.6, width / 2. + 0.6, headroom]),
+                },
                 &mut kit.rng(&format!("{key}/front-goods"))?,
             )?;
         }
@@ -229,8 +250,9 @@ fn as_stock(mut output: NativeOutput, kept: &[&str], fade: f64) -> NativeOutput 
 
 /// `kowloon/street-stock`: stock on the pavement in front of a wall, low-detail and coloured
 /// per vertex (slot `stock`). `kind` `shop` (the default) is a shop's display: stacked plastic
-/// crates and cartons either side of the way in, a sack truck by the left jamb, wire racks
-/// packed with goods at the pavement edge on the right, buckets and brooms; `crates`,
+/// crates and cartons either side of the way in behind a front row of crates, a sack truck by
+/// the left jamb, wire racks packed with goods at the pavement edge on the right, and buckets,
+/// a stool and brooms by the way in; `crates`,
 /// `cartons` and `mixed` are a heap of those across the whole width. Anchor: bottom-centre of
 /// the frontage on the wall plane; the stock stands within 1.1 m of the wall. Parameters:
 /// `width` (m of frontage, 0.6–40, 3), `kind`, `fade` (of the colours' saturation, 0–1, 0.5),
@@ -396,6 +418,159 @@ pub(super) fn pavement(
                     "d",
                 )?;
             }
+        }
+        Ok(())
+    })
+}
+
+/// A profile of `[reach, z]` points swept about the upright axis at (0, `radius`) from one
+/// angle to another in `pieces` chords: reach is the distance from the axis, the angle is
+/// measured from -Y toward +X, and the profile's visible side is on the right of the way it
+/// runs (an outer face is listed from its foot to its head). Faces that stand turn their
+/// normals with the sweep; `caps` closes both ends of a convex profile.
+#[allow(clippy::too_many_arguments)]
+fn swept(
+    d: &mut Fixture<'_, '_>,
+    slot: &str,
+    radius: f64,
+    profile: &[[f64; 2]],
+    angles: [f64; 2],
+    pieces: usize,
+    caps: bool,
+    tint: V3,
+) -> Result<(), String> {
+    use superspec_geometry::math::{cos, hypot, sin};
+    let repeat = d.repeat(slot);
+    let at = |[reach, z]: [f64; 2], angle: f64| -> V3 {
+        [reach * sin(angle), radius - reach * cos(angle), z]
+    };
+    let step = |k: usize| angles[0] + (angles[1] - angles[0]) * k as f64 / pieces as f64;
+    for edge in profile.windows(2) {
+        let (p, q) = (edge[0], edge[1]);
+        let size = hypot(q[0] - p[0], q[1] - p[1]);
+        let across = [(q[1] - p[1]) / size, (p[0] - q[0]) / size];
+        let normal =
+            |angle: f64| -> V3 { [across[0] * sin(angle), -across[0] * cos(angle), across[1]] };
+        for k in 0..pieces {
+            let (a0, a1) = (step(k), step(k + 1));
+            d.pen.face(
+                d.mesh,
+                slot,
+                &[at(p, a0), at(p, a1), at(q, a1), at(q, a0)],
+                normal((a0 + a1) / 2.),
+                &Tint::Color(tint),
+                repeat,
+                None,
+                Some(&[normal(a0), normal(a1), normal(a1), normal(a0)]),
+            )?;
+        }
+    }
+    if caps {
+        for (angle, facing) in [(angles[0], -1.), (angles[1], 1.)] {
+            let points: Vec<V3> = profile.iter().map(|p| at(*p, angle)).collect();
+            d.pen.face(
+                d.mesh,
+                slot,
+                &points,
+                [cos(angle) * facing, sin(angle) * facing, 0.],
+                &Tint::Color(tint),
+                repeat,
+                None,
+                None,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// `kowloon/pavement-corner`: the pavement round a rounded street corner, between the
+/// pavements of its two streets: rings of paving stones that carry their rows on and an arc of
+/// kerb stones, concentric with the corner. Anchor: the wall's foot where its round starts;
+/// the wall leaves along +X and turns left by `turn` about an upright axis `radius` behind it
+/// (+Y), and the pavement reaches `depth` outside it, its top at z = 0 and the road `height`
+/// below. Slots: `paving`, `kerb`. Parameters: `radius` (m of the wall's round, 0.05–20,
+/// 0.55), `turn` (degrees, 5–175, 90), `depth` (m, 0.4–10, 1.45), `height` (m of kerb above
+/// the road, 0.02–0.5, 0.15), `stone` (m, paving stone size, 0.2–2, 0.55), `segments` (chords
+/// of the whole turn, 4–48, 12), `color` (#a8a394), `seed` (stone shades).
+pub(super) fn pavement_corner(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let radius = a.bounded("radius", 0.55, 0.05..=20.)?;
+    let turn = a.bounded("turn", 90., 5. ..=175.)?.to_radians();
+    let depth = a.bounded("depth", 1.45, 0.4..=10.)?;
+    let height = a.bounded("height", 0.15, 0.02..=0.5)?;
+    let stone = a.bounded("stone", 0.55, 0.2..=2.)?;
+    let segments = a.integer("segments", 12, 4..=48)?;
+    let color = a.color("color", "#a8a394")?;
+    let mut rng = a.rng()?;
+    a.finish()?;
+    let (kerb, joint) = (0.14, 0.006);
+    // How many chords a span of the turn takes, so every arc is as round as the whole.
+    let chords = |span: f64| ((span / turn * segments as f64).ceil() as usize).max(1);
+    draw(cancelled, |mesh| {
+        let d = &mut on(mesh, room_pen("pavement-corner", [0.; 3])?)?;
+        // The bed shows in the joints between the stones.
+        swept(
+            d,
+            "paving",
+            radius,
+            &[[radius + depth - kerb, -0.035], [radius * 0.9, -0.035]],
+            [0., turn],
+            segments,
+            false,
+            shade(color, 0.55),
+        )?;
+        // The rows of the straight pavements run on as rings, each of its own count of stones.
+        let rows = ((depth - kerb) / stone).round().max(1.) as usize;
+        let row = (depth - kerb) / rows as f64;
+        for r in 0..rows {
+            let (inner, outer) = (radius + r as f64 * row, radius + (r + 1) as f64 * row);
+            let middle = (inner + outer) / 2.;
+            let count = (turn * middle / stone).round().max(1.) as usize;
+            let (span, gap) = (turn / count as f64, joint / 2. / middle);
+            for c in 0..count {
+                let sink = rng.float(0., 0.006);
+                let tint = shade(color, rng.float(0.7, 1.08));
+                let (low, high) = (inner + joint / 2., outer - joint / 2.);
+                swept(
+                    d,
+                    "paving",
+                    radius,
+                    &[[high, -0.04], [high, -sink], [low, -sink], [low, -0.04]],
+                    [c as f64 * span + gap, (c + 1) as f64 * span - gap],
+                    chords(span),
+                    true,
+                    tint,
+                )?;
+            }
+        }
+        // Kerb stones with their road-side arris chamfered, as the straight kerb's.
+        let edge = radius + depth;
+        let stones = (turn * edge / (stone * 1.6)).round().max(1.) as usize;
+        let (span, gap) = (turn / stones as f64, joint / 2. / edge);
+        let (inner, top) = (edge - kerb + joint / 2., -0.012);
+        let arris = 0.02_f64.min((height + top) * 0.4);
+        for i in 0..stones {
+            let tint = shade(color, rng.float(0.62, 0.92));
+            swept(
+                d,
+                "kerb",
+                radius,
+                &[
+                    [edge, -height],
+                    [edge, top - arris],
+                    [edge - arris, top],
+                    [inner, top],
+                    [inner, -height],
+                ],
+                [i as f64 * span + gap, (i + 1) as f64 * span - gap],
+                chords(span),
+                true,
+                tint,
+            )?;
         }
         Ok(())
     })

@@ -681,6 +681,8 @@ export class SceneBaker {
     material.normalMap = standIn.data;
     material.roughnessMap = material.metalnessMap = standIn.data;
     if (program.attachments.includes("emissive")) { material.emissiveMap = standIn.data; material.emissive.set(0xffffff); }
+    // A cutout program's opacity is in its base color map's alpha: the look is drawn where it reaches the cutoff.
+    if (program.cutout !== undefined) { material.alphaTest = program.cutout; material.alphaToCoverage = true; }
     // Arguments computed from parameters alone are evaluated in the material's shader, from the same uniform objects
     // the program's materials share: they follow a parameter with no bake.
     const parameters = program.liveParameters;

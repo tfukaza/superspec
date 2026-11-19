@@ -16,13 +16,17 @@
     "outletX": {"type": "number", "default": 0.45, "min": 0, "max": 40, "unit": "m"},
     "ledge": {"type": "boolean", "default": false},
     "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
-    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4}
+    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
+    "arrisStart": {"type": "number", "default": 0, "min": 0, "max": 2},
+    "arrisEnd": {"type": "number", "default": 0, "min": 0, "max": 2}
   },
   "parts": [
     {
       "id": "parapet",
       "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": {"parameter": "height"}, "thickness": {"parameter": "thickness"},
-        "patternAnchor": ["-u0", "-z0"]},
+        "patternAnchor": ["-u0", "-z0"],
+        "arris": {"parameter": "arris"}, "arrisStart": {"parameter": "arrisStart"}, "arrisEnd": {"parameter": "arrisEnd"}},
       "slots": {"front": "wall", "back": "wall", "edge": "wall"}
     },
     {
@@ -49,14 +53,15 @@
   "features": [
     {"name": "drip", "part": "outlet", "points": [["outletX - 0.14", 0, 0.1], ["outletX + 0.14", 0, 0.1]], "when": "outlet"},
     {"name": "drip-above", "part": "outlet", "points": [["outletX - 0.14", 0, 0.4], ["outletX + 0.14", 0, 0.4]], "when": "outlet"},
-    {"name": "eave", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
-    {"name": "eave-above", "part": "parapet", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]}
+    {"name": "coping", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
+    {"name": "coping-above", "part": "parapet", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]}
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.22, 0.2, 0.17], "period": 3.6}, "seed": 3, "follow": {"source": "top", "guard": "eave-above"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.24, 0.215, 0.18], "streakLength": 2.2, "period": 3.6}, "seed": 3, "follow": {"source": ["drip", "eave", "ledge", "sill"], "guard": ["drip-above", "eave-above", "ledge-above", "sill-above"]}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.15], "streakLength": 1.5, "shift": 1.7, "period": 2.3}, "seed": 5, "follow": {"source": "coping", "guard": "coping-above"}}
     ]
   }
 }

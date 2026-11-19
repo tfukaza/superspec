@@ -40,7 +40,7 @@ const sooted = mul(mul(mul(soot, within), exp(neg(div(edge, mul(sootReach, 0.22)
 // On a ledge the dirt settles instead of washing off: faces that look up are filmed over, patchily, and faces that
 // look down stay damp and dark.
 const lookingUp = dot(normal, neg(gravity));
-const lying = mul(mul(settled, smoothstep(0.3, 0.85, lookingUp)), add(0.55, mul(0.45, fractal(add(mul(vec2(add(world.x, world.y), world.z), 2.9), vec2(8.3, 1.9)), seed("dirt-settled")))));
+const lying = mul(mul(settled, smoothstep(0.3, 0.85, lookingUp)), add(0.55, mul(0.45, fractal(add(mul(vec2(surface.x, surface.y), 2.9), vec2(8.3, 1.9)), seed("dirt-settled")))));
 const beneath = mul(mul(settled, 0.6), smoothstep(0.4, 0.9, neg(lookingUp)));
 
 const washed = add(add(add(mul(mul(amount, 0.75), rain), mul(mul(clouds, 0.45), cloud)), max(lying, beneath)), mottled);

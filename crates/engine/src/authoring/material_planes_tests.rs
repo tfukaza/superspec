@@ -1431,6 +1431,8 @@ fn an_item_s_features_become_named_receiver_features_in_world_meters() {
         closed,
         normal: [0., -1., 0.],
         width: 0.,
+        reach: Default::default(),
+        within: 0.,
     };
     let features = [
         feature("sill", vec![[0., 0., 1.], [1., 0., 1.]], false),

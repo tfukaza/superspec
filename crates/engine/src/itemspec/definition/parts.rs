@@ -3,6 +3,7 @@
 use super::{
     Attachment, Derived, Feature, ImportedMaterial, ItemDecal, ItemDefinition, ItemDiagnostic,
     ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PatternAnchor, PreparedItem, Values,
+    arc,
     compose::{self, Environment, Opaque},
     decal, fail, footprint, panel, procedural, route,
     schema::{Axis, Generator, PartDefinition, Scalar, Switch, bounded_name},
@@ -155,6 +156,7 @@ enum PartShape {
     },
     Panel(panel::Panel),
     Route(route::Route),
+    Arc(arc::Arc),
     /// A sub-item: its entry, geometry key and prepared definition.
     Item {
         entry: String,
@@ -592,6 +594,11 @@ pub(super) fn prepare(
                         vec![],
                     )
                 }
+                Generator::Arc(definition) => (
+                    PartShape::Arc(arc::resolve(context, definition, &generator)?),
+                    arc::GROUPS,
+                    vec![],
+                ),
                 Generator::Item(reference) => {
                     let entry = compose::entry(
                         context.definition,
@@ -649,7 +656,7 @@ pub(super) fn prepare(
                     return Err(context.fail(
                         &generator,
                         "ITEM_PART",
-                        "A part uses a box, panel, route, pipe, duct, item or native generator.",
+                        "A part uses a box, panel, route, arc, pipe, duct, item or native generator.",
                     ));
                 }
             };
@@ -731,6 +738,7 @@ pub(super) fn decals(
             PartShape::Pipe { .. }
             | PartShape::Duct { .. }
             | PartShape::Prism { .. }
+            | PartShape::Arc(_)
             | PartShape::Item { .. }
             | PartShape::Native(_) => {
                 return Err(context.fail(
@@ -832,6 +840,29 @@ pub(super) fn authored(
                 }
                 points.push(resolved);
             }
+            // A wider reach is bounded: receivers further than `within` are not given it.
+            let within = match (&definition.reach, &definition.within) {
+                (super::Reach::Part, None) => 0.,
+                (super::Reach::Part, Some(_)) => {
+                    return Err(context.fail(
+                        &format!("{pointer}/within"),
+                        "ITEM_FEATURE",
+                        "Only a feature with reach item or scene has a within distance.",
+                    ));
+                }
+                (_, None) => super::REACH_WITHIN,
+                (_, Some(within)) => {
+                    let within = copy.scalar(within, &format!("{pointer}/within"))?;
+                    if !(within > 0. && within <= super::MAX_REACH_WITHIN) {
+                        return Err(context.fail(
+                            &format!("{pointer}/within"),
+                            "ITEM_FEATURE",
+                            "A feature reaches receivers within more than 0 and at most 50 meters.",
+                        ));
+                    }
+                    within
+                }
+            };
             result.push(Feature {
                 name: definition.name.clone(),
                 part,
@@ -841,6 +872,8 @@ pub(super) fn authored(
                 closed: definition.closed,
                 normal,
                 width: copy.scalar(&definition.width, &format!("{pointer}/width"))?,
+                reach: definition.reach,
+                within,
             });
             if result.len() > 4096 {
                 return Err(context.fail(
@@ -1028,6 +1061,7 @@ impl PreparedPart {
             }
             PartShape::Panel(panel) => panel.build(&mut surfaces)?,
             PartShape::Route(route) => route.build(&mut surfaces)?,
+            PartShape::Arc(arc) => arc.build(&mut surfaces)?,
             PartShape::Prism {
                 outline,
                 height,
@@ -1063,6 +1097,7 @@ impl PreparedPart {
         match &self.shape {
             PartShape::Panel(panel) => panel.features(&self.id),
             PartShape::Route(route) => route.features(&self.id),
+            PartShape::Arc(arc) => arc.features(&self.id),
             PartShape::Item { prepared, .. } if prepared.0.first_anchor().is_some() => {
                 let mut anchor = prepared.0.first_anchor().unwrap();
                 anchor.part = self.id.clone();
@@ -1193,7 +1228,7 @@ pub(super) fn build(
             ])
         };
         let (features, anchor) = part.features();
-        let surface = matches!(part.shape, PartShape::Panel(_));
+        let surface = matches!(part.shape, PartShape::Panel(_) | PartShape::Arc(_));
         // A sub-item's features are surface features where they came from a panel; their
         // normals follow the inverse transpose as a panel's do (a rigid placement keeps both).
         for (mut feature, surface) in features

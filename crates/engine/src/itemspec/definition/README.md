@@ -95,8 +95,9 @@ message.
 | Generator | Fields | Face groups |
 | --- | --- | --- |
 | `box` | `size` (spans from the part origin), `bevel`, `bevelSegments`, `bevelAxis` | `side`, `top`, `bottom` |
-| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
+| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments`, `arris`, `arrisStart`, `arrisEnd` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
 | `prism` | `footprint`, `height`, `inset`, `bevel`, `bevelSegments` (see Footprints) | `side`, `top`, `bottom` |
+| `arc` | `radius`, `turn`, `segments`, `section[]`, `closed`, `bevel`, `bevelSegments`, `step`, `patternAnchor`, `rings[]` | `side`, `end` |
 | `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
 | `pipe`, `duct` | as version 1 | `surface` |
 | `item` | `entry` (one or a list), `pick`, `parameters` | the sub-item's slots |
@@ -130,6 +131,43 @@ A through opening may have a `frame` (`border`, `depth`) and `glazing`
 (`depth`, `overhang`, optional `thickness`). The slab is built as a polygon with
 holes swept through the thickness, which is the same solid as the panel minus its
 extruded openings but keeps exact face groups and f64 positions.
+
+*Arrises.* Two flat receivers that meet at a corner cannot be rounded by a material, and a
+`bevel` rounds a panel's whole rim. `arris` (a radius) rounds only the panel's upright end
+edges, where `arrisStart` and `arrisEnd` give the tangent of half the plan turn there (1 at a
+square corner, a footprint edge's `_miter_start` and `_miter_end`; 0 leaves the end sharp).
+Each of the two panels at a corner draws its own half of the round as one chord of its `front`,
+from where the front leaves off (the radius times the tangent before the corner) to the
+round's middle on the corner's bisector, with normals that turn to the bisector's, so the two
+chords are one round of two segments. The end face starts behind the round, the top and bottom
+lose its corner, and openings keep clear of it. An opening's `jambs` (a radius, rectangles
+only) rounds its two upright front arrises, the edges of the piers beside it, in two chords of
+the `front` that turn into the reveals; the opening may still start 0.02 m above the panel's
+foot, and needs the radius more of wall on each side. A panel has a `bevel` or arrises and
+jambs, not both (`ITEM_GEOMETRY`, `ITEM_OPENING`).
+
+**Arc.** A section swept round a plan arc: a wall, a band or a moulding that turns a round
+corner as one surface. The part's origin is where the arc starts; it leaves along +X, turns to
+the left (toward +Y) by `turn` degrees (1 to 180) about an upright axis `radius` away, in
+`segments` chords (8), and its outside faces -Y at the start as a panel's front does, so it
+stands where a wall along +X ends and a wall along the turned direction starts where it ends.
+`section` lists 2 to 32 `[out, up]` points: meters outside the arc of `radius`, and height. A
+closed section (the default) runs counterclockwise in (out, up) and has two `end` caps; with
+`"closed": false` it is a strip whose visible side is on its right (an outer face is listed
+from its foot to its head), without ends. Every swept face is in `side`, one mesh whose
+vertices are shared along the arc with normals that turn with it, so the chords shade as one
+round and none of them is a crease; the section's own corners stay sharp unless `bevel` rounds
+them (set back that far along both edges, in 1 or 2 chords). `step` splits section edges
+longer than it into even rows. Texture coordinates are pattern coordinates in meters: `u` is
+the distance along the chords of the arc of `radius` (for every section point, so a band keeps
+its wall's pattern) and `v` the height of the section's first point run on along the section,
+both measured from `patternAnchor`. A wall before the arc and one after it that measure their
+patterns round the same footprint (`_perimeter`, `_cperimeter`) meet it without a seam when the
+arc's slot is mapped by its texture coordinates; mapped by its anchor (the frame of its start)
+the pattern is right where the arc starts and turns away from it. Features: `base` and `top`
+follow the arc at the section's lowest and highest points, and `rings` (`{"name", "at": [out,
+up]}`, at most 16) add named ones, each a polyline of `segments + 1` points; `start` and `end`
+are the section where the arc begins and ends, where it meets what stands before and after it.
 
 **Route.** `section` is `{"kind":"round","radius"}` or
 `{"kind":"rect","width","height"}`. Corners are filleted with `bendRadius`, which
@@ -224,7 +262,10 @@ for a chamfer), and `"facet": k` chooses the one that `_cx`, `_cy`, `_cdx`, `_cd
 round the cut outline to the wall's and to that facet's start, for patterns that run on.
 `_miter_start`, `_miter_end`, `_cmiter_start` and `_cmiter_end` are the tangent of half the plan
 turn at the wall's and the facet's ends (1 at a square corner), which a moulding mitres by. A
-prism and a pavement given the same footprint follow the same outline.
+prism and a pavement given the same footprint follow the same outline. `_turn` is the plan turn
+at the edge's end in degrees and `_cradius` the radius of the arc its cut touches both edges
+with (0 where it is not cut): what an `arc` part placed at `_cx`, `_cy` (facet 0) along `_dx`,
+`_dy` needs to turn the corner as one surface on the same chords.
 
 **Plans.** A `grid` control holds nested lists (at most four deep, 4096 entries) of numbers
 or, with `choices`, of texts among them: an explicit plan of what goes where. Expressions read it
@@ -247,14 +288,48 @@ conditioner's `drip` reaches the wall it is on when both are in one sub-item. In
 slot with layers is bound to an assignment of its own, `<material>.<model>.<slot>`: the bound
 material with the item's layers over the material's own, mapped as it is.
 
+*Following several features.* A `follow` entry is one receiver feature or a list of 1 to 16:
+`{"source": ["top", "sill", "drip"], "guard": ["eave-above", "sill-above", "drip-above"]}`. The
+layer's name then holds the polylines of all of them, so `featureDistance("source")` is the
+distance to the nearest and `featureTangent` the direction of the nearest, in one layer where
+each source used to cost one of the eight a slot composes. A list is a set: it is kept ascending
+without repeats and a list of one name is that name, so equal layers of sub-items still merge and
+a layer that follows one feature keeps its identity and cache keys. The CPU bake, the field bake
+and the features `shade_project` packs for a GPU host (`layerFeatures`) all read the union.
+
+*Reach.* A receiver is given the features of its own top-level part: every sub-item under that
+part, at any depth, so every `top` of a building side reaches every wall of that side, and a
+query finds the nearest of them. An authored feature may reach further with `"reach"`:
+`"part"` (the default), `"item"` (the receivers of every part of the placed top-level item it
+ends up in, through any depth of sub-items) or `"scene"` (those of every item model of the scene
+project as well): `{"name": "drip", "part": "run", "points": [...], "reach": "item", "within": 4}`.
+The reach is bounded: a receiver outside the feature's part is given it only when its bounding
+box comes within `within` meters of the feature's (3 by default, more than 0 and at most 50, in
+scene meters; `ITEM_FEATURE` otherwise, and for a `within` without a wider reach), so a layer
+should not query further than that. A receiver is given at most 256 such features from the other
+parts of its item and 256 from other items, the nearest first; the item's metadata counts those
+left out (`reachDropped`, `sceneReachDropped`). Generated features (`top`, `sill`, `joint`, ...)
+reach their part; to carry one further, author a feature along it. The default leaves geometry
+keys and every receiver's features as they were.
+
+**Slot densities.** `densities` maps a slot to the texels per meter it asks for (1 to 100000):
+`{"lettering": 800}` for a sign, less for stacked goods. It is a default the generated item
+reports (`densities`), not part of its geometry key; whatever its host states comes first. A
+sub-item's densities join the slots they land in, as its layers do: the parent's own statement
+for a slot holds, else the greatest any sub-item asks for it. In a scene project a receiver is
+baked at the first density stated of: its mesh id in the project's `texelDensities`, its model's
+`slotDensities`, the item's `densities`, its material's id in `texelDensities`, and the project's
+`texelDensity`. The density is part of the receiver's layout, so every bake of it is keyed by it.
+
 Composed examples are in `worldspec/themes/kowloon/items/`: small items (`kowloon-window`,
 `kowloon-aircon`, `kowloon-shopfront`, `kowloon-parapet`, `kowloon-duct-run`, `kowloon-duct-riser`,
 `kowloon-roof`), storeys made of them (`kowloon-floor`, `kowloon-ground-floor`), a building side
 that stacks storeys and adds its services (`kowloon-facade-side`), and `kowloon-building`, which
 places a side along every edge of its footprint, shops on street edges, back doors and pipes on
-the rest, and a cut corner with a sign between two streets (`cornerStyle` `chamfer`, or `round`
-in `cornerSegments` facets with mitred string courses; `cornerTiles` runs the tile band through
-it).
+the rest, and a cut corner with a sign between two streets (`cornerStyle` `chamfer`, or `round`:
+one `kowloon-corner`, whose wall, plinth, tile bands, string courses and coping are arcs of
+`cornerSegments` chords, with a `kowloon/pavement-corner` round it; `cornerTiles` runs the tile
+band through it). Its `arris` rounds every other convex corner and the shop piers' edges.
 
 In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
 its slots are bound to the project's materials, every part and face group is a receiver

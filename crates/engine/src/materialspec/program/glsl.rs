@@ -91,6 +91,10 @@ pub struct Shader {
     /// after `ms_evaluate()`: linear RGB, drawn without the light loop.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub painted: Option<String>,
+    /// The cutoff of a cutout (`alpha_cutout` as the opacity): the host draws the surface only
+    /// where `ms_opacity` reaches it, in every look of the material, baked ones included.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alpha_cutoff: Option<f64>,
 }
 
 /// See [`Shader::render_inputs`].
@@ -2076,6 +2080,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             reads,
             render_inputs,
             painted,
+            alpha_cutoff: program.metadata.alpha_cutoff,
         },
         functions,
     ))

@@ -17,7 +17,7 @@
 //! Colors are `#rrggbb` sRGB text; lengths are meters; angles are radians. A `seed` (text
 //! or number) selects the per-instance variety of seeded fixtures.
 use super::{
-    balconies, balcony_props, doors, facade_details,
+    bake_jobs, balconies, balcony_props, doors, facade_details,
     fixture::Fixture,
     ground, household,
     kit::Kit,
@@ -36,10 +36,12 @@ use std::{collections::BTreeMap, sync::Arc};
 use superspec_geometry::{Matrix, V3};
 use superspec_types::rng::SeededRng;
 
+mod cloth;
+mod hardware;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "3";
+const VERSION: &str = "4";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -234,7 +236,13 @@ fn unbaked_paint(mesh: &mut Mesh<'_>) {
             weathered::Pending::Prepared(r) => {
                 Some((r.first_triangle, r.triangle_count, r.settings.paint))
             }
-            weathered::Pending::Surface { .. } => None,
+            // A painted leaf (a seeded door's) is a surface receiver with its paint in the job.
+            weathered::Pending::Surface {
+                first, count, job, ..
+            } => match &job.recipe {
+                bake_jobs::Recipe::Paint(recipe) => Some((*first, *count, recipe.finish.paint)),
+                _ => None,
+            },
         })
         .collect();
     let mut painted = vec![false; mesh.vertices.len()];
@@ -411,15 +419,52 @@ fn window(
     // Such a window's panes are left out as with `glazing` false: the glass is a painted
     // surface that shows nothing behind it.
     let storage = a.bounded("storage", 0., 0. ..=1.)?;
+    // What a plan fixes of the sashes: `openChance` (how many lights stand open: a count plus
+    // the chance of one more; unset, one light three times in ten), `lightWidth` (m a casement's
+    // lights aim at, 0.5), `midRail` (a heavy rail halfway up the lower lights, false), `louvre`
+    // (`none` | `left` | `right`: that top light is glass slats, `none`), `handles` (lever
+    // handles on closed lights, false) and `glow` (the tint of a `lit` room's back panel, which
+    // is then drawn in the `tube-light` slot, the lit lamps' own, instead of `interior-lit`;
+    // its panes are left out so the room shows).
+    let glow = match a.optional_text("glow")? {
+        Some(_) => Some(a.color("glow", "#ffe7ad")?),
+        None => None,
+    };
+    let options = windows::Options {
+        open: match a.optional_number("openChance")? {
+            Some(share) if !(0. ..=16.).contains(&share) => {
+                return Err(format!("{name}: openChance must lie in 0..16."));
+            }
+            share => share,
+        },
+        light_width: match a.optional_number("lightWidth")? {
+            Some(width) if !(0.15..=10.).contains(&width) => {
+                return Err(format!("{name}: lightWidth must lie in 0.15..10."));
+            }
+            width => width,
+        },
+        mid_rail: a.boolean("midRail", false)?,
+        louvre: match a.text("louvre", "none")?.as_str() {
+            "none" => None,
+            "left" => Some(windows::Louvre::Left),
+            "right" => Some(windows::Louvre::Right),
+            _ => return Err(format!("{name}: louvre must be one of none, left, right.")),
+        },
+        handles: a.boolean("handles", false)?,
+        glow,
+        glow_slot: glow.map(|_| "tube-light"),
+    };
+    let glowing = look.lit && glow.is_some();
     let key = a.seed()?;
     let mut rng = SeededRng::from_text(&key);
     a.finish()?;
     let recess = look.recess;
     let mut output = draw(cancelled, |mesh| {
-        windows::window_sized(
+        windows::window_with(
             &mut fixture(mesh, "window")?,
             [-width / 2., 0., width, height],
             &look,
+            &options,
             &mut rng,
         )?;
         if storage > 0. && recess >= 0.15 && !look.boarded {
@@ -431,11 +476,13 @@ fn window(
                 d.mesh.spend_work(1)?;
                 let carton = rng.float(0.3, 0.46).min(width / 2. - 0.05 - x);
                 let stacked = rng.chance(storage);
-                let top = 0.05 + (height - 0.15) * rng.float(0.3, 0.95);
+                // Low stacks, under half the opening: the room's dark shows over them.
+                let top = 0.05 + (height - 0.15) * rng.float(0.1, 0.45);
                 let mut z = 0.05;
                 while stacked && z < top {
                     let high = rng.float(0.24, 0.36).min(height - 0.06 - z);
-                    let card = super::palette::shade(srgb("#b08a5c"), rng.float(0.75, 1.1));
+                    // Card in the shade of the room, duller than cartons in the open.
+                    let card = super::palette::shade(srgb("#8a7a60"), rng.float(0.3, 0.55));
                     let inset = rng.float(0., 0.03);
                     // In the goods' own `stock` slot: plain card, not the frame's paint.
                     d.cuboid(
@@ -459,7 +506,7 @@ fn window(
         }
         Ok(())
     })?;
-    if !glazing || storage > 0. {
+    if !glazing || storage > 0. || glowing {
         output.meshes.retain(|mesh| mesh.material_slot != "glass");
     }
     Ok(output)
@@ -467,7 +514,8 @@ fn window(
 
 /// `kowloon/security-bars`: a welded security grille over an opening. Anchor: bottom-centre
 /// of the guarded opening on the wall plane. Parameters: `pattern` (`bars` | `grid` |
-/// `diamond`, `bars`), `width` (m, 1.2), `height` (m, 1.4), `color` (#2a2c2e).
+/// `diamond`, `bars`), `width` (m, 1.2), `height` (m, 1.4), `color` (#2a2c2e), `share` (the
+/// part of the height it covers, from the top: 0.5 guards the upper half; 0.1–1, 1).
 fn security_bars(
     name: &str,
     values: &Values,
@@ -478,11 +526,16 @@ fn security_bars(
     let width = a.number("width", 1.2)?;
     let height = a.number("height", 1.4)?;
     let color = a.color("color", "#2a2c2e")?;
+    let share = a.bounded("share", 1., 0.1..=1.)?;
     a.finish()?;
     draw(cancelled, |mesh| {
         windows::security_bars_sized(
             &mut fixture(mesh, "security-bars")?,
-            [-width / 2., 0., width, height],
+            if share < 1. {
+                [-width / 2., height * (1. - share), width, height * share]
+            } else {
+                [-width / 2., 0., width, height]
+            },
             pattern,
             color,
             None,
@@ -616,12 +669,25 @@ fn downpipe(
     let straps = a.boolean("straps", true)?;
     // `hopper`: a rainwater hopper box at the head of the pipe.
     let hopper = a.boolean("hopper", false)?;
+    // `clips`: m between two-eared saddle clips bolted to the wall (0–10, 0: none).
+    let clips = a.bounded("clips", 0., 0. ..=10.)?;
     let color = a.color("color", "#3a3c3a")?;
     a.finish()?;
     let y = radius + standoff;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "downpipe")?;
         system.run(d, &[[0., y, height], [0., y, 0.]], straps.then_some(0.))?;
+        if clips >= 0.2 && height > 0.6 {
+            let count = ((height - 0.5) / clips).floor() as usize;
+            for k in 0..=count {
+                hardware::pipe_clip(
+                    d,
+                    [0., y, 0.35 + k as f64 * clips],
+                    radius,
+                    super::palette::shade(color, 0.72),
+                )?;
+            }
+        }
         if hopper {
             let (half, deep) = (radius * 2.6, radius * 4.4);
             d.cuboid(
@@ -887,7 +953,8 @@ fn steel_rail(
 /// right, false: top to bottom), `reach` (m of outrigger, 0.8), `angle` (degrees, 0), `age`
 /// (0–1, 0.7), `anchor` (m along the board from its left edge to where the outriggers meet the
 /// wall, 0), `end` (m along it where they end; default the board's far edge, or its far end at
-/// an angle), `seed` (weathering).
+/// an angle), `seed` (weathering). A `horizontal` board flat to the wall hangs level from one
+/// pole with two stays; every fixing is a bolted plate.
 fn board_sign(
     name: &str,
     values: &Values,
@@ -1014,15 +1081,51 @@ fn board_sign(
             }
         }
         let d = &mut on(mesh, root)?;
-        // A fixing plate where each outrigger meets the wall.
-        for z in [0.12, height - 0.12] {
-            d.cuboid(
+        if horizontal && angle == 0. {
+            // A level board hangs by two straps from one pole, which leaves the wall at
+            // `anchor` and turns along the board; one stay from the wall above carries its far
+            // end and a second, square to the wall, steadies it.
+            let (top, y) = (height + 0.1, reach - 0.0225);
+            let far = [end_at, y, top];
+            d.tube(
                 "metal",
-                [anchor - 0.06, 0., z - 0.08],
-                [anchor + 0.06, 0.012, z + 0.08],
+                &[[anchor, 0.012, top], [anchor, y, top], far],
+                0.024,
                 hardware.tint,
-                "b",
+                10,
             )?;
+            hardware::wall_plate(d, [anchor, top], 0.07, 0.07, hardware.tint)?;
+            for share in [0.1, 0.9] {
+                let x = width * share;
+                d.cuboid(
+                    "metal",
+                    [x - 0.014, y - 0.03, height - 0.07],
+                    [x + 0.014, y + 0.03, top + 0.03],
+                    hardware.tint,
+                    "",
+                )?;
+            }
+            if ties {
+                let side = if end_at >= anchor { -0.25 } else { 0.25 };
+                for fixing in [
+                    [anchor, top + 0.3 + 0.3 * (end_at - anchor).abs().min(2.)],
+                    [end_at + side, top + 0.42],
+                ] {
+                    d.tube(
+                        "metal",
+                        &[[fixing[0], 0.012, fixing[1]], far],
+                        0.006,
+                        hardware.tint,
+                        6,
+                    )?;
+                    hardware::wall_plate(d, fixing, 0.04, 0.04, hardware.tint)?;
+                }
+            }
+            return Ok(());
+        }
+        // A bolted fixing plate where each outrigger meets the wall.
+        for z in [0.12, height - 0.12] {
+            hardware::wall_plate(d, [anchor, z], 0.06, 0.08, hardware.tint)?;
         }
         if ties {
             let far = if angle != 0. {
@@ -1036,13 +1139,7 @@ fn board_sign(
                 height + 0.35 + 0.25 * (far[0] - anchor).abs().min(2.),
             ];
             d.tube("metal", &[fixing, far], 0.006, hardware.tint, 6)?;
-            d.cuboid(
-                "metal",
-                [fixing[0] - 0.04, 0., fixing[2] - 0.04],
-                [fixing[0] + 0.04, 0.012, fixing[2] + 0.04],
-                hardware.tint,
-                "b",
-            )?;
+            hardware::wall_plate(d, [fixing[0], fixing[2]], 0.04, 0.04, hardware.tint)?;
         }
         for z in [0.12, height - 0.12] {
             if angle != 0. {
@@ -1173,8 +1270,9 @@ fn plants(
 /// (m, 1.9), `height` (m, 1.6), `depth` (m out from the wall, 0.65), `color` (#7fb0c8),
 /// `stocked` (contents, true), `textured` (plant and cloth atlases, true), `seed`, and what a
 /// plan fixes instead of the seed: `contents` (`auto` | `plants` | `washing` | `storage`
-/// (stacked cartons) | `mixed` | `empty`, `auto`), `roof` (`auto` | `none` | `sheet`, `auto`)
-/// and `roofColor` (of a `sheet` roof, #7f9a6c).
+/// (stacked cartons) | `mixed` | `empty` | `aircon` (an old window unit standing in it),
+/// `auto`), `roof` (`auto` | `none` | `sheet`, `auto`) and `roofColor` (of a `sheet` roof,
+/// #7f9a6c).
 fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let width = a.number("width", 1.9)?;
@@ -1188,6 +1286,11 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     let textured = a.boolean("textured", true)?;
     const CONTENTS: [&str; 6] = ["auto", "plants", "washing", "storage", "mixed", "empty"];
     let contents = a.text("contents", "auto")?;
+    // `aircon`: the cage holds an old window air conditioner (one of the seeded models, its
+    // louvred back to the street) standing on the cage's floor, and nothing else.
+    let unit = contents == "aircon";
+    let contents = if unit { "empty".to_owned() } else { contents };
+    let key = a.seed()?;
     let roof = a.text("roof", "auto")?;
     let roof_color = a.color("roofColor", "#7f9a6c")?;
     let plan = household::CagePlan {
@@ -1196,7 +1299,7 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
             Some(index) => Some(CONTENTS[index]),
             None => {
                 return Err(format!(
-                    "{name}: contents must be one of {}.",
+                    "{name}: contents must be one of {}, aircon.",
                     CONTENTS.join(", ")
                 ));
             }
@@ -1219,6 +1322,130 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
             None,
             textured,
             &plan,
+        )?;
+        if unit {
+            // Drawn after the cage from a stream of its own, so the cage stays the seed's.
+            super::aircon::air_conditioner(
+                &mut fixture(mesh, "cage")?,
+                0.,
+                cage.heights[0] + 0.045,
+                0.,
+                &mut SeededRng::from_text(&format!("{key}/unit")),
+                None,
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// `kowloon/back-door`: a plain steel service door in its wall opening: an angle frame, a
+/// flush leaf with a louvred vent at its head and foot, a kick plate, hinges, a lever handle
+/// and a concrete threshold. Anchor: bottom-centre of the opening on the wall plane; the leaf
+/// stands in the recess behind it. Parameters: `width` (m, 0.6–2, 0.9), `height` (m, 1.8–3.2,
+/// 2.05), `recess` (m, 0.05–0.6, 0.23), `color` (#2f4f43), `trim` (#ddd2bc), `seed` (which
+/// side it hangs on, dents in its paint's shade).
+fn back_door(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let width = a.bounded("width", 0.9, 0.6..=2.)?;
+    let height = a.bounded("height", 2.05, 1.8..=3.2)?;
+    let recess = a.bounded("recess", 0.23, 0.05..=0.6)?;
+    let color = a.color("color", "#2f4f43")?;
+    let trim = a.color("trim", "#ddd2bc")?;
+    // `louvres`: false leaves the leaf plain, without its pressed vents (true).
+    let louvres = a.boolean("louvres", true)?;
+    let mut rng = a.rng()?;
+    a.finish()?;
+    let shade = super::palette::shade;
+    let (left, right) = (-width / 2., width / 2.);
+    let (back, face) = (-recess + 0.01, -recess + 0.055);
+    draw(cancelled, |mesh| {
+        let d = &mut fixture(mesh, "back-door")?;
+        // The dark of the passage behind, should the leaf ever be left out of a look.
+        d.panel(
+            "pane",
+            [left, right, 0., height],
+            back - 0.005,
+            srgb("#1b2225"),
+        )?;
+        let frame = shade(color, 0.8);
+        for x in [left, right - 0.05] {
+            d.frame_box([x, back, 0.], [x + 0.05, face + 0.02, height], frame)?;
+        }
+        d.frame_box(
+            [left + 0.05, back, height - 0.05],
+            [right - 0.05, face + 0.02, height],
+            frame,
+        )?;
+        let (x0, x1, z0, z1) = (left + 0.055, right - 0.055, 0.03, height - 0.055);
+        let paint = shade(color, rng.float(0.85, 1.1));
+        d.cuboid("paint", [x0, back + 0.01, z0], [x1, face, z1], paint, "")?;
+        // Pressed louvres at the head and the foot of the leaf.
+        for base in [z0 + 0.22, z1 - 0.42] {
+            for slat in 0..if louvres { 5 } else { 0 } {
+                let z = base + slat as f64 * 0.04;
+                d.sheet(
+                    "paint",
+                    &[
+                        [x0 + 0.12, face, z + 0.034],
+                        [x1 - 0.12, face, z + 0.034],
+                        [x1 - 0.12, face + 0.014, z],
+                        [x0 + 0.12, face + 0.014, z],
+                    ],
+                    shade(paint, 0.8),
+                )?;
+            }
+        }
+        d.cuboid(
+            "metal",
+            [x0 + 0.02, face, z0 + 0.01],
+            [x1 - 0.02, face + 0.003, z0 + 0.17],
+            srgb("#8d8a80"),
+            "",
+        )?;
+        let hung_left = rng.chance(0.5);
+        let (hinge, lock) = if hung_left {
+            (x0, x1 - 0.09)
+        } else {
+            (x1 - 0.02, x0 + 0.09)
+        };
+        for z in [z0 + 0.22, (z0 + z1) / 2., z1 - 0.22] {
+            d.cuboid(
+                "metal",
+                [hinge, face, z - 0.05],
+                [hinge + 0.02, face + 0.012, z + 0.05],
+                frame,
+                "",
+            )?;
+        }
+        d.cuboid(
+            "metal",
+            [lock - 0.03, face, 0.94],
+            [lock + 0.03, face + 0.004, 1.12],
+            srgb("#8d8a80"),
+            "",
+        )?;
+        let turn = if hung_left { -0.1 } else { 0.1 };
+        d.tube(
+            "metal",
+            &[
+                [lock, face, 1.05],
+                [lock, face + 0.04, 1.05],
+                [lock + turn, face + 0.04, 1.05],
+            ],
+            0.009,
+            srgb("#a39f92"),
+            8,
+        )?;
+        d.cuboid(
+            "concrete",
+            [left - 0.03, -recess, -0.03],
+            [right + 0.03, 0.1, 0.025],
+            trim,
+            "",
         )
     })
 }
@@ -1547,11 +1774,14 @@ fn door_design(a: &mut Arguments<'_>, paint: V3) -> Result<doors::Design, String
             ));
         }
     };
+    // `panels`: the pressed panels of each painted or steel leaf (1–4; 0 leaves the door's three).
+    let panels = a.integer("panels", 0, 0..=4)?;
     Ok(doors::Design {
         style,
         paint: style.map(|_| paint),
         transom,
         fit: None,
+        panels: (panels > 0).then_some(panels),
     })
 }
 
@@ -1564,7 +1794,9 @@ fn door_design(a: &mut Arguments<'_>, paint: V3) -> Result<doors::Design, String
 /// `transom` (a door bay's entrance, as `kowloon/entrance`; a named door is painted `frame`),
 /// `opening` (m; the head height of a wall opening as wide as the bay, which a shutter then
 /// fills, closed and painted `shutter`, and a door's frame and transom fill; 0: unfitted),
-/// `head` (m of a shutter's head box, 0.1–1, 0.22) and `headRust` (0–1, 0).
+/// `head` (m of a shutter's head box, 0.1–1, 0.22) and `headRust` (0–1, 0), `panels` (of each
+/// named leaf, 1–4; 0: three), `gate` (the lattice's paint), `gateBars` (its bars' width,
+/// 0.5–3 times) and `gateBacking` (sheet steel leaves behind it, the paint times this; 0: none).
 fn ground_bay(
     name: &str,
     values: &Values,
@@ -1592,8 +1824,21 @@ fn ground_bay(
         fit: (opening > 0.).then_some(opening),
         shutter_head: Some(a.bounded("head", 0.22, 0.1..=1.)?),
         head_rust: a.bounded("headRust", 0., 0. ..=1.)?,
-        // `gate`: the paint of a gate's lattice (#647a6b).
+        // `gate`: the paint of a gate's lattice (#647a6b). `gateBars`: how many times as wide
+        // its uprights and links are (0.5–3, 1). `gateBacking`: 0 shows the timber doors behind
+        // the lattice; more closes sheet steel leaves behind it, the lattice's paint times this
+        // (0–2, 0).
         gate: Some(a.color("gate", "#647a6b")?),
+        gate_bars: None,
+        gate_backing: None,
+    };
+    let bars = a.bounded("gateBars", 1., 0.5..=3.)?;
+    let backing = a.bounded("gateBacking", 0., 0. ..=2.)?;
+    let plan = ground::Plan {
+        gate_bars: (bars != 1.).then_some(bars),
+        gate_backing: (backing > 0.)
+            .then(|| plan.gate.unwrap_or_default().map(|v| (v * backing).min(1.))),
+        ..plan
     };
     let key = a.seed()?;
     a.finish()?;
@@ -2534,6 +2779,7 @@ impl Natives {
             ("kowloon/plant", plant),
             ("kowloon/plants", plants),
             ("kowloon/cage", cage),
+            ("kowloon/back-door", back_door),
             ("kowloon/drying-rack", drying_rack),
             ("kowloon/drying-pole", drying_pole),
             ("kowloon/drying-lines", drying_lines),
@@ -2572,6 +2818,7 @@ impl Natives {
             ("kowloon/shop-room", street::shop_room),
             ("kowloon/street-stock", street::street_stock),
             ("kowloon/pavement", street::pavement),
+            ("kowloon/pavement-corner", street::pavement_corner),
             ("kowloon/cornice", street::cornice),
             ("kowloon/fan-divider", street::fan_divider),
             ("kowloon/tile-deck", street::tile_deck),
@@ -2579,6 +2826,11 @@ impl Natives {
             ("kowloon/balcony-door", street::balcony_door),
             ("kowloon/rail", street::rail),
             ("kowloon/ladder", street::ladder),
+            ("kowloon/sagging-tarp", cloth::sagging_tarp),
+            ("kowloon/sheet-canopy", cloth::sheet_canopy),
+            ("kowloon/cable", hardware::cable),
+            ("kowloon/junction-box", hardware::junction_box),
+            ("kowloon/roof-clutter", hardware::roof_clutter),
         ];
         Self {
             generators: registered.iter().copied().collect(),

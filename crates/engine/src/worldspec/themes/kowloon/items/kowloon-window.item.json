@@ -16,7 +16,14 @@
     "glazing": {"type": "boolean", "default": true},
     "bars": {"type": "boolean", "default": false},
     "barsPattern": {"type": "choice", "default": "bars", "choices": ["bars", "grid", "diamond"]},
-    "storage": {"type": "number", "default": 0, "min": 0, "max": 1}
+    "barsShare": {"type": "number", "default": 1, "min": 0.1, "max": 1},
+    "storage": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "openChance": {"type": "number", "default": 0.3, "min": 0, "max": 8},
+    "lightWidth": {"type": "number", "default": 0.5, "min": 0.2, "max": 2, "unit": "m"},
+    "midRail": {"type": "boolean", "default": false},
+    "louvre": {"type": "choice", "default": "none", "choices": ["none", "left", "right"]},
+    "handles": {"type": "boolean", "default": true},
+    "glow": {"type": "color", "default": "#ffe7ad"}
   },
   "parts": [
     {
@@ -25,14 +32,16 @@
         "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "hood": {"parameter": "hood"}, "recess": {"parameter": "recess"},
                        "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"},
-                       "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}, "storage": {"parameter": "storage"}}},
-      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "metal": "metal", "concrete": "concrete", "stock": "stock"}
+                       "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}, "storage": {"parameter": "storage"},
+                       "openChance": {"parameter": "openChance"}, "lightWidth": {"parameter": "lightWidth"}, "midRail": {"parameter": "midRail"},
+                       "louvre": {"parameter": "louvre"}, "handles": {"parameter": "handles"}, "glow": {"parameter": "glow"}}},
+      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "interior-lit": "interior-lit", "tube-light": "tube-light", "metal": "metal", "concrete": "concrete", "stock": "stock"}
     },
     {
       "id": "bars",
       "when": "bars",
       "generator": {"kind": "native", "name": "kowloon/security-bars",
-        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}}},
+        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}, "share": {"parameter": "barsShare"}}},
       "placement": {"position": [0, -0.06, -0.04]}
     }
   ],

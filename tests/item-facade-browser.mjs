@@ -77,6 +77,27 @@ try {
     const report = await page.evaluate(() => ({ status: document.querySelector("#status")?.textContent,
       bake: (document.querySelector("#viewport").dataset.sceneBake ?? "").slice(0, 1500) }));
     console.log(`status: ${report.status}\nbake: ${report.bake}`);
+    // ATLASES=<text>: the atlas size and triangle count of every mesh whose name holds the text, and the bake's memory.
+    if (process.env.ATLASES) {
+      const found = await page.evaluate(text => {
+        const bake = JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "{}");
+        const lines = Object.entries(bake.atlases ?? {}).filter(([name]) => name.includes(text)).map(([name, size]) => {
+          const mesh = window.__scene.models.children.find(child => child.name === name), geometry = mesh?.userData.sourceGeometry ?? mesh?.geometry;
+          return `${name}: ${size}, ${geometry ? (geometry.getIndex()?.count ?? geometry.getAttribute("position").count) / 3 : "?"} triangles`;
+        });
+        lines.push(...(bake.details ?? []).filter(line => line.includes(text)).slice(0, 6).map(line => `drawn ${line}`));
+        // What each weathering layer of the first such mesh was given: its features by kind (5 and up are the names it follows, in order).
+        const entry = window.__scene.sceneBaker?.current?.entries.find(candidate => candidate.target.mesh.name.includes(text) && candidate.target.stack);
+        for (const layer of entry?.target.stack.layers ?? []) {
+          const data = layer.uniforms.ms_features?.value?.image?.data, count = layer.uniforms.ms_feature_count?.value ?? 0, kinds = {};
+          for (let row = 0; data && row < count; row++) kinds[data[row * 12 + 3]] = (kinds[data[row * 12 + 3]] ?? 0) + 1;
+          lines.push(`layer ${layer.id} of ${entry.target.mesh.name}: ${layer.shading?.shader?.namedFeatures?.join(",") ?? ""} ${count} features, by kind ${JSON.stringify(kinds)}`);
+        }
+        lines.push(...Object.entries(bake.unsupported ?? {}).slice(0, 12).map(([name, why]) => `unsupported ${name}: ${why}`));
+        return [...lines, `maps on screen ${(bake.bytes / 1048576).toFixed(0)} MiB, bake ${bake.ms} ms`];
+      }, process.env.ATLASES);
+      console.log(found.join("\n"));
+    }
     // The sun, as in the reference picture: high (55 degrees) and from the front, a little toward the side the narrow face
     // turns from (SUN=<azimuth>,<elevation> degrees from +x toward +y sets its direction), and softened.
     // LIGHT: "keep" leaves the scene's lighting alone; otherwise the sun is turned round and `softSun` (below) is merged into
@@ -172,6 +193,12 @@ try {
       signs: { position: [front + 6.5, y1 + 5, 8.2], target: [front - 0.6, y1 - 0.4, 7.2], bare: true },
       storey: { position: [front + 6.5, cy + 0.6, 8.3], target: [front, cy + 0.6, 8.1], bare: true },
       shops: { position: [front + 8, cy + 1, 1.75], target: [front, cy - 0.3, 1.9], bare: true },
+      // The edges off the street: the back (-x) and the left end (-y), a little from one side to show what stands off them.
+      back: { position: [x0 - 26, cy - 4, cz + 2], target: [x0, cy, cz], bare: true },
+      left: { position: [(x0 + front) / 2 - 4, y0 - 26, cz + 2], target: [(x0 + front) / 2, y0, cz], bare: true },
+      // High three-quarter from the street corner, looking down on the roof: its rail, tank, stair hut, ladder, aerials
+      // and the aerial's cable, and what stands about on it.
+      roof: { position: [front + 8, y1 + 7, z1 + 8], target: [(x0 + front) / 2, cy, z1 - 1.2], bare: true },
     };
     // Only the picture: the page's panels over the viewport are hidden (CHROME=1 keeps them).
     if (process.env.CHROME !== "1") await page.evaluate(() => {
@@ -184,7 +211,9 @@ try {
       if (s.scene?.background?.isColor) s.scene.background.set(color); else if (s.scene) s.scene.background = new T.Color(color);
       s.renderer.setClearColor?.(color); s.invalidate?.();
     }, process.env.BACKDROP ?? "#d2ccc4");
-    for (const [name, view] of Object.entries(views)) {
+    // VIEWS=<name>,<name> pictures only those views.
+    const wanted = process.env.VIEWS?.split(",");
+    for (const [name, view] of Object.entries(views).filter(([name]) => !wanted || wanted.includes(name))) {
       // A view with the plants is drawn without ambient occlusion: the occlusion pass draws depth with one plain material,
       // which does not stand the canopy's leaf cards up as their own shaders do, so the building's creases would be
       // darkened through the trees. (Still the scene's global setting, per picture.)
@@ -195,7 +224,7 @@ try {
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));
     }
-    console.log(`Wrote ${Object.keys(views).length} pictures to ${out}${errors.length ? `; page errors:\n${errors.slice(0, 8).join("\n")}` : ""}`);
+    console.log(`Wrote ${wanted?.length ?? Object.keys(views).length} pictures to ${out}${errors.length ? `; page errors:\n${errors.slice(0, 8).join("\n")}` : ""}`);
   }
 } finally {
   await browser.close();

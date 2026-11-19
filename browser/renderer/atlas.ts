@@ -222,6 +222,11 @@ export interface AtlasProgramLayout {
   liveParameters: { uniform: string; type: string }[];
   /** Why the program cannot be baked on this device, if it cannot. */
   unsupported?: string;
+  /**
+   * The cutoff of a cutout program (`ProgramShader.alphaCutoff`): the base color texture then holds the program's
+   * opacity in its alpha, and the baked look is drawn only where that reaches the cutoff.
+   */
+  cutout?: number;
 }
 
 /** What a live argument is to a bake, as the engine classifies it (`LiveArgument` in `program/glsl.rs`). */
@@ -314,14 +319,15 @@ function layoutOf(shader: ProgramShader): AtlasProgramLayout {
   const liveTextures = Math.ceil(liveChannels.length / 4);
   for (let index = 0; index < liveTextures; index++) attachments.push(`live${index}`);
   const liveParameters = [...used].map(([uniform, type]) => ({ uniform, type }));
-  const layout: AtlasProgramLayout = { key: `${attachments.join("+")}${orient ? ":orient" : ""}:${fnv(JSON.stringify([liveChannels, liveOperations]))}`,
-    attachments, orient, liveChannels, liveOperations, liveParameters };
+  const cutout = typeof shader.alphaCutoff === "number" && outputs.includes("opacity") ? shader.alphaCutoff : undefined;
+  const layout: AtlasProgramLayout = { key: `${attachments.join("+")}${orient ? ":orient" : ""}${cutout === undefined ? "" : `:cutout${cutout}`}:${fnv(JSON.stringify([liveChannels, liveOperations]))}`,
+    attachments, orient, liveChannels, liveOperations, liveParameters, ...(cutout === undefined ? {} : { cutout }) };
   return layout;
 }
 
 /** The outputs each texture of the evaluate pass holds (see `atlasFragment`); the live textures hold the live fields. */
 const ATTACHMENT_OUTPUTS: Record<string, string[]> = {
-  base: ["base_color"], properties: ["roughness", "metalness"], height: ["height", "receiver_normal"], emissive: ["emissive"], offset: ["normal_offset"],
+  base: ["base_color", "opacity"], properties: ["roughness", "metalness"], height: ["height", "receiver_normal"], emissive: ["emissive"], offset: ["normal_offset"],
 };
 
 /**
@@ -561,7 +567,8 @@ void main() {
 export function atlasFragment(source: string, layout: AtlasProgramLayout): string {
   const writes: Record<string, string> = {
     // The base color target is an sRGB attachment: the hardware encodes these linear values on write.
-    base: "vec4(clamp(ms_base_color, 0.0, 1.0), 1.0)",
+    // A cutout's opacity rides in the alpha (linear; the baked look tests it against the cutoff).
+    base: `vec4(clamp(ms_base_color, 0.0, 1.0), ${layout.cutout === undefined ? "1.0" : "clamp(ms_opacity, 0.0, 1.0)"})`,
     properties: "vec4(1.0, clamp(ms_roughness, 0.0, 1.0), clamp(ms_metalness, 0.0, 1.0), 1.0)",
     // Height in meters, with the world-space receiver_normal output beside it when the program has one.
     height: "vec4(ms_height, ms_receiver_normal)",

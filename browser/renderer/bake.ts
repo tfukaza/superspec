@@ -1613,7 +1613,8 @@ export class GpuBaker {
     if (stack.channels.emissive) attachments.push("emissive");
     if (stack.channels.normal_offset) attachments.push("offset");
     attachments.push(...own.attachments.filter(name => name.startsWith("live")));
-    return { ...own, key: `stack:${attachments.join("+")}:${own.key}`, attachments, orient: false, unsupported: own.unsupported ?? stackUnsupported(base, stack) ?? undefined };
+    // The composed maps store no opacity, so a layered slot is never a cutout.
+    return { ...own, cutout: undefined, key: `stack:${attachments.join("+")}:${own.key}`, attachments, orient: false, unsupported: own.unsupported ?? stackUnsupported(base, stack) ?? undefined };
   }
 
   /**

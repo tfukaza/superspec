@@ -148,6 +148,124 @@ fn a_sub_item_is_placed_with_its_arguments_slots_and_attachments() {
 }
 
 #[test]
+fn slot_densities_reach_the_parent_through_the_slots_sub_items_land_in() {
+    let dense = |id: &str, density: f64| {
+        let mut definition = cube(id, 1.);
+        definition["densities"] = json!({"paint": density});
+        definition
+    };
+    let files = library(&[
+        ("notice.item.json", dense("notice", 640.)),
+        ("sign.item.json", dense("sign", 800.)),
+        ("crate.item.json", dense("crate", 48.)),
+        ("plain.item.json", cube("plain", 1.)),
+    ]);
+    let part = |id: &str, entry: &str, slot: Option<&str>| {
+        let mut part = json!({"id":id,"generator":{"kind":"item","entry":entry}});
+        if let Some(slot) = slot {
+            part["slots"] = json!({"paint": slot});
+        }
+        part
+    };
+    let top = |parts: Value, densities: Value| json!({"format":"itemspec","version":2,"id":"shop","parts":parts,"densities":densities});
+    // A sub-item's density follows its slot into the parent: kept under its own name, renamed
+    // by the part's slot map, and absent for a sub-item that states none.
+    let shop = build(
+        &top(
+            json!([
+                part("notice", "notice.item.json", None),
+                part("sign", "sign.item.json", Some("lettering")),
+                part("goods", "crate.item.json", Some("goods")),
+                part("shelf", "plain.item.json", Some("shelf")),
+            ]),
+            json!({}),
+        ),
+        &files,
+    )
+    .unwrap();
+    assert_eq!(
+        shop.densities,
+        [
+            ("goods".to_owned(), 48.),
+            ("lettering".to_owned(), 800.),
+            ("paint".to_owned(), 640.)
+        ]
+        .into()
+    );
+    // Two sub-items in one slot: the finest holds, in either order of the parts.
+    for order in [["sign", "crate"], ["crate", "sign"]] {
+        let parts: Vec<Value> = order
+            .iter()
+            .map(|name| part(name, &format!("{name}.item.json"), None))
+            .collect();
+        let shared = build(&top(json!(parts), json!({})), &files).unwrap();
+        assert_eq!(shared.densities, [("paint".to_owned(), 800.)].into());
+    }
+    // The parent's own statement for a slot comes before its sub-items', even when coarser.
+    let stated = build(
+        &top(
+            json!([part("sign", "sign.item.json", None)]),
+            json!({"paint": 96., "trim": 320.}),
+        ),
+        &files,
+    )
+    .unwrap();
+    assert_eq!(
+        stated.densities,
+        [("paint".to_owned(), 96.), ("trim".to_owned(), 320.)].into()
+    );
+    // Two levels down: a building holding the shop still hears the sign.
+    let mut nested = files.clone();
+    nested.extend(library(&[(
+        "shop.item.json",
+        top(
+            json!([part("sign", "sign.item.json", Some("lettering"))]),
+            json!({}),
+        ),
+    )]));
+    let building = build(
+        &top(json!([part("shop", "shop.item.json", None)]), json!({})),
+        &nested,
+    )
+    .unwrap();
+    assert_eq!(building.densities, [("lettering".to_owned(), 800.)].into());
+    // A density is no part of the geometry: the same meshes with and without it.
+    let bare = build(
+        &top(json!([part("sign", "plain.item.json", None)]), json!({})),
+        &files,
+    );
+    assert_eq!(
+        bare.unwrap().geometry_key,
+        build(
+            &top(
+                json!([part("sign", "plain.item.json", None)]),
+                json!({"paint": 800.})
+            ),
+            &files
+        )
+        .unwrap()
+        .geometry_key
+    );
+    assert!(serde_json::to_value(&shop).unwrap()["densities"]["lettering"] == 800.);
+    // Out of range, or for a slot that is no identifier, is refused where it is written.
+    for (densities, pointer) in [
+        (json!({"paint": 0.5}), "/densities/paint"),
+        (json!({"paint": 100001}), "/densities/paint"),
+        (json!({"": 64}), "/densities/"),
+    ] {
+        let error = build(
+            &top(json!([part("sign", "plain.item.json", None)]), densities),
+            &files,
+        )
+        .unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_DENSITY", pointer)
+        );
+    }
+}
+
+#[test]
 fn repeated_parts_read_their_indices_and_conditions_drop_copies() {
     let files = library(&[("cube.item.json", cube("cube", 1.))]);
     let top = json!({"format":"itemspec","version":2,"id":"grid",

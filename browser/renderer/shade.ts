@@ -93,6 +93,8 @@ export interface ProgramShader {
   renderInputs?: RenderInput[];
   /** For a painted material, the expression holding the color that reaches the screen after `ms_evaluate()`. */
   painted?: string;
+  /** The cutoff of a cutout (`alphaCutout` as the opacity): the surface is drawn only where `ms_opacity` reaches it. */
+  alphaCutoff?: number;
 }
 /** See `ProgramShader.renderInputs`. */
 export interface RenderInput { symbol: string; kind: "uniform" | "instance" | "vertex" | "derived" | "field"; glsl: string; name?: string; fallback?: string }
@@ -336,6 +338,8 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     material.toneMapped = paintedFinishing.toneMapping;
     paintedMaterials.add(new WeakRef(material));
   }
+  // A cutout is drawn where the program's opacity reaches its cutoff (the baked look does the same, scene-bake.ts).
+  if (typeof shader.alphaCutoff === "number") { material.alphaTest = shader.alphaCutoff; material.alphaToCoverage = true; }
   const features = featureTexture(mesh.features);
   const relief = mode === "pixel" && hasPixelRelief(shading);
   const objectFromWorld = new THREE.Matrix4();

@@ -3,17 +3,18 @@
 // soiled. `wear` 0 is fresh lettering.
 import {
   defineMaterial, param, vec2, vec3, add, sub, mul, mix, smoothstep, valueNoise, sampleColor, sampleAlpha, alphaCutout,
-  seed, uv, world,
+  seed, uv, surface, world,
 } from "@superspec/material/v1";
 
 const wear = param.scalar({ default: 0.45, range: [0, 1], label: "Lost paint" });
 const fading = param.scalar({ default: 0.4, range: [0, 1], label: "Chalking" });
 
-const sheet = vec2(uv.x, sub(1, uv.y));
+// The glyph cells are addressed from the sheet's top row, as the sign's mesh maps them.
+const sheet = vec2(uv.x, uv.y);
 const ink = sampleColor("superspec-material:lettering.png", sheet);
 const stroke = sampleAlpha("superspec-material:lettering.png", sheet);
-const round = add(world.x, world.y);
-const at = vec2(round, world.z);
+const round = surface.x;
+const at = vec2(surface.x, surface.y);
 // Flakes: clustered, fine-edged; a stroke survives where the field stays under the threshold.
 const cluster = valueNoise(mul(at, 6.5), seed("letter-cluster"));
 const chips = valueNoise(mul(at, 70), seed("letter-chips"));

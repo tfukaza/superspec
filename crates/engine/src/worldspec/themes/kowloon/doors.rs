@@ -91,6 +91,9 @@ pub struct Design {
     /// The head height of a wall opening as wide as the unit, which the entrance then fills:
     /// its frame reaches the unit's edges and its transom the head.
     pub fit: Option<f64>,
+    /// How many pressed panels a painted or steel leaf has, one above another (1 to 4; three
+    /// when left to the door).
+    pub panels: Option<usize>,
 }
 pub fn entrance_bounds(unit: &Unit, rng: &mut SeededRng) -> Result<Bounds, String> {
     planned_bounds(unit, rng, &Design::default())
@@ -609,6 +612,9 @@ pub fn planned_entrance(
     {
         return Err("A planned entrance needs a finite paint and a head within its storey.".into());
     }
+    if plan.panels.is_some_and(|count| !(1..=4).contains(&count)) {
+        return Err("A planned leaf has one to four panels.".into());
+    }
     let w = &s.weathering;
     if w.seed.len() > 2048
         || s.detail > 2
@@ -747,11 +753,26 @@ pub fn planned_entrance(
         if glazed {
             timber_leaf(d, a, b, paint, &key, s)?;
         } else {
-            let panels = vec![
-                [a + 0.095, 0.2, b - 0.095, 0.73],
-                [a + 0.095, 0.83, b - 0.095, 1.28],
-                [a + 0.095, 1.39, b - 0.095, 1.94],
-            ];
+            // The cross rails from the foot up, and the panels between them.
+            let rails: Vec<[f64; 2]> = match plan.panels {
+                None => vec![[0.055, 0.2], [0.73, 0.83], [1.28, 1.39], [1.94, h - 0.005]],
+                // Planned panels: the lowest a little shorter than the rest, 0.1 m rails.
+                Some(count) => {
+                    let clear = 1.74 - (count - 1) as f64 * 0.1;
+                    let each = clear / (count as f64 - 0.18);
+                    let mut rails = vec![[0.055, 0.2]];
+                    for i in 1..count {
+                        let top = 0.2 + each * (i as f64 - 0.18) + (i - 1) as f64 * 0.1;
+                        rails.push([top, top + 0.1]);
+                    }
+                    rails.push([1.94, h - 0.005]);
+                    rails
+                }
+            };
+            let panels: Vec<[f64; 4]> = rails
+                .windows(2)
+                .map(|pair| [a + 0.095, pair[0][1], b - 0.095, pair[1][0]])
+                .collect();
             let pen = if steel {
                 d.pen.with_weathering(
                     d.mesh,
@@ -812,7 +833,7 @@ pub fn planned_entrance(
                     surface.as_ref(),
                 )?;
             }
-            for [bottom, top] in [[0.055, 0.2], [0.73, 0.83], [1.28, 1.39], [1.94, h - 0.005]] {
+            for [bottom, top] in rails {
                 rail(
                     &mut f,
                     [a + 0.095, 0.025, bottom],

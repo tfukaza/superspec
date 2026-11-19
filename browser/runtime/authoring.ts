@@ -51,8 +51,8 @@ export interface StudioMaterial {
    */
   layers?: StudioLayer[];
 }
-/** A weathering layer of a material slot (`authoring::Layer`). */
-export interface StudioLayer { entry: string; parameters: Record<string, ParameterValue>; seed: number; follow?: Record<string, string> }
+/** A weathering layer of a material slot (`authoring::Layer`). A name follows one receiver feature, or the nearest of a list of them. */
+export interface StudioLayer { entry: string; parameters: Record<string, ParameterValue>; seed: number; follow?: Record<string, string | string[]> }
 /** Portable studio inputs; original scene assets remain separate from compiled render output. */
 export interface AuthoringProject {
   /** Version 2 adds `models` and `materials`; version 1 projects open unchanged. */

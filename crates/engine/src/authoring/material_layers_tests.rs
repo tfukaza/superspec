@@ -84,7 +84,7 @@ fn layer(entry: &str, parameters: &[(&str, f64)]) -> Layer {
             .collect(),
         seed: 7,
         follow: if entry == "grime.material.ts" {
-            [("follow".to_owned(), "sill".to_owned())].into()
+            [("follow".to_owned(), "sill".into())].into()
         } else {
             BTreeMap::new()
         },

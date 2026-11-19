@@ -3,6 +3,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { SimplexNoise } from "three/examples/jsm/math/SimplexNoise.js";
 import type { AmbientOcclusionSettings } from "./lighting.ts";
 
 /** The lighting record's ambient occlusion values; whether the effect is on (`enabled`) is its host's decision. */
@@ -74,6 +75,34 @@ function faceNormals(material: THREE.Material): void {
 }
 
 /**
+ * The denoise's rotation noise as the pass makes it (four channels of simplex noise over a repeating 64 by 64 tile),
+ * from a fixed sequence instead of Math.random(): the same texture in every session.
+ */
+function fixedNoise(size = 64): THREE.DataTexture {
+  let state = 0x2f6e2b1;
+  // mulberry32: a small generator with a fixed seed.
+  const random = (): number => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const simplex = new SimplexNoise({ random });
+  const data = new Uint8Array(size * size * 4);
+  for (let i = 0; i < size; i++) for (let j = 0; j < size; j++) {
+    const at = (i * size + j) * 4;
+    data[at] = (simplex.noise(i, j) * 0.5 + 0.5) * 255;
+    data[at + 1] = (simplex.noise(i + size, j) * 0.5 + 0.5) * 255;
+    data[at + 2] = (simplex.noise(i, j + size) * 0.5 + 0.5) * 255;
+    data[at + 3] = (simplex.noise(i + size, j + size) * 0.5 + 0.5) * 255;
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/**
  * Screen-space ambient occlusion for a scene view: soft darkening in creases and where objects meet, from the depth and
  * geometric normals the camera sees (three.js's GTAO pass with its denoise; `faceNormals` makes its normals those). A global rendering setting of the scene
  * (`ambientOcclusion` in the lighting record), never part of a material; the planned baked `occlusion()` material
@@ -110,6 +139,12 @@ export class AmbientOcclusion {
     this.composer.addPass(new RenderPass(scene, camera));
     this.pass = new GTAOPass(scene, camera, size.x, size.y);
     // Both faces of a thin part write depth and a normal, as the scene's materials draw them.
+    // The denoise turns its sample pattern by a noise texture the pass draws from Math.random() when it is made, so
+    // two runs of one scene differed in a fifth or more of their pixels. A fixed texture makes pictures comparable.
+    const denoise = this.pass as unknown as { pdNoiseTexture: THREE.Texture; pdMaterial: THREE.ShaderMaterial };
+    denoise.pdNoiseTexture.dispose();
+    denoise.pdNoiseTexture = fixedNoise();
+    denoise.pdMaterial.uniforms.tNoise.value = denoise.pdNoiseTexture;
     this.pass.normalMaterial.side = THREE.DoubleSide;
     faceNormals(this.pass.normalMaterial);
     const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void };

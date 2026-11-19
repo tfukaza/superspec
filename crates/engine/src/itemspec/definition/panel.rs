@@ -48,6 +48,9 @@ pub(super) struct Opening {
     frame: Option<[f64; 2]>,
     glazing: Option<f64>,
     sill: Option<Sill>,
+    /// The radius its two upright front arrises are rounded with; 0 leaves them sharp.
+    #[serde(skip_serializing_if = "is_zero")]
+    jambs: f64,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Panel {
@@ -58,6 +61,55 @@ pub(super) struct Panel {
     anchor: P2,
     #[serde(skip_serializing_if = "Bevel::none")]
     bevel: Bevel,
+    #[serde(skip_serializing_if = "Arris::none")]
+    arris: Arris,
+}
+fn is_zero(value: &f64) -> bool {
+    *value == 0.
+}
+
+/// The rounding of a panel's upright end edges: its radius and the tangent of half the plan
+/// turn at the start and at the end (0 where that end stays sharp). Absent from a geometry key
+/// when neither end is rounded.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct Arris {
+    radius: f64,
+    turns: [f64; 2],
+}
+impl Arris {
+    fn none(&self) -> bool {
+        self.radius == 0. || self.turns == [0.; 2]
+    }
+    /// How far along the front the round starts from each end.
+    fn setbacks(&self) -> [f64; 2] {
+        self.turns.map(|turn| self.radius * turn)
+    }
+    /// One end's half of the round, in (x, y) with y into the panel: where it leaves the front,
+    /// its middle (where the neighbour's half takes over) and the outward normal there.
+    fn half(&self, end: usize, width: f64) -> Option<[P2; 3]> {
+        let turn = self.turns[end];
+        if self.radius <= 0. || turn <= 0. {
+            return None;
+        }
+        // The half turn's cosine and sine from its tangent: only a square root.
+        let cosine = 1. / (1. + turn * turn).sqrt();
+        let sine = turn * cosine;
+        let reach = self.radius * ((1. + turn * turn).sqrt() - 1.);
+        let setback = self.radius * turn;
+        Some(if end == 0 {
+            [
+                [setback, 0.],
+                [reach * sine, reach * cosine],
+                [-sine, -cosine],
+            ]
+        } else {
+            [
+                [width - setback, 0.],
+                [width - reach * sine, reach * cosine],
+                [sine, -cosine],
+            ]
+        })
+    }
 }
 
 /// Start of a span of `size` inside `available`, by the shared placement rule.
@@ -115,6 +167,36 @@ pub(super) fn resolve(
             .max(0.),
     )?;
     let bevel = Bevel { radius, segments };
+    let arris = Arris {
+        radius: context.scalar(&definition.arris, &format!("{pointer}/arris"))?,
+        turns: [
+            context.scalar(&definition.arris_start, &format!("{pointer}/arrisStart"))?,
+            context.scalar(&definition.arris_end, &format!("{pointer}/arrisEnd"))?,
+        ],
+    };
+    let setbacks = arris.setbacks();
+    if arris.radius < 0.
+        || arris.turns.iter().any(|turn| !(0. ..=8.).contains(turn))
+        || setbacks.iter().any(|setback| *setback > thickness - SLIVER)
+        || setbacks[0] + setbacks[1] > width - 2. * MARGIN
+        || (!arris.none() && radius > 0.)
+    {
+        return Err(context.fail(
+            &format!("{pointer}/arris"),
+            "ITEM_GEOMETRY",
+            "An arris is a radius whose rounds (the radius times the tangent of each end's half turn, 0 to 8) fit in the panel's thickness and width; a panel has a bevel or arrises, not both.",
+        ));
+    }
+    // An end that stays sharp keeps the arris out of the geometry key.
+    let arris = if arris.none() {
+        Arris {
+            radius: 0.,
+            turns: [0.; 2],
+        }
+    } else {
+        arris
+    };
+    let setbacks = arris.setbacks();
     // A rounded rim takes its radius from the panel's edge and from round every opening.
     let margin = if radius > 0. {
         MARGIN.max(2. * radius + 0.002)
@@ -191,9 +273,22 @@ pub(super) fn resolve(
             parameters: context.parameters,
             derived: &derived,
         };
-        let mut resolved =
-            resolve_opening(&copy, opening, [width, height, thickness], margin, &pointer)?;
+        let mut resolved = resolve_opening(
+            &copy,
+            opening,
+            [width, height, thickness],
+            margin,
+            setbacks,
+            &pointer,
+        )?;
         resolved.id = id;
+        if resolved.jambs > 0. && radius > 0. {
+            return Err(context.fail(
+                &format!("{pointer}/jambs"),
+                "ITEM_OPENING",
+                "A bevelled panel already rounds its openings' rims.",
+            ));
+        }
         if resolved.recess.is_some_and(|depth| depth < radius + SLIVER) {
             return Err(context.fail(
                 &format!("{pointer}/depth"),
@@ -208,9 +303,11 @@ pub(super) fn resolve(
                 "Opening IDs are unique within their panel.",
             ));
         }
+        // Rounded jambs take their radius from the wall beside the opening.
+        let between = margin + resolved.jambs;
         if let Some(other) = openings.iter().find(|other| {
-            resolved.x < other.x + other.width + margin - 1e-9
-                && other.x < resolved.x + resolved.width + margin - 1e-9
+            resolved.x < other.x + other.width + other.jambs + between - 1e-9
+                && other.x < resolved.x + resolved.width + other.jambs + between - 1e-9
                 && resolved.z < other.z + other.height + margin - 1e-9
                 && other.z < resolved.z + resolved.height + margin - 1e-9
         }) {
@@ -239,6 +336,7 @@ pub(super) fn resolve(
         openings,
         anchor,
         bevel,
+        arris,
     })
 }
 
@@ -247,6 +345,7 @@ fn resolve_opening(
     opening: &OpeningDefinition,
     [panel_width, panel_height, panel_thickness]: [f64; 3],
     margin: f64,
+    ends: [f64; 2],
     pointer: &str,
 ) -> Result<Opening, ItemDiagnostic> {
     let fail = |field: &str, message: String| {
@@ -281,9 +380,11 @@ fn resolve_opening(
         height,
         &format!("{pointer}/v"),
     )?;
-    if x < margin - 1e-9
+    let jambs = context.scalar(&opening.jambs, &format!("{pointer}/jambs"))?;
+    // Rounded jambs, and the panel's rounded ends, take their width from the front.
+    if x < margin + jambs + ends[0] - 1e-9
         || z < margin - 1e-9
-        || x + width > panel_width - margin + 1e-9
+        || x + width > panel_width - margin - jambs - ends[1] + 1e-9
         || z + height > panel_height - margin + 1e-9
     {
         return Err(fail(
@@ -324,6 +425,12 @@ fn resolve_opening(
         }
         (OpeningMode::Through, None) => None,
     };
+    if jambs < 0. || jambs > recess.unwrap_or(panel_thickness) - SLIVER || (jambs > 0. && arch) {
+        return Err(fail(
+            "/jambs",
+            "Rounded jambs are a radius smaller than the depth of a rectangular opening.".into(),
+        ));
+    }
     if recess.is_some() && (opening.frame.is_some() || opening.glazing.is_some()) {
         return Err(fail(
             "",
@@ -400,6 +507,7 @@ fn resolve_opening(
         frame,
         glazing,
         sill,
+        jambs,
     })
 }
 
@@ -430,6 +538,74 @@ impl Opening {
 }
 
 impl Panel {
+    /// The rounded jambs of a rectangular opening: on each side a quarter round in two chords
+    /// from the front (whose group it joins, with normals that turn to the reveal's) to the
+    /// reveal, and the head and the foot of the reveal, which widen to the front between them.
+    fn jambs(surfaces: &mut Surfaces<'_>, opening: &Opening, depth: f64) -> Result<(), String> {
+        let j = opening.jambs;
+        let half = 0.5f64.sqrt();
+        let (z0, z1) = (opening.z, opening.z + opening.height);
+        let arc = j * std::f64::consts::FRAC_PI_4;
+        // Where a side's round leaves the front, its middle, and where it meets the reveal.
+        let round = |x: f64, away: f64| -> [P2; 3] {
+            [
+                [x + away * j, 0.],
+                [x + away * j * (1. - half), j * (1. - half)],
+                [x, j],
+            ]
+        };
+        // Each side: the jamb's plane, and which way the wall beside it lies.
+        for (x, away) in [(opening.x, -1.), (opening.x + opening.width, 1.)] {
+            let points = round(x, away);
+            let normals: [V3; 3] = [[0., -1., 0.], [-away * half, -half, 0.], [-away, 0., 0.]];
+            for k in 0..2 {
+                let (a, b) = (points[k], points[k + 1]);
+                let u = |k: usize| x + away * (j - arc * k as f64);
+                surfaces.polygon(
+                    "front",
+                    &[
+                        [a[0], a[1], z0],
+                        [b[0], b[1], z0],
+                        [b[0], b[1], z1],
+                        [a[0], a[1], z1],
+                    ],
+                    [-away * half, -half, 0.],
+                    &[[u(k), z0], [u(k + 1), z0], [u(k + 1), z1], [u(k), z1]],
+                    Some(&[normals[k], normals[k + 1], normals[k + 1], normals[k]]),
+                )?;
+            }
+        }
+        // Head and foot, counterclockwise seen from above: along the front, round the right
+        // jamb, along the back and round the left jamb.
+        let (left, right) = (round(opening.x, -1.), round(opening.x + opening.width, 1.));
+        let outline = vec![
+            left[0],
+            right[0],
+            right[1],
+            right[2],
+            [right[2][0], depth],
+            [left[2][0], depth],
+            left[2],
+            left[1],
+        ];
+        let profile = triangulate(
+            vec![outline.iter().map(|p| [p[0], p[1], 0.]).collect()],
+            &[],
+            &[],
+        )?;
+        let points: Vec<P2> = profile.points.iter().map(|p| [p[0], p[1]]).collect();
+        for (z, facing) in [(z0, 1.), (z1, -1.)] {
+            surfaces.indexed(
+                "reveal",
+                &points.iter().map(|p| [p[0], p[1], z]).collect::<Vec<_>>(),
+                &vec![[0., 0., facing]; points.len()],
+                &points,
+                &profile.triangles,
+                facing < 0.,
+            )?;
+        }
+        Ok(())
+    }
     /// Width, height and thickness.
     pub(super) fn size(&self) -> [f64; 3] {
         [self.width, self.height, self.thickness]
@@ -466,17 +642,34 @@ impl Panel {
         ] {
             let front = group == "front";
             let g = if front { r } else { 0. };
+            // Rounded ends start where the front leaves off.
+            let [start, end] = if front {
+                self.arris.setbacks()
+            } else {
+                [0.; 2]
+            };
             let mut loops: Vec<Vec<V3>> = vec![vec![
-                [g, g, 0.],
-                [w - g, g, 0.],
-                [w - g, h - g, 0.],
-                [g, h - g, 0.],
+                [g + start, g, 0.],
+                [w - g - end, g, 0.],
+                [w - g - end, h - g, 0.],
+                [g + start, h - g, 0.],
             ]];
             for opening in &self.openings {
                 if !through_only || opening.recess.is_none() {
                     let mut outline = opening.outline(0.);
                     if g > 0. {
                         outline = inset(&outline, -g);
+                    }
+                    if front && opening.jambs > 0. {
+                        // Rounded jambs widen the opening in the front face by their radius.
+                        let (x0, x1) = (opening.x - opening.jambs, opening.x + opening.width);
+                        let (z0, z1) = (opening.z, opening.z + opening.height);
+                        outline = vec![
+                            [x0, z0],
+                            [x1 + opening.jambs, z0],
+                            [x1 + opening.jambs, z1],
+                            [x0, z1],
+                        ];
                     }
                     loops.push(outline.iter().map(|p| [p[0], p[1], 0.]).collect());
                 }
@@ -501,24 +694,89 @@ impl Panel {
         }
         // The four edge faces, with one texture coordinate running around the perimeter.
         let corners = [[0., 0.], [w, 0.], [w, h], [0., h]];
+        let halves = [self.arris.half(0, w), self.arris.half(1, w)];
+        let setbacks = self.arris.setbacks();
         let mut along = 0.;
         for side in 0..4 {
             let (a, b): (P2, P2) = (corners[side], corners[(side + 1) % 4]);
             let span = (b[0] - a[0]).abs() + (b[1] - a[1]).abs();
             let outward = [(b[1] - a[1]) / span, 0., -(b[0] - a[0]) / span];
+            if !self.arris.none() && side % 2 == 0 {
+                // The bottom and the top lose the corners their rounded ends cut off: the front
+                // edge from the start's round to the end's, then the back edge.
+                let mut outline: Vec<P2> = match halves[0] {
+                    Some([leaves, middle, _]) => vec![[0., setbacks[0]], middle, leaves],
+                    None => vec![[0., 0.]],
+                };
+                match halves[1] {
+                    Some([leaves, middle, _]) => {
+                        outline.extend([leaves, middle, [w, setbacks[1]]]);
+                    }
+                    None => outline.push([w, 0.]),
+                }
+                outline.extend([[w, t], [0., t]]);
+                surfaces.polygon(
+                    "edge",
+                    &outline
+                        .iter()
+                        .map(|p| [p[0], p[1], a[1]])
+                        .collect::<Vec<_>>(),
+                    outward,
+                    &outline
+                        .iter()
+                        .map(|p| [along + if side == 0 { p[0] } else { w - p[0] }, p[1]])
+                        .collect::<Vec<_>>(),
+                    None,
+                )?;
+                along += span;
+                continue;
+            }
+            // An end face starts behind its round.
+            let lift = match side {
+                1 => r.max(setbacks[1]),
+                3 => r.max(setbacks[0]),
+                _ => r,
+            };
             surfaces.polygon(
                 "edge",
                 &[
-                    [a[0], r, a[1]],
-                    [b[0], r, b[1]],
+                    [a[0], lift, a[1]],
+                    [b[0], lift, b[1]],
                     [b[0], t, b[1]],
                     [a[0], t, a[1]],
                 ],
                 outward,
-                &[[along, r], [along + span, r], [along + span, t], [along, t]],
+                &[
+                    [along, lift],
+                    [along + span, lift],
+                    [along + span, t],
+                    [along, t],
+                ],
                 None,
             )?;
             along += span;
+        }
+        // Each rounded end: one chord from the front to the middle of the round, which the
+        // neighbouring panel's chord continues, with normals that turn across it.
+        for (end, half) in halves.into_iter().enumerate() {
+            let Some([leaves, middle, normal]) = half else {
+                continue;
+            };
+            let chord = superspec_geometry::math::hypot(middle[0] - leaves[0], middle[1]);
+            let u = leaves[0] + if end == 0 { -chord } else { chord };
+            let (flat, turned) = ([0., -1., 0.], [normal[0], normal[1], 0.]);
+            surfaces.polygon(
+                "front",
+                &[
+                    [leaves[0], 0., 0.],
+                    [middle[0], middle[1], 0.],
+                    [middle[0], middle[1], h],
+                    [leaves[0], 0., h],
+                ],
+                [normal[0], normal[1] - 1., 0.],
+                &[[leaves[0], 0.], [u, 0.], [u, h], [leaves[0], h]],
+                Some(&[flat, turned, turned, flat]),
+            )?;
         }
         if r > 0. {
             rim(
@@ -545,6 +803,17 @@ impl Panel {
                 let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
                 let span = superspec_geometry::math::hypot(b[0] - a[0], b[1] - a[1]);
                 let middle = [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2.];
+                // A rounded jamb's reveal starts behind its round (a rectangle's jambs are its
+                // second and fourth edges); the head and the foot between them follow the rounds.
+                let r = if opening.jambs > 0. {
+                    if i % 2 == 0 {
+                        along += span;
+                        continue;
+                    }
+                    opening.jambs
+                } else {
+                    r
+                };
                 surfaces.polygon(
                     "reveal",
                     &[
@@ -563,6 +832,9 @@ impl Panel {
                     None,
                 )?;
                 along += span;
+            }
+            if opening.jambs > 0. {
+                Self::jambs(surfaces, opening, depth)?;
             }
             if r > 0. {
                 rim(
@@ -656,6 +928,8 @@ impl Panel {
                 closed,
                 normal: [0., if y == 0. { -1. } else { 1. }, 0.],
                 width: 0.,
+                reach: Default::default(),
+                within: 0.,
             });
         };
         for y in [0., t] {

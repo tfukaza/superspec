@@ -400,7 +400,7 @@ impl Session {
                 })?;
                 let mut features = request.features.clone();
                 if let Some(own) = features.get_mut(mesh) {
-                    *own = followed_features(own, &layer.follow);
+                    *own = crate::materialspec::program::followed_features(own, &layer.follow);
                 }
                 Request {
                     entry: layer.entry.clone(),
@@ -425,30 +425,6 @@ impl Session {
             fields,
         })
     }
-}
-
-/// A receiver's named features as a layer that follows `follow` (its own names to the
-/// receiver's) sees them: the receiver's names it does not take as its own stay, and each name
-/// it follows is a copy under the layer's name (as the CPU bake renames them).
-fn followed_features(
-    features: &[crate::materialspec::program::NamedFeature],
-    follow: &BTreeMap<String, String>,
-) -> Vec<crate::materialspec::program::NamedFeature> {
-    let mut renamed = Vec::new();
-    for feature in features {
-        if !follow.contains_key(&feature.name) {
-            renamed.push(feature.clone());
-        }
-        for (own, theirs) in follow {
-            if *theirs == feature.name {
-                renamed.push(crate::materialspec::program::NamedFeature {
-                    name: own.clone(),
-                    ..feature.clone()
-                });
-            }
-        }
-    }
-    renamed
 }
 
 #[cfg(test)]
@@ -480,13 +456,37 @@ mod tests {
             closed: false,
         };
         let features = [feature("base"), feature("sill"), feature("follow")];
-        let follow = BTreeMap::from([("follow".to_owned(), "base".to_owned())]);
+        use crate::materialspec::program::{Follow, followed_features};
+        let follow = BTreeMap::from([("follow".to_owned(), Follow::from("base"))]);
         let names: Vec<String> = followed_features(&features, &follow)
             .into_iter()
             .map(|feature| feature.name)
             .collect();
         assert_eq!(names, ["base", "follow", "sill"]);
         assert_eq!(followed_features(&features, &BTreeMap::new()).len(), 3);
+        // A list follows several: the layer's one name holds the polylines of all of them.
+        let both = BTreeMap::from([(
+            "follow".to_owned(),
+            Follow::Many(vec!["sill".into(), "base".into()]),
+        )]);
+        let names: Vec<String> = followed_features(&features, &both)
+            .into_iter()
+            .map(|feature| feature.name)
+            .collect();
+        assert_eq!(names, ["base", "follow", "sill", "follow"]);
+        // One name in a list is the name itself, and a list's order and repeats say nothing.
+        assert_eq!(
+            Follow::Many(vec!["base".into()]).normalized(),
+            Follow::from("base")
+        );
+        assert_eq!(
+            Follow::Many(vec!["sill".into(), "base".into(), "sill".into()]).normalized(),
+            Follow::Many(vec!["base".into(), "sill".into()])
+        );
+        assert_eq!(
+            serde_json::to_string(&follow).unwrap(),
+            r#"{"follow":"base"}"#
+        );
     }
 
     /// Reads a record the way a renderer does and checks it against the atlas's own sampling.

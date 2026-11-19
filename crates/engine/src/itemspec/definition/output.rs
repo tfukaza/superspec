@@ -412,6 +412,17 @@ pub struct Feature {
     pub normal: [f64; 3],
     /// Extent across the polyline: a fitting's length along its route, otherwise zero.
     pub width: f64,
+    /// Whose receivers are given the feature: its own part's (what every generated feature
+    /// has), or also those of other parts and items that come within `within` meters of it.
+    #[serde(skip_serializing_if = "super::Reach::is_part")]
+    pub reach: super::Reach,
+    /// How near a receiver outside the feature's part must come to be given it, in the
+    /// feature's own space; zero for a feature that reaches its part alone.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub within: f64,
+}
+fn is_zero(value: &f64) -> bool {
+    *value == 0.
 }
 
 /// The frame a part's surface pattern is fixed to, so a resize does not shift it.
@@ -505,6 +516,10 @@ pub struct GeneratedItem {
     /// item's sub-items under the slots they land in.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub layers: BTreeMap<String, Vec<super::LayerRequest>>,
+    /// Texels per meter each slot asks for where its host states none, including what the
+    /// item's sub-items ask for the slots they land in.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub densities: BTreeMap<String, f64>,
 }
 impl GeneratedItem {
     pub fn with_material_overrides(

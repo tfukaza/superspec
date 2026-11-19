@@ -172,6 +172,38 @@ fn vessel(
         48,
     )
 }
+/// What a caller fixes of a round tank instead of leaving it to the seed. The default fixes
+/// nothing and draws the seeded tank; the seed's draws are made either way, so a fixed size
+/// leaves the rest of the tank the seed's.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RoundShape {
+    /// Vessel radius in meters (the seed's 0.55–0.67).
+    pub radius: Option<f64>,
+    /// Vessel height in meters, foot to shoulder (the seed's 1.05–1.3).
+    pub height: Option<f64>,
+    /// Height of the stand under the vessel in meters (the seed's 0.42–0.53).
+    pub stand: Option<f64>,
+    /// Evenly spaced rolled ribs round the shell (three hoops when `None`).
+    pub ribs: Option<usize>,
+    /// Rise of a conical lid over the shoulder in meters; 0 keeps the flat top.
+    pub lid: f64,
+}
+impl RoundShape {
+    fn validate(&self) -> Result<(), String> {
+        let within = |value: Option<f64>, range: std::ops::RangeInclusive<f64>| {
+            value.is_none_or(|v| range.contains(&v))
+        };
+        if !within(self.radius, 0.3..=1.5)
+            || !within(self.height, 0.6..=3.)
+            || !within(self.stand, 0.2..=3.)
+            || self.ribs.is_some_and(|n| n > 24)
+            || !(0. ..=1.).contains(&self.lid)
+        {
+            return Err("Round tank needs radius 0.3–1.5 m, height 0.6–3 m, stand 0.2–3 m, at most 24 ribs and a lid of 0–1 m.".into());
+        }
+        Ok(())
+    }
+}
 /// Draws within the source's two-meter rooftop footprint; caller owns the detached host and RNG stream.
 pub fn round_tank(
     drawing: &mut Fixture<'_, '_>,
@@ -179,7 +211,85 @@ pub fn round_tank(
     rng: &mut SeededRng,
     settings: &Settings,
 ) -> Result<(), String> {
+    shaped_round_tank(drawing, center, rng, settings, &RoundShape::default())
+}
+/// A conical lid from an eave just proud of the shell at `z` up to a collar of `top` radius.
+fn cone_lid(
+    drawing: &mut Fixture<'_, '_>,
+    radius: f64,
+    z: f64,
+    rise: f64,
+    top: f64,
+) -> Result<(), String> {
+    let eave = radius + 0.025;
+    // The skirt's foot, its eave, then the cone to its collar.
+    let profile = [[eave, z - 0.05], [eave, z], [top, z + rise]];
+    let slant = hypot(eave - top, rise);
+    let normals = [[1., 0.], [1., 0.], [rise / slant, (eave - top) / slant]];
+    let sides = 48;
+    let repeat = drawing.repeat("brushed-metal");
+    for row in 0..2 {
+        // The skirt is vertical; the cone takes its own slant on both its rows.
+        let normal = if row == 0 { normals[0] } else { normals[2] };
+        for side in 0..sides {
+            let corner = |r: usize, s: usize| {
+                let angle = s as f64 / sides as f64 * 2. * PI;
+                let [radius, z] = profile[r];
+                (
+                    [cos(angle) * radius, sin(angle) * radius, z],
+                    [cos(angle) * normal[0], sin(angle) * normal[0], normal[1]],
+                    [s as f64 / sides as f64 * 2. * PI * eave, z],
+                )
+            };
+            let corners = [
+                corner(row, side),
+                corner(row, side + 1),
+                corner(row + 1, side + 1),
+                corner(row + 1, side),
+            ];
+            drawing.pen.face_raw(
+                drawing.mesh,
+                "brushed-metal",
+                &corners.map(|v| v.0),
+                corners[0].1,
+                &Tint::Color([0.92; 3]),
+                repeat,
+                Some(&corners.map(|v| v.2.map(|u| u * repeat))),
+                Some(&corners.map(|v| v.1)),
+            )?;
+        }
+    }
+    // The eave's underside, a ring facing down between the skirt and the shell.
+    let inner = radius - 0.01;
+    for side in 0..sides {
+        let at = |r: f64, s: usize| {
+            let angle = s as f64 / sides as f64 * 2. * PI;
+            [cos(angle) * r, sin(angle) * r, z - 0.05]
+        };
+        drawing.face(
+            "metal",
+            &[
+                at(eave, side + 1),
+                at(eave, side),
+                at(inner, side),
+                at(inner, side + 1),
+            ],
+            [0., 0., -1.],
+            [0.55; 3],
+        )?;
+    }
+    Ok(())
+}
+/// [`round_tank`] with whatever `shape` fixes of it.
+pub fn shaped_round_tank(
+    drawing: &mut Fixture<'_, '_>,
+    center: V3,
+    rng: &mut SeededRng,
+    settings: &Settings,
+    shape: &RoundShape,
+) -> Result<(), String> {
     validate(center, settings)?;
+    shape.validate()?;
     let pen = drawing.pen.moved(center)?;
     let mut drawing = Fixture {
         pen,

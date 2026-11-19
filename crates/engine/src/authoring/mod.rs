@@ -167,9 +167,11 @@ pub struct Layer {
     pub seed: u32,
     /// The receiver feature each named feature the layer measures to follows, by the layer's
     /// own name for it: `{ "follow": "sill" }` makes `featureDistance("follow", ...)` measure to
-    /// the receiver's `sill`. Names left out are the receiver's own.
+    /// the receiver's `sill`. Names left out are the receiver's own. A list
+    /// (`{ "follow": ["sill", "drip"] }`) follows several at once: the layer's name then
+    /// measures to the nearest of all their polylines, at the cost of one layer.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub follow: BTreeMap<String, String>,
+    pub follow: BTreeMap<String, program::Follow>,
 }
 
 /// An item's features (`itemspec::definition::output::Feature`: joint, end, bracket-contact,

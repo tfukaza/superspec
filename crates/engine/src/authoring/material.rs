@@ -424,7 +424,7 @@ struct Source {
     /// Its other inputs read the request's planes of the receiver by name.
     bindings: BTreeMap<String, (String, String)>,
     /// The receiver feature each named feature it measures to follows (see `Layer::follow`).
-    follow: BTreeMap<String, String>,
+    follow: BTreeMap<String, program::Follow>,
 }
 
 impl std::ops::Index<usize> for BoundPlanes {
@@ -449,7 +449,11 @@ fn plane_id(index: usize, name: &str, producer: Option<&str>) -> String {
 struct Chain {
     /// The base and then the layers, lowest first, by their material name in the build, with
     /// their requests and the features they follow.
-    materials: Vec<(String, program::MaterialRequest, BTreeMap<String, String>)>,
+    materials: Vec<(
+        String,
+        program::MaterialRequest,
+        BTreeMap<String, program::Follow>,
+    )>,
     /// For the composite entry, the material and value each input reads: `base.<channel>` the
     /// channel of the material that last changed it, `live.<k>` a field of the base that its
     /// live operations read.
@@ -911,23 +915,9 @@ fn layer_request(layer: &super::Layer) -> program::MaterialRequest {
 /// names measures to the receiver's feature it follows, and the receiver's other names stay.
 fn followed(
     features: &[program::NamedFeature],
-    follow: &BTreeMap<String, String>,
+    follow: &BTreeMap<String, program::Follow>,
 ) -> Result<program::NamedFeatures, String> {
-    let mut renamed = Vec::new();
-    for feature in features {
-        if !follow.contains_key(&feature.name) {
-            renamed.push(feature.clone());
-        }
-        for (own, theirs) in follow {
-            if *theirs == feature.name {
-                renamed.push(program::NamedFeature {
-                    name: own.clone(),
-                    ..feature.clone()
-                });
-            }
-        }
-    }
-    program::NamedFeatures::new(&renamed)
+    program::NamedFeatures::new(&program::followed_features(features, follow))
 }
 
 /// The node of the plane of `value` (a channel, or a field the base's live operations read) of

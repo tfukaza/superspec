@@ -19,8 +19,9 @@ mod ts;
 pub use deps::{Dependencies, DependencyTable, SampleInputs};
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{
-    COPLANAR_DEGREES, FeatureSet, MAX_FEATURE_NAMES, MAX_FEATURES, MAX_NAMED_SEGMENTS,
-    NamedFeature, NamedFeatures, bend_shaded, orient_relief, receiver_features, receiver_seams,
+    COPLANAR_DEGREES, FeatureSet, Follow, MAX_FEATURE_NAMES, MAX_FEATURES, MAX_FOLLOWED,
+    MAX_NAMED_SEGMENTS, NamedFeature, NamedFeatures, bend_shaded, followed_features,
+    followed_names, orient_relief, receiver_features, receiver_seams,
 };
 pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
 pub use ts::{

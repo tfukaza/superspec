@@ -5,6 +5,7 @@
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    f64::consts::PI,
     sync::Arc,
 };
 use superspec_engine::{
@@ -163,18 +164,27 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
         floor.layers["wall"][0].entry,
         "kowloon-paint-coat.material.ts"
     );
-    // Over the paint: the inked edges every wall carries, then the layers that follow a feature.
+    // Over the paint: the repairs and peels placed by the floor's frames, the inked edges every
+    // wall carries, then the layers that follow a feature.
     assert_eq!(
         floor.layers["wall"][1].entry,
+        "kowloon-repairs.material.ts"
+    );
+    assert_eq!(
+        floor.layers["wall"][2].entry,
         "kowloon-edge-ink.material.ts"
     );
-    let follows: Vec<String> = floor.layers["wall"][1..]
+    let follows: Vec<_> = floor.layers["wall"][2..]
         .iter()
-        .filter_map(|layer| layer.follow.get("source").cloned())
+        .filter_map(|layer| layer.follow.get("source"))
+        .map(|source| serde_json::to_value(source).expect("a followed feature"))
         .collect();
-    // Runoff streaks from its top, its sills and its air conditioners' drips; on the tiled
-    // spandrels from the sills and drips.
-    assert_eq!(follows, ["top", "sill", "drip"]);
+    // One layer of runoff streaks from the nearest of its drips, eave, ledges and sills, and
+    // the fringe under a parapet's coping; on the tiled spandrels from the sills and drips.
+    assert_eq!(
+        follows,
+        [json!(["drip", "eave", "ledge", "sill"]), json!("coping")]
+    );
     // The soot band follows the pavement line, which only a storey at street level has.
     let soot = floor.layers["wall"]
         .iter()
@@ -190,7 +200,7 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
             .iter()
             .any(|f| f.name == "pavement")
     );
-    let tiles: Vec<String> = floor.layers["tile"]
+    let tiles: Vec<_> = floor.layers["tile"]
         .iter()
         .filter_map(|layer| layer.follow.get("source").cloned())
         .collect();
@@ -581,9 +591,55 @@ fn the_reference_plan_builds_its_shops_balcony_roof_and_pavement() {
         "pavement-1/",
         "podium/",
         "board-1-1/board/",
+        // Planned cables on both streets (the front's third rounds the corner), hoods of
+        // loose sheet, a rail on the rear and left parapets, and the roof's clutter.
+        "side-0/cable-0/",
+        "side-0/cable-2/cable",
+        "side-0/cable-4/",
+        "side-1/cable-1/",
+        "side-2/cableAuto-0/",
+        "side-0/floor-0/canopy-0/sheet",
+        "roofRail-2/",
+        "roofRail-3/",
+        "roofClutter-0/metal",
+        "roofClutter-0/clutter",
+        "roofClutter-0/cable",
     ] {
         assert!(has(piece), "{piece} is missing");
     }
+    for piece in ["roofRail-0/", "roofRail-1/", "side-0/cableAuto-0/"] {
+        assert!(!has(piece), "{piece} should not be there");
+    }
+    // The cable round the corner ends on the side street's wall: beyond the front's end in
+    // x, and behind the front's wall plane.
+    let transforms = building.geometry.world_transforms().unwrap();
+    let mut reach = [f64::NEG_INFINITY; 2];
+    for (node, matrix) in building.geometry.nodes.iter().zip(&transforms) {
+        for index in &node.meshes {
+            let mesh = &building.geometry.meshes[*index];
+            let mut segments = mesh.id.split('/');
+            if mesh.material_slot == "cable"
+                && ["side-0", "cable-2"]
+                    .iter()
+                    .all(|n| segments.any(|s| s == *n))
+            {
+                for p in &mesh.positions {
+                    let p = matrix.point(*p);
+                    reach = [reach[0].max(p[0]), reach[1].max(p[1])];
+                }
+            }
+        }
+    }
+    assert!(
+        (reach[0] - 9.83).abs() < 0.03,
+        "stands off the side wall at x = {}",
+        reach[0]
+    );
+    assert!(
+        (reach[1] - 0.55 - 2.586).abs() < 0.03,
+        "runs to y = {}",
+        reach[1]
+    );
     assert!(
         !has("rooftop-"),
         "the seeded roof deck is replaced by the kit"
@@ -681,8 +737,9 @@ fn every_parapet_wall_of_the_reference_plan_has_a_top_within_its_height() {
             }
         }
     }
-    // Four sides and the four facets of the round corner, each with a front, a back and edges.
-    assert!(walls >= 16, "{walls} parapet wall faces");
+    // Four sides, each with a front, a back and edges (the round corner's parapet is part of
+    // its one wall, which carries its own `coping` line).
+    assert!(walls >= 12, "{walls} parapet wall faces");
 }
 
 #[test]
@@ -724,6 +781,9 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         "roofTiles-0/",
         "pavement-0/",
         "pavement-3/",
+        // The planned meter by the door and the one planned cable.
+        "side-0/ground/meterAt-0/",
+        "side-0/cable-0/",
     ] {
         assert!(has(piece), "{piece} is missing");
     }
@@ -737,6 +797,8 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         "side-0/floor-0/canopy-1/",
         "side-0/ground/fascia/",
         "side-0/ground/meters-1/",
+        "side-1/cableAuto-0/",
+        "roofClutter-0/",
         "side-0/downpipe/",
         "side-1/downpipe/",
         "side-1/pipe-0/",
@@ -972,9 +1034,9 @@ fn points_of(item: &GeneratedItem, part: &str, piece: &str) -> Vec<[f64; 3]> {
 }
 
 #[test]
-fn a_round_corner_is_facets_along_an_arc_that_mouldings_and_patterns_follow() {
-    // The reference corner: a radius of 0.55 m. On a square corner the arc's radius is the cut,
-    // its centre (9.25, 0.55), and its four facets turn 22.5 degrees each.
+fn a_round_corner_is_one_smooth_surface_that_mouldings_patterns_and_pavement_follow() {
+    // The reference corner: a radius of 0.55 m. On a square corner the arc's radius is the cut
+    // and its centre (9.25, 0.55); the corner is one item that turns through it in eight chords.
     let cut = 0.55f64;
     let building = generate(
         "kowloon-building.item.json",
@@ -984,19 +1046,100 @@ fn a_round_corner_is_facets_along_an_arc_that_mouldings_and_patterns_follow() {
             ("cornerTiles", json!(true)),
         ],
     );
-    assert!(sides(&building, "corner-").is_empty());
-    let facets = [
-        "cornerArc-0-0",
-        "cornerArc-1-0",
-        "cornerArc-2-0",
-        "cornerArc-3-0",
-    ];
-    assert_eq!(sides(&building, "cornerArc-"), facets);
-    let on_arc = |k: usize| {
-        let angle = (-90. + 22.5 * k as f64).to_radians();
-        [9.8 - cut + cut * angle.cos(), cut + cut * angle.sin()]
+    assert!(sides(&building, "corner-").is_empty() && sides(&building, "cornerArc-").is_empty());
+    assert_eq!(sides(&building, "cornerRound-"), ["cornerRound-0"]);
+    let (n, round) = (8usize, "cornerRound-0");
+    let center = [9.8 - cut, cut];
+    let chord = 2. * cut * (90f64 / (2 * n) as f64).to_radians().sin();
+    // It stands where the front's wall ends, along the front, and reaches the coping.
+    let start = translation(&building, round);
+    assert!((start[0] - (9.8 - cut)).abs() < 1e-9 && start[1].abs() < 1e-9);
+    let node = building
+        .geometry
+        .nodes
+        .iter()
+        .find(|node| node.name.as_deref() == Some(round))
+        .unwrap();
+    assert_eq!(node.transform[0], [1., 0., 0.]);
+    assert!((top_of(&building, round) - 13.18).abs() < 1e-9);
+    // One receiver a material: the wall from the pavement to the coping (with the parapet's top
+    // and inner face), the plinth, a tile band and a string course a storey, the parapet's
+    // ledge and the coping. Sixteen flat sides stood here before.
+    let corner: Vec<_> = building
+        .geometry
+        .meshes
+        .iter()
+        .filter(|mesh| mesh.id.starts_with("cornerRound-0/"))
+        .collect();
+    let count = |slot: &str| corner.iter().filter(|m| m.material_slot == slot).count();
+    assert_eq!(
+        [
+            count("wall-round"),
+            count("plinth"),
+            count("tile"),
+            count("trim")
+        ],
+        [1, 1, 3, 5]
+    );
+    assert_eq!(corner.len(), 10);
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
     };
-    let chord = 2. * cut * 11.25f64.to_radians().sin();
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    for mesh in &corner {
+        // No triangle is degenerate, and every normal is a unit vector on its triangle's side.
+        for triangle in mesh.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| mesh.positions[triangle[k] as usize]);
+            let facing = cross(sub(b, a), sub(c, a));
+            assert!(dot(facing, facing).sqrt() > 1e-9, "{}: degenerate", mesh.id);
+            for index in triangle {
+                let normal = mesh.normals[*index as usize];
+                assert!((dot(normal, normal) - 1.).abs() < 1e-9 && dot(facing, normal) > 0.);
+            }
+        }
+        // Everything stays between the two walls: inside the quarter the round turns through.
+        for p in &mesh.positions {
+            let from = [p[0] + start[0] - center[0], p[1] + start[1] - center[1]];
+            assert!(
+                from[0] > -1e-9 && from[1] < 1e-9 && from[0].hypot(from[1]) < cut + 0.111,
+                "{}: {p:?}",
+                mesh.id
+            );
+        }
+    }
+    // The wall is smooth: its outer face is n chords of the round, each vertex with the normal of
+    // its own radius, and reads the pattern by the distance round the outline and the height.
+    let wall = corner
+        .iter()
+        .find(|m| m.material_slot == "wall-round")
+        .unwrap();
+    assert_eq!(wall.id, "cornerRound-0/part/wall/wall/side");
+    let mut outer = BTreeSet::new();
+    for ((p, normal), uv) in wall.positions.iter().zip(&wall.normals).zip(&wall.uvs) {
+        let spoke = [p[0] + start[0] - center[0], p[1] + start[1] - center[1]];
+        let reach = spoke[0].hypot(spoke[1]);
+        if normal[2] != 0. || (reach - cut).abs() > 1e-9 {
+            continue;
+        }
+        assert!(
+            (normal[0] - spoke[0] / reach).abs() < 1e-9
+                && (normal[1] - spoke[1] / reach).abs() < 1e-9
+        );
+        let k = (spoke[0] / cut).clamp(-1., 1.).asin() / (PI / 2. / n as f64);
+        assert!(
+            (k - k.round()).abs() < 1e-6,
+            "{p:?} is off the round's chords"
+        );
+        assert!((uv[0] - (9.8 - cut + k.round() * chord)).abs() < 1e-9);
+        assert!((uv[1] - p[2]).abs() < 1e-9);
+        outer.insert(k.round() as usize);
+    }
+    assert_eq!(outer.len(), n + 1);
     let anchor = |part: &str| {
         building
             .geometry
@@ -1013,73 +1156,179 @@ fn a_round_corner_is_facets_along_an_arc_that_mouldings_and_patterns_follow() {
             .map(|i| (start[i] - a.origin[i]) * a.u[i])
             .sum::<f64>()
     };
-    for (k, facet) in facets.iter().enumerate() {
-        let (from, to) = (on_arc(k), on_arc(k + 1));
-        let start = translation(&building, facet);
-        assert!(
-            (start[0] - from[0]).abs() < 1e-9 && (start[1] - from[1]).abs() < 1e-9,
-            "{facet} starts at {start:?}, not {from:?}"
-        );
-        let node = building
-            .geometry
-            .nodes
-            .iter()
-            .find(|n| n.name.as_deref() == Some(*facet))
-            .unwrap();
-        assert!(
-            (node.transform[0][0] - (to[0] - from[0]) / chord).abs() < 1e-9
-                && (node.transform[0][1] - (to[1] - from[1]) / chord).abs() < 1e-9,
-            "{facet} runs along {:?}",
-            node.transform[0]
-        );
-        // Every facet reaches the coping, and its pattern is measured round the outline.
-        assert!((top_of(&building, facet) - 13.18).abs() < 0.03);
-        assert!(
-            (along(facet) - (9.8 - cut + k as f64 * chord)).abs() < 1e-9,
-            "{facet}: {}",
-            along(facet)
-        );
-        // The tile band runs through the corner on every upper storey.
-        assert!(!points_of(&building, facet, "/floor-2/part/tileStrip/").is_empty());
-    }
-    // The second street's wall starts where the arc ends.
+    // The pattern is continuous from the front, round the corner, into the second street: the
+    // corner starts at the front's end, and the second wall where the corner's last chord ends.
+    assert!((along(round) - (9.8 - cut)).abs() < 1e-9);
     let second = translation(&building, "side-1");
     assert!((second[0] - 9.8).abs() < 1e-9 && (second[1] - cut).abs() < 1e-9);
-    assert!((along("side-1") - (9.8 - cut + 4. * chord)).abs() < 1e-9);
-    // String courses are mitred by half the turn at every joint, so each one's end section is
-    // its neighbour's start section: side, four facets, side.
-    let run = [
-        "side-0", facets[0], facets[1], facets[2], facets[3], "side-1",
-    ];
-    for pair in run.windows(2) {
-        let end: Vec<[f64; 3]> = {
-            let start = translation(&building, pair[1]);
-            points_of(&building, pair[0], "/floor-1/part/band/")
-                .into_iter()
-                .filter(|p| (p[0] - start[0]).hypot(p[1] - start[1]) < 0.15)
-                .collect()
-        };
-        let next = points_of(&building, pair[1], "/floor-1/part/band/");
-        assert!(end.len() >= 5, "{} has a string course", pair[0]);
+    assert!((along("side-1") - (9.8 - cut + n as f64 * chord)).abs() < 1e-9);
+    // The tile band runs through the corner on every upper storey, and the string courses of
+    // both streets end square where the corner's begin and end, section on section to within a
+    // millimeter (the walls' are native mouldings, whose rounded arrises bulge a little less).
+    assert!(!points_of(&building, round, "/tiles-2/").is_empty());
+    let ring = points_of(&building, round, "/band-1/");
+    for (side, at) in [("side-0", [9.8 - cut, 0.]), ("side-1", [9.8, cut])] {
+        let end: Vec<[f64; 3]> = points_of(&building, side, "/floor-1/part/band/")
+            .into_iter()
+            .filter(|p| (p[0] - at[0]).hypot(p[1] - at[1]) < 0.15)
+            .collect();
+        assert!(end.len() >= 5, "{side} has a string course");
         for p in &end {
             assert!(
-                next.iter()
-                    // Native meshes are rounded to 10 µm in their own frames.
-                    .any(|q| (0..3).all(|i| (p[i] - q[i]).abs() < 2e-5)),
-                "{} and {} do not meet at {p:?}",
-                pair[0],
-                pair[1]
+                ring.iter()
+                    .any(|q| (0..3).all(|i| (p[i] - q[i]).abs() < 1e-3)),
+                "{side} and the corner do not meet at {p:?}"
             );
         }
     }
-    // The roof slab follows the same outline, 0.2 m inside it: four corners become eight.
+    // The roof slab follows the same outline, 0.2 m inside it: one corner becomes n + 1.
     let roof = points_of(&building, "roof", "roof/top");
-    assert_eq!(roof.len(), 8);
+    assert_eq!(roof.len(), 3 + n + 1);
     let nearest = roof
         .iter()
-        .map(|p| ((p[0] - (9.8 - cut)).hypot(p[1] - cut) - (cut - 0.2)).abs())
+        .map(|p| ((p[0] - center[0]).hypot(p[1] - center[1]) - (cut - 0.2)).abs())
         .fold(f64::MAX, f64::min);
     assert!(nearest < 0.01, "the roof's corner is {nearest} off its arc");
+    // The pavement turns the corner too: the two streets' pavements stop where the round
+    // starts and ends, and between them rings of stones and a kerb whose road side is an arc
+    // a pavement's depth outside the wall's.
+    let (front, side) = (
+        points_of(&building, "pavement-0", ""),
+        points_of(&building, "pavement-1", ""),
+    );
+    assert!(front.iter().all(|p| p[0] < center[0] + 1e-4));
+    assert!(side.iter().all(|p| p[1] > center[1] - 1e-4));
+    let turned = points_of(&building, "pavementCorner-0", "");
+    let reach = |p: &[f64; 3]| (p[0] - center[0]).hypot(p[1] - center[1]);
+    assert!(
+        turned
+            .iter()
+            .all(|p| p[0] > center[0] - 1e-4 && p[1] < center[1] + 1e-4)
+    );
+    let outermost = turned.iter().map(reach).fold(0., f64::max);
+    assert!((outermost - (cut + 1.45)).abs() < 1e-4, "{outermost}");
+    let kerb = points_of(&building, "pavementCorner-0", "kerb");
+    let road: Vec<_> = kerb
+        .iter()
+        .filter(|p| (reach(p) - (cut + 1.45)).abs() < 1e-4)
+        .collect();
+    // (the kerb's outer arc is at least twelve chords, each with a foot and a head.)
+    assert!(
+        road.len() >= 2 * 13,
+        "{} kerb points on the arc",
+        road.len()
+    );
+    assert!(kerb.iter().all(|p| p[2] > -0.15 - 1e-6 && p[2] < 0.));
+
+    // Another turn: a corner of about 63 degrees is rounded the same way, and its wall ends
+    // where the second street's begins.
+    let skew = generate(
+        "kowloon-building.item.json",
+        &[
+            ("cornerStyle", json!("round")),
+            ("cut", json!(0.8)),
+            ("footprint", json!([[0, 0], [10, 0], [13, 6], [0, 6]])),
+        ],
+    );
+    let begins = translation(&skew, "side-1");
+    let wall = points_of(&skew, round, "/wall/");
+    let gap = wall
+        .iter()
+        .map(|p| (p[0] - begins[0]).hypot(p[1] - begins[1]))
+        .fold(f64::MAX, f64::min);
+    assert!(gap < 1e-9, "the corner ends {gap} m from the second wall");
+    assert!(
+        wall.iter()
+            .all(|p| p[1] > -1e-9 && p[1] < begins[1] + 0.3 && p[0] < begins[0] + 1e-9)
+    );
+}
+
+/// The least distance in plan from `at` to a vertex of the `slot` meshes under the parts.
+fn nearest(item: &GeneratedItem, parts: &[&str], slot: &str, at: [f64; 2]) -> f64 {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut least = f64::INFINITY;
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        if !parts.contains(&node.name.as_deref().unwrap_or_default()) {
+            continue;
+        }
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if mesh.material_slot == slot {
+                for p in &mesh.positions {
+                    let p = matrix.point(*p);
+                    least = least.min((p[0] - at[0]).hypot(p[1] - at[1]));
+                }
+            }
+        }
+    }
+    least
+}
+
+#[test]
+fn upright_corners_and_shop_piers_are_rounded() {
+    // Where two walls meet at a square corner each gives up its sharp end for half a round of
+    // the building's `arris`: the nearest either comes to the corner is the round's middle,
+    // r (sqrt 2 - 1) from it. The rounds are part of the walls' fronts.
+    let r = 0.025f64;
+    let middle = r * (2f64.sqrt() - 1.);
+    let building = generate("kowloon-building.item.json", &[]);
+    for (corner, parts) in [
+        ([9.8, 7.], ["side-1", "side-2"]),
+        ([0., 7.], ["side-2", "side-3"]),
+        ([0., 0.], ["side-3", "side-0"]),
+    ] {
+        let least = nearest(&building, &parts, "wall", corner);
+        assert!((least - middle).abs() < 1e-9, "{corner:?}: {least}");
+    }
+    // The chamfered street corner keeps its two arrises.
+    assert!(nearest(&building, &["side-0", "corner-0"], "wall", [9.56, 0.]) < 1e-9);
+    // Without an arris every corner is sharp, as it was.
+    let sharp = generate("kowloon-building.item.json", &[("arris", json!(0))]);
+    assert!(nearest(&sharp, &["side-1", "side-2"], "wall", [9.8, 7.]) < 1e-9);
+    // The small warehouse's four square corners are rounded from the ground to the parapet.
+    let plan = plan("small-warehouse.json");
+    let overrides: Vec<(&str, serde_json::Value)> = plan
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let warehouse = generate("kowloon-building.item.json", &overrides);
+    for (corner, parts) in [
+        ([6., 0.], ["side-0", "side-1"]),
+        ([6., 6.], ["side-1", "side-2"]),
+        ([0., 6.], ["side-2", "side-3"]),
+        ([0., 0.], ["side-3", "side-0"]),
+    ] {
+        let least = nearest(&warehouse, &parts, "wall", corner);
+        assert!((least - middle).abs() < 1e-9, "{corner:?}: {least}");
+    }
+    let rounded = warehouse
+        .geometry
+        .meshes
+        .iter()
+        .filter(|mesh| mesh.id.starts_with("side-0/") && mesh.id.ends_with("/front"))
+        .filter(|mesh| {
+            let half = 0.5f64.sqrt();
+            mesh.normals
+                .iter()
+                .any(|n| (n[0] - half).abs() < 1e-9 && (n[1] + half).abs() < 1e-9 && n[2] == 0.)
+        })
+        .count();
+    // (the ground storey, two upper storeys and the parapet.)
+    assert_eq!(rounded, 4);
+    // A shop opening's jambs are rounded too: the piers' fronts turn into the reveals.
+    let ground = building
+        .geometry
+        .meshes
+        .iter()
+        .find(|mesh| {
+            mesh.id.starts_with("side-0/")
+                && mesh.id.contains("/ground/")
+                && mesh.id.ends_with("/wall/front")
+        })
+        .unwrap();
+    for jamb in [[1., 0., 0.], [-1., 0., 0.]] {
+        assert!(ground.normals.contains(&jamb));
+    }
 }
 
 /// A character without a cell in the shipped lettering atlas is left off its sign without an
@@ -1299,4 +1548,161 @@ fn shop_rooms_of_two_streets_do_not_meet_behind_their_corner() {
         ],
     );
     assert!((depth(&alone, "side-1/ground/shop-0/room") - 3.1).abs() < 0.02);
+}
+
+/// The bounds of one part's meshes whose ids end with `piece`.
+fn extent(item: &GeneratedItem, part: &str, piece: &str) -> [[f64; 3]; 2] {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        if node.name.as_deref() != Some(part) {
+            continue;
+        }
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if !mesh.id.ends_with(piece) {
+                continue;
+            }
+            for p in &mesh.positions {
+                let p = matrix.point(*p);
+                for k in 0..3 {
+                    bounds[0][k] = bounds[0][k].min(p[k]);
+                    bounds[1][k] = bounds[1][k].max(p[k]);
+                }
+            }
+        }
+    }
+    bounds
+}
+
+fn corners(item: &GeneratedItem, id: &str) -> usize {
+    item.geometry
+        .meshes
+        .iter()
+        .filter(|m| m.id == id)
+        .map(|m| m.indices.len())
+        .sum()
+}
+
+#[test]
+fn sashes_grilles_and_lit_rooms_follow_a_windows_controls() {
+    let window = |overrides: &[(&str, serde_json::Value)]| {
+        let mut values = vec![("width", json!(2.1)), ("height", json!(1.7))];
+        values.extend(overrides.iter().cloned());
+        generate("kowloon-window.item.json", &values)
+    };
+    // No light stands open at a chance of zero; two do at 2, swung or pushed out in front of
+    // the wall (-y).
+    let shut = window(&[("openChance", json!(0))]);
+    let open = window(&[("openChance", json!(2))]);
+    let front = |item: &GeneratedItem| extent(item, "window", "/glass")[0][1];
+    assert!(front(&shut) > -0.05, "{}", front(&shut));
+    assert!(front(&open) < front(&shut) - 0.1, "{}", front(&open));
+    // Four lights across 2.1 m by default; three at 0.7 m a light, with a mid rail in the frame.
+    let narrow = window(&[
+        ("openChance", json!(0)),
+        ("lightWidth", json!(0.7)),
+        ("midRail", json!(true)),
+    ]);
+    assert_eq!(
+        corners(&narrow, "window/glass") * 4,
+        corners(&shut, "window/glass") * 3
+    );
+    assert!(corners(&narrow, "window/paint") < corners(&shut, "window/paint"));
+    // A louvred top light is slats instead of one pane.
+    let louvred = window(&[("openChance", json!(0)), ("louvre", json!("right"))]);
+    assert!(corners(&louvred, "window/glass") > corners(&shut, "window/glass"));
+    // A lit room's back panel is in the lit lamps' slot, and its panes are left out to show it.
+    assert_eq!(corners(&shut, "window/tube-light"), 0);
+    let lit = window(&[("lit", json!(true))]);
+    assert_eq!(corners(&lit, "window/tube-light"), 6);
+    assert_eq!(corners(&lit, "window/glass"), 0);
+    assert_eq!(corners(&lit, "window/pane"), 0);
+    // A grille over the upper half starts halfway up the opening.
+    let whole = window(&[("bars", json!(true)), ("barsPattern", json!("diamond"))]);
+    let upper = window(&[
+        ("bars", json!(true)),
+        ("barsPattern", json!("diamond")),
+        ("barsShare", json!(0.5)),
+    ]);
+    assert!(extent(&whole, "bars", "")[0][2] < 0.);
+    let foot = extent(&upper, "bars", "")[0][2];
+    assert!((foot - (1.8 * 0.5 - 0.04)).abs() < 0.03, "{foot}");
+    assert!((extent(&upper, "bars", "")[1][2] - extent(&whole, "bars", "")[1][2]).abs() < 1e-6);
+}
+
+#[test]
+fn a_fixture_plan_cages_a_window_unit_and_moves_a_condenser_along_its_bank() {
+    // Three bays of 2.1 m from 1.35 m; the sill is at 0.95 m.
+    let floor = generate(
+        "kowloon-floor.item.json",
+        &[
+            ("fixturePlan", json!(["caged-aircon", "split", "none"])),
+            ("fixtureAt", json!([[0.3, 0.05], [0.6, 0.1]])),
+        ],
+    );
+    assert_eq!(parts(&floor, "cage-"), ["cage-0"]);
+    assert_eq!(parts(&floor, "aircon-"), ["aircon-1"]);
+    // The cage holds the unit: its casing is among the cage's meshes, inside its bars.
+    let cage = extent(&floor, "cage-0", "/paint");
+    let unit = extent(&floor, "cage-0", "/aircon");
+    assert!(unit[0][0] > cage[0][0] && unit[1][0] < cage[1][0]);
+    assert!(unit[0][1] > cage[0][1] && unit[0][2] > cage[0][2]);
+    let at = translation(&floor, "cage-0");
+    assert!((at[0] - 2.7).abs() < 1e-9 && (at[2] - 1.).abs() < 1e-9);
+    // The condenser stands 0.6 m right of its bank's centre, its foot 0.1 m above the sill.
+    let at = translation(&floor, "aircon-1");
+    assert!((at[0] - 5.1).abs() < 1e-9 && (at[2] - 1.05).abs() < 1e-9);
+    // Unplanned, a fixture hangs centred under its sill as before.
+    let plain = generate(
+        "kowloon-floor.item.json",
+        &[("fixturePlan", json!(["none", "split", "none"]))],
+    );
+    let at = translation(&plain, "aircon-1");
+    assert!((at[0] - 4.5).abs() < 1e-9 && (at[2] - 0.23).abs() < 1e-9);
+    // The seeded share: with every bay a window unit, `cagedChance` 1 cages them all.
+    let seeded = generate(
+        "kowloon-floor.item.json",
+        &[
+            ("airconChance", json!(1)),
+            ("condenserChance", json!(0)),
+            ("cagedChance", json!(1)),
+        ],
+    );
+    assert_eq!(parts(&seeded, "cage-").len(), 3);
+    assert!(parts(&seeded, "aircon-").is_empty());
+}
+
+#[test]
+fn a_back_door_stands_in_an_opening_of_the_ground_storeys_wall() {
+    let side = |overrides: &[(&str, serde_json::Value)]| {
+        let mut values = vec![("groundShops", json!(false))];
+        values.extend(overrides.iter().cloned());
+        generate("kowloon-facade-side.item.json", &values)
+    };
+    let plain = side(&[]);
+    let door = side(&[("backDoor", json!(true))]);
+    assert!(parts(&plain, "backDoor").is_empty());
+    assert_eq!(parts(&door, "backDoor"), ["backDoor"]);
+    assert_eq!(
+        openings(&door, "groundFloor"),
+        openings(&plain, "groundFloor") + 1
+    );
+    // Seeded, it stands between two bays (three of 2.1 m from 1.35 m), clear of their windows.
+    let x = translation(&door, "backDoor")[0];
+    assert!(
+        (x - 3.45).abs() < 1e-9 || (x - 5.55).abs() < 1e-9,
+        "the door is at {x}"
+    );
+    // The leaf is behind the wall plane (y > 0 is inside), within the opening's 2.05 m.
+    let leaf = extent(&door, "backDoor", "/paint");
+    assert!(
+        leaf[0][1] > 0. && leaf[1][1] < 0.25 && leaf[1][2] < 2.1,
+        "{leaf:?}"
+    );
+    // A plan places it.
+    for at in [3.45, 5.55] {
+        let placed = side(&[("backDoor", json!(true)), ("backDoorAt", json!(at))]);
+        assert!((translation(&placed, "backDoor")[0] - at).abs() < 1e-9);
+    }
 }

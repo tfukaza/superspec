@@ -421,6 +421,82 @@ pub(crate) struct PlacedItemState {
     rebuilt: Vec<String>,
 }
 
+/// Features of wider reach one receiver is given at most, from the parts of its item other
+/// than its own and, counted apart, from the other items of its scene: the nearest are kept
+/// and the number left out is reported (`reachDropped` in the item's metadata).
+pub const MAX_REACHED_FEATURES: usize = 256;
+
+/// A feature that reaches beyond its part (`itemspec::definition::Reach`), in world meters,
+/// with the box around it: a receiver is given it when its own box comes within `within`.
+#[derive(Clone)]
+pub(super) struct Reaching {
+    feature: crate::materialspec::program::NamedFeature,
+    /// The part of its item it belongs to, whose receivers have it already.
+    part: String,
+    within: f64,
+    bounds: [[f64; 3]; 2],
+}
+
+impl Reaching {
+    fn new(feature: &definition::Feature, world: &[f64; 16]) -> Self {
+        let named = super::item_features(std::slice::from_ref(feature), world).remove(0);
+        Self {
+            bounds: bounds_of(named.points.iter().copied()),
+            feature: named,
+            part: feature.part.clone(),
+            within: feature.within,
+        }
+    }
+    /// How far the box of a receiver is from the feature's, when within its reach.
+    fn gap(&self, receiver: &[[f64; 3]; 2]) -> Option<f64> {
+        let gap = (0..3)
+            .map(|axis| {
+                (self.bounds[0][axis] - receiver[1][axis])
+                    .max(receiver[0][axis] - self.bounds[1][axis])
+                    .max(0.)
+                    .powi(2)
+            })
+            .sum::<f64>()
+            .sqrt();
+        (gap <= self.within).then_some(gap)
+    }
+}
+
+fn bounds_of(points: impl Iterator<Item = [f64; 3]>) -> [[f64; 3]; 2] {
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for point in points {
+        for axis in 0..3 {
+            bounds[0][axis] = bounds[0][axis].min(point[axis]);
+            bounds[1][axis] = bounds[1][axis].max(point[axis]);
+        }
+    }
+    bounds
+}
+
+/// The features among `reaching` that a receiver with these bounds is given, nearest first and
+/// at most [`MAX_REACHED_FEATURES`] (ties keep their order), and how many were left out.
+/// `own` is the receiver's part, whose features it has already; `None` takes every one.
+pub(super) fn reached(
+    reaching: &[Reaching],
+    own: Option<&str>,
+    receiver: &[[f64; 3]; 2],
+) -> (Vec<crate::materialspec::program::NamedFeature>, usize) {
+    let mut near: Vec<(f64, &Reaching)> = reaching
+        .iter()
+        .filter(|feature| own != Some(feature.part.as_str()))
+        .filter_map(|feature| Some((feature.gap(receiver)?, feature)))
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let dropped = near.len().saturating_sub(MAX_REACHED_FEATURES);
+    near.truncate(MAX_REACHED_FEATURES);
+    (
+        near.into_iter()
+            .map(|(_, reaching)| reaching.feature.clone())
+            .collect(),
+        dropped,
+    )
+}
+
 /// One item of a scene project, ready to compose: its meshes as placements of local
 /// resources, and what its owner knows about each of them.
 pub(super) struct PlacedItem {
@@ -436,6 +512,13 @@ pub(super) struct PlacedItem {
     pub anchors: BTreeMap<String, definition::PatternAnchor>,
     /// The item's weathering layers per item slot, lowest first.
     pub layers: BTreeMap<String, Vec<definition::LayerRequest>>,
+    /// The texels per meter the item asks for per item slot (its definition's `densities`,
+    /// merged through its sub-items): a default under whatever the project states.
+    pub densities: BTreeMap<String, f64>,
+    /// World bounds of each mesh, low corner then high.
+    pub bounds: BTreeMap<String, [[f64; 3]; 2]>,
+    /// The item's features that reach the receivers of other items of the scene.
+    pub scene_features: Vec<Reaching>,
     /// For inspection and overlays: controls, derived values, parts with their keys,
     /// features, anchors, attachments, decals and handles, in world meters.
     pub metadata: serde_json::Value,
@@ -552,8 +635,26 @@ impl Session {
             features: BTreeMap::new(),
             anchors: BTreeMap::new(),
             layers: generated.layers.clone(),
+            densities: generated.densities.clone(),
+            bounds: BTreeMap::new(),
+            scene_features: Vec::new(),
             metadata: serde_json::Value::Null,
         };
+        // Features that reach beyond their part: every receiver of the item near enough is
+        // given them, and those of scene reach are handed on for the other items' receivers.
+        let reaching: Vec<Reaching> = geometry
+            .features
+            .iter()
+            .filter(|feature| !feature.reach.is_part())
+            .map(|feature| Reaching::new(feature, &world))
+            .collect();
+        placed.scene_features = geometry
+            .features
+            .iter()
+            .filter(|feature| feature.reach == definition::Reach::Scene)
+            .map(|feature| Reaching::new(feature, &world))
+            .collect();
+        let mut reach_dropped = 0;
         let anchor = |anchor: &definition::PatternAnchor| -> Result<_, String> {
             let inverse = placement.inverse()?;
             Ok(definition::PatternAnchor {
@@ -691,8 +792,23 @@ impl Session {
                 });
                 placed.transforms.insert(id.clone(), transform);
                 placed.slots.insert(id.clone(), mesh.material_slot.clone());
+                let bounds = bounds_of(mesh.positions.iter().map(|p| {
+                    std::array::from_fn(|row| {
+                        transform[row] * p[0]
+                            + transform[4 + row] * p[1]
+                            + transform[8 + row] * p[2]
+                            + transform[12 + row]
+                    })
+                }));
+                let mut features = features.clone();
+                if !reaching.is_empty() {
+                    let (near, dropped) = reached(&reaching, Some(part), &bounds);
+                    features.extend(near);
+                    reach_dropped += dropped;
+                }
+                placed.bounds.insert(id.clone(), bounds);
                 if !features.is_empty() {
-                    placed.features.insert(id.clone(), features.clone());
+                    placed.features.insert(id.clone(), features);
                 }
                 if let Some(anchor) = &part_anchor {
                     placed.anchors.insert(id.clone(), anchor.clone());
@@ -814,6 +930,7 @@ impl Session {
             "parameters": parameters, "derived": prepared.derived,
             "parts": parts, "features": features, "attachments": attachments,
             "decals": decals, "handles": handles,
+            "reachDropped": reach_dropped,
             "meshSlots": placed.slots.iter().map(|(id, slot)| (format!("{prefix}{id}"), slot.clone())).collect::<BTreeMap<_, _>>(),
         });
         Ok(placed)

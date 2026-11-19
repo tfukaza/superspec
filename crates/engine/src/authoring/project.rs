@@ -70,7 +70,8 @@ pub struct ModelSource {
     pub slots: BTreeMap<String, String>,
     /// `item`: texels per meter for the meshes of a slot of this item, where it is not the
     /// density of the slot's material or the project's (`Project::texel_densities`, which this
-    /// fills per mesh; a density the project states for a mesh itself stays).
+    /// fills per mesh; a density the project states for a mesh itself stays). It comes before
+    /// the item definition's own `densities`, which come before a material's and the project's.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub slot_densities: BTreeMap<String, f64>,
 }
@@ -512,12 +513,14 @@ impl Session {
             project: project.clone(),
             metadata: serde_json::Map::new(),
         };
+        // Per item: its features that reach the scene, and the world bounds of its meshes.
+        let mut scene_reach = Vec::new();
         for model in project.models.iter().filter(|model| model.kind == "item") {
             if !valid_identity(&model.id) {
                 return Err(fail(format!("Invalid model identity {}.", model.id)));
             }
             let prefix = format!("{}/", model.id);
-            let placed = self.place_item(project, model, &prefix, assets, cancelled)?;
+            let mut placed = self.place_item(project, model, &prefix, assets, cancelled)?;
             for (slot, material) in &model.slots {
                 // An item's slots depend on its controls (a seed or a condition can leave a
                 // fixture out), so a binding for a slot it does not emit this time is unused.
@@ -596,6 +599,18 @@ impl Session {
                         .or_insert(*density);
                 }
             }
+            // Then what the item itself asks for its slots, under what the project says of a
+            // mesh or the model of a slot, and over a material's or the project's density. It
+            // reaches each receiver's layout, so every bake of the receiver is keyed by it.
+            for (slot, density) in &placed.densities {
+                for (mesh, _) in placed.slots.iter().filter(|(_, used)| *used == slot) {
+                    resolved
+                        .project
+                        .texel_densities
+                        .entry(format!("{prefix}{mesh}"))
+                        .or_insert(*density);
+                }
+            }
             for (mesh, features) in placed.features {
                 resolved
                     .project
@@ -604,6 +619,11 @@ impl Session {
                     .or_default()
                     .extend(features);
             }
+            scene_reach.push((
+                model.id.clone(),
+                std::mem::take(&mut placed.scene_features),
+                std::mem::take(&mut placed.bounds),
+            ));
             // Each mesh is anchored to its part's pattern anchor (read by `Mapping::Anchored`),
             // unless the project states an anchor of its own for it.
             for (mesh, anchor) in placed.anchors {
@@ -618,6 +638,36 @@ impl Session {
                     });
             }
             resolved.metadata.insert(model.id.clone(), placed.metadata);
+        }
+        // Features of scene reach: the receivers of every other item that come near enough are
+        // given them (an item's own receivers have them already, by its item reach).
+        if scene_reach
+            .iter()
+            .any(|(_, features, _)| !features.is_empty())
+        {
+            for (id, _, bounds) in &scene_reach {
+                let others: Vec<super::item::Reaching> = scene_reach
+                    .iter()
+                    .filter(|(other, _, _)| other != id)
+                    .flat_map(|(_, features, _)| features.iter().cloned())
+                    .collect();
+                let mut dropped = 0;
+                for (mesh, bounds) in bounds {
+                    let (near, left) = super::item::reached(&others, None, bounds);
+                    dropped += left;
+                    if !near.is_empty() {
+                        resolved
+                            .project
+                            .features
+                            .entry(format!("{id}/{mesh}"))
+                            .or_default()
+                            .extend(near);
+                    }
+                }
+                if let Some(metadata) = resolved.metadata.get_mut(id) {
+                    metadata["sceneReachDropped"] = dropped.into();
+                }
+            }
         }
         Ok(Some(resolved))
     }
@@ -954,7 +1004,7 @@ fn preview_features(
     receiver: &Receiver,
     named: Option<&[crate::materialspec::program::NamedFeature]>,
     names: &[String],
-    follow: &BTreeMap<String, String>,
+    follow: &BTreeMap<String, crate::materialspec::program::Follow>,
 ) -> Vec<f64> {
     let mut features = Vec::new();
     let mut found =
@@ -989,13 +1039,9 @@ fn preview_features(
         features.extend([0., 0., 0., 0., 0.]);
     }
     for feature in named.into_iter().flatten() {
-        // The names the shader sees this feature by.
-        let own = (!follow.contains_key(&feature.name)).then_some(&feature.name);
-        let followed = follow
-            .iter()
-            .filter(|(_, theirs)| **theirs == feature.name)
-            .map(|(own, _)| own);
-        for seen in own.into_iter().chain(followed) {
+        // The names the shader sees this feature by: a name that follows several features
+        // holds the segments of them all, under its one kind.
+        for seen in crate::materialspec::program::followed_names(&feature.name, follow) {
             let Some(place) = names.iter().position(|name| name == seen) else {
                 continue;
             };
@@ -1129,7 +1175,11 @@ impl Session {
             metadata["shader"] = serde_json::to_value(shader).unwrap();
             // What each layer's shader queries of a receiver: whether it reads derived features,
             // the named features it reads, and which of the receiver's names it follows.
-            let mut layer_queries: Vec<(bool, Vec<String>, BTreeMap<String, String>)> = Vec::new();
+            let mut layer_queries: Vec<(
+                bool,
+                Vec<String>,
+                BTreeMap<String, crate::materialspec::program::Follow>,
+            )> = Vec::new();
             if !assignment.layers.is_empty() {
                 // A slot its bake would refuse is refused here too, with the same diagnostics.
                 self.check_layered(&material_request(project, assignment, source, Vec::new()))?;
