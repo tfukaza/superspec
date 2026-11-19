@@ -1,0 +1,28 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "straight-stairs",
+  "parameters": {
+    "run": {"type": "number", "default": 3.6, "min": 0.25, "max": 32, "unit": "m"},
+    "rise": {"type": "number", "default": 2.04, "min": 0.08, "max": 12, "unit": "m"},
+    "width": {"type": "number", "default": 1.35, "min": 0.5, "max": 12, "unit": "m"},
+    "steps": {"type": "integer", "default": 12, "min": 1, "max": 64}
+  },
+  "derived": {
+    "going": "run / steps",
+    "riser": "rise / steps"
+  },
+  "parts": [{
+    "id": "step",
+    "repeat": [{"name": "i", "count": "steps"}],
+    "placement": {"position": ["i * going", 0, 0]},
+    "generator": {"kind": "box", "size": ["going", "width", "(i + 1) * riser"]},
+    "slots": {"top": "concrete", "side": "concrete", "bottom": "concrete"}
+  }],
+  "slots": {"concrete": {"entry": "stair-concrete.ms", "seed": 5}},
+  "attachments": [
+    {"name": "foot", "position": [0, "width / 2", 0], "direction": [-1, 0, 0]},
+    {"name": "landing", "position": ["run", "width / 2", "rise"], "direction": [1, 0, 0]}
+  ],
+  "collision": "mesh"
+}
