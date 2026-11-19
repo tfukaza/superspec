@@ -1,0 +1,20 @@
+{
+  "format": "treespec",
+  "version": 1,
+  "kind": "tree",
+  "id": "street",
+  "seed": 5,
+  "trunk": { "height": 7.2, "radius": 0.21, "tip": 0.3, "segments": 12, "wobble": 5, "lean": 3 },
+  "levels": [
+    { "count": 10, "start": 0.48, "end": 0.97, "angle": [58, 22], "length": [0.62, 0.42], "radius": 0.62, "tip": 0.3, "segments": 8, "gravity": -16, "wobble": 7, "jitter": 0.5 },
+    { "count": 7, "start": 0.22, "end": 0.97, "angle": [58, 34], "length": [0.52, 0.3], "radius": 0.5, "tip": 0.4, "segments": 5, "gravity": 12, "wobble": 9, "jitter": 0.7 },
+    { "count": 5, "start": 0.25, "end": 0.95, "angle": [52, 35], "length": [0.6, 0.4], "radius": 0.6, "tip": 0.5, "segments": 3, "gravity": 14, "wobble": 9, "jitter": 0.7 }
+  ],
+  "envelope": { "kind": "ellipsoid", "center": [0, 0, 6.7], "radii": [3.9, 3.9, 3.5] },
+  "leaves": { "level": 2, "spacing": 0.15, "start": 0.3, "size": [0.24, 0.36], "aspect": 0.55, "cards": 1, "spread": 0, "angle": 55, "lift": 0.2, "shape": "quad" },
+  "lods": [
+    { "radialSegments": 10, "ringStep": 1, "maxLevel": 3, "leafKeep": 1, "leafCards": 1, "distance": 0, "hull": "backing" },
+    { "radialSegments": 6, "ringStep": 2, "maxLevel": 2, "leafKeep": 0.45, "leafCards": 1, "distance": 22, "hull": "backing" },
+    { "radialSegments": 4, "ringStep": 4, "maxLevel": 1, "leafKeep": 0.15, "leafCards": 1, "distance": 45, "hull": "impostor" }
+  ]
+}

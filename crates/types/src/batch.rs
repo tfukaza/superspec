@@ -238,6 +238,11 @@ pub struct FoliageMass {
     /// How the painted colours are graded for the scene the plant stands in (the default keeps
     /// the milestone's own).
     pub palette: FoliagePalette,
+    /// Which of the renderer's looks draws the mass: empty for the painted mass above, or the
+    /// name of an illustrated-tree prototype (`leaves`, `sprays`, `shells`, `impostors`) that
+    /// draws distinct leaves on the twigs instead.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub look: String,
 }
 impl Default for FoliageMass {
     fn default() -> Self {
@@ -258,6 +263,7 @@ impl Default for FoliageMass {
             variation: 0.,
             sparkles: 0.,
             palette: FoliagePalette::default(),
+            look: String::new(),
         }
     }
 }
@@ -575,6 +581,12 @@ impl Foliage {
             within(mass.shapes, 0., 1., "mass shapes")?;
             within(mass.variation, 0., 1., "mass variation")?;
             within(mass.sparkles, 0., 4., "mass sparkles")?;
+            if !["", "leaves", "sprays", "shells", "impostors"].contains(&mass.look.as_str()) {
+                return Err(format!(
+                    "A mass's look \"{}\" is not one a renderer draws.",
+                    mass.look
+                ));
+            }
             within(mass.palette.hue, -180., 180., "mass palette hue")?;
             within(mass.palette.saturation, 0., 2., "mass palette saturation")?;
             within(mass.palette.value, 0., 2., "mass palette value")?;

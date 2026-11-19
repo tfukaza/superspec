@@ -794,6 +794,7 @@ fn groundcover(
         variation: 0.8,
         sparkles: 0.4,
         palette: GROUNDCOVER_PALETTE,
+        look: String::new(),
     });
     carrier
 }
@@ -924,12 +925,43 @@ fn write_lane_plants() {
             .collect()
     };
     let middle = avenue["median"]["offset"].as_f64().unwrap();
+    // LANE_TREE=street: the street tree (`street.tree.json`: a clear bole forking into rising
+    // limbs under a full crown) in the birch's stead, each station its own seed and size, its
+    // twigs kept within 2.9 m of the trunk and above 3.2 m (the avenue is
+    // narrow); LANE_LOOK names the look that draws every tree's mass (`FoliageMass::look`).
+    let street = |station: usize| {
+        let mut definition = scaled(
+            tree::parse(
+                "street.tree.json",
+                include_str!("../src/treespec/fixtures/street.tree.json"),
+            )
+            .unwrap(),
+            [1.0, 0.92, 1.05][station % 3],
+        );
+        definition.seed += 7 * station as u64;
+        if let Some(tree::Envelope::Ellipsoid { center, radii }) = &mut definition.envelope {
+            let top = center[2] + radii[2];
+            let foot = 3.2_f64.min(top - 3.);
+            *center = [0., 0., 0.5 * (top + foot)];
+            *radii = [radii[0].min(2.9), radii[1].min(2.9), 0.5 * (top - foot)];
+        }
+        // Steeper, shorter limbs for the narrower crown, so they fork up through it.
+        if let Some(limbs) = definition.levels.first_mut() {
+            limbs.length = [0.52, 0.36];
+            limbs.angle = [52., 22.];
+        }
+        (definition, superspec_types::batch::FoliageMass::default())
+    };
+    let tree_look = std::env::var("LANE_LOOK").unwrap_or_default();
     let mut row = vec![];
     for (i, along) in stations("trees").into_iter().enumerate() {
-        row.push((
-            birch([1.08, 1.0][i % 2]),
-            avenue_point(&avenue, along, middle),
-        ));
+        let (definition, mut mass) = if std::env::var("LANE_TREE").as_deref() == Ok("street") {
+            street(i)
+        } else {
+            birch([1.08, 1.0][i % 2])
+        };
+        mass.look = tree_look.clone();
+        row.push(((definition, mass), avenue_point(&avenue, along, middle)));
     }
     for along in stations("shrubs") {
         row.push((shrub.clone(), avenue_point(&avenue, along, middle)));
@@ -952,6 +984,7 @@ fn write_lane_plants() {
             variation: mass.variation,
             sparkles: mass.sparkles,
             jitter: mass.jitter,
+            look: mass.look.clone(),
             palette: LANE_PALETTE,
             ..painted_mass(&definition, &plant)
         };

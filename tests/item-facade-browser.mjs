@@ -58,7 +58,9 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
   page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 6144}`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 6144}${
+    // TREE_LOOK=<leaves|sprays|shells|impostors>: every tree's and shrub's mass drawn in that illustrated look (anime-tree.ts).
+    process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   // The project is handed over as a file: a building with its images can pass the 50 MB an in-memory upload may hold.
   const projectFile = resolve(out, "washroom-facade.studio.json");

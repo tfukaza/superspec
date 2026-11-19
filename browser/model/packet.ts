@@ -72,6 +72,8 @@ export interface FoliageMass {
   palette: { hue: number; saturation: number; value: number; shade: number; shadeHue: number; contrast: number; depth: number;
     /** Bands the light steps through (6: the ramp's own six), and the share of the range below the ramp's darkest colour. */
     bands: number; deep: number };
+  /** The look that draws the mass: absent or empty for the painted mass, or an illustrated look of anime-tree.ts. */
+  look?: string;
 }
 /** Grass, or a plant's part: bark, leaf clusters, the canopy hull and its shadow proxy (roadmap stage 7). */
 export type FoliageFamily = "grass" | "bark" | "leaves" | "hull" | "shadow";
