@@ -193,8 +193,12 @@ try {
       // From the street corner (+x, +y), raised, as the reference picture of the shop house is taken.
       corner: { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5] },
       // Along the pedestrian avenue (`tests/studio/washroom-items/avenue.json`) from beyond its far end, toward the side
-      // face and the street corner: the median's row of trees and its grass, the benches and the paving.
-      avenue: { position: [x0 - 26, y1 + 11, 7], target: [(x0 + front) / 2, y1 - 2, 5.5] },
+      // face and the street corner: the median's planting, the benches and the paving. Its own sun (`sun`: azimuth and
+      // elevation, degrees) comes from behind the camera on the avenue's side, so the crowns' lit clumps face it and their
+      // dappled shadows fall on the building's side face and shop fronts; every other view keeps the shared sun.
+      // Raised about four storeys over the far walkway near the avenue's end and looking along the median toward the
+      // building's street corner, the building on the right and the neighbours' shopfronts closing the left.
+      avenue: { position: [x0 - 19, y1 + 5.6, 12.5], target: [front - 1.5, y1 - 0.5, 3.2], sun: [135, 40] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
       // Details, without the plants: the corner's foot and the pavement, the balcony and what hangs under it, the signs
@@ -227,6 +231,14 @@ try {
     for (const [name, view] of Object.entries(views).filter(([name]) => !wanted || wanted.includes(name))) {
       // Every view keeps the scene's ambient occlusion: foliage neither casts nor receives it (ambient-occlusion.ts).
       await page.evaluate(view => { const s = window.__scene;
+        // A view's own sun, or the shared one (as the lighting above set it).
+        const record = window.__facadeLighting;
+        if (record) {
+          const light = record.lights[0], shared = window.__facadeSun ??= [...light.direction];
+          const [az, el] = (view.sun ?? [0, 0]).map(v => v * Math.PI / 180);
+          const direction = view.sun ? [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)] : shared;
+          if (direction.some((v, i) => v !== light.direction[i])) { light.direction = direction; s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; }
+        }
         (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = !view.bare; if (m.userData.source) m.userData.source.visible = !view.bare; } }); s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));

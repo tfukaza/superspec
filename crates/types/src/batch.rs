@@ -209,6 +209,16 @@ pub struct FoliageMass {
     pub level: f64,
     /// Share of the card candidates kept at the core's level, 0 to 1.
     pub card_keep: f64,
+    /// How much each clump's own form lights it, 0 to 1: the share of the clump-scale field's
+    /// normal kept beside the plant's broad form (0: the broad form alone, 1: every clump lit as
+    /// its own rounded mass).
+    pub form: f64,
+    /// A random tilt of each card's light, 0 to 1 (0: none; higher breaks a clump's light into
+    /// card-sized patches).
+    pub jitter: f64,
+    /// Size of the painted leaves (the leaf map, the outline's fuzz and the cards) as a multiple
+    /// of the renderer's own, 0.25 to 4: larger for a plant seen from far.
+    pub leaf_scale: f64,
     /// How the painted colours are graded for the scene the plant stands in (the default keeps
     /// the milestone's own).
     pub palette: FoliagePalette,
@@ -222,6 +232,9 @@ impl Default for FoliageMass {
             cell: 0.2,
             level: 0.6,
             card_keep: 0.9,
+            form: 0.55,
+            jitter: 0.45,
+            leaf_scale: 1.,
             palette: FoliagePalette::default(),
         }
     }
@@ -245,6 +258,12 @@ pub struct FoliagePalette {
     pub shade_hue: f64,
     pub contrast: f64,
     pub depth: f64,
+    /// How many painted bands the light steps through, 2 to 24 (the renderer's ramp of colours
+    /// sampled at as many steps; 6 its own six).
+    pub bands: f64,
+    /// Share of the light's range, 0 to 0.5, below the ramp's darkest colour that goes down to a
+    /// very dark cool green: the deepest, occluded parts of the plant.
+    pub deep: f64,
 }
 impl Default for FoliagePalette {
     fn default() -> Self {
@@ -256,6 +275,8 @@ impl Default for FoliagePalette {
             shade_hue: 0.,
             contrast: 1.,
             depth: 1.,
+            bands: 6.,
+            deep: 0.,
         }
     }
 }
@@ -524,6 +545,9 @@ impl Foliage {
             within(mass.cell, 0.02, 2., "mass cell")?;
             within(mass.level, 1e-3, 2., "mass level")?;
             within(mass.card_keep, 0., 1., "mass cardKeep")?;
+            within(mass.form, 0., 1., "mass form")?;
+            within(mass.jitter, 0., 1., "mass jitter")?;
+            within(mass.leaf_scale, 0.25, 4., "mass leafScale")?;
             within(mass.palette.hue, -180., 180., "mass palette hue")?;
             within(mass.palette.saturation, 0., 2., "mass palette saturation")?;
             within(mass.palette.value, 0., 2., "mass palette value")?;
@@ -531,6 +555,8 @@ impl Foliage {
             within(mass.palette.shade_hue, -180., 180., "mass palette shadeHue")?;
             within(mass.palette.contrast, 0., 3., "mass palette contrast")?;
             within(mass.palette.depth, 0., 3., "mass palette depth")?;
+            within(mass.palette.bands, 2., 24., "mass palette bands")?;
+            within(mass.palette.deep, 0., 0.5, "mass palette deep")?;
             if mass.sites.is_empty() || mass.sites.len() > MAX_MASS_SITES {
                 return Err(format!(
                     "A painted mass needs 1 to {MAX_MASS_SITES} leaf cluster sites."

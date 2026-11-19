@@ -745,7 +745,14 @@ impl Session {
             layers.push(program);
         }
         let mut text = String::from("material 1;\n");
+        // A slot is drawn as its base is: a base without an opacity stays opaque whatever opacity
+        // a layer gives (its layers still read the opacity beneath them), so the composite has
+        // an opacity only where the base states one.
+        let base_opacity = metadata.outputs.iter().any(|output| output == "opacity");
         for (channel, fallback) in STACK_CHANNELS {
+            if channel == "opacity" && !base_opacity {
+                continue;
+            }
             if let Some(producer) = latest.get(channel) {
                 let input = format!("{}{channel}", program::BASE_PLANE);
                 text.push_str(&format!(

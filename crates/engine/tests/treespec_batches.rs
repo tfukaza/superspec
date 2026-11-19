@@ -396,14 +396,19 @@ fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefini
 const LANE_PALETTE: superspec_types::batch::FoliagePalette =
     superspec_types::batch::FoliagePalette {
         // Matched to the sunny avenue concept's foliage: its shade, mid and lit values about
-        // #2c362b, #424c39 and #7f8358 (a muted olive, warm in the light, deep in the shade).
-        hue: -24.,
-        saturation: 0.62,
-        value: 0.95,
-        shade: 0.62,
+        // #2c362b, #424c39 and #7f8358 (a muted olive, warm in the light, deep in the shade),
+        // sampled in the avenue view lit from behind the camera.
+        hue: -26.,
+        saturation: 0.66,
+        value: 0.8,
+        shade: 0.7,
         shade_hue: -34.,
-        contrast: 1.5,
-        depth: 1.8,
+        contrast: 1.2,
+        depth: 2.0,
+        // More, finer steps than the milestone's six, so lit and shaded sides step gradually,
+        // and a deep end for the crown's occluded inside.
+        bands: 14.,
+        deep: 0.18,
     };
 
 /// A plant's painted mass (roadmap milestone `painted-trees-milestone`), in the plant's own space
@@ -652,11 +657,12 @@ fn lane_ground() -> GroundMesh {
     ground
 }
 
-/// The lane groundcover's grade: the trees' (`LANE_PALETTE`), a little darker, as the planting
-/// sits low in the planter.
+/// The lane groundcover's grade: the trees' (`LANE_PALETTE`), darker and with deeper shade, as
+/// the concept's planting: dark mounds with sunlit tops.
 const GROUNDCOVER_PALETTE: superspec_types::batch::FoliagePalette =
     superspec_types::batch::FoliagePalette {
-        value: 0.85,
+        value: 0.6,
+        shade: 0.5,
         ..LANE_PALETTE
     };
 
@@ -765,13 +771,22 @@ fn groundcover(
     carrier.batch.object_id = "lane-groundcover".into();
     let foliage = carrier.batch.foliage.as_mut().unwrap();
     foliage.patch = "lane-groundcover".into();
+    // Millimeters are plenty, and keep the document small.
+    let mm = |v: f64| (v * 1000.).round() / 1000.;
     foliage.mass = Some(FoliageMass {
-        sites,
-        twigs,
-        radius: 0.32,
+        sites: sites.into_iter().map(|s| s.map(mm)).collect(),
+        twigs: twigs
+            .into_iter()
+            .map(|twig| twig.into_iter().map(|p| p.map(mm)).collect())
+            .collect(),
+        radius: 0.36,
         cell: 0.12,
-        level: 0.55,
-        card_keep: 0.7,
+        // Full: a continuous, hedge-like mass of rounded low shrubs.
+        level: 0.42,
+        card_keep: 0.9,
+        form: 0.9,
+        jitter: 0.1,
+        leaf_scale: 1.3,
         palette: GROUNDCOVER_PALETTE,
     });
     carrier
@@ -802,9 +817,14 @@ fn write_lane_plants() {
     }))
     .unwrap();
     // The painted trees of the milestone (`painted-mass/milestone-birch.png`): the birch, scaled to a
-    // street tree of about 7 m, its core cut at 0.85 with half the cards kept, as the milestone's.
+    // avenue tree reaching the building's third storey (9 to 10 m), its crown kept to 2.5 m
+    // about the trunk and above the walkway (from about 3 m up), so it fits a narrow avenue.
+    // Full, as the milestone's (core cut near 0.85, over half the cards kept): gaps come from
+    // between its clusters, not from thinning; each cluster lit as its own rounded mass (lit
+    // top, dark beneath), with little per-card scatter, and leaves painted larger, as the
+    // trees are seen from across a street.
     let birch = |factor: f64| {
-        let definition = scaled(
+        let mut definition = scaled(
             tree::parse(
                 "birch.tree.json",
                 include_str!("../src/treespec/fixtures/birch.tree.json"),
@@ -812,9 +832,18 @@ fn write_lane_plants() {
             .unwrap(),
             factor,
         );
+        if let Some(tree::Envelope::Ellipsoid { center, radii }) = &mut definition.envelope {
+            let top = center[2] + radii[2];
+            let foot = 2.9_f64.min(top - 3.);
+            *center = [0., 0., 0.5 * (top + foot)];
+            *radii = [radii[0].min(2.5), radii[1].min(2.5), 0.5 * (top - foot)];
+        }
         let look = superspec_types::batch::FoliageMass {
-            level: 0.85,
-            card_keep: 0.5,
+            level: 0.88,
+            card_keep: 0.6,
+            form: 0.9,
+            jitter: 0.1,
+            leaf_scale: 1.5,
             ..Default::default()
         };
         (definition, look)
@@ -828,7 +857,14 @@ fn write_lane_plants() {
     for (lod, distance) in shrub.lods.iter_mut().zip([0., 8., 16.]) {
         lod.distance = distance;
     }
-    let shrub = (shrub, superspec_types::batch::FoliageMass::default());
+    let shrub = (
+        shrub,
+        superspec_types::batch::FoliageMass {
+            form: 0.8,
+            jitter: 0.15,
+            ..Default::default()
+        },
+    );
     let height = |x: f64, y: f64| {
         ground
             .positions
@@ -856,7 +892,7 @@ fn write_lane_plants() {
     let mut row = vec![];
     for (i, along) in stations("trees").into_iter().enumerate() {
         row.push((
-            birch([0.9, 0.8][i % 2]),
+            birch([1.2, 1.1][i % 2]),
             avenue_point(&avenue, along, middle),
         ));
     }
@@ -872,6 +908,9 @@ fn write_lane_plants() {
         let painted = superspec_types::batch::FoliageMass {
             level: mass.level,
             card_keep: mass.card_keep,
+            form: mass.form,
+            leaf_scale: mass.leaf_scale,
+            jitter: mass.jitter,
             palette: LANE_PALETTE,
             ..painted_mass(&definition, &plant)
         };
@@ -919,9 +958,13 @@ fn write_lane_plants() {
     let text = serde_json::to_vec(&document).unwrap();
     std::fs::write(out.join("lane-plants.json"), &text).unwrap();
     println!(
-        "lane-plants.json: {} batches, {} clumps of grass, {} bytes",
+        "lane-plants.json: {} batches, {} groundcover leaf sites, {} bytes",
         all.len(),
-        patch.stats.instances,
+        all.iter()
+            .filter_map(|level| level.batch.foliage.as_ref()?.mass.as_ref())
+            .filter(|mass| mass.cell < 0.2)
+            .map(|mass| mass.sites.len())
+            .sum::<usize>(),
         text.len()
     );
 }

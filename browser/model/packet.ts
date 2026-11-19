@@ -58,8 +58,14 @@ export interface FoliageLook {
 export interface FoliageMass {
   sites: [number, number, number, number][]; twigs: [number, number, number][][];
   radius: number; cell: number; level: number; cardKeep: number;
+  /** How much each clump's own form lights it, and each card's random light tilt, both 0 to 1. */
+  form: number; jitter: number;
+  /** Size of the painted leaves against the renderer's own. */
+  leafScale: number;
   /** The colours' grade for the scene (`superspec_types::batch::FoliagePalette`; hues in degrees). */
-  palette: { hue: number; saturation: number; value: number; shade: number; shadeHue: number; contrast: number; depth: number };
+  palette: { hue: number; saturation: number; value: number; shade: number; shadeHue: number; contrast: number; depth: number;
+    /** Bands the light steps through (6: the ramp's own six), and the share of the range below the ramp's darkest colour. */
+    bands: number; deep: number };
 }
 /** Grass, or a plant's part: bark, leaf clusters, the canopy hull and its shadow proxy (roadmap stage 7). */
 export type FoliageFamily = "grass" | "bark" | "leaves" | "hull" | "shadow";
@@ -79,8 +85,8 @@ export function validFoliage(look: unknown): look is FoliageLook {
     && Array.isArray(canopy.highlight) && canopy.highlight.length === 3 && canopy.highlight.every(Number.isFinite))) return false;
   const mass = value?.mass;
   const points = (list: unknown, size: number) => Array.isArray(list) && list.every(point => Array.isArray(point) && point.length === size && point.every(Number.isFinite));
-  if (mass !== undefined && !(numbers(mass, ["radius", "cell", "level", "cardKeep"]) && mass.radius > 0 && mass.cell > 0
-    && numbers(mass.palette, ["hue", "saturation", "value", "shade", "shadeHue", "contrast", "depth"])
+  if (mass !== undefined && !(numbers(mass, ["radius", "cell", "level", "cardKeep", "form", "jitter", "leafScale"]) && mass.radius > 0 && mass.cell > 0
+    && numbers(mass.palette, ["hue", "saturation", "value", "shade", "shadeHue", "contrast", "depth", "bands", "deep"])
     && points(mass.sites, 4) && mass.sites.length > 0 && Array.isArray(mass.twigs) && mass.twigs.every(twig => points(twig, 3)))) return false;
   return typeof value === "object" && value !== null && ["grass", "bark", "leaves", "hull", "shadow"].includes(value.family) && typeof value.patch === "string" && value.patch.length > 0
     && Number.isInteger(value.level) && value.level >= 0 && numbers(value, ["distance", "keep", "far"]) && value.keep > 0 && value.far > value.distance

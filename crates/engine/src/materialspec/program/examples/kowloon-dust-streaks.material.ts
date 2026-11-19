@@ -13,6 +13,8 @@ const strength = param.scalar({ default: 0.55, range: [0, 1], label: "Strength" 
 const streakLength = param.scalar({ default: 0.6, range: [0.05, 5], unit: "m", label: "Longest run" });
 const period = param.scalar({ default: 1.2, range: [0.2, 20], unit: "m", label: "Repeat along the edge" });
 const film = param.scalar({ default: 0.25, range: [0, 1], label: "Film right under the edge" });
+const foot = param.scalar({ default: 0, range: [0, 1], label: "Dust at the foot of the zone" });
+const opaque = param.scalar({ default: 0, range: [0, 1], label: "Opacity where dust is thick" });
 const filmDepth = param.scalar({ default: 0.08, range: [0.005, 0.5], unit: "m", label: "Film depth" });
 
 const zone = zoneCoord("zone");
@@ -26,10 +28,16 @@ const ended = sub(1, smoothstep(0.7, 1, div(zone.y, max(extent.y, 0.05))));
 const patchy = add(0.5, mul(0.5, valueNoise(vec2(add(mul(zone.x, 2.1), mul(zone.z, 41)), 0.5), seed("dust-patchy"))));
 const runs = mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), mul(reached, ended)), patchy);
 const head = mul(film, sub(1, smoothstep(mul(filmDepth, 0.3), filmDepth, zone.y)));
+// Dust collected where the zone ends below (a pane's foot, against its frame): a band some centimetres high, uneven.
+const toFoot = sub(extent.y, zone.y);
+const footBand = mul(mul(foot, sub(1, smoothstep(0.01, add(0.03, mul(0.05, patchy)), toFoot))), patchy);
 
 export default defineLayer({
   name: "Kowloon dust streaks",
-  coverage: mul(extent.x, min(mul(add(runs, head), strength), 1)),
+  coverage: mul(extent.x, min(add(mul(add(runs, head), strength), footBand), 1)),
   baseColor: color,
   roughness: 0.9,
+  // On glass, thick dust is not see-through: the opacity beneath only rises.
+  opacity: opaque,
+  blend: { opacity: "max" },
 });

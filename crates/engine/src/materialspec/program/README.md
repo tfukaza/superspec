@@ -203,7 +203,9 @@ chain of planes, not one linked program:
   that gives it combines it by its coverage and blend rule like any channel (`opacity: 0.9` sets
   0.9 where it covers; `blend: { opacity: "max" }` only ever adds). The composed slot is drawn as
   its base says: a cutout at the base's cutoff where the base declares one (`alphaCutout`), else
-  blended where the opacity is below 1; a stack without an opacity is opaque. The CPU bake keeps
+  blended where the opacity is below 1. A base without an opacity stays opaque, alpha 1, whatever
+  opacity its layers give (a window frame under the dust streaks that cloud the glass); a material
+  that wants its layers to thin it states an opacity of its own (`opacity: 1`). The CPU bake keeps
   it in the color map's alpha (the composite reads the opacity plane, and the base's metadata says
   how it is drawn); the GPU stack bake does the same (`stackOpacity` in `browser/renderer/bake.ts`:
   the composed base color map's alpha, its key marked `:blend` or `:cutout<c>`); stacks without an

@@ -17,6 +17,10 @@ use std::collections::BTreeMap;
 use superspec_geometry::V3;
 use superspec_types::rng::SeededRng;
 
+/// The stone tint pavements and avenues are shaded from: a near-neutral mid grey, so the
+/// paving material bound over them decides their colour and the tints only vary it.
+const PAVING: &str = "#8f8e8a";
+
 /// `kowloon/shop-room`: an open shop behind its shopfront opening: floor, ceiling and walls,
 /// the raised shutter's head box and threshold, and the trade's furniture and stock (shelf
 /// banks packed with goods, counter, hung goods, crates and cartons, lights). Walls are in the
@@ -320,7 +324,7 @@ pub(super) fn street_stock(
 /// `paving`, `kerb`, `metal`. Parameters: `length` (m, 0.3–100, 6), `depth` (m, 0.4–10, 1.45),
 /// `height` (m of kerb above the road, 0.02–0.5, 0.15), `stone` (m, paving stone size,
 /// 0.2–2, 0.55), `before`, `after` (m the pavement continues past the wall's ends, 0–10, 0),
-/// `drain` (true), `color` (#a8a394), `seed` (stone shades).
+/// `drain` (true), `color` (#8f8e8a), `seed` (stone shades).
 pub(super) fn pavement(
     name: &str,
     values: &Values,
@@ -336,7 +340,7 @@ pub(super) fn pavement(
     let drain = a.boolean("drain", true)?;
     // `manhole`: a cast iron cover in the paving (false).
     let manhole = a.boolean("manhole", false)?;
-    let color = a.color("color", "#a8a394")?;
+    let color = a.color("color", PAVING)?;
     let mut rng = a.rng()?;
     a.finish()?;
     let kerb = 0.14;
@@ -522,7 +526,7 @@ fn swept(
 /// below. Slots: `paving`, `kerb`. Parameters: `radius` (m of the wall's round, 0.05–20,
 /// 0.55), `turn` (degrees, 5–175, 90), `depth` (m, 0.4–10, 1.45), `height` (m of kerb above
 /// the road, 0.02–0.5, 0.15), `stone` (m, paving stone size, 0.2–2, 0.55), `segments` (chords
-/// of the whole turn, 4–48, 12), `color` (#a8a394), `seed` (stone shades).
+/// of the whole turn, 4–48, 12), `color` (#8f8e8a), `seed` (stone shades).
 pub(super) fn pavement_corner(
     name: &str,
     values: &Values,
@@ -535,7 +539,7 @@ pub(super) fn pavement_corner(
     let height = a.bounded("height", 0.15, 0.02..=0.5)?;
     let stone = a.bounded("stone", 0.55, 0.2..=2.)?;
     let segments = a.integer("segments", 12, 4..=48)?;
-    let color = a.color("color", "#a8a394")?;
+    let color = a.color("color", PAVING)?;
     let mut rng = a.rng()?;
     a.finish()?;
     let (kerb, joint) = (0.14, 0.006);
@@ -667,10 +671,11 @@ fn kerb_run(
 /// median's middle, half the width), `medianStart` (m, 3) and `medianEnd` (m along, 3 m short
 /// of the end), `planterKerb` (m, 0.08–0.6, 0.2), `planterRise` (m above the paving,
 /// 0.05–1, 0.3), `soilDepth` (m below the planter's top, 0.02–1, 0.14), `drains` (true),
-/// `bollardSpacing` (m, 0 for none, 0.6–10, 1.6), `benches` (pairs, 0–40, 3), `benchFirst`
-/// (m along, where the median's first third starts, or a quarter of the length without a
-/// median) and `benchSpacing` (m, 0.5–80, 7), `bins` (a litter bin past the ends of each bench
-/// station, false) and `binColor` (#c2672e), `color` (#a8a394), `seed` (stone shades).
+/// `bollardSpacing` (m, 0 for none, 0.6–10, 1.6) and `bollardColor` (#3d403b), `benches`
+/// (pairs, 0–40, 3), `benchFirst` (m along, where the median's first third starts, or a
+/// quarter of the length without a median) and `benchSpacing` (m, 0.5–80, 7), `bins` (a
+/// litter bin past the ends of each bench station, false) and `binColor` (#c2672e), `stagger`
+/// (courses breaking joint, true; false a grid), `color` (#8f8e8a), `seed` (stone shades).
 pub(super) fn pedestrian_avenue(
     name: &str,
     values: &Values,
@@ -683,6 +688,9 @@ pub(super) fn pedestrian_avenue(
     let slab = a.bounded("slab", 0.9, 0.2..=3.)?;
     let course = a.bounded("course", 0.6, 0.2..=3.)?;
     let bands = a.integer("bands", 5, 0..=40)?;
+    // `stagger`: alternate courses break joint by half a slab (true); false lays the slabs in
+    // a grid, their joints running straight both ways.
+    let stagger = a.boolean("stagger", true)?;
     let mouth = a.boolean("mouth", true)?;
     let end = a.boolean("end", true)?;
     let side = a.boolean("side", true)?;
@@ -695,6 +703,8 @@ pub(super) fn pedestrian_avenue(
     let soil_depth = a.bounded("soilDepth", 0.14, 0.02..=1.)?;
     let drains = a.boolean("drains", true)?;
     let bollard_spacing = a.bounded("bollardSpacing", 1.6, 0. ..=10.)?;
+    // `bollardColor`: the bollards' paint (#3d403b) under a pale reflective band.
+    let bollard_color = a.color("bollardColor", "#3d403b")?;
     let benches = a.integer("benches", 3, 0..=40)?;
     let bench_spacing = a.bounded("benchSpacing", 7., 0.5..=80.)?;
     let bench_first = a.number(
@@ -709,7 +719,7 @@ pub(super) fn pedestrian_avenue(
     // painted `binColor` (#c2672e) under a steel lid.
     let bins = a.boolean("bins", false)?;
     let bin_color = a.color("binColor", "#c2672e")?;
-    let color = a.color("color", "#a8a394")?;
+    let color = a.color("color", PAVING)?;
     let mut rng = a.rng()?;
     a.finish()?;
     let median = median_width > 0.;
@@ -769,7 +779,11 @@ pub(super) fn pedestrian_avenue(
             for r in 0..rows {
                 let (high, low) = (-(r as f64) * row, -((r + 1) as f64) * row);
                 let band = bands > 0 && r % bands == bands / 2;
-                let offset = if r % 2 == 1 { pitch / 2. } else { 0. };
+                let offset = if stagger && r % 2 == 1 {
+                    pitch / 2.
+                } else {
+                    0.
+                };
                 let (mut left, mut c) = (x0, 0);
                 while left < x1 - 1e-6 {
                     let right = if c == 0 && offset > 0. {
@@ -904,7 +918,7 @@ pub(super) fn pedestrian_avenue(
             if bollard_spacing > 0. && width > 1.2 {
                 let count = ((width - 1.2) / bollard_spacing).floor() as usize + 1;
                 let first = -(width - (count - 1) as f64 * bollard_spacing) / 2.;
-                let steel = srgb("#3d403b");
+                let steel = bollard_color;
                 for (open, x) in [(mouth, 0.45), (end, length - 0.45)] {
                     if !open {
                         continue;
@@ -1012,6 +1026,352 @@ fn litter_bin(d: &mut Fixture<'_, '_>, tint: V3) -> Result<(), String> {
         steel,
     )?;
     d.drum("metal", [0., 0., 0.94], 0.075, 0.03, shade(steel, 0.8), 12)
+}
+
+/// Frame paints a parked cart is seen in.
+const CART_PAINTS: [&str; 6] = [
+    "#2f4a5a", "#5a2c28", "#2e2f2c", "#3f5a3a", "#8a8778", "#6b4f2e",
+];
+
+/// `kowloon/street-cart`: something parked on a pavement: a utility bicycle (`bicycle`: a
+/// roadster frame on two spoked wheels under mudguards, a rear rack, a chain wheel and pedals,
+/// a saddle, swept-back bars and by seed a wire basket on the front) or a flat-bed hand cart
+/// (`trolley`: a steel deck on four castors with a push bar at one end, loaded by seed with a
+/// stack of cartons and plastic crates). Anchor: on the ground at the cart's middle; it runs
+/// along +X (the bicycle's front, the trolley's bar end toward -X). Slots: `metal` (frame,
+/// wheels and fittings, tinted per vertex) and `stock` (the saddle, grips and a trolley's load,
+/// coloured per vertex). Parameters: `kind` (`bicycle` | `trolley`, `bicycle`), `color` (the
+/// frame's paint; the seed's when absent), `load` (a trolley's, 0–1, 0.7), `seed`.
+pub(super) fn street_cart(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let trolley = match a.text("kind", "bicycle")?.as_str() {
+        "bicycle" => false,
+        "trolley" => true,
+        _ => return Err(format!("{name}: kind must be one of bicycle, trolley.")),
+    };
+    let given = match a.optional_text("color")? {
+        Some(_) => Some(a.color("color", "#000000")?),
+        None => None,
+    };
+    let load = a.bounded("load", 0.7, 0. ..=1.)?;
+    let mut rng = a.rng()?;
+    a.finish()?;
+    let paint = given.unwrap_or_else(|| shade(srgb(rng.pick(&CART_PAINTS)), rng.float(0.85, 1.1)));
+    draw(cancelled, |mesh| {
+        let d = &mut on(mesh, room_pen("street-cart", [0.; 3])?)?;
+        if trolley {
+            hand_cart(d, paint, load, &mut rng)
+        } else {
+            bicycle(d, paint, &mut rng)
+        }
+    })
+}
+
+/// Points round a circle of `radius` about `centre` in the XZ plane, from `from` to `to`
+/// radians (measured from +X toward +Z), `pieces` chords.
+fn arc(centre: V3, radius: f64, [from, to]: [f64; 2], pieces: usize) -> Vec<V3> {
+    use superspec_geometry::math::{cos, sin};
+    (0..=pieces)
+        .map(|k| {
+            let t = from + (to - from) * k as f64 / pieces as f64;
+            [
+                centre[0] + radius * cos(t),
+                centre[1],
+                centre[2] + radius * sin(t),
+            ]
+        })
+        .collect()
+}
+
+/// A utility bicycle along +X, standing on z = 0 about the origin (see [`street_cart`]).
+fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<(), String> {
+    use std::f64::consts::{PI, TAU};
+    use superspec_geometry::math::{cos, sin};
+    let (tyre, steel, black) = (srgb("#1c1c1a"), srgb("#a3a59f"), srgb("#262624"));
+    let radius = 0.33;
+    let (rear, front) = ([-0.52, 0., radius], [0.53, 0., radius]);
+    for axle in [rear, front] {
+        // The tyre and rim as closed rings, eight spokes a side from the hub's flanges.
+        let mut ring = arc(axle, radius - 0.018, [0., TAU], 28);
+        ring.pop();
+        let first = ring[0];
+        ring.push(first);
+        d.tube("metal", &ring, 0.019, tyre, 6)?;
+        let mut rim = arc(axle, radius - 0.045, [0., TAU], 28);
+        rim.pop();
+        let first = rim[0];
+        rim.push(first);
+        d.tube("metal", &rim, 0.01, steel, 5)?;
+        d.tube(
+            "metal",
+            &[[axle[0], -0.05, axle[2]], [axle[0], 0.05, axle[2]]],
+            0.022,
+            steel,
+            8,
+        )?;
+        for k in 0..16 {
+            let angle = k as f64 * TAU / 16. + rng.float(0., 0.05);
+            let side = if k % 2 == 0 { -0.035 } else { 0.035 };
+            let r = radius - 0.05;
+            d.tube(
+                "metal",
+                &[
+                    [axle[0], side, axle[2]],
+                    [axle[0] + r * cos(angle), 0., axle[2] + r * sin(angle)],
+                ],
+                0.0025,
+                steel,
+                3,
+            )?;
+        }
+        // A mudguard over the top of the wheel.
+        let mut guard = arc(axle, radius + 0.03, [0.15 * PI, 0.95 * PI], 12);
+        if axle[0] > 0. {
+            guard = arc(axle, radius + 0.03, [0.05 * PI, 0.85 * PI], 12);
+        }
+        d.tube("metal", &guard, 0.024, shade(paint, 0.9), 6)?;
+    }
+    let bracket = [-0.06, 0., 0.29];
+    let seat = [-0.21, 0., 0.84];
+    let head = ([0.39, 0., 0.86], [0.43, 0., 0.7]);
+    let tube =
+        |d: &mut Fixture<'_, '_>, a: V3, b: V3, r: f64| d.tube("metal", &[a, b], r, paint, 8);
+    // Seat tube, down tube, top tube and the head tube.
+    tube(d, bracket, seat, 0.017)?;
+    tube(d, bracket, head.1, 0.019)?;
+    tube(d, [-0.19, 0., 0.79], [0.395, 0., 0.83], 0.016)?;
+    tube(d, head.1, head.0, 0.021)?;
+    // Stays to the rear axle and the fork's blades to the front, either side of the wheels.
+    for y in [-0.045, 0.045] {
+        tube(
+            d,
+            [bracket[0], y * 0.6, bracket[2]],
+            [rear[0], y, rear[2]],
+            0.01,
+        )?;
+        tube(d, [-0.2, y * 0.6, 0.77], [rear[0], y, rear[2]], 0.009)?;
+        tube(
+            d,
+            [head.1[0], y * 0.6, head.1[2]],
+            [front[0], y, front[2]],
+            0.012,
+        )?;
+    }
+    // Seat post and saddle; stem and swept-back bars with grips.
+    d.tube("metal", &[seat, [-0.225, 0., 0.93]], 0.012, steel, 8)?;
+    d.cuboid(
+        "stock",
+        [-0.33, -0.075, 0.93],
+        [-0.12, 0.075, 0.985],
+        black,
+        "",
+    )?;
+    d.tube("metal", &[head.0, [0.38, 0., 0.99]], 0.013, steel, 8)?;
+    let bars = [
+        [0.27, -0.29, 1.0],
+        [0.33, -0.22, 1.0],
+        [0.38, -0.08, 0.99],
+        [0.38, 0.08, 0.99],
+        [0.33, 0.22, 1.0],
+        [0.27, 0.29, 1.0],
+    ];
+    d.tube("metal", &bars, 0.011, steel, 6)?;
+    for (a, b) in [(bars[0], bars[1]), (bars[5], bars[4])] {
+        d.tube(
+            "stock",
+            &[
+                a,
+                [a[0] + (b[0] - a[0]) * 0.6, a[1] + (b[1] - a[1]) * 0.6, a[2]],
+            ],
+            0.016,
+            black,
+            6,
+        )?;
+    }
+    // The chain wheel, cranks and pedals; the chain to the rear sprocket.
+    d.disc(
+        "metal",
+        [bracket[0], 0.055, bracket[2]],
+        0.095,
+        [0., 1., 0.],
+        steel,
+        16,
+    )?;
+    d.disc(
+        "metal",
+        [bracket[0], 0.054, bracket[2]],
+        0.095,
+        [0., -1., 0.],
+        steel,
+        16,
+    )?;
+    let crank = rng.float(0., PI);
+    for (side, turn) in [(0.065, 0.), (-0.065, PI)] {
+        let (c, s) = (cos(crank + turn), sin(crank + turn));
+        let end = [bracket[0] + 0.165 * c, side * 1.6, bracket[2] + 0.165 * s];
+        d.tube(
+            "metal",
+            &[[bracket[0], side, bracket[2]], end],
+            0.01,
+            steel,
+            6,
+        )?;
+        d.cuboid(
+            "metal",
+            [end[0] - 0.05, end[1].min(side * 2.6), end[2] - 0.012],
+            [end[0] + 0.05, end[1].max(side * 2.6), end[2] + 0.012],
+            black,
+            "",
+        )?;
+    }
+    for z in [bracket[2] + 0.09, bracket[2] - 0.09] {
+        d.tube(
+            "metal",
+            &[
+                [bracket[0], 0.06, z],
+                [rear[0], 0.06, rear[2] + (z - bracket[2]) * 0.45],
+            ],
+            0.005,
+            srgb("#3a3631"),
+            4,
+        )?;
+    }
+    // A rear rack over the wheel on stays, and a kickstand.
+    d.cuboid(
+        "metal",
+        [-0.78, -0.09, 0.74],
+        [-0.3, 0.09, 0.755],
+        shade(paint, 0.85),
+        "",
+    )?;
+    for y in [-0.08, 0.08] {
+        d.tube(
+            "metal",
+            &[[-0.72, y, 0.74], [rear[0], y * 0.6, rear[2]]],
+            0.007,
+            steel,
+            4,
+        )?;
+    }
+    d.tube(
+        "metal",
+        &[[-0.3, 0.05, 0.3], [-0.38, 0.17, 0.005]],
+        0.009,
+        steel,
+        5,
+    )?;
+    if rng.chance(0.6) {
+        // A wire basket on the front, its contents a dark mass.
+        let (x0, x1) = (0.48, 0.8);
+        d.cuboid("metal", [x0, -0.15, 0.78], [x1, 0.15, 0.8], steel, "")?;
+        for (lo, hi) in [
+            ([x0, -0.15, 0.8], [x1, -0.14, 1.0]),
+            ([x0, 0.14, 0.8], [x1, 0.15, 1.0]),
+            ([x0, -0.14, 0.8], [x0 + 0.01, 0.14, 1.0]),
+            ([x1 - 0.01, -0.14, 0.8], [x1, 0.14, 1.0]),
+        ] {
+            d.cuboid("metal", lo, hi, steel, "")?;
+        }
+        if rng.chance(0.6) {
+            d.cuboid(
+                "stock",
+                [x0 + 0.02, -0.12, 0.8],
+                [x1 - 0.03, 0.12, 0.92],
+                shade(srgb(rng.pick(&["#b6a27a", "#6d7a5a", "#c9c1b0"])), 0.9),
+                "d",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// A flat-bed hand cart along +X with its push bar at -X, loaded (see [`street_cart`]).
+fn hand_cart(
+    d: &mut Fixture<'_, '_>,
+    paint: V3,
+    load: f64,
+    rng: &mut SeededRng,
+) -> Result<(), String> {
+    let (rubber, steel) = (srgb("#1c1c1a"), srgb("#9a9c96"));
+    let (half_x, half_y, deck) = (0.46, 0.29, 0.17);
+    d.cuboid(
+        "metal",
+        [-half_x, -half_y, deck - 0.03],
+        [half_x, half_y, deck],
+        paint,
+        "",
+    )?;
+    for x in [-half_x + 0.08, half_x - 0.08] {
+        for y in [-half_y + 0.06, half_y - 0.06] {
+            // A castor: its fork plate and the wheel across it.
+            d.cuboid(
+                "metal",
+                [x - 0.03, y - 0.03, 0.1],
+                [x + 0.03, y + 0.03, deck - 0.03],
+                steel,
+                "",
+            )?;
+            d.tube(
+                "metal",
+                &[[x, y - 0.018, 0.065], [x, y + 0.018, 0.065]],
+                0.065,
+                rubber,
+                12,
+            )?;
+        }
+    }
+    // The push bar: two uprights and a grip across.
+    let bar = -half_x + 0.02;
+    let top = 0.95;
+    d.tube(
+        "metal",
+        &[
+            [bar, -half_y + 0.03, deck],
+            [bar - 0.05, -half_y + 0.03, top],
+            [bar - 0.05, half_y - 0.03, top],
+            [bar, half_y - 0.03, deck],
+        ],
+        0.014,
+        steel,
+        8,
+    )?;
+    // The load: cartons and crates stacked on the deck.
+    let cardboard = ["#b08a5a", "#a3814f", "#c29a66", "#9b7a52"];
+    let crates = ["#3a6a9a", "#c0402e", "#3f7a4a", "#d0b030"];
+    let mut z = deck;
+    let layers = (load * 4.).round() as usize;
+    for layer in 0..layers {
+        let crate_layer = rng.chance(0.3);
+        let tint = if crate_layer {
+            srgb(rng.pick(&crates))
+        } else {
+            shade(srgb(rng.pick(&cardboard)), rng.float(0.85, 1.05))
+        };
+        let height = if crate_layer {
+            0.26
+        } else {
+            rng.float(0.22, 0.34)
+        };
+        let shrink = layer as f64 * 0.02 + rng.float(0., 0.03);
+        let shift = rng.float(-0.03, 0.03);
+        d.cuboid(
+            "stock",
+            [-half_x + 0.06 + shrink + shift, -half_y + 0.02 + shrink, z],
+            [
+                half_x - 0.02 - shrink + shift,
+                half_y - 0.02 - shrink,
+                z + height,
+            ],
+            tint,
+            "d",
+        )?;
+        z += height;
+    }
+    Ok(())
 }
 
 /// `kowloon/street-lamp`: a street lamp on a tapered steel pole: a base plate under a cast

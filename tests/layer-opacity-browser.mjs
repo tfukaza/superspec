@@ -22,10 +22,13 @@ const pane = (id, x) => ({
 const project = {
   schemaVersion: 2, kind: "material", entry: "glass.material.ts", parameters: {}, seed: 0, resolution: 64, mapping: "world",
   inspection: "final", domain: [1, 1], base: { kind: "swatch" }, target: { scope: "mesh", enabled: false }, assets: {},
-  modules: { "glass.material.ts": recipe("GLASS"), "cutout.material.ts": recipe("CUTOUT"), "dust.material.ts": recipe("DUST"), "clouding.material.ts": recipe("CLOUDING") },
-  // The cutout is opaque where world x < 0.5, so its pane stands at the origin; the glass's layers read world z alone.
-  models: [pane("glass", 2), pane("cut", 0)],
+  modules: { "glass.material.ts": recipe("GLASS"), "cutout.material.ts": recipe("CUTOUT"), "dust.material.ts": recipe("DUST"), "clouding.material.ts": recipe("CLOUDING"),
+    "thinning.material.ts": recipe("THINNING"), "frame.material.ts": recipe("GLASS").replace(", opacity: 0.4", "") },
+  // The cutout is opaque where world x < 0.5, so its pane stands at the origin; the other layers read world z alone.
+  models: [pane("glass", 2), pane("cut", 0), pane("frame", 4)],
   materials: [
+    // An opaque base under layers that give an opacity (a window frame under the glass's dust) stays opaque.
+    { id: "frame", entry: "frame.material.ts", parameters: {}, seed: 0, meshes: [], layers: [{ entry: "thinning.material.ts", parameters: {}, seed: 1 }, { entry: "clouding.material.ts", parameters: {}, seed: 1 }] },
     { id: "glass", entry: "glass.material.ts", parameters: {}, seed: 0, meshes: [], layers: [{ entry: "dust.material.ts", parameters: {}, seed: 1 }, { entry: "clouding.material.ts", parameters: {}, seed: 1 }] },
     { id: "cut", entry: "cutout.material.ts", parameters: {}, seed: 0, meshes: [], layers: [{ entry: "dust.material.ts", parameters: {}, seed: 1 }] },
   ],
@@ -76,6 +79,9 @@ try {
   assert.ok(share(glass, 0.4) > 0.3 && share(glass, 0.9) > 0.3, "the glass's alpha where the clouding gives none, and the clouding's where it covers");
   assert.equal(cut.alphaTest, 0.5, "a cutout under a layer keeps its cutoff");
   assert.ok(share(cut, 1) > 0.3 && share(cut, 0) > 0.3, "and its opacity");
+  const frame = Object.entries(looks).find(([id]) => id.startsWith("frame"))[1];
+  assert.ok(frame.layered && !frame.transparent && !frame.alphaTest, "an opaque base under layers that give an opacity is drawn opaque");
+  assert.equal(share(frame, 1), 1, "with alpha 1 everywhere");
   assert.equal(errors.length, 0, errors.join("\n"));
   console.log("Layer opacity passed: layered glass is blended with its alphas, and a layered cutout keeps its cutout.");
 } finally {

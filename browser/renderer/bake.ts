@@ -1856,8 +1856,9 @@ export class GpuBaker {
     // The result: maps composed from the planes of the materials that last changed each channel, and the normals.
     const produced = (channel: string) => stack.channels[channel] && planes.get(stack.channels[channel])?.includes(channel) ? planeId(stack.channels[channel], channel) : undefined;
     const color = produced("base_color"), roughness = produced("roughness"), metalness = produced("metalness"), emissive = produced("emissive");
-    // The stack's opacity rides in the base color map's alpha (`stackOpacity`); without one the alpha is 1.
-    const opacity = produced("opacity");
+    // The stack's opacity rides in the base color map's alpha where the slot is drawn by it (`stackOpacity`); else 1.
+    const drawnByOpacity = Object.keys(stackOpacity(base, stack)).length > 0;
+    const opacity = drawnByOpacity ? produced("opacity") : undefined;
     const offset = produced("normal_offset");
     let heightId = produced("height");
     if (!heightId) { fallbacks.add("height"); heightId = "fallback/height"; }
@@ -2053,13 +2054,15 @@ export class GpuBaker {
 }
 
 /**
- * How a layered slot's composed maps are drawn: the stack has an opacity where its base or a layer gives one
- * (`StackInput.channels.opacity`; a layer that gives no opacity leaves it as it is beneath). Then the base color map's
- * alpha holds it, and the slot is a cutout at the base's cutoff where the base declares one, else blended. A stack
- * without an opacity is opaque, its alpha 1.
+ * How a layered slot's composed maps are drawn: as its base is. A base that states an opacity (glass, a cutout) keeps
+ * the stack's opacity (`StackInput.channels.opacity`: the base's, changed by any layer that gives one) in the base color
+ * map's alpha, drawn as a cutout at the base's cutoff where it declares one, else blended. A base without an opacity
+ * stays opaque, its alpha 1, whatever opacity a layer gives: an opaque frame under a dust layer must not be drawn
+ * blended (unsorted against the glass, it went black). A material that wants its layers to thin it out states an
+ * opacity of its own (`opacity: 1`).
  */
 export function stackOpacity(base: MaterialShading, stack: StackInput): { cutout?: number; blend?: true } {
-  if (!stack.channels.opacity) return {};
+  if (!stack.channels.opacity || !base.shader.outputs.includes("opacity")) return {};
   const cutoff = base.shader.alphaCutoff;
   return typeof cutoff === "number" ? { cutout: cutoff } : { blend: true };
 }
@@ -2068,12 +2071,14 @@ export function stackOpacity(base: MaterialShading, stack: StackInput): { cutout
  * The planes a stack bake draws, by stack material (`stack.base`, `stack.<k>`): the channels something reads (each
  * channel of the result, and each a layer reads beneath it), in the order of the material's outputs, so a material's
  * plane program is the same text whoever makes it (`bakeStack`, `precompileStack`). The opacity is drawn where the
- * stack has one (`stackOpacity`): the composed base color map keeps it in its alpha.
+ * slot is drawn by it (`stackOpacity`: its base states one), and the composed base color map keeps it in its alpha.
  */
 function stackPlanes(base: MaterialShading, stack: StackInput): Map<string, string[]> {
   const wanted = new Map<string, Set<string>>();
   const want = (producer: string, channel: string) => { if (!wanted.has(producer)) wanted.set(producer, new Set()); wanted.get(producer)!.add(channel); };
-  for (const [channel, producer] of Object.entries(stack.channels)) if (STACK_CHANNELS.includes(channel)) want(producer, channel);
+  // The opacity only where the slot is drawn by it; a layer that reads the opacity beneath still has it drawn (below).
+  const opaque = !Object.keys(stackOpacity(base, stack)).length;
+  for (const [channel, producer] of Object.entries(stack.channels)) if (STACK_CHANNELS.includes(channel) && !(opaque && channel === "opacity")) want(producer, channel);
   for (const layer of stack.layers) for (const [input, producer] of Object.entries(layer.reads)) want(producer, input.slice("base.".length));
   const planes = new Map<string, string[]>();
   for (const [id, shading] of [["stack.base", base] as const, ...stack.layers.map(layer => [layer.id, layer.shading] as const)]) {

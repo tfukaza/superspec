@@ -147,8 +147,9 @@ fn window(
 /// `stub`, `wall`), `length` (m, 0.3–60, 6), `top` (m, 2–80, 12.5), `ground` (m, 2–8, 3.3),
 /// `storey` (m, 2.4–6, 3), `storeys` (1–20, 4), `own` (0–20, 0), `color` (#b4a88f), `frame`
 /// (#4b5257), `door` (true), `stacks` (0–4, -1: one or two), `cables` (0–6, 2), `bars`
-/// (0–1, 0.3), `units` (0–1, 0.45), `seed`. Drying racks and extract vents dress a seeded few
-/// upper windows.
+/// (0–1, 0.3), `units` (0–1, 0.45), `depth` (a stub's, m, 0.8–12; 0: seeded), `shops` (a
+/// stub's front ground storey left blank for shopfronts stood before it, false), `seed`.
+/// Drying racks and extract vents dress a seeded few upper windows.
 ///
 /// Features ([`features`]), in item axes with the faces' outward normals (`front` faces -y):
 /// `top` (the foot of the coping), `base`, and on a stub `eave` (under every string course) and
@@ -185,6 +186,8 @@ struct Party {
     floors: usize,
     roof: f64,
     depth: f64,
+    /// Whether the front's ground storey is left blank for shopfronts.
+    shops: bool,
     bays: usize,
     blank: Vec<bool>,
     units: Vec<bool>,
@@ -253,6 +256,15 @@ impl Party {
         let bar_share = a.bounded("bars", 0.3, 0. ..=1.)?;
         // `units`: the share of upper front windows with a unit under the sill (0–1, 0.45).
         let unit_share = a.bounded("units", 0.45, 0. ..=1.)?;
+        // `depth`: a stub's depth out from the wall plane (m, 0.8–12; 0, the default, a seeded
+        // 1.1–1.9), so a host can stand things against its front.
+        let fixed_depth = a.bounded("depth", 0., 0. ..=12.)?;
+        if fixed_depth > 0. && fixed_depth < 0.8 {
+            return Err(format!("{name}: depth must be 0 or 0.8..12."));
+        }
+        // `shops`: the front's ground storey is left blank (no windows or back door in it) for
+        // shopfronts a host stands before it (false).
+        let shops = a.boolean("shops", false)?;
         let key = a.seed()?;
         a.finish()?;
         let mut rng = SeededRng::from_text(&key);
@@ -274,6 +286,7 @@ impl Party {
             floors: 0,
             roof: 0.,
             depth: 0.,
+            shops: false,
             bays: 0,
             blank: vec![],
             units: vec![],
@@ -298,7 +311,14 @@ impl Party {
         plan.roof = ground + (floors - 1) as f64 * storey;
         let parapet = rng.float(0.4, 1.0);
         plan.high = plan.roof + parapet;
-        plan.depth = rng.float(1.1, 1.9);
+        // (the seeded depth is drawn either way, so the rest stays the seed's).
+        let seeded_depth = rng.float(1.1, 1.9);
+        plan.depth = if fixed_depth > 0. {
+            fixed_depth
+        } else {
+            seeded_depth
+        };
+        plan.shops = shops;
         plan.bays = ((length - 0.8) / 2.3).floor().max(1.) as usize;
         let bays = plan.bays;
         // Which windows stand: most do; a few bays are blank.
@@ -310,7 +330,7 @@ impl Party {
         let pitch = length / bays as f64;
         // The back door takes a ground bay wide enough for it and its surround.
         let door_bay = (lane.float(0., 1.) * bays as f64).floor() as usize;
-        plan.door = (door && pitch >= 1.5).then_some(door_bay.min(bays - 1));
+        plan.door = (door && !shops && pitch >= 1.5).then_some(door_bay.min(bays - 1));
         plan.barred = (0..bays * floors).map(|_| lane.chance(bar_share)).collect();
         // Stacks stand between bays (or near the start of a single one), clear of the drain
         // and the door.
@@ -372,7 +392,7 @@ impl Party {
             if z1 > self.roof - 0.25 || wide < 0.4 {
                 continue;
             }
-            for bay in 0..self.bays {
+            for bay in (0..self.bays).filter(|_| level > 0 || !self.shops) {
                 if self.blank[level * self.bays + bay] || (level == 0 && self.door == Some(bay)) {
                     continue;
                 }

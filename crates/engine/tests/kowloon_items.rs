@@ -581,6 +581,107 @@ fn choices_and_dimensions_reach_the_fixture() {
         );
     }
     assert!(lids.iter().all(|p| p[2] <= 0.971));
+    // Unstaggered, the slabs lie in a grid: every slab top starts on one of the same column
+    // lines, which staggered courses offset by half a slab; the bollards take their paint.
+    let column_starts = |meshes: &[ItemMesh]| -> std::collections::BTreeSet<i64> {
+        meshes
+            .iter()
+            .filter(|m| m.material_slot == "paving")
+            .flat_map(|m| m.positions.iter())
+            .filter(|p| p[2] > -0.01)
+            .map(|p| (p[0] * 100.).round() as i64)
+            .collect()
+    };
+    let grid_values = |stagger: bool| {
+        values(&[
+            ("length", json!(9)),
+            ("width", json!(6)),
+            ("medianWidth", json!(0)),
+            ("benches", json!(0)),
+            ("slab", json!(0.6)),
+            ("course", json!(0.6)),
+            ("bands", json!(0)),
+            ("stagger", json!(stagger)),
+            ("bollardColor", json!("#101010")),
+        ])
+    };
+    let grid = generate(&natives, "kowloon/pedestrian-avenue", &grid_values(false)).unwrap();
+    check("kowloon/pedestrian-avenue", &grid);
+    let staggered = generate(&natives, "kowloon/pedestrian-avenue", &grid_values(true)).unwrap();
+    assert!(
+        column_starts(&grid).len() * 3 < column_starts(&staggered).len() * 2,
+        "{} grid against {} staggered x positions",
+        column_starts(&grid).len(),
+        column_starts(&staggered).len()
+    );
+    let darkest = |meshes: &[ItemMesh]| {
+        meshes
+            .iter()
+            .filter(|m| m.material_slot == "metal")
+            .flat_map(|m| m.colors.iter())
+            .map(|c| c[0] + c[1] + c[2])
+            .fold(f64::MAX, f64::min)
+    };
+    let plain_bollards = generate(
+        &natives,
+        "kowloon/pedestrian-avenue",
+        &values(&[("medianWidth", json!(0)), ("benches", json!(0))]),
+    )
+    .unwrap();
+    assert!(
+        darkest(&grid) < darkest(&plain_bollards) * 0.5,
+        "the bollards are painted near black"
+    );
+    // A parked bicycle stands on its wheels about a metre high and 1.9 m long, along +X; a
+    // hand cart's load stands on its deck. Both keep to their two slots.
+    let bounds_of = |meshes: &[ItemMesh], axis: usize| {
+        let points = all_points(meshes);
+        (lowest(&points, axis), highest(&points, axis))
+    };
+    let bicycle = generate(&natives, "kowloon/street-cart", &Values::new()).unwrap();
+    check("kowloon/street-cart", &bicycle);
+    let (low, high) = bounds_of(&bicycle, 2);
+    assert!(
+        low.abs() < 0.01 && (0.95..1.1).contains(&high),
+        "{low}..{high}"
+    );
+    let (front_x, back_x) = bounds_of(&bicycle, 0);
+    assert!(
+        (1.6..2.0).contains(&(back_x - front_x)),
+        "{front_x}..{back_x}"
+    );
+    let (near, far) = bounds_of(&bicycle, 1);
+    assert!(near > -0.35 && far < 0.35, "{near}..{far}");
+    let cart = generate(
+        &natives,
+        "kowloon/street-cart",
+        &values(&[("kind", json!("trolley")), ("load", json!(1))]),
+    )
+    .unwrap();
+    check("kowloon/street-cart", &cart);
+    for meshes in [&bicycle, &cart] {
+        assert!(
+            meshes
+                .iter()
+                .all(|m| m.material_slot == "metal" || m.material_slot == "stock")
+        );
+    }
+    let load: Vec<[f64; 3]> = cart
+        .iter()
+        .filter(|m| m.material_slot == "stock")
+        .flat_map(|m| m.positions.clone())
+        .collect();
+    assert!(!load.is_empty() && load.iter().all(|p| p[2] >= 0.17 - 1e-9));
+    let vertices: usize = bicycle.iter().chain(&cart).map(|m| m.positions.len()).sum();
+    assert!(vertices < 20_000, "{vertices} vertices");
+    assert!(
+        generate(
+            &natives,
+            "kowloon/street-cart",
+            &values(&[("kind", json!("scooter"))])
+        )
+        .is_err()
+    );
     // A street lamp: a pole `height` tall whose swan-neck arm reaches toward -Y and holds the
     // luminaire's diffuser (`lamp`) under its housing; a lantern's glass stands on the pole's
     // head; a banner hangs on brackets toward +X; two arms reach either way.
@@ -1550,6 +1651,44 @@ fn a_party_neighbour_is_a_stained_wall_or_a_slice_of_a_building() {
         )
         .is_err()
     );
+    // A stub can be given its depth, and its front's ground storey left blank for shops: no
+    // window or door below the first floor on its front, the storeys above as before.
+    let shops = party(&[
+        ("kind", json!("stub")),
+        ("length", json!(7)),
+        ("own", json!(3)),
+        ("depth", json!(3.5)),
+        ("shops", json!(true)),
+        ("seed", json!(4)),
+    ]);
+    assert!((lowest(&slot_points(&shops, "wall"), 1) + 3.5).abs() < 1e-9);
+    let front_low = |meshes: &[ItemMesh]| {
+        ["pane", "frame"]
+            .iter()
+            .flat_map(|slot| slot_points(meshes, slot))
+            .filter(|p| p[1] < -3.45 && p[2] < 3.)
+            .count()
+    };
+    assert_eq!(front_low(&shops), 0);
+    let lane = party(&[
+        ("kind", json!("stub")),
+        ("length", json!(7)),
+        ("own", json!(3)),
+        ("depth", json!(3.5)),
+        ("seed", json!(4)),
+    ]);
+    assert!(front_low(&lane) > 0);
+    assert!(slot_points(&shops, "pane").iter().any(|p| p[2] > 3.5));
+    for refused in [json!(0.5), json!(13)] {
+        assert!(
+            generate(
+                &natives,
+                "kowloon/party",
+                &values(&[("kind", json!("stub")), ("depth", refused)])
+            )
+            .is_err()
+        );
+    }
 }
 
 /// Every position of every mesh.

@@ -37,12 +37,18 @@ const CLOUDING: &str = r#"import { defineLayer, vec3, step, world } from "@super
 export default defineLayer({ name: "Clouding", coverage: step(0.5, world.z), baseColor: vec3(0.3, 0.28, 0.25), opacity: 0.9 });
 "#;
 
+/// Dust that takes the larger of its own opacity (0.3) and what is beneath, as dust streaks do.
+const THINNING: &str = r#"import { defineLayer, vec3, step, world } from "@superspec/material/v1";
+export default defineLayer({ name: "Thinning", coverage: step(0.5, world.z), baseColor: vec3(0.3, 0.28, 0.25), opacity: 0.3, blend: { opacity: "max" } });
+"#;
+
 fn request(base: &str, layers: &[&str]) -> Request {
     let modules: BTreeMap<String, String> = [
         ("glass.material.ts", GLASS),
         ("cutout.material.ts", CUTOUT),
         ("dust.material.ts", DUST),
         ("clouding.material.ts", CLOUDING),
+        ("thinning.material.ts", THINNING),
     ]
     .into_iter()
     .map(|(name, text)| (name.to_owned(), text.to_owned()))
@@ -140,13 +146,22 @@ fn a_cutout_base_keeps_its_cutout_under_a_layer() {
 
 #[test]
 fn an_opaque_base_stays_opaque_under_a_layer() {
-    // A layer alone (no opacity anywhere in the stack) keeps a slot opaque.
-    let mut opaque = request("glass.material.ts", &["dust.material.ts"]);
-    opaque.source = opaque.modules["glass.material.ts"].replace(", opacity: 0.4", "");
-    opaque
-        .modules
-        .insert("glass.material.ts".into(), opaque.source.clone());
-    let (material, counts) = alphas(&build(&opaque));
-    assert_eq!(material.alpha_mode, None);
-    assert_eq!(share(&counts, 1.), 1., "{counts:?}");
+    // A base without an opacity is drawn opaque, alpha 1 everywhere, under a layer that gives
+    // none, one that sets it (0.9 where it covers) and one that takes the larger (`max`) of 0.3
+    // and what is beneath: what a slot is drawn as is its base's (a window frame under the
+    // dust that clouds its glass).
+    for layers in [
+        &["dust.material.ts"][..],
+        &["dust.material.ts", "clouding.material.ts"][..],
+        &["thinning.material.ts"][..],
+    ] {
+        let mut opaque = request("glass.material.ts", layers);
+        opaque.source = opaque.modules["glass.material.ts"].replace(", opacity: 0.4", "");
+        opaque
+            .modules
+            .insert("glass.material.ts".into(), opaque.source.clone());
+        let (material, counts) = alphas(&build(&opaque));
+        assert_eq!(material.alpha_mode, None, "{layers:?}");
+        assert_eq!(share(&counts, 1.), 1., "{layers:?}: {counts:?}");
+    }
 }

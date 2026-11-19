@@ -1,18 +1,21 @@
 {
-  "//": "The pedestrian avenue along the building's right-side street (kowloon-building edge 1), in the scene's coordinates (meters, Z up). build.mjs places kowloon/pedestrian-avenue from it; crates/engine/tests/treespec_batches.rs (write_lane_plants) stands the trees and shrubs on its median and lays the median's grass from it. Distances are measured along `along` from `origin` and across along `across`.",
+  "//": "The pedestrian avenue along the building's right-side street (kowloon-building edge 1), in the scene's coordinates (meters, Z up): a narrow street between buildings, the building and a neighbour on its near side and a row of neighbours' shopfronts closing its far side. build.mjs places kowloon/pedestrian-avenue from it; crates/engine/tests/treespec_batches.rs (write_lane_plants) stands the trees and shrubs on its median and lays the median's grass from it. Distances are measured along `along` from `origin` and across along `across`.",
   "/origin": "The avenue's start: on the building's side wall line (y = 3.0) at the front street's kerb line (x = -3.05), its top 4.5 cm below the building's pavement (z = 0.15), so the house pavement and its kerb stones stand over it.",
   "origin": [-3.05, 3.0, 0.105],
   "along": [-1, 0],
   "across": [0, 1],
   "length": 32,
-  "width": 14,
+  "/width": "From the near wall line to the far side, where the neighbours' shopfronts stand (their upper storeys 0.35 m further back).",
+  "width": 8.2,
   "/height": "Its open ends and far side drop this far to the road (z = 0).",
   "height": 0.105,
-  "/median": "The planted median: its middle `offset` across from the wall line, `width` wide, from `start` to `end` along; planter kerbs `kerb` wide rising `rise` above the paving, the soil `soil` below their top.",
-  "median": { "offset": 7, "width": 2.4, "start": 2.5, "end": 28.5, "kerb": 0.2, "rise": 0.3, "soil": 0.14 },
+  "/median": "The planted median: its middle `offset` across from the wall line, `width` wide, from `start` to `end` along; planter kerbs `kerb` wide rising `rise` above the paving, the soil `soil` below their top. A walkway of 3.25 m on either side.",
+  "median": { "offset": 4.1, "width": 1.7, "start": 2.5, "end": 28.5, "kerb": 0.2, "rise": 0.35, "soil": 0.14 },
   "/trees": "Stations along the median's middle: `count` of them, from `first`, `spacing` apart. Shrubs stand between the trees, and a pair of benches beside the planter at each shrub.",
   "trees": { "first": 4.5, "spacing": 7, "count": 4 },
   "shrubs": { "first": 8, "spacing": 7, "count": 3 },
-  "/lamps": "kowloon/street-lamp posts in two rows, `offsets` across (one row a little in from either outer edge), at `count` stations from `first`, `spacing` apart; each arm reaches `reach` toward the avenue's middle. build.mjs places them; the tree batches do not read them.",
-  "lamps": { "first": 1.5, "spacing": 7, "count": 5, "offsets": [3.2, 12.8], "height": 6, "reach": 1.3 }
+  "/lamps": "kowloon/street-lamp posts in two rows, `offsets` across (one row just past the building's pavement kerb, one clear of the far shopfronts' awnings), at `count` stations from `first`, `spacing` apart; each arm reaches `reach` toward the avenue's middle. build.mjs places them; the tree batches do not read them.",
+  "lamps": { "first": 8, "spacing": 7, "count": 4, "offsets": [1.9, 7.0], "height": 6, "reach": 0.9 },
+  "/frontage": "The neighbours closing the far side, from `from` to `to` along: `units` buildings of seeded widths, each a ground storey of shopfronts (kowloon-ground-floor) under `storeys` (fewest, most) storeys in all of a kowloon/party stub `depth` deep set `setback` behind the shopfronts. build.mjs places them; the tree batches do not read them.",
+  "frontage": { "from": 1.45, "to": 34, "units": 6, "storeys": [3, 5], "depth": 3.5, "setback": 0.35, "seed": 51 }
 }

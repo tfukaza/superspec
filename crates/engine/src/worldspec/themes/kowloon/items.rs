@@ -42,7 +42,7 @@ mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "5";
+const VERSION: &str = "6";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -2951,6 +2951,7 @@ impl Natives {
             ("kowloon/pavement-corner", street::pavement_corner),
             ("kowloon/pedestrian-avenue", street::pedestrian_avenue),
             ("kowloon/street-lamp", street::street_lamp),
+            ("kowloon/street-cart", street::street_cart),
             ("kowloon/cornice", street::cornice),
             ("kowloon/fan-divider", street::fan_divider),
             ("kowloon/tile-deck", street::tile_deck),

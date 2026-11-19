@@ -339,7 +339,8 @@
       "generator": {"kind": "item", "entry": "kowloon-duct-riser.item.json",
         "parameters": {"floors": {"derived": "uppers"}, "storyHeight": {"parameter": "storyHeight"},
                        "height": {"derived": "height"}, "firstFloor": {"derived": "base"},
-                       "base": {"expr": "select(groundShops, groundHeight + 0.25, 0.9)"}}},
+                       "base": {"expr": "select(groundShops, groundHeight + 0.25, 0.9)"},
+                       "standoff": {"expr": "select(bands, 0.13, 0.06)"}}},
       "placement": {"position": [{"derived": "riserX"}, 0, 0]}
     },
     {
@@ -347,15 +348,15 @@
       "when": "ductRun * riser * (floors >= 2)",
       "generator": {"kind": "item", "entry": "kowloon-duct-run.item.json",
         "parameters": {"length": {"expr": "runLength * (width - edge)"}, "direction": {"expr": "select(riserRight, -1, 1)"},
-                       "tees": {"parameter": "bayWidth"}}},
-      "placement": {"position": [{"derived": "riserX"}, 0, "height - 0.75"]}
+                       "tees": {"parameter": "bayWidth"}, "standoff": {"expr": "select(bands, 0.13, 0.06)"}}},
+      "placement": {"position": [{"derived": "riserX"}, 0, "height - 0.2"]}
     },
     {
       "id": "duct",
       "repeat": [{"name": "k", "count": "max(0, bays - 1)"}],
       "when": "(ducts > 0) * (uppers >= 2) * windows * (random(seed, k, 7) < ducts / max(1, bays - 1))",
       "generator": {"kind": "native", "name": "kowloon/riser-duct",
-        "parameters": {"height": {"expr": "clamp(uppers * storyHeight - 1.6, 3, 20)"}}},
+        "parameters": {"height": {"expr": "clamp(uppers * storyHeight - 1.6, 3, 20)"}, "standoff": {"expr": "select(bands, 0.13, 0.06)"}}},
       "placement": {"position": ["(width - bays * bayWidth) / 2 + (k + 1) * bayWidth", 0, "base + 0.4"]}
     }
   ],

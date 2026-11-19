@@ -223,14 +223,38 @@ export function leafNormalTexture(clumpLeaves = 0): THREE.DataTexture {
   return texture;
 }
 
-/** The painted bands: six colours (sRGB) from a cool teal shade to a sunlit green, as the washroom shrub's. */
+/**
+ * The painted bands: six colours (sRGB) from a cool teal shade to a sunlit green, as the washroom shrub's. `msBands`
+ * (unset or 0: 6) steps the light into that many bands instead, their colours taken along the same six-colour ramp, so
+ * the light and shade sides step gradually. `msDeep` (0 to 0.5, unset 0) puts a very dark cool green below the ramp's
+ * darkest colour over that share of the light's range, for the deepest, occluded parts (the six colours then spread
+ * over the rest).
+ */
 export const BAND_GLSL = /* glsl */`
+uniform float msBands;
+uniform float msDeep;
+vec3 msLeafRamp(float u) {
+  // The six colours at 0, 1/5, ..., 1 (with msDeep, at msDeep + (1 - msDeep) * k / 5, the deep colour at 0).
+  float deep = clamp(msDeep, 0.0, 0.5);
+  if (u < deep) return mix(vec3(0.004, 0.012, 0.011), vec3(0.0232, 0.1022, 0.0844), u / max(deep, 1e-4));
+  float x = clamp((u - deep) / (1.0 - deep), 0.0, 1.0) * 5.0;
+  float k = floor(min(x, 4.999)), f = x - k;
+  vec3 a = k < 0.5 ? vec3(0.0232, 0.1022, 0.0844) : k < 1.5 ? vec3(0.0331, 0.1441, 0.0823) : k < 2.5 ? vec3(0.0452, 0.1779, 0.0782)
+    : k < 3.5 ? vec3(0.0844, 0.2384, 0.0802) : vec3(0.15, 0.3277, 0.0844);
+  vec3 b = k < 0.5 ? vec3(0.0331, 0.1441, 0.0823) : k < 1.5 ? vec3(0.0452, 0.1779, 0.0782) : k < 2.5 ? vec3(0.0844, 0.2384, 0.0802)
+    : k < 3.5 ? vec3(0.15, 0.3277, 0.0844) : vec3(0.2747, 0.4793, 0.1022);
+  return mix(a, b, f);
+}
+float msBandCount() { return msBands > 0.5 ? msBands : 6.0; }
 vec3 msLeafBand(float t) {
-  float level = floor(clamp(t, 0.0, 0.999) * 6.0);
-  vec3 c = level < 0.5 ? vec3(0.0232, 0.1022, 0.0844) : level < 1.5 ? vec3(0.0331, 0.1441, 0.0823)
-    : level < 2.5 ? vec3(0.0452, 0.1779, 0.0782) : level < 3.5 ? vec3(0.0844, 0.2384, 0.0802)
-    : level < 4.5 ? vec3(0.15, 0.3277, 0.0844) : vec3(0.2747, 0.4793, 0.1022);
-  return c;
+  float n = msBandCount();
+  float level = floor(clamp(t, 0.0, 0.999) * n);
+  if (n == 6.0 && msDeep <= 0.0) {
+    return level < 0.5 ? vec3(0.0232, 0.1022, 0.0844) : level < 1.5 ? vec3(0.0331, 0.1441, 0.0823)
+      : level < 2.5 ? vec3(0.0452, 0.1779, 0.0782) : level < 3.5 ? vec3(0.0844, 0.2384, 0.0802)
+      : level < 4.5 ? vec3(0.15, 0.3277, 0.0844) : vec3(0.2747, 0.4793, 0.1022);
+  }
+  return msLeafRamp(level / (n - 1.0));
 }
 // The stroke map read at a world point, in the plane facing the camera through origin, tile meters a repeat: two
 // copies, the upper's kept strokes blended over the lower by coverage. Returns the normal's x, y along the plane's
@@ -315,10 +339,11 @@ vec3 msLeafPaint(vec3 band, float light, float tone, float amount) {
 }
 // The bands with their edges blended over a pixel (w: the value's change across one, from fwidth), so no stair-steps.
 vec3 msLeafBandAA(float t, float w) {
-  float x = clamp(t, 0.0, 0.999) * 6.0;
+  float n = msBandCount();
+  float x = clamp(t, 0.0, 0.999) * n;
   float edge = fract(x);
-  float blend = smoothstep(1.0 - 3.0 * w, 1.0, edge);
-  return mix(msLeafBand(t), msLeafBand(t + 1.0 / 6.0), blend * step(x, 5.0));
+  float blend = smoothstep(1.0 - 0.5 * n * w, 1.0, edge);
+  return mix(msLeafBand(t), msLeafBand(t + 1.0 / n), blend * step(x, n - 1.0));
 }
 `;
 

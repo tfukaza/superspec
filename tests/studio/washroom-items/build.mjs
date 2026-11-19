@@ -173,6 +173,8 @@ export function pedestrianAvenue({ origin, along, across, length, width, height,
     parts: [{ id: "avenue", generator: { kind: "native", name: "kowloon/pedestrian-avenue", parameters: {
       length, width, height, medianOffset: median.offset, medianWidth: median.width, medianStart: median.start, medianEnd: median.end,
       planterKerb: median.kerb, planterRise: median.rise, soilDepth: median.soil,
+      // Large square slabs laid in a grid with straight joints both ways, no darker bands; black bollards close the ends.
+      slab: 0.75, course: 0.75, stagger: false, bands: 0, bollardSpacing: 1.3, bollardColor: "#1d1e1c",
       // A pair of benches against the planter beside each shrub, with a litter bin past their ends.
       benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, seed: 7 } } }] };
   const transform = [[along[0], along[1], 0], [-across[0], -across[1], 0], [0, 0, 1], origin];
@@ -198,6 +200,132 @@ export function avenueLamps({ origin, along, across, width, lamps }) {
     }
   }
   return { format: "itemspec", version: 2, id: "avenue-lamps", parts };
+}
+
+/** A small seeded stream (mulberry32) for the scene's own choices: numbers in [0, 1). */
+function seeded(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Where a point `s` along and `t` across an avenue record stands in the scene (x, y), and the item axes that face
+ * toward or away from its near side: a Kowloon fixture's front faces its -Y, so one standing on the far side facing
+ * the avenue runs along `far` and one on the near side along `near`.
+ */
+function avenueFrame({ origin, along, across }) {
+  const at = (s, t) => [0, 1].map(k => +(origin[k] + along[k] * s + across[k] * t).toFixed(4));
+  return { at, far: [across[1], -across[0]], near: [-across[1], across[0]] };
+}
+
+/** The stations along an avenue that its trees, lamps and the benches stand at. */
+function avenueStations({ trees, lamps, shrubs }) {
+  const row = ({ first, spacing, count }) => Array.from({ length: count }, (_, i) => first + i * spacing);
+  return { trees: row(trees), lamps: row(lamps), benches: row(shrubs) };
+}
+
+/**
+ * The neighbours closing the avenue's far side (`frontage` of an avenue record): a row of `units` buildings of seeded
+ * widths, each a ground storey of shopfronts with shutters, gates and awnings (`kowloon-ground-floor`) under a slice of
+ * an adjoining building (`kowloon/party`, a stub `depth` deep with its own storeys, its front's ground storey left
+ * blank behind the shopfronts) set `setback` behind them, and blade signs over the walkway between the trees and clear
+ * of the lamps. One item in scene coordinates (`definition`), with where its units meet along the avenue (`piers`);
+ * painted and weathered as `party` (the building's own party part) is.
+ */
+export function avenueFrontage(record, party) {
+  const { origin, width, frontage } = record;
+  const { at, far } = avenueFrame(record);
+  const { trees, lamps } = avenueStations(record);
+  const random = seeded(frontage.seed);
+  const weights = Array.from({ length: frontage.units }, () => 0.8 + 0.45 * random());
+  const total = weights.reduce((a, b) => a + b, 0), span = frontage.to - frontage.from;
+  const paints = ["#b9ad96", "#a8a294", "#c4b9a2", "#9fa39a", "#b5a48a", "#c2b49a"];
+  const shops = ["shutter", "gate", "shop", "shutter", "door", "gate", "service"];
+  const awnings = ["awning", "tarp", "awning", "none", "striped", "awning"];
+  const parts = [], piers = [];
+  let s0 = frontage.from;
+  for (const [i, weight] of weights.entries()) {
+    const unit = +(span * weight / total).toFixed(3), s1 = s0 + unit, seed = frontage.seed * 100 + i;
+    const storeys = frontage.storeys[0] + Math.floor(random() * (frontage.storeys[1] - frontage.storeys[0] + 1));
+    const paint = paints[Math.floor(random() * paints.length)];
+    const count = Math.max(1, Math.floor((unit - 0.7) / 2.1));
+    const pick = list => Array.from({ length: count }, () => list[Math.floor(random() * list.length)]);
+    // The item's x runs from the unit's far end (s1) back toward the avenue's start.
+    parts.push({ id: `shops-${i}`, generator: { kind: "item", entry: "kowloon-ground-floor.item.json", parameters: {
+      width: unit, height: 3.35, seed, paint, shopWidth: 2.1, shopPlan: pick(shops), awningPlan: pick(awnings), awningLower: 0.2, meters: true } },
+      placement: { position: [...at(s1, width), origin[2]], along: far } });
+    parts.push({ id: `storeys-${i}`, ...(party?.zones?.length ? { zones: party.zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: {
+      kind: "stub", length: unit, own: storeys, ground: 3.35, storey: 3, top: 2, depth: frontage.depth, shops: true, door: false, stacks: 0,
+      cables: 1, bars: 0.15, units: 0.4, color: paint, seed } },
+      placement: { position: [...at(s1, width + frontage.setback + frontage.depth), origin[2]], along: far } });
+    s0 = s1;
+    if (i + 1 < weights.length) piers.push(+s1.toFixed(3));
+  }
+  // Blade signs from the first floor, between the trees and a little past each lamp.
+  for (const [k, lamp] of lamps.entries()) {
+    const s = lamp + 0.9;
+    if (s < frontage.from + 0.6 || s > frontage.to - 0.6 || trees.some(tree => Math.abs(tree - s) < 1.8)) continue;
+    parts.push({ id: `sign-${k}`, generator: { kind: "item", entry: "kowloon-sign.item.json", parameters: {
+      mount: k % 2 ? "hung" : "blade", height: 3.2, reach: 1.15, seed: frontage.seed * 10 + k } },
+      placement: { position: [...at(s, width + frontage.setback), origin[2] + 3.75], along: far } });
+  }
+  return { definition: { format: "itemspec", version: 2, id: "avenue-frontage", parts }, piers };
+}
+
+/**
+ * What stands about on the avenue's walkways, along the facades and clear of the median, the benches and the lamps:
+ * pairs of potted plants by the far shopfronts' piers, crates and cartons stacked out of the shops, parked bicycles and
+ * loaded hand carts on both sides, and blade signs over the near walkway from the neighbour past the building's back
+ * (`near`: where that neighbour's front starts and ends along the avenue, and the height of its signs' foot);
+ * `piers`: where the far shopfronts' units meet along the avenue. One item in scene coordinates.
+ */
+export function avenueClutter(record, near, piers) {
+  const { origin, width, frontage } = record;
+  const { at, far: alongFar, near: alongNear } = avenueFrame(record);
+  const { trees, lamps } = avenueStations(record);
+  const z = origin[2], parts = [];
+  const place = (s, t, along) => ({ position: [...at(s, t), z], along });
+  const turned = (along, angle) => [along[0] * Math.cos(angle) - along[1] * Math.sin(angle), along[0] * Math.sin(angle) + along[1] * Math.cos(angle)].map(v => +v.toFixed(4));
+  const plant = (id, s, t, model, scale) => parts.push({ id, generator: { kind: "native", name: "kowloon/plant", parameters: { model, scale, rotation: (s * 1.7) % 6.28, textured: false } },
+    placement: place(s, t, alongFar) });
+  const stock = (id, s, t, along, kind, wide, seed) => parts.push({ id, generator: { kind: "native", name: "kowloon/street-stock", parameters: { width: wide, kind, seed } },
+    placement: place(s, t, along) });
+  const cart = (id, s, t, along, kind, seed) => parts.push({ id, generator: { kind: "native", name: "kowloon/street-cart", parameters: { kind, seed } },
+    placement: place(s, t, along) });
+  // The far side: the shop fronts stand on `width`; pots and stock keep within a metre of them.
+  const front = width, random = seeded(frontage.seed + 7);
+  const models = ["rubber-plant", "snake-plant", "trailing-pothos"];
+  for (const [k, s] of piers.entries()) {
+    if (lamps.some(lamp => Math.abs(lamp - s) < 0.7)) continue;
+    if (k % 3 === 1) stock(`crates-${k}`, s, front, alongFar, ["crates", "cartons", "mixed"][k % 3], 1.3, 300 + k);
+    else {
+      plant(`pot-${k}-a`, s - 0.3, front - 0.3, models[k % 3], 1.5 + 0.3 * random());
+      plant(`pot-${k}-b`, s + 0.32, front - 0.28, models[(k + 1) % 3], 1.3 + 0.3 * random());
+    }
+  }
+  // Parked against the far shopfronts and the near neighbour, along the walkway, a hand cart a little askew.
+  cart("bicycle-far", 12.6, front - 0.5, turned(alongFar, Math.PI), "bicycle", 3);
+  cart("trolley-far", 26.4, front - 0.55, turned(alongFar, 0.25), "trolley", 5);
+  cart("bicycle-near", 19.6, 0.45, alongNear, "bicycle", 8);
+  cart("trolley-near", 13.2, 0.55, turned(alongNear, -0.2), "trolley", 9);
+  stock("cartons-near", 30.6, 0, alongNear, "cartons", 1.2, 41);
+  plant("pot-near-a", 24.4, 0.3, "rubber-plant", 1.6);
+  plant("pot-near-b", 24.95, 0.28, "snake-plant", 1.4);
+  // Blade and hung signs over the near walkway from the neighbour, as on the far side.
+  for (const [k, lamp] of lamps.entries()) {
+    const s = lamp + 0.6;
+    if (s < near.from + 0.6 || s > near.to - 0.6 || trees.some(tree => Math.abs(tree - s) < 1.8)) continue;
+    parts.push({ id: `sign-near-${k}`, generator: { kind: "item", entry: "kowloon-sign.item.json", parameters: {
+      mount: k % 2 ? "blade" : "hung", height: 3, reach: 1.1, seed: 70 + k } },
+      placement: { position: [...at(s, -0.01), z + near.sign], along: alongNear } });
+  }
+  return { format: "itemspec", version: 2, id: "avenue-clutter", parts };
 }
 
 /**
@@ -293,7 +421,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     };
     if (farKerb === null) slab("lane-paving", [-13.6, -0.6], [roadFrom, roadTo]);
     else {
-      slab("lane-paving", [-13.6, wall], [roadFrom, roadTo]);
+      // (and the yard runs out of the pictures past the building's left end too).
+      slab("lane-paving", [-13.6, wall], [-60, roadTo]);
       slab("lane-road", [wall, farKerb], [-60, 50]);
       // The far pavement faces the building across the road: its kerb on the far kerb line, its stones running from +y
       // to -y (the pavement runs along its +X, its kerb toward its -Y).
@@ -307,21 +436,36 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     // Past the building's back the avenue's near side is closed by a neighbour: a two-storey slice of an adjoining
     // building (`kowloon/party`, a stub) along the avenue's near edge, its windows toward the avenue, from just past
     // the building's own back neighbour (1.47 m deep at the reference seed) to beyond the avenue's end. Its back shows
-    // from 2 m up; a plain wall closes it below.
-    if (withFacade && process.env.NEIGHBOUR !== "0") {
-      const length = 24, depth = 1.84353; // the stub's depth at seed 41 (its front's distance from its back).
+    // from 2 m up; a party wall closes it below.
+    if (withFacade) {
+      const length = 24, depth = 1.85; // the stub's depth (its front's distance from its back).
       // Painted and weathered as the building's own party stubs are: the building's wall layers, over runoff zones
       // hung below the stub's tops, courses and sills (both read from the building's definition).
       const buildingItem = JSON.parse(building.definitions["kowloon-building.item.json"]);
       const party = buildingItem.parts.find(part => part.id === "party");
       const zones = (party?.zones ?? []).map(({ u0, length, ...zone }) => ({ ...zone, length: typeof length === "number" ? length : 3 }));
       const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#b0a590" } }, ...(buildingItem.layers?.wall ? { layers: { wall: buildingItem.layers.wall } } : {}), parts: [
-        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 2, top: 2, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
-        { id: "back", generator: { kind: "box", size: [length + 0.14, 0.2, 2.1] }, slots: { side: "wall", top: "wall", bottom: "wall" }, placement: { position: [-0.07, 0.01, 0] } }] };
+        // Four storeys, so the narrow street is closed on both sides past the building's back.
+        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 4, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
+        // Below that, a stained party wall (2 to 3.3 m by seed, under a coping) along its back, facing away from the avenue.
+        { id: "back", generator: { kind: "native", name: "kowloon/party", parameters: { kind: "wall", length, top: 2.4, seed: 41 } },
+          placement: { position: [length, 0, 0], along: [-1, 0] } }] };
       modules["items/avenue-neighbour.item.json"] = JSON.stringify(neighbour, null, 2) + "\n";
       scene.push({ id: "neighbour", kind: "item", entry: "items/avenue-neighbour.item.json", parameters: {},
         transform: [[-1, 0, 0], [0, -1, 0], [0, 0, 1], [wall - 7 - 1.49, avenue.origin[1] - 0.01 - depth, 0]], slots: building.slots,
         slotDensities: { wall: 64, trim: 64 } });
+      // The far side closed by a row of neighbours with shops at street level (`frontage` of `avenue.json`), and what
+      // stands about on the walkways; both painted and weathered as the neighbour is.
+      const own = { parameters: neighbour.parameters, ...(neighbour.layers ? { layers: neighbour.layers } : {}) };
+      const { definition: frontage, piers } = avenueFrontage(avenue, { zones });
+      modules["items/avenue-frontage.item.json"] = JSON.stringify({ ...frontage, ...own }, null, 2) + "\n";
+      scene.push({ id: "frontage", kind: "item", entry: "items/avenue-frontage.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
+        slots: building.slots, slotDensities: { wall: 64, trim: 64, lettering: 400, posters: 320 } });
+      const along = x => +(avenue.origin[0] - x).toFixed(3);
+      const clutter = avenueClutter(avenue, { from: along(wall - 7 - 1.49), to: along(wall - 7 - 1.49 - length), sign: 3.6 }, piers);
+      modules["items/avenue-clutter.item.json"] = JSON.stringify(clutter, null, 2) + "\n";
+      scene.push({ id: "clutter", kind: "item", entry: "items/avenue-clutter.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
+        slots: building.slots, slotDensities: { lettering: 400, posters: 320 } });
     }
     // The median is planted with groundcover (`lane-groundcover`, a painted mass), not grass: under it the lawn recipe is
     // the planting's dark soil and leaf litter (a deep olive-brown), so what shows between the mounds reads as shade, not
@@ -334,7 +478,7 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
       // The bark a grey-brown with a near-neutral shade, not the washroom's warm brown under a blue shade (which reads
       // mauve beside the plaster).
       ...treeMaterials.map(material => ({ ...material, seed: 7, ...(withFacade && material.id === "painted-bark"
-        ? { parameters: { light: [0.34, 0.31, 0.26], dark: [0.17, 0.15, 0.12], shadeTint: [0.56, 0.58, 0.64] } } : {}) })));
+        ? { parameters: { light: [0.13, 0.11, 0.085], dark: [0.05, 0.042, 0.032], shadeTint: [0.56, 0.58, 0.64] } } : {}) })));
     batchList = [...(batchList ?? []), ...lane.batches];
   }
   const project = {

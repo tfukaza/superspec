@@ -69,24 +69,28 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
   const field = densityField(sites, mass.radius, mass.cell);
   const geometry = densitySurface(field, mass.level);
   const shadeField = densityField(sites, mass.radius * s.shadeSpread, mass.cell);
-  shadeNormals(geometry, shadeField, s.shadeMix);
+  // The mass's form and jitter, or the milestone's.
+  const form = mass.form ?? s.shadeMix, jitter = mass.jitter ?? s.shadeJitter;
+  shadeNormals(geometry, shadeField, form);
   geometry.computeBoundingBox();
   const centre = geometry.boundingBox!.getCenter(new THREE.Vector3());
   const sun = programSun.value.clone();
   const leaf = leafCardTextures(true);
-  const leafMap = { texture: leafNormalTexture(s.brush), tile: s.tile, origin: centre, strength: s.strength, offset: s.offset };
-  const surface = new THREE.Mesh(smoothGeometry(geometry), leafNormalMaterial(sun, s.tile, s.strength, 0.35, true, centre, s.brush, s.offset));
+  // The painted leaves' size: the leaf map's repeat, the fuzz's cards and the density cards scale together.
+  const leafScale = mass.leafScale ?? 1, tile = s.tile * leafScale;
+  const leafMap = { texture: leafNormalTexture(s.brush), tile, origin: centre, strength: s.strength, offset: s.offset };
+  const surface = new THREE.Mesh(smoothGeometry(geometry), leafNormalMaterial(sun, tile, s.strength, 0.35, true, centre, s.brush, s.offset));
   surface.name = "painted/surface";
-  const fuzz = contourFuzz(geometry, leaf.cards, { ...s.fuzz, sun, normals: leaf.normals, leafMap });
+  const fuzz = contourFuzz(geometry, leaf.cards, { ...s.fuzz, size: s.fuzz.size * leafScale, sun, normals: leaf.normals, leafMap });
   fuzz.name = "painted/fuzz";
-  const cards = densityCards(field, leaf.cards, { ...s.cards, level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
-    roundFamily: true, shadeField, shadeMix: s.shadeMix, shadeJitter: s.shadeJitter,
+  const cards = densityCards(field, leaf.cards, { ...s.cards, size: s.cards.size * leafScale, branchSize: s.cards.branchSize * leafScale, level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
+    roundFamily: true, shadeField, shadeMix: form, shadeJitter: jitter,
     tierField: densityField(sites, mass.radius * s.tierSpread, mass.cell), leafMap });
   cards.name = "painted/cards";
   // The whole plant as one blob: an ellipsoid a little wider than the core's bounds.
   const radii = geometry.boundingBox!.getSize(new THREE.Vector3()).multiplyScalar(0.55);
   const parts = [surface, fuzz, cards];
-  const palette = mass.palette ?? { hue: 0, saturation: 1, value: 1, shade: 1, shadeHue: 0, contrast: 1, depth: 1 };
+  const palette = mass.palette ?? { hue: 0, saturation: 1, value: 1, shade: 1, shadeHue: 0, contrast: 1, depth: 1, bands: 6, deep: 0 };
   const grade = { value: new THREE.Vector4(palette.hue * Math.PI / 180, palette.saturation, palette.value, palette.shadeHue * Math.PI / 180) };
   const shade = { value: palette.shade };
   for (const part of parts) {
@@ -113,6 +117,8 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
       // The palette's contrast and depth scale the milestone's light stretch, inner darkening and shade-side shift.
       msContrast: { value: s.contrast * (palette.contrast ?? 1) }, msOcclusion: { value: s.occlusion * (palette.depth ?? 1) },
       msMacroShade: { value: s.macroShade * (palette.depth ?? 1) },
+      // Its band count and the deep end of its ramp (leaf-normals.ts BAND_GLSL).
+      msBands: { value: palette.bands ?? 6 }, msDeep: { value: palette.deep ?? 0 },
     });
     // Built where they stand: no picking, and never culled by stale bounds.
     part.raycast = () => {};

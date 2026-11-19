@@ -1,0 +1,65 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-duct-bracket",
+  "parameters": {
+    "width": {"type": "number", "default": 0.4, "min": 0.1, "max": 1, "unit": "m"},
+    "depth": {"type": "number", "default": 0.3, "min": 0.1, "max": 1, "unit": "m"},
+    "standoff": {"type": "number", "default": 0.06, "min": 0.03, "max": 0.6, "unit": "m"},
+    "feet": {"type": "boolean", "default": true}
+  },
+  "derived": {
+    "hw": "width / 2 + 0.005",
+    "front": "standoff + depth + 0.005",
+    "plateX0": "select(feet, -(width / 2 + 0.15), -(width / 2 + 0.155))",
+    "plateX1": "select(feet, width / 2 + 0.15, -(width / 2 - 0.045))"
+  },
+  "parts": [
+    {
+      "id": "strap",
+      "when": "feet",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": 0.006, "height": 0.05},
+        "points": [["-(hw + 0.1)", -0.011, 0], ["-hw", -0.011, 0], ["-hw", "-front", 0], ["hw", "-front", 0], ["hw", -0.011, 0], ["hw + 0.1", -0.011, 0]],
+        "bendRadius": 0.03,
+        "up": [0, 0, 1],
+        "capped": true,
+        "fittings": [
+          {"kind": "coupling", "id": "boltStart", "at": {"from": "start", "offset": 0.04}, "length": 0.022, "clearance": 0.005},
+          {"kind": "coupling", "id": "boltEnd", "at": {"from": "end", "offset": 0.04}, "length": 0.022, "clearance": 0.005}
+        ]
+      },
+      "slots": {"body": "steel", "fitting": "steel", "end": "steel"}
+    },
+    {
+      "id": "hanger",
+      "when": "1 - feet",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": 0.006, "height": 0.05},
+        "points": [["-(hw + 0.1)", -0.011, 0], ["-hw", -0.011, 0], ["-hw", "-front", 0], ["hw", "-front", 0]],
+        "bendRadius": 0.03,
+        "up": [0, 0, 1],
+        "capped": true,
+        "fittings": [
+          {"kind": "coupling", "id": "boltStart", "at": {"from": "start", "offset": 0.04}, "length": 0.022, "clearance": 0.005}
+        ]
+      },
+      "slots": {"body": "steel", "fitting": "steel", "end": "steel"}
+    },
+    {
+      "id": "plate",
+      "generator": {"kind": "box", "size": ["plateX1 - plateX0", 0.008, 0.1]},
+      "placement": {"position": [{"derived": "plateX0"}, -0.008, -0.05]},
+      "slots": {"side": "steel", "top": "steel", "bottom": "steel"}
+    }
+  ],
+  "features": [
+    {"name": "fixing", "part": "plate", "reach": "item", "within": 1, "points": [["plateX0", 0, 0], ["plateX1", 0, 0]]},
+    {"name": "rust", "part": "plate", "reach": "item", "within": 1, "when": "feet", "repeat": {"name": "s", "count": 2},
+     "points": [["(2 * s - 1) * (hw + 0.06) - 0.03", 0, -0.05], ["(2 * s - 1) * (hw + 0.06) + 0.03", 0, -0.05]], "zone": {"length": 0.55}},
+    {"name": "rust", "part": "plate", "reach": "item", "within": 1, "when": "1 - feet",
+     "points": [["-(hw + 0.1)", 0, -0.03], ["-(hw + 0.1)", 0, 0.03]], "zone": {"length": 0.55, "down": [-1, 0, 0]}}
+  ]
+}

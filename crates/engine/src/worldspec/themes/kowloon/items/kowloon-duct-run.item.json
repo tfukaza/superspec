@@ -7,8 +7,16 @@
     "direction": {"type": "number", "default": -1, "min": -1, "max": 1},
     "width": {"type": "number", "default": 0.3, "min": 0.15, "max": 0.8, "unit": "m"},
     "depth": {"type": "number", "default": 0.24, "min": 0.1, "max": 0.6, "unit": "m"},
-    "standoff": {"type": "number", "default": 0.32, "min": 0.15, "max": 0.8, "unit": "m"},
+    "standoff": {"type": "number", "default": 0.06, "min": 0.04, "max": 0.6, "unit": "m"},
     "tees": {"type": "number", "default": 2.1, "min": 0.6, "max": 10, "unit": "m"}
+  },
+  "derived": {
+    "axis": "standoff + width / 2",
+    "inset": "min(0.5, length / 4)",
+    "avail": "length - 2 * inset",
+    "brackets": "max(1, ceil(avail / 1.4 - 0.000000001))",
+    "pitch": "avail / brackets",
+    "teeEvery": "max(1, round(tees / pitch))"
   },
   "parts": [
     {
@@ -17,22 +25,43 @@
         "kind": "route",
         "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
         "wallThickness": 0.004,
-        "points": [[0, "-standoff", 0], ["direction * length", "-standoff", 0]],
+        "points": [[0, "-axis", 0], ["direction * length", "-axis", 0]],
         "up": [0, 0, 1],
         "capped": true,
         "fittings": [
-          {"kind": "flange", "id": "seam", "at": {"every": 1.2, "inset": 0.5}, "overhang": 0.02, "thickness": 0.018},
-          {"kind": "bracket", "id": "bracket", "at": {"every": 1.6, "inset": 0.6}, "reach": "standoff - depth / 2", "direction": [0, 1, 0], "width": 0.04, "thickness": 0.006},
-          {"kind": "tee", "id": "drop", "at": {"every": {"parameter": "tees"}, "inset": 0.9}, "direction": [0, 1, 0], "length": {"parameter": "standoff"}}
+          {"kind": "flange", "id": "seam", "at": {"every": 1.4, "inset": {"derived": "inset"}}, "overhang": 0.02, "thickness": 0.018}
         ]
       },
-      "slots": {"body": "galvanized", "fitting": "galvanized", "bracket": "steel", "bolt": "steel", "end": "galvanized"}
+      "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
+    },
+    {
+      "id": "bracket",
+      "repeat": [{"name": "k", "count": {"derived": "brackets"}}],
+      "generator": {"kind": "item", "entry": "kowloon-duct-bracket.item.json",
+        "parameters": {"width": {"parameter": "depth"}, "depth": {"parameter": "width"}, "standoff": {"parameter": "standoff"}, "feet": false}},
+      "placement": {"position": ["direction * (inset + pitch * (k + 0.5))", 0, 0], "rotation": [0, -90, 0]}
+    },
+    {
+      "id": "branch",
+      "repeat": [{"name": "j", "count": {"derived": "brackets"}}],
+      "when": "(j % teeEvery == 0) * (pitch >= 0.8)",
+      "generator": {
+        "kind": "route",
+        "section": {"kind": "rect", "width": "width * 0.6", "height": "depth * 0.6"},
+        "points": [["direction * (inset + pitch * (j + 0.25))", "-axis", 0], ["direction * (inset + pitch * (j + 0.25))", 0.05, 0]],
+        "up": [0, 0, 1],
+        "capped": false,
+        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.056}, "overhang": 0.035, "thickness": 0.012, "bolts": 4}]
+      },
+      "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
     }
   ],
   "features": [
     {"name": "fixture", "part": "run", "reach": "item", "within": 1, "points": [[0, 0, 0], ["direction * length", 0, 0]]},
-    {"name": "fixing", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((length - 1.2) / 1.6) + 1)"}, "points": [["direction * (0.6 + k * 1.6)", 0, -0.05], ["direction * (0.6 + k * 1.6)", 0, 0.05]]},
-    {"name": "rust", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((length - 1.2) / 1.6) + 1)"}, "points": [["direction * (0.6 + k * 1.6) - 0.03", 0, -0.03], ["direction * (0.6 + k * 1.6) + 0.03", 0, -0.03]], "zone": {"length": 0.5}},
+    {"name": "fixing", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "j", "count": {"derived": "brackets"}}, "when": "(j % teeEvery == 0) * (pitch >= 0.8)",
+     "points": [["direction * (inset + pitch * (j + 0.25)) - width * 0.3 - 0.035", 0, 0], ["direction * (inset + pitch * (j + 0.25)) + width * 0.3 + 0.035", 0, 0]]},
+    {"name": "rust", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "j", "count": {"derived": "brackets"}}, "when": "(j % teeEvery == 0) * (pitch >= 0.8)",
+     "points": [["direction * (inset + pitch * (j + 0.25)) - 0.06", 0, "-depth * 0.3 - 0.035"], ["direction * (inset + pitch * (j + 0.25)) + 0.06", 0, "-depth * 0.3 - 0.035"]], "zone": {"length": 0.6}},
     {"name": "drip", "part": "run", "reach": "item", "within": 1, "points": [[0, 0, "-depth / 2"], ["direction * length", 0, "-depth / 2"]], "zone": {"length": 1}}
   ],
   "layers": {
