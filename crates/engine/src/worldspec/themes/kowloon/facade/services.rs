@@ -554,8 +554,8 @@ fn draw_close_fixings(
         // Drawn heavy: a bolt head that reads from the street.
         d.cuboid(
             "vent-edge",
-            [u - 0.022, face, v - 0.022],
-            [u + 0.022, face + 0.022, v + 0.022],
+            [u - 0.018, face, v - 0.018],
+            [u + 0.018, face + 0.018, v + 0.018],
             [0.62; 3],
             "",
         )

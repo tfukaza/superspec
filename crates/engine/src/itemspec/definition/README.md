@@ -132,6 +132,17 @@ A through opening may have a `frame` (`border`, `depth`) and `glazing`
 holes swept through the thickness, which is the same solid as the panel minus its
 extruded openings but keeps exact face groups and f64 positions.
 
+*Seats.* A part laid flat on a wall (tiles, a dado, a plinth band) stands only millimeters
+proud of it, closer than a depth buffer separates surfaces seen from afar, so the wall shows
+through it as the camera moves. A recess with `"seat": true` is cut for such a part instead:
+the wall has no face behind it. A seat reports no `opening-edge` or `sill` and stops or clips
+no zone (the wall's weathering runs on behind it as if it were whole); it may come within 2 mm
+of the panel's edge and of other openings (a bevelled panel keeps its own margin), so a band
+laid along the whole wall leaves only hairlines of wall behind its ends. It has no sill. Lay
+the part on the wall with its front `t` proud and its back face left out (a panel with only
+its `front` and `edge` mapped), and cut the seat a few centimeters deep, so that nothing lies
+behind the part's front within the recess's depth plus `t`.
+
 *Arrises.* Two flat receivers that meet at a corner cannot be rounded by a material, and a
 `bevel` rounds a panel's whole rim. `arris` (a radius) rounds only the panel's upright end
 edges, where `arrisStart` and `arrisEnd` give the tangent of half the plan turn there (1 at a
@@ -168,6 +179,13 @@ the pattern is right where the arc starts and turns away from it. Features: `bas
 follow the arc at the section's lowest and highest points, and `rings` (`{"name", "at": [out,
 up]}`, at most 16) add named ones, each a polyline of `segments + 1` points; `start` and `end`
 are the section where the arc begins and ends, where it meets what stands before and after it.
+`recesses` (`{"from", "to", "depth"}`, with an optional one-axis `repeat` and a `when`; at most
+16 counting copies) set the part of an upright outer face (a section edge of constant `out`
+listed upward) between two heights back `depth` into the section: the arc's form of a panel's
+seat, for a band laid round a curved wall. A recess lies inside one such face, a millimeter
+apart from its ends and from other recesses, or reaches an open section's end, which then starts
+or ends at the recess's back. Its floor and head do not advance `v`, so the face above it keeps
+its pattern; a bevelled section has none.
 
 **Route.** `section` is `{"kind":"round","radius"}` or
 `{"kind":"rect","width","height"}`. Corners are filleted with `bendRadius`, which

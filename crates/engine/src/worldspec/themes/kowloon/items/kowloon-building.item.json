@@ -127,9 +127,9 @@
     "lampStyle": {"type": "choice", "default": "bulkhead", "choices": ["bulkhead", "round"]},
     "cageColor": {"type": "color", "default": "#c9c3b2"},
     "cageRust": {"type": "number", "default": 0.3, "min": 0, "max": 1},
-    "cageBar": {"type": "number", "default": 0.024, "min": 0.004, "max": 0.05, "unit": "m"},
-    "cageRail": {"type": "number", "default": 0.036, "min": 0.008, "max": 0.08, "unit": "m"},
-    "cageSpacing": {"type": "number", "default": 0.19, "min": 0.04, "max": 0.5, "unit": "m"}
+    "cageBar": {"type": "number", "default": 0.018, "min": 0.004, "max": 0.05, "unit": "m"},
+    "cageRail": {"type": "number", "default": 0.028, "min": 0.008, "max": 0.08, "unit": "m"},
+    "cageSpacing": {"type": "number", "default": 0.22, "min": 0.04, "max": 0.5, "unit": "m"}
   },
   "derived": {
     "height": "groundHeight + (floors - 1) * storyHeight",
@@ -250,6 +250,7 @@
                        "panel": {"choose": ["#d2a23a", "#2f7a4a", "#b23a2c", "#2c4a6e", "#dcd8cc", "#1f1d1b"], "by": "cell(boardPlans, e, k, 12)"},
                        "panel2": {"choose": ["#d2a23a", "#2f7a4a", "#b23a2c", "#2c4a6e", "#dcd8cc", "#1f1d1b"], "by": "select(count(boardPlans, e, k) > 13, cell(boardPlans, e, k, 13), cell(boardPlans, e, k, 12))"},
                        "horizontal": {"choose": [false, true], "by": "cell(boardPlans, e, k, 5)"},
+                       "face": {"choose": ["auto", "kai", "hei", "song", "brush", "heavy", "round", "slim"], "by": "cell(boardPlans, e, k, 14)"},
                        "angle": {"expr": "cell(boardPlans, e, k, 6)"}, "reach": {"expr": "cell(boardPlans, e, k, 7)"},
                        "anchor": {"expr": "cell(boardPlans, e, k, 8)"}, "end": {"expr": "cell(boardPlans, e, k, 9)"},
                        "seed": {"expr": "seed * 11 + e * 7 + k"}}},

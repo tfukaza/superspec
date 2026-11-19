@@ -49,7 +49,8 @@
   "derived": {
     "spans": "count(shopSpans)",
     "shops": "select(spans > 0, spans, max(1, floor((width - edge * 2) / shopWidth)))",
-    "pitch": "(width - edge * 2) / shops"
+    "pitch": "(width - edge * 2) / shops",
+    "foot": "max(plinth, dado)"
   },
   "parts": [
     {
@@ -64,7 +65,12 @@
         "openings": [
           {"id": "shop", "repeat": {"name": "i", "count": {"derived": "shops"}}, "jambs": {"parameter": "arris"},
            "width": "(select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15)) - (select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))", "height": "select(fitted * ((floor(select(cell(shopPlan, i) == 0, random(seed, i, 5) * 8, 7 + cell(shopPlan, i))) == 4) + (floor(select(cell(shopPlan, i) == 0, random(seed, i, 5) * 8, 7 + cell(shopPlan, i))) == 11)), 2.5, height - 0.5)",
-           "u": {"from": "start", "offset": "select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)"}, "v": {"from": "start", "offset": 0.02}}
+           "u": {"from": "start", "offset": "select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)"}, "v": {"from": "start", "offset": 0.02}},
+          {"id": "footSeat", "mode": "recess", "depth": 0.05, "seat": true, "repeat": {"name": "i", "count": "shops + 1"},
+           "when": "(foot > 0.013) * ((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) > 0.05) * ((select(i == shops, width - arris * arrisEnd, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15) - arris)) - (select(i == 0, arris * arrisStart, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15) + arris)) - 0.006 > 0.01)",
+           "width": "(select(i == shops, width - arris * arrisEnd, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15) - arris)) - (select(i == 0, arris * arrisStart, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15) + arris)) - 0.006",
+           "height": "foot - 0.003",
+           "u": {"from": "start", "offset": "select(i == 0, arris * arrisStart, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15) + arris) + 0.003"}, "v": {"from": "start", "offset": 0.003}}
         ]
       },
       "slots": {"front": "wall", "edge": "wall", "reveal": "wall"},
@@ -103,17 +109,17 @@
       "id": "plinth",
       "repeat": [{"name": "i", "count": "shops + 1"}],
       "when": "(plinth > 0) * ((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) > 0.05)",
-      "generator": {"kind": "box", "size": ["(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", 0.018, {"parameter": "plinth"}], "bevel": "min(0.008, plinth / 4)", "bevelAxis": "x"},
+      "generator": {"kind": "panel", "width": "(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", "height": {"parameter": "plinth"}, "thickness": 0.018, "bevel": "min(0.008, plinth / 4)"},
       "placement": {"position": ["select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))", -0.018, 0]},
-      "slots": {"side": "plinth", "top": "plinth", "bottom": "plinth"}
+      "slots": {"front": "plinth", "edge": "plinth"}
     },
     {
       "id": "dado",
       "repeat": [{"name": "i", "count": "shops + 1"}],
       "when": "(dado > 0) * ((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) > 0.05)",
-      "generator": {"kind": "box", "size": ["(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", 0.015, {"parameter": "dado"}]},
+      "generator": {"kind": "panel", "width": "(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", "height": {"parameter": "dado"}, "thickness": 0.015},
       "placement": {"position": ["select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))", -0.015, 0]},
-      "slots": {"side": "dado"}
+      "slots": {"front": "dado", "edge": "dado"}
     },
     {
       "id": "meters",

@@ -29,8 +29,8 @@ fn hang(t: f64) -> f64 {
 
 /// The radius of a cloth's rolled hem and of the ropes that tie it: thick enough to read
 /// as drawn lines from across a street.
-const HEM: f64 = 0.011;
-const ROPE: f64 = 0.013;
+const HEM: f64 = 0.0075;
+const ROPE: f64 = 0.008;
 
 fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
@@ -306,8 +306,8 @@ pub(super) fn sagging_tarp(
                 d.tube("tarp", &[p, [p[0], 0.014, p[2] + 0.1]], ROPE, rope, 5)?;
                 d.cuboid(
                     "metal",
-                    [p[0] - 0.022, 0., p[2] + 0.08],
-                    [p[0] + 0.022, 0.028, p[2] + 0.13],
+                    [p[0] - 0.017, 0., p[2] + 0.075],
+                    [p[0] + 0.017, 0.021, p[2] + 0.12],
                     dark,
                     "b",
                 )?;
@@ -319,20 +319,20 @@ pub(super) fn sagging_tarp(
             let front: Vec<V3> = (0..=arms)
                 .map(|i| {
                     let p = surface(i as f64 / arms as f64, 1.);
-                    [p[0], p[1], p[2] - 0.024]
+                    [p[0], p[1], p[2] - 0.02]
                 })
                 .collect();
-            d.tube("metal", &front, 0.02, steel, 6)?;
+            d.tube("metal", &front, 0.014, steel, 6)?;
             for end in &front {
                 let wall = [end[0], 0.012, -0.03];
-                d.tube("metal", &[wall, *end], 0.018, steel, 6)?;
+                d.tube("metal", &[wall, *end], 0.012, steel, 6)?;
                 let foot = [end[0], 0.012, -drop - 0.42];
                 let knee = [
                     end[0],
                     end[1] * 0.7,
                     wall[2] + (end[2] - wall[2]) * 0.7 - 0.01,
                 ];
-                d.tube("metal", &[foot, knee], 0.015, steel, 5)?;
+                d.tube("metal", &[foot, knee], 0.01, steel, 5)?;
                 wall_plate(d, [end[0], -0.03], 0.05, 0.07, dark)?;
                 wall_plate(d, [end[0], foot[2]], 0.04, 0.05, dark)?;
             }
@@ -346,12 +346,12 @@ pub(super) fn sagging_tarp(
             if poles > 0 && stand > drop + 0.3 {
                 // A post on a base plate, tied back to the wall.
                 let foot = [x + leans[p][0], top[1] + leans[p][1], -stand];
-                d.tube("metal", &[foot, top], 0.04, steel, 8)?;
-                d.disc("metal", top, 0.04, [0., 0., 1.], steel, 8)?;
+                d.tube("metal", &[foot, top], 0.034, steel, 8)?;
+                d.disc("metal", top, 0.034, [0., 0., 1.], steel, 8)?;
                 d.cuboid(
                     "metal",
-                    [foot[0] - 0.1, foot[1] - 0.1, -stand],
-                    [foot[0] + 0.1, foot[1] + 0.1, -stand + 0.03],
+                    [foot[0] - 0.09, foot[1] - 0.09, -stand],
+                    [foot[0] + 0.09, foot[1] + 0.09, -stand + 0.02],
                     dark,
                     "d",
                 )?;
@@ -360,11 +360,11 @@ pub(super) fn sagging_tarp(
                     d.tube(
                         "metal",
                         &[[top[0], top[1], top[2] - 0.02], fixing],
-                        0.02,
+                        0.013,
                         dark,
                         6,
                     )?;
-                    wall_plate(d, [x, 0.22], 0.055, 0.065, dark)?;
+                    wall_plate(d, [x, 0.22], 0.05, 0.06, dark)?;
                 }
                 if ties {
                     // The corner's eyelet lashed to the post in one heavy turn.
@@ -380,7 +380,7 @@ pub(super) fn sagging_tarp(
                 // No post: the corner hangs from a stay fixed to the wall above.
                 let fixing = [x, 0.012, 0.25 + depth * 0.45];
                 d.tube("tarp", &[corner, fixing], ROPE, rope, 5)?;
-                wall_plate(d, [x, fixing[2]], 0.05, 0.06, dark)?;
+                wall_plate(d, [x, fixing[2]], 0.045, 0.055, dark)?;
             }
         }
         Ok(())
@@ -419,7 +419,7 @@ pub(super) fn sheet_canopy(
     let lap = if sheets > 1 { 0.07 } else { 0. };
     let each = (width + lap * (sheets - 1) as f64) / sheets as f64;
     // Few deep corrugations: their ribs read from across a street.
-    let amplitude = pitch * 0.16;
+    let amplitude = pitch * 0.14;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "sheet-canopy")?;
         for sheet in 0..sheets {
@@ -467,25 +467,25 @@ pub(super) fn sheet_canopy(
         let inset = 0.1_f64.min(width / 4.);
         for i in 0..brackets {
             let x = -width / 2. + inset + (width - 2. * inset) * i as f64 / (brackets - 1) as f64;
-            let under = amplitude + 0.022;
+            let under = amplitude + 0.018;
             d.bar(
                 "metal",
                 [x, 0.01, -under],
                 [x, depth * 0.92, -drop * 0.92 - under],
-                0.034,
+                0.028,
                 steel,
             )?;
             d.bar(
                 "metal",
                 [x, 0.01, -drop - 0.26],
-                [x, depth * 0.72, -drop * 0.72 - under - 0.018],
-                0.028,
+                [x, depth * 0.72, -drop * 0.72 - under - 0.015],
+                0.021,
                 steel,
             )?;
             wall_plate(
                 d,
                 [x, -(drop + 0.26 + under) / 2.],
-                0.055,
+                0.05,
                 (drop + 0.36) / 2.,
                 steel,
             )?;

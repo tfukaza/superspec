@@ -493,7 +493,7 @@ written only when it differs from its default, so records and exports that never
     "enabled": true,
     "strength": 1.0,                  // how much of the line's color replaces the image on a line
     "width": 1.25,                    // CSS pixels on a silhouette; a crease is 0.6 of it
-    "darken": 0.6,                    // the line is the surface's own color times this
+    "darken": 0.6,                    // the line looks this bright against its own surface
     // "color": [r, g, b]             // optional tint, linear RGB; absent is none
     "depth": 0.04,                    // meters: the step in depth that draws a silhouette
     "normal": 0.7,                    // radians: the turn that draws a full crease (it starts at half)
@@ -549,13 +549,15 @@ the frame is still composed, with the occlusion's passes left out and that depth
   the outline of a form weighs a little more than the edges inside it (0.6 since 2026-11-19).
 - **The surface's own color, darker** (revised 2026-11-19: a fixed dark brown, #3a2a20 multiplied at 0.7, read as
   too cartoony). On a line the image becomes the color of the surface the line belongs to (linear, before tone
-  mapping) times `darken`, 15% more saturated so it does not read as dirt, times the optional `color` tint: a cream wall
+  mapping), made `darken` as bright to the eye (the factor goes through the display's gamma, 2.2, since the image is
+  linear: 0.6 is about a third of the linear color; a linear 0.6 was tried and the lines all but vanished), 15% more saturated so it does not read as dirt, times the optional `color` tint: a cream wall
   gets a darker cream line, a green frame a darker green one, a red sign a darker red one. That color is read from the
   same taps as the line, weighted by how much line each holds, so the soft edge spilling onto the far surface still
   takes the nearer surface's color. The old look is `{ "darken": 1, "strength": 0.7, "color": [0.042, 0.023, 0.014] }`.
 - **A fine line.** The default is 1.25 CSS pixels (creases 0.75, at least one device pixel), scaled by the device pixel
-  ratio, so a picture at `SCALE=2` has lines of the same apparent weight (2 pixels at first; thinner since 2026-11-19). The depth has one sample a pixel, so the line is read
-  through a small tent filter and has a soft edge.
+  ratio, so a picture at `SCALE=2` has lines of the same apparent weight (2 pixels at first; thinner since
+  2026-11-19). The depth has one sample a pixel, so the line is read through a small tent filter (0.35 pixel) and has a
+  soft edge without losing most of a one-pixel line's strength.
 - **Too small or too dense to draw.** A pixel whose surface is farther on both sides within three line widths (a cage
   bar, a cable, a lattice, a glazing bar) is part of something too thin to hold a line on each side and gets none; and
   where more than about a third of the surrounding block (eight line widths across) is line, the lines are left out,
@@ -595,7 +597,10 @@ Building scene, real GPU (ANGLE D3D11, NVIDIA RTX 5060 Ti), pictures in `generat
 
 Revision (2026-11-19), surface-colored lines: `generated/verification/illus-surface/compare-<view>.png` for `reference`,
 `storey`, `shops` and `street` (form 0.35 in all four panels; top: no contours, the first brown line at 2 px; bottom:
-the brown at the new 1.25 px, the surface-colored line at 1.25 px).
+the brown at the new 1.25 px, the surface-colored line at 1.25 px), and `zoom-<view>.png`, the same four enlarged. A
+blue crate gets a darker blue edge, a carton a darker tan one, the orange cart a darker orange one; the window grilles,
+already dark, keep a near-black line. Darken 0.5 and 0.7 were rendered beside 0.6 (`<view>-surface-d50.png`,
+`-d70.png`): 0.7 is faint at 1x, 0.5 starts to read as an outline again.
 
 Limits: the form light cannot tell a prop from a wall (see above); a joint or bevel whose step is near `depth` draws a
 broken line (the paving's joints); a kerb's bevels draw two or three parallel lines close up; the Studio's Lighting

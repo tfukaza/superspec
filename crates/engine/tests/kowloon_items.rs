@@ -513,7 +513,8 @@ fn choices_and_dimensions_reach_the_fixture() {
         for corners in m.indices.chunks_exact(3) {
             let [a, b, c] = [0, 1, 2].map(|k| m.positions[corners[k] as usize]);
             let centre = [0, 1].map(|k| (a[k] + b[k] + c[k]) / 3.);
-            if a[2] > -0.01 && b[2] > -0.01 && c[2] > -0.01 {
+            // (A slab's top sinks at most 5 mm; its 8 mm chamfer falls below this.)
+            if a[2] > -0.007 && b[2] > -0.007 && c[2] > -0.007 {
                 slabs += 1;
                 assert!(
                     !(centre[0] > 3. && centre[0] < 21. && centre[1] > -5.9 && centre[1] < -4.1),
@@ -628,8 +629,8 @@ fn choices_and_dimensions_reach_the_fixture() {
             .filter(|f| (f.width - width).abs() < 1e-9)
             .count()
     };
-    // Bench supports are 0.15 m wide, the stout bollards 0.18 m and the bins 0.4 m.
-    assert_eq!((wide(0.15), wide(0.18), wide(0.4)), (8, 14, 4));
+    // Bench supports are 0.15 m wide, the stout bollards 0.164 m and the bins 0.4 m.
+    assert_eq!((wide(0.15), wide(0.164), wide(0.4)), (8, 14, 4));
     // A street lamp reports its base plate's outline, for the paving of the item under it.
     let plate = natives.features("kowloon/street-lamp", &Values::new());
     assert_eq!(plate.len(), 1);
@@ -1176,9 +1177,9 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         lowest(&slot_points(&taut, "tarp"), 2),
         lowest(&slot_points(&slack, "tarp"), 2),
     );
-    // (Its rolled hem is 1.1 cm in radius, drawn bold.)
+    // (Its rolled hem is 7.5 mm in radius, drawn bold.)
     assert!(
-        (taut_low + 0.4 + 0.011).abs() < 0.005,
+        (taut_low + 0.4 + 0.0075).abs() < 0.005,
         "a taut sheet falls its drop: {taut_low}"
     );
     assert!(
@@ -1233,7 +1234,7 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         "a frame has no posts"
     );
     // A scalloped hem rises between its lobes: less of its width (in centimetre columns)
-    // hangs at its full depth, measured under its bound edge (1.1 cm in radius).
+    // hangs at its full depth, measured under its bound edge (7.5 mm in radius).
     let straight = tarp(&[
         ("stripes", json!(30)),
         ("valance", json!(0.25)),
@@ -1250,12 +1251,12 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
             .len()
     };
     assert!(
-        deep(&striped, 0.011) * 2 < deep(&straight, 0.),
+        deep(&striped, 0.0075) * 2 < deep(&straight, 0.),
         "{} {}",
-        deep(&striped, 0.011),
+        deep(&striped, 0.0075),
         deep(&straight, 0.)
     );
-    assert!(deep(&striped, 0.011) > 0);
+    assert!(deep(&striped, 0.0075) > 0);
     assert!((lowest(&slot_points(&striped, "tarp"), 2) + 0.65).abs() < 0.02);
     assert!(
         generate(
@@ -1443,6 +1444,72 @@ fn cables_sag_round_corners_and_hardware_is_bolted() {
     };
     assert!(wall(&board(true)) > 0.6, "its fixings are above it");
     assert!(wall(&board(false)) < 0.1);
+    // No outrigger, brace, tie rod or clip passes over either lettered face: every metal
+    // triangle, sampled across its area, stays clear of the faces within their artwork.
+    for (angle, anchor, horizontal) in [
+        (53.13, 0., false),
+        (-40., 0.3, false),
+        (0., 0., false),
+        (0., 0.6, false),
+        (0., 0., true),
+    ] {
+        let (width, height, reach, depth) = if horizontal {
+            (1.95, 0.64, 0.83, 0.045)
+        } else {
+            (0.94, 3.33, 0.78, 0.045)
+        };
+        let meshes = generate(
+            &natives,
+            "kowloon/board-sign",
+            &values(&[
+                ("angle", json!(angle)),
+                ("anchor", json!(anchor)),
+                ("horizontal", json!(horizontal)),
+                ("width", json!(width)),
+                ("height", json!(height)),
+                ("reach", json!(reach)),
+            ]),
+        )
+        .unwrap();
+        check("board-sign", &meshes);
+        // The board's own frame in item coordinates (the wall is y = 0, the street -y).
+        let (sin, cos) = f64::to_radians(angle).sin_cos();
+        let (origin, along, out) = ([0., -reach], [cos, -sin], [-sin, -cos]);
+        let frame = |p: [f64; 3]| {
+            let d = [p[0] - origin[0], p[1] - origin[1]];
+            (
+                d[0] * along[0] + d[1] * along[1],
+                d[0] * out[0] + d[1] * out[1],
+                p[2],
+            )
+        };
+        // The artwork lies inside the frame and its margin.
+        let margin = 0.06;
+        for m in meshes.iter().filter(|m| m.material_slot == "metal") {
+            for corners in m.indices.chunks_exact(3) {
+                let [a, b, c] = [0, 1, 2].map(|k| m.positions[corners[k] as usize]);
+                for i in 0..=8 {
+                    for j in 0..=8 - i {
+                        let (u, v) = (i as f64 / 8., j as f64 / 8.);
+                        let p: [f64; 3] =
+                            std::array::from_fn(|k| a[k] + (b[k] - a[k]) * u + (c[k] - a[k]) * v);
+                        let (s, t, z) = frame(p);
+                        let over =
+                            s > margin && s < width - margin && z > margin && z < height - margin;
+                        // Nothing between the street face and the street; behind the back
+                        // face only the wall and its fixings, further off than the steel's
+                        // own reach across the board.
+                        assert!(
+                            !over || (t < 1e-6 && (t > -depth - 1e-6 || t < -depth - 0.25)),
+                            "angle {angle}, anchor {anchor}: {} crosses a lettered face at \
+                             {s:.3} m along, {z:.3} m up, {t:.3} m off it",
+                            m.id
+                        );
+                    }
+                }
+            }
+        }
+    }
     // Roof clutter keeps to the sides it is given.
     let roof = |entries: &[(&str, Value)]| {
         let meshes = generate(&natives, "kowloon/roof-clutter", &values(entries)).unwrap();

@@ -15,6 +15,7 @@ import type { AmbientOcclusion } from "./ambient-occlusion.ts";
 import type { Lighting } from "./lighting.ts";
 import { SceneLighting, studioEnvironment } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
+import { fitNearPlane } from "./depth-range.ts";
 import { InspectionWalk } from "./walk.ts";
 import { ItemOverlays, type HandleChange, type OverlayItem } from "./item-overlays.ts";
 import { FoliageView, type FoliageProfile } from "./foliage.ts";
@@ -217,6 +218,8 @@ export class RustScene {
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
+    // The near plane follows the view, so depth stays precise far away (depth-range.ts).
+    fitNearPlane(this.camera, this.walking ? null : this.controls.target);
     // Foliage first: its tiles are culled and its levels chosen for this view (foliage.ts).
     this.camera.updateMatrixWorld();
     const foliage = this.foliage.update(this.models, this.camera, this.lights.sun, this.shadows);

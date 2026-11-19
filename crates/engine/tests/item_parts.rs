@@ -1960,3 +1960,105 @@ fn generation_is_deterministic_and_cancellable() {
         assert_eq!(reparsed.geometry_key, first.geometry_key);
     }
 }
+
+#[test]
+fn a_seat_and_an_arc_recess_leave_no_wall_behind_what_fills_them() {
+    // A seat 1 m by 0.5 m and 5 cm deep, 2 mm from the panel's corner, where a plain opening
+    // must keep 2 cm.
+    let seat = |mode: &str, u: f64| {
+        json!({"id": "band", "mode": mode, "depth": 0.05, "seat": true, "width": 1., "height": 0.5,
+               "u": {"from": "start", "offset": u}, "v": {"from": "start", "offset": 0.002}})
+    };
+    let built = generate(&panel(json!([seat("recess", 0.002)])), &[]).unwrap();
+    close(
+        closed_volume(&meshes(
+            &built,
+            &["wall/front", "wall/back", "wall/edge", "wall/reveal"],
+        )),
+        3. * 2. * 0.2 - 1. * 0.5 * 0.05,
+        1e-12,
+    );
+    // No wall faces lie in front of the seat's floor, 5 cm back.
+    let front = meshes(&built, &["wall/front"])[0];
+    for [a, b, c] in triangles(front) {
+        let middle = scale(
+            add(
+                add(front.positions[a], front.positions[b]),
+                front.positions[c],
+            ),
+            1. / 3.,
+        );
+        assert!(
+            !(middle[0] > 0.002 && middle[0] < 1.002 && middle[2] > 0.002 && middle[2] < 0.502),
+            "{middle:?}"
+        );
+    }
+    // It reports no opening edge or sill: what lies in it carries its own.
+    assert!(
+        built
+            .geometry
+            .features
+            .iter()
+            .all(|f| f.name != "opening-edge" && f.name != "sill"),
+        "{:?}",
+        built.geometry.features
+    );
+    // Without `seat`, the same recess must keep 2 cm from the edge; a seat cuts no hole.
+    let mut plain = seat("recess", 0.002);
+    plain["seat"] = json!(false);
+    let mut through = seat("through", 0.5);
+    through.as_object_mut().unwrap().remove("depth");
+    for (openings, pointer) in [
+        (json!([plain]), "/parts/0/generator/openings/0"),
+        (json!([through]), "/parts/0/generator/openings/0/seat"),
+    ] {
+        let error = generate(&panel(openings), &[]).unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_OPENING", pointer)
+        );
+    }
+
+    // An arc's recess sets 0.5 m of its outer face 5 cm back, and the face above keeps `v`.
+    let (radius, t, h, n) = (0.55, 0.25, 3., 8usize);
+    let generator = |recesses: Value| {
+        solid(
+            json!({"kind": "arc", "radius": radius, "turn": 90, "segments": n,
+                     "section": [[-t, 0], [0, 0], [0, h], [-t, h]], "recesses": recesses}),
+        )
+    };
+    let recessed = generator(json!([{"from": 1, "to": 1.5, "depth": 0.05, "when": 1}])).unwrap();
+    let wedge = |outer: f64, inner: f64| {
+        n as f64 * (PI / 2. / n as f64).sin() / 2. * (outer * outer - inner * inner)
+    };
+    close(
+        closed_volume(&meshes(&recessed, &["s/side", "s/end"])),
+        wedge(radius, radius - t) * h - wedge(radius, radius - 0.05) * 0.5,
+        1e-12,
+    );
+    let side = meshes(&recessed, &["s/side"])[0];
+    let mut above = 0;
+    for ((p, normal), uv) in side.positions.iter().zip(&side.normals).zip(&side.uvs) {
+        let out = (p[0] * p[0] + (p[1] - radius) * (p[1] - radius)).sqrt() - radius;
+        if normal[2] == 0. && out.abs() < 1e-9 && p[2] > 1.5 + 1e-9 {
+            // The bottom (t long) and the face up to here, not the recess's floor and head.
+            close(uv[1], t + p[2], 1e-9);
+            above += 1;
+        }
+    }
+    assert!(above > 0);
+    // A recess reaching an open section's start starts the section at its back; one that
+    // leaves its face fails.
+    let open = solid(
+        json!({"kind": "arc", "radius": radius, "turn": 90, "segments": n,
+                            "closed": false, "section": [[0, 0], [0, h]],
+                            "recesses": [{"from": 0, "to": 1, "depth": 0.05}]}),
+    )
+    .unwrap();
+    close(open.geometry.bounds[0][2], 0., 1e-12);
+    let error = generator(json!([{"from": 2.8, "to": 3.2, "depth": 0.05}])).unwrap_err();
+    assert_eq!(
+        (error.code.as_str(), error.pointer.as_str()),
+        ("ITEM_GEOMETRY", "/parts/0/generator/recesses")
+    );
+}

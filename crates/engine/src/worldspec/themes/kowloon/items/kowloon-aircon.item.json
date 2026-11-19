@@ -29,14 +29,14 @@
       "when": "split * lines",
       "generator": {"kind": "native", "name": "kowloon/conduit",
         "parameters": {"rise": {"expr": "0.35 + 0.3 * random(seed, 2)"}, "run": {"expr": "0.2 + 0.1 * random(seed, 3)"}, "rise2": {"expr": "height + 0.7 + 0.5 * random(seed, 4)"},
-                       "radius": 0.024, "color": "#9b9985", "boxes": false}},
+                       "radius": 0.017, "color": "#9b9985", "boxes": false}},
       "placement": {"position": ["width / 2 + 0.1", 0, "height * 0.3 - 0.5"]}
     },
     {
       "id": "hose",
       "when": "lines",
       "generator": {"kind": "native", "name": "kowloon/conduit",
-        "parameters": {"rise": {"expr": "min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)"}, "run": 0, "rise2": 0, "radius": 0.018, "color": "#cfcabb", "boxes": false}},
+        "parameters": {"rise": {"expr": "min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)"}, "run": 0, "rise2": 0, "radius": 0.012, "color": "#cfcabb", "boxes": false}},
       "placement": {"position": ["select(split, -width / 2 + 0.08, 0.2)", 0, "-(min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)) - select(split, 0.02, 0.1)"]}
     }
   ],

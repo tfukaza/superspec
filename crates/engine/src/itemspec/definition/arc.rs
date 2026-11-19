@@ -41,6 +41,10 @@ pub(super) struct Arc {
     step: f64,
     anchor: P2,
     rings: Vec<(String, P2)>,
+    /// Section edges (by their first point) that run across a recess's floor or head: the
+    /// texture's `v` does not advance over them, so the face above a recess keeps its height.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    level: Vec<usize>,
 }
 
 /// One straight piece of the swept profile, with the outward normal at each of its ends.
@@ -163,6 +167,12 @@ pub(super) fn resolve(
         }
         rings.push((ring.name.clone(), point));
     }
+    let recesses = resolve_recesses(context, definition, pointer)?;
+    if !recesses.is_empty() && bevel > 0. {
+        return Err(geometry("recesses", "A bevelled section has no recesses."));
+    }
+    let (section, level) = recess(&section, definition.closed, recesses, radius)
+        .map_err(|message| geometry("recesses", message))?;
     Ok(Arc {
         radius,
         turn: turn * (std::f64::consts::PI / 180.),
@@ -174,7 +184,176 @@ pub(super) fn resolve(
         step,
         anchor,
         rings,
+        level,
     })
+}
+
+/// Every recess as `[from, to, depth]`, its copies expanded and those whose `when` fails left out.
+fn resolve_recesses(
+    context: &Context<'_>,
+    definition: &ArcDefinition,
+    pointer: &str,
+) -> Result<Vec<[f64; 3]>, ItemDiagnostic> {
+    let mut found = Vec::new();
+    for (index, recess) in definition.recesses.iter().enumerate() {
+        let at = format!("{pointer}/recesses/{index}");
+        let copies = match &recess.repeat {
+            None => vec![context.derived.clone()],
+            Some(axis) => {
+                let identifier = !axis.name.is_empty()
+                    && axis.name.len() <= 64
+                    && axis
+                        .name
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    && !axis.name.as_bytes()[0].is_ascii_digit()
+                    && !context.definition.parameters.contains_key(&axis.name)
+                    && !context.derived.contains_key(&axis.name);
+                let count = context.scalar(&axis.count, &format!("{at}/repeat/count"))?;
+                if !identifier || count.fract() != 0. || !(0. ..=16.).contains(&count) {
+                    return Err(context.fail(
+                        &format!("{at}/repeat"),
+                        "ITEM_REPEAT",
+                        "A recess repeats up to 16 times, indexed by a new identifier.",
+                    ));
+                }
+                (0..count as usize)
+                    .map(|copy| {
+                        let mut derived = context.derived.clone();
+                        derived.insert(axis.name.clone(), copy as f64);
+                        derived.insert(format!("{}_count", axis.name), count);
+                        derived
+                    })
+                    .collect()
+            }
+        };
+        for derived in copies {
+            let copy = Context {
+                definition: context.definition,
+                parameters: context.parameters,
+                derived: &derived,
+            };
+            if let Some(condition) = &recess.when {
+                if copy.scalar(condition, &format!("{at}/when"))? <= 0. {
+                    continue;
+                }
+            }
+            let from = copy.scalar(&recess.from, &format!("{at}/from"))?;
+            let to = copy.scalar(&recess.to, &format!("{at}/to"))?;
+            let depth = copy.scalar(&recess.depth, &format!("{at}/depth"))?;
+            if !(to - from >= 1e-3) || !(depth >= 1e-3) || to.abs().max(from.abs()) > 10_000. {
+                return Err(context.fail(
+                    &at,
+                    "ITEM_GEOMETRY",
+                    "A recess rises from `from` to a higher `to` and is at least a millimeter deep.",
+                ));
+            }
+            found.push([from, to, depth]);
+        }
+    }
+    if found.len() > 16 {
+        return Err(context.fail(
+            &format!("{pointer}/recesses"),
+            "ITEM_LIMIT",
+            "An arc has at most 16 recesses, counting every copy.",
+        ));
+    }
+    Ok(found)
+}
+
+/// The section with its recesses cut into its upright outer faces, and the edges that run
+/// across their floors and heads. A recess lies inside one such face, at least a millimeter
+/// from its ends and from the next recess, except where it reaches an open section's end: the
+/// section then starts (or ends) at the back of the recess.
+fn recess(
+    section: &[P2],
+    closed: bool,
+    mut recesses: Vec<[f64; 3]>,
+    radius: f64,
+) -> Result<(Vec<P2>, Vec<usize>), &'static str> {
+    if recesses.is_empty() {
+        return Ok((section.to_vec(), Vec::new()));
+    }
+    recesses.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    let count = section.len();
+    let edges = if closed { count } else { count - 1 };
+    let upright = |i: usize| {
+        let (a, b) = (section[i], section[(i + 1) % count]);
+        (a[0] - b[0]).abs() < 1e-9 && b[1] > a[1]
+    };
+    let mut used = vec![false; recesses.len()];
+    let (mut points, mut level) = (Vec::new(), Vec::new());
+    for i in 0..count {
+        let a = section[i];
+        let first = i == 0 && !closed;
+        if i >= edges || !upright(i) {
+            points.push(a);
+            continue;
+        }
+        let b = section[(i + 1) % count];
+        let last = !closed && i + 1 == count - 1;
+        let mut floor = a[1];
+        let mut start = true;
+        for (k, &[from, to, depth]) in recesses.iter().enumerate() {
+            if used[k] || from < a[1] - 1e-9 || to > b[1] + 1e-9 {
+                continue;
+            }
+            let (at_start, at_end) = (from < a[1] + 1e-9, to > b[1] - 1e-9);
+            if (at_start && (!first || !start))
+                || (at_end && !last)
+                || (!at_start && from < floor + 1e-3)
+                || radius + a[0] - depth < 1e-3
+            {
+                return Err(
+                    "Recesses lie apart inside an upright outer face, or reach an open section's end, and keep outside the arc's axis.",
+                );
+            }
+            used[k] = true;
+            let back = a[0] - depth;
+            if at_start {
+                // The open section starts at the back of the recess.
+                points.push([back, from]);
+            } else {
+                if start {
+                    points.push(a);
+                }
+                points.push([a[0], from]);
+                level.push(points.len() - 1);
+                points.push([back, from]);
+            }
+            start = false;
+            points.push([back, to]);
+            if at_end {
+                // ... or ends there, without its head.
+                floor = f64::INFINITY;
+            } else {
+                level.push(points.len() - 1);
+                points.push([a[0], to]);
+                floor = to;
+            }
+        }
+        if start {
+            points.push(a);
+        } else if floor.is_infinite() {
+            // The section's last point was the recess's back: skip `b`.
+            for point in section.iter().skip(i + 2) {
+                points.push(*point);
+            }
+            return finish(points, level, &used);
+        }
+    }
+    finish(points, level, &used)
+}
+
+fn finish(
+    points: Vec<P2>,
+    level: Vec<usize>,
+    used: &[bool],
+) -> Result<(Vec<P2>, Vec<usize>), &'static str> {
+    if used.iter().any(|used| !used) {
+        return Err("Every recess lies on one upright outer face of the section.");
+    }
+    Ok((points, level))
 }
 
 fn unit(v: P2) -> P2 {
@@ -227,11 +406,13 @@ impl Arc {
             .collect();
         let mut pieces = Vec::new();
         let mut along = 0.;
-        let mut push = |pieces: &mut Vec<Piece>, a: P2, b: P2, na: P2, nb: P2| {
+        let mut push = |pieces: &mut Vec<Piece>, a: P2, b: P2, na: P2, nb: P2, measured: bool| {
             let length = hypot(b[0] - a[0], b[1] - a[1]);
             if length < 1e-12 {
                 return;
             }
+            // A recess's floor and head keep `v` where it is.
+            let length = if measured { length } else { 0. };
             // Flat faces longer than the step are split evenly.
             let rows = if self.step > 0. && na == nb {
                 (length / self.step - 1e-9).ceil().max(1.) as usize
@@ -267,15 +448,15 @@ impl Arc {
             let face = normal(self.section[i], self.section[j]);
             let from = corners[i].map_or(self.section[i], |corner| corner.1);
             let to = corners[j].map_or(self.section[j], |corner| corner.0);
-            push(&mut pieces, from, to, face, face);
+            push(&mut pieces, from, to, face, face, !self.level.contains(&i));
             if let Some((a, b, middle)) = corners[j] {
                 let next = normal(self.section[j], self.section[(j + 1) % count]);
                 if self.bevel_segments >= 2 {
                     let between = unit([face[0] + next[0], face[1] + next[1]]);
-                    push(&mut pieces, a, middle, face, between);
-                    push(&mut pieces, middle, b, between, next);
+                    push(&mut pieces, a, middle, face, between, true);
+                    push(&mut pieces, middle, b, between, next, true);
                 } else {
-                    push(&mut pieces, a, b, face, next);
+                    push(&mut pieces, a, b, face, next, true);
                 }
             }
         }

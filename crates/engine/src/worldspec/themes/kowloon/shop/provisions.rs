@@ -744,7 +744,7 @@ fn broom(d: &mut Fixture<'_, '_>, foot: V3, rng: &mut SeededRng) -> Result<(), S
         "paint",
         [x, y, z + 0.2],
         [x + slide, y + lean, z + rng.float(1.4, 1.6)],
-        0.045,
+        0.038,
         srgb("#c2a56c"),
     )?;
     d.cuboid(
@@ -1048,7 +1048,7 @@ fn hung_row(
                     "paint",
                     [cx, y, top - h + 0.1],
                     [cx, y, top],
-                    0.034,
+                    0.03,
                     srgb("#b89a62"),
                 )?;
                 d.cuboid(
@@ -1118,7 +1118,7 @@ fn hung_row(
                         [x + w * 0.74, y, low + h + handle * 0.7],
                         [x + w * 0.82, y, low + h],
                     ],
-                    0.014,
+                    0.01,
                     shade(cane, 0.8),
                     5,
                 )?;
@@ -1144,8 +1144,8 @@ fn hung_row(
         };
         if ceiling - hung_from > 0.01 {
             let cx = x + width / 2.;
-            // A cord as it is drawn: a strip 2.6 cm wide.
-            front(d, [cx - 0.013, cx + 0.013, hung_from, ceiling], 0., cord)?;
+            // A cord as it is drawn: a strip 1.8 cm wide.
+            front(d, [cx - 0.009, cx + 0.009, hung_from, ceiling], 0., cord)?;
         }
         x += width + gap;
     }
@@ -1193,9 +1193,9 @@ fn wire_rack(
 ) -> Result<(), String> {
     let steel = srgb("#8a8f86");
     // Stout posts and shelves: a rack of thin wire would vanish from across a street.
-    for x in [0.018, w - 0.018] {
-        for y in [0.018, depth - 0.018] {
-            d.bar("paint", [x, y, 0.], [x, y, h], 0.036, steel)?;
+    for x in [0.015, w - 0.015] {
+        for y in [0.015, depth - 0.015] {
+            d.bar("paint", [x, y, 0.], [x, y, h], 0.03, steel)?;
         }
     }
     let pitch = (h - 0.14) / levels as f64;
@@ -1203,7 +1203,7 @@ fn wire_rack(
         let z = 0.12 + level as f64 * pitch;
         d.cuboid(
             "paint",
-            [0., 0., z - 0.03],
+            [0., 0., z - 0.024],
             [w, depth, z],
             shade(steel, 0.9),
             if z > 1.45 { "fu" } else { "fd" },
@@ -1609,7 +1609,7 @@ pub(crate) fn street_fitted(
             truck.tube(
                 "paint",
                 &[[x, 0., 0.15], [x, 0., 1.38], [x, 0.16, 1.46]],
-                0.026,
+                0.022,
                 ivory,
                 5,
             )?;

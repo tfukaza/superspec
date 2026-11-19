@@ -2669,3 +2669,277 @@ fn the_plinth_runs_on_round_a_neighbour_beside_a_street() {
     bare.push(("plinthPlans", json!([1.0, 0, 0, 0])));
     assert!(band(&generate("kowloon-building.item.json", &bare)).is_empty());
 }
+
+/// The area two convex polygons share, in one plane's (u, v), and its perimeter.
+fn shared_area(a: &[[f64; 2]], b: &[[f64; 2]]) -> (f64, f64) {
+    let cross = |o: [f64; 2], p: [f64; 2], q: [f64; 2]| {
+        (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+    };
+    let area = |p: &[[f64; 2]]| {
+        (0..p.len())
+            .map(|i| cross([0.; 2], p[i], p[(i + 1) % p.len()]))
+            .sum::<f64>()
+            / 2.
+    };
+    // Both counterclockwise; clip `a` by every edge of `b` (Sutherland-Hodgman).
+    let ccw = |p: &[[f64; 2]]| {
+        let mut p = p.to_vec();
+        if area(&p) < 0. {
+            p.reverse();
+        }
+        p
+    };
+    let (mut clipped, b) = (ccw(a), ccw(b));
+    for i in 0..b.len() {
+        let (e0, e1) = (b[i], b[(i + 1) % b.len()]);
+        let input = std::mem::take(&mut clipped);
+        for j in 0..input.len() {
+            let (p, q) = (input[j], input[(j + 1) % input.len()]);
+            let (sp, sq) = (cross(e0, e1, p), cross(e0, e1, q));
+            if sp >= 0. {
+                clipped.push(p);
+            }
+            if (sp >= 0.) != (sq >= 0.) {
+                let t = sp / (sp - sq);
+                clipped.push([p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]);
+            }
+        }
+        if clipped.len() < 3 {
+            return (0., 0.);
+        }
+    }
+    let perimeter = (0..clipped.len())
+        .map(|i| {
+            let (p, q) = (clipped[i], clipped[(i + 1) % clipped.len()]);
+            (q[0] - p[0]).hypot(q[1] - p[1])
+        })
+        .sum();
+    (area(&clipped).abs(), perimeter)
+}
+
+/// One receiver's face laid over another's: the front one's mesh id and slot, the one behind
+/// it, the area they share in square meters, and how wide the widest piece of it is (twice
+/// its area over its perimeter: a strip's width).
+struct Stacked {
+    front: (String, String),
+    back: (String, String),
+    area: f64,
+    width: f64,
+}
+
+/// Every pair of receivers (meshes as placed) with faces facing the same way, the second's
+/// within `behind` meters behind the first's plane (or `ahead` in front of it), that share more
+/// than `least` square meters: a surface laid on another closer than a depth buffer separates
+/// them from afar. Largest share first.
+fn stacked(item: &GeneratedItem, behind: f64, ahead: f64, least: f64) -> Vec<Stacked> {
+    struct Face {
+        receiver: usize,
+        normal: [f64; 3],
+        offset: f64,
+        points: [[f64; 3]; 3],
+        low: [f64; 3],
+        high: [f64; 3],
+    }
+    let cell = behind.max(ahead).max(1e-4);
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let transforms = item.geometry.world_transforms().unwrap();
+    let (mut names, mut buckets) = (Vec::new(), BTreeMap::<[i64; 4], Vec<Face>>::new());
+    for (node, matrix) in item.geometry.nodes.iter().zip(&transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            let receiver = names.len();
+            names.push((mesh.id.clone(), mesh.material_slot.clone()));
+            for triangle in mesh.indices.chunks(3) {
+                let points = [0, 1, 2].map(|k| matrix.point(mesh.positions[triangle[k] as usize]));
+                let (u, v) = (
+                    [0, 1, 2].map(|k| points[1][k] - points[0][k]),
+                    [0, 1, 2].map(|k| points[2][k] - points[0][k]),
+                );
+                let n = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                let length = dot(n, n).sqrt();
+                if length < 2e-8 {
+                    continue;
+                }
+                let normal = n.map(|c| c / length);
+                let offset = dot(normal, points[0]);
+                let key = [
+                    (normal[0] * 200.).round() as i64,
+                    (normal[1] * 200.).round() as i64,
+                    (normal[2] * 200.).round() as i64,
+                    (offset / cell).floor() as i64,
+                ];
+                let low = [0, 1, 2].map(|k| points.iter().map(|p| p[k]).fold(f64::MAX, f64::min));
+                let high = [0, 1, 2].map(|k| points.iter().map(|p| p[k]).fold(f64::MIN, f64::max));
+                buckets.entry(key).or_default().push(Face {
+                    receiver,
+                    normal,
+                    offset,
+                    points,
+                    low,
+                    high,
+                });
+            }
+        }
+    }
+    let mut shared = BTreeMap::<(usize, usize), [f64; 2]>::new();
+    for (key, faces) in &buckets {
+        let near: Vec<&Face> = (-1..=1)
+            .filter_map(|step| buckets.get(&[key[0], key[1], key[2], key[3] + step]))
+            .flatten()
+            .collect();
+        for a in faces {
+            for b in near.iter().copied() {
+                // How far `b` lies behind `a`'s plane, along `a`'s outward normal.
+                let gap = a.offset - b.offset;
+                if a.receiver == b.receiver
+                    || gap > behind
+                    || -gap > ahead
+                    || dot(a.normal, b.normal) < 0.99999
+                    || (0..3).any(|k| a.low[k] > b.high[k] + cell || b.low[k] > a.high[k] + cell)
+                {
+                    continue;
+                }
+                // The plane's own axes, from the first face's normal.
+                let n = a.normal;
+                let helper = if n[0].abs() < 0.9 {
+                    [1., 0., 0.]
+                } else {
+                    [0., 1., 0.]
+                };
+                let mut e1 = [
+                    helper[1] * n[2] - helper[2] * n[1],
+                    helper[2] * n[0] - helper[0] * n[2],
+                    helper[0] * n[1] - helper[1] * n[0],
+                ];
+                let l = dot(e1, e1).sqrt();
+                e1 = e1.map(|c| c / l);
+                let e2 = [
+                    n[1] * e1[2] - n[2] * e1[1],
+                    n[2] * e1[0] - n[0] * e1[2],
+                    n[0] * e1[1] - n[1] * e1[0],
+                ];
+                let flat = |f: &Face| f.points.map(|p| [dot(p, e1), dot(p, e2)]);
+                let (area, perimeter) = shared_area(&flat(a), &flat(b));
+                if area > 0. {
+                    let entry: &mut [f64; 2] = shared.entry((a.receiver, b.receiver)).or_default();
+                    entry[0] += area;
+                    entry[1] = entry[1].max(2. * area / perimeter);
+                }
+            }
+        }
+    }
+    let mut found: Vec<Stacked> = shared
+        .into_iter()
+        .filter(|(_, [area, _])| *area > least)
+        .map(|((a, b), [area, width])| Stacked {
+            front: names[a].clone(),
+            back: names[b].clone(),
+            area,
+            width,
+        })
+        .collect();
+    found.sort_by(|a, b| b.area.total_cmp(&a.area));
+    found
+}
+
+fn listed(found: &[&Stacked]) -> String {
+    found
+        .iter()
+        .map(|s| {
+            format!(
+                "{:.4} m2 ({:.4} m wide)  {}  |  {}",
+                s.area, s.width, s.front.0, s.back.0
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn no_two_receivers_of_the_planned_buildings_lie_on_one_another() {
+    // A band laid on a wall (tiles, a dado, a plinth) stands only millimeters proud of it, and
+    // a depth buffer seen from tens of meters away does not tell such faces apart: the wall
+    // shows through as the camera moves. Such bands sit in a recess cut for them instead.
+    //
+    // Pairs drawn by fixtures, frames and signs whose own makers have yet to part them, by the
+    // names in their two mesh ids: they are listed rather than hidden, so none is added.
+    const PENDING: &[(&str, &str)] = &[
+        // Square corners: one side's wall end lies in the next side's front plane (and the
+        // seats both sides cut for their bands meet in the corner, behind the bands).
+        ("/wall/wall/edge", "/wall/wall/front"),
+        ("/wall/wall/edge", "/wall/wall/edge"),
+        ("/wall/wall/reveal", "/wall/wall/reveal"),
+        ("/parapet/parapet/edge", "/parapet/parapet/front"),
+        ("/parapet/parapet/edge", "/parapet/parapet/edge"),
+        ("/coping/coping/", "/coping/coping/"),
+        ("/wall/wall/edge", "roof/top"),
+        ("/wall/wall/reveal", "/room/room/"),
+        ("/fascia/fascia/", "/balcony/balcony/"),
+        // A balcony's slab and the doors' steps end in the planes of the wall and its bands.
+        ("/door/door/concrete", "/wall/wall/edge"),
+        ("/backDoor/backDoor/concrete", "/wall/wall/edge"),
+        ("/backDoor/backDoor/concrete", "/dado"),
+        ("/balcony/balcony/", "/tileEnd/tileEnd/edge"),
+        // A shopfront's frame stands in its jambs' plane, where the plinth ends.
+        ("/room/room/metal", "/plinth-"),
+        // The next side's wall end under a plinth or a dado at a square corner.
+        ("/plinth-", "/wall/wall/edge"),
+        ("/dado", "/wall/wall/edge"),
+        // Pipes, conduits and neighbours' slices, drawn by their own generators.
+        ("/conduit-", "/plinth-"),
+        ("/downpipe/", "/plinth-"),
+        ("/drain-", "/plinth-"),
+        ("/drain-", "/dado"),
+        ("party-", "party-"),
+        ("party-", "/band/band/concrete"),
+    ];
+    let pending = |s: &Stacked| {
+        PENDING.iter().any(|(a, b)| {
+            (s.front.0.contains(a) && s.back.0.contains(b))
+                || (s.front.0.contains(b) && s.back.0.contains(a))
+        })
+    };
+    // Only the building's own fabric: the receivers its walls, parapets and bands are made of.
+    let fabric = ["wall", "wall-round", "tile", "dado", "plinth", "trim"];
+    for name in ["reference-shop-house.json", "small-warehouse.json"] {
+        let plan = plan(name);
+        let overrides: Vec<(&str, serde_json::Value)> = plan
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.clone()))
+            .collect();
+        let building = generate("kowloon-building.item.json", &overrides);
+        // Two faces in one plane, within 2 mm of it.
+        let all = stacked(&building, 0.002, 0.002, 1e-4);
+        let coplanar: Vec<&Stacked> = all
+            .iter()
+            .filter(|s| s.front.0 < s.back.0)
+            .filter(|s| fabric.contains(&s.front.1.as_str()) || fabric.contains(&s.back.1.as_str()))
+            .filter(|s| !pending(s))
+            .collect();
+        assert!(
+            coplanar.is_empty(),
+            "{name}: {} coplanar pairs:\n{}",
+            coplanar.len(),
+            listed(&coplanar)
+        );
+        // Nothing within 3 cm behind the front of a tiled, dado or plinth band, but the
+        // hairlines of wall a seat's margin leaves at the panel's edge and beside its openings
+        // (and the centimeter of wall under a shop opening's foot where a plinth meets its jamb).
+        let near = stacked(&building, 0.03, 0.002, 1e-4);
+        let bands: Vec<&Stacked> = near
+            .iter()
+            .filter(|s| ["tile", "dado", "plinth"].contains(&s.front.1.as_str()))
+            .filter(|s| s.width > 0.012 && !pending(s))
+            .collect();
+        assert!(
+            bands.is_empty(),
+            "{name}: {} faces lie just behind a band:\n{}",
+            bands.len(),
+            listed(&bands)
+        );
+    }
+}

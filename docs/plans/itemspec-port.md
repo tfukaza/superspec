@@ -288,17 +288,34 @@ that faces a street (`gable`) has columns of windows across its depth, a soil st
   seeded street rule. `roofClutter` (0 to 1) scales `kowloon/roof-clutter`: vent stubs with cowls or
   goosenecks along `roofVentSide`, pipes on sleepers along `roofPipeSide`, pots along `roofPotSide`, and
   a cable from the first aerial to the stair hut.
-- **Drawn weight at street level.** Nothing linear on the street is thinner than about 2.5 cm, and
-  counts fall where thicker pieces would clog. Paving and kerb stones have 2 cm joints and paving
-  stones a dark 1.2 cm chamfer into them (`street.rs` `paving_stone`), so a joint is a drawn line;
-  drain and manhole covers are four heavy bars and the avenue's slot drain 9 cm bars every 0.25 m;
-  benches have two 7.5 cm slats; bollards are 18 cm with a broad band; lamp arms, braces and scrolls,
-  bicycles (fat tyres, six spokes, 5 cm tubes) and hand carts are heavier. A roller shutter's slats
-  are 0.15 m apart and 3.4 cm deep (`slat`; `shutters::slatted_roller_shutter`) and a gate's lattice
-  2.6 cm uprights 0.22 m apart (`gateSpacing`; `ground::Plan::gate_lattice`): only the item
-  generators ask for these, so the older Kowloon models draw as before. A sheet canopy's
-  corrugations are 0.14 m apart; a hung cloth's hems and ropes are 2 to 2.6 cm thick, its posts 8 cm
-  and stays 4 cm; hung goods' cords are 2.6 cm strips; rack posts, brooms and awning poles are stouter.
+- **Drawn weight at street level.** Nothing linear on the street is thinner than about 1.8 cm (cables
+  and hems about 1.5 cm), and counts fall where thicker pieces would clog. Paving and kerb stones have
+  1.4 cm joints and paving stones a dark 8 mm chamfer into them (`street.rs` `paving_stone`), so a
+  joint is a drawn line; drain and manhole covers are four heavy bars and the avenue's slot drain 6 cm
+  bars every 0.25 m; benches have two 6 cm slats; bollards are 16.4 cm with a broad band; lamp arms,
+  braces and scrolls, bicycles (fat tyres, six spokes, 4 cm tubes) and hand carts are heavier. A
+  roller shutter's slats are 0.15 m apart and 2.9 cm deep (`slat`; `shutters::slatted_roller_shutter`)
+  and a gate's lattice 2.2 cm uprights 0.22 m apart (`gateSpacing`; `ground::Plan::gate_lattice`):
+  only the item generators ask for these, so the older Kowloon models draw as before. A sheet
+  canopy's corrugations are 0.14 m apart; a hung cloth's hems and ropes are 1.5 to 1.6 cm thick, its
+  posts 6.8 cm and stays 2.6 cm; hung goods' cords are 1.8 cm strips; rack posts, brooms and awning
+  poles are stouter. Cables are 1.5 cm and conduits 2.5 cm across.
+- **Drawn weight on the facade.** The facade items draw their fine members a little heavier than life,
+  so each reads as a hand-drawn line, but no heavier: linear members about 1.8 to 2 cm at least,
+  wires 1.4 cm, cage bars 1.8 cm, glazing bars 2.5 cm and window frame faces 4 cm, with fewer pieces
+  where heavier ones would clog. A window's frame, mullions, glazing bars and handles are 4, 3.6, 2.5
+  and 1.8 cm (`frameWidth`, `mullion`, `glazingBar`, `handle`); security bars 2 cm in a 3 cm border,
+  1.6 times the facades' spacing; cages 1.8 cm bars on 2.8 cm rails about 0.22 m apart (`cageBar`,
+  `cageRail`, `cageSpacing`); a balcony's steel rails 4 cm on 4.6 cm posts; the roof rail 3.6 cm on
+  4 cm posts; a fan divider nine 2 cm bars under a 4 cm rim; the hut ladder 4 cm stiles and 2.4 cm
+  rungs; an aerial a 4 cm mast, 2.6 cm boom, four 2 cm elements and 1.4 cm guy wires; a wall lamp's
+  guard 1.8 cm wire; a board sign 4.4 cm outriggers, 3 cm braces and 1.8 cm tie rods, and a
+  projecting sign's rods and flat bars 1.6 times their own. Signs letter in `heavy` where an `auto`
+  face's glyphs are 0.35 to 0.5 m tall, and in `kai` otherwise (`heavy` fills in on small boards and
+  plates). A `boardPlans` row's fifteenth column names a face (0 `auto`, 1 `kai`, …, 5 `heavy`); the
+  reference plan letters its small 電器修理 board in `kai`. The shared Kowloon drawing code takes these as options
+  (`windows::Weight`, `windows::Gauge`, `CagePlan::bold`, `rooftop::Aerial`, `panel::Art`,
+  `Proposal::gauge`) whose defaults draw the older models exactly as before.
 
 ItemSpec itself gained two things for this: a choice control reads as its index among its choices in
 expressions (so a `when` can test a kind), and an item may have 128 controls and a placed item a million

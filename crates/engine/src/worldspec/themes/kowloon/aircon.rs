@@ -338,11 +338,11 @@ fn brackets(
             &mut d,
             steel,
             [
-                [x - heavy(0.018, 0.025), 0.008, z - heavy(0.04, 0.055)],
-                [x - heavy(0.018, 0.025), depth, z - heavy(0.04, 0.055)],
+                [x - heavy(0.018, 0.0225), 0.008, z - heavy(0.04, 0.05)],
+                [x - heavy(0.018, 0.0225), depth, z - heavy(0.04, 0.05)],
             ],
             [[1., 0., 0.], [0., 0., 1.]],
-            [heavy(0.035, 0.05), heavy(0.004, 0.011)],
+            [heavy(0.035, 0.045), heavy(0.004, 0.008)],
         )?;
         if plates {
             // A bolted wall plate where the arm meets the wall, and bolts through the arm's
@@ -355,7 +355,7 @@ fn brackets(
                     across: [1., 0., 0.],
                     up: [0., 0., 1.],
                     out: [0., 1., 0.],
-                    size: [heavy(0.09, 0.13), heavy(0.13, 0.17)],
+                    size: [heavy(0.09, 0.115), heavy(0.13, 0.155)],
                     bolts: 4,
                 },
             )?;
@@ -365,7 +365,7 @@ fn brackets(
                     steel,
                     [x + 0.002, depth * share, z - 0.035],
                     [0., 0., 1.],
-                    heavy(0.007, 0.012),
+                    heavy(0.007, 0.0105),
                 )?;
             }
         }
@@ -377,7 +377,7 @@ fn brackets(
             steel,
             [[x, depth - 0.05, z - 0.04], [x, 0.014, z - fall + 0.035]],
             [1., 0., 0.],
-            [heavy(0.026, 0.042), heavy(0.018, 0.03)],
+            [heavy(0.026, 0.036), heavy(0.018, 0.026)],
         )?;
         steel::fixing_plate(
             &mut d,
@@ -387,7 +387,7 @@ fn brackets(
                 across: [1., 0., 0.],
                 up: [0., 0., 1.],
                 out: [0., 1., 0.],
-                size: [heavy(0.07, 0.1), fall],
+                size: [heavy(0.07, 0.09), fall],
                 bolts: 4,
             },
         )?;
@@ -603,8 +603,8 @@ pub fn air_conditioner_with(
     let wire = shade(body, 0.65);
     // The guard's wires: heavier ones stand further apart.
     let heavy = |plain: f64, bold: f64| weighed(options.weight, plain, bold);
-    let (gauge, pitch) = (heavy(0.0018, 0.005), heavy(0.055, 0.1));
-    let grille_y = depth - recess + heavy(0.003, 0.006);
+    let (gauge, pitch) = (heavy(0.0018, 0.0038), heavy(0.055, 0.1));
+    let grille_y = depth - recess + heavy(0.003, 0.005);
     let mut u = x0 + 0.055;
     while u < x1 - 0.045 {
         d.tube(
@@ -681,7 +681,7 @@ pub fn air_conditioner_with(
                 [hose, depth - 0.06, z - 0.12],
                 [hose + 0.03, depth - 0.1, z - extent],
             ],
-            heavy(0.011, 0.018),
+            heavy(0.011, 0.0135),
             srgb("#3a3a38"),
             5,
         )?;
@@ -867,7 +867,7 @@ fn line_set(
     let out = x + 0.07;
     let insulation = srgb("#d8d6cc");
     let hose = srgb("#3a3a38");
-    let (lagged, drain) = (weighed(weight, 0.016, 0.024), weighed(weight, 0.011, 0.017));
+    let (lagged, drain) = (weighed(weight, 0.016, 0.02), weighed(weight, 0.011, 0.0135));
     if rise < 0.3 {
         d.tube(
             "paint",

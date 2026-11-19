@@ -516,11 +516,13 @@ fn wall(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "party")?;
         d.cuboid("wall", [x0, back, 0.], [x1, face, high], base, "bfdu")?;
+        // The face starts above its plinth: nothing lies just behind the band's front.
+        let foot = plan.plinth.max(0.);
         stained_face(
             d,
-            [x0, face, 0.],
+            [x0, face, foot],
             [x1 - x0, 0., 0.],
-            high,
+            high - foot,
             false,
             0.,
             high,
@@ -602,23 +604,48 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
             srgb("#8f8a7c"),
             8,
         )?;
-        // The outer face and both ends, stained from their parapet down.
+        // The outer face and both ends, stained from their parapet down. Where a plinth band
+        // stands on them they start above it, so nothing lies just behind the band's front.
+        let foot = plan.plinth.max(0.);
+        let runs = front_plinth_runs(plan);
+        let front = if runs.is_empty() { 0. } else { foot };
         stained_face(
             d,
-            [0., depth, 0.],
+            [0., depth, front],
             [length, 0., 0.],
-            high,
+            high - front,
             false,
             0.,
             high,
             paint,
             noise_seed,
         )?;
+        if front > 0. {
+            // Below the band's top, the face shows only between its runs.
+            let mut from = 0_f64;
+            for [a, b] in runs.into_iter().chain([[length, length]]) {
+                let a = a.clamp(0., length);
+                if a - from > 1e-6 {
+                    stained_face(
+                        d,
+                        [from, depth, 0.],
+                        [a - from, 0., 0.],
+                        front,
+                        false,
+                        from,
+                        high,
+                        paint,
+                        noise_seed,
+                    )?;
+                }
+                from = from.max(b.clamp(0., length));
+            }
+        }
         stained_face(
             d,
-            [0., 0., 0.],
+            [0., 0., foot],
             [0., depth, 0.],
-            high,
+            high - foot,
             false,
             length,
             high,
@@ -627,9 +654,9 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
         )?;
         stained_face(
             d,
-            [length, 0., 0.],
+            [length, 0., foot],
             [0., depth, 0.],
-            high,
+            high - foot,
             true,
             length + depth,
             high,
@@ -762,6 +789,26 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
 const PLINTH: f64 = 0.018;
 const PLINTH_TINT: &str = "#59554f";
 
+/// The runs of a stub's front plinth along its length, in order: broken at its back door, and
+/// none where shopfronts stand before it or it has no plinth.
+fn front_plinth_runs(plan: &Party) -> Vec<[f64; 2]> {
+    let length = plan.length;
+    if plan.plinth <= 0. || plan.shops {
+        return Vec::new();
+    }
+    let runs = match plan.door {
+        // (the door's surround is 0.9 m wide between jambs of 0.12).
+        Some(bay) => {
+            let x = (bay as f64 + 0.5) * length / plan.bays as f64;
+            vec![[-PLINTH, x - 0.57], [x + 0.57, length + PLINTH]]
+        }
+        None => vec![[-PLINTH, length + PLINTH]],
+    };
+    runs.into_iter()
+        .filter(|[from, to]| to - from > 0.05)
+        .collect()
+}
+
 /// A stub's plinth: a dark band along the foot of its front, broken at its back door and left
 /// out where shopfronts stand before it, and round both its ends.
 fn plinth(d: &mut Fixture<'_, '_>, plan: &Party) -> Result<(), String> {
@@ -770,26 +817,14 @@ fn plinth(d: &mut Fixture<'_, '_>, plan: &Party) -> Result<(), String> {
         return Ok(());
     }
     let tint = srgb(PLINTH_TINT);
-    if !plan.shops {
-        let runs = match plan.door {
-            // (the door's surround is 0.9 m wide between jambs of 0.12).
-            Some(bay) => {
-                let x = (bay as f64 + 0.5) * length / plan.bays as f64;
-                vec![[-PLINTH, x - 0.57], [x + 0.57, length + PLINTH]]
-            }
-            None => vec![[-PLINTH, length + PLINTH]],
-        };
-        for [from, to] in runs {
-            if to - from > 0.05 {
-                d.cuboid(
-                    "wall",
-                    [from, depth, 0.],
-                    [to, depth + PLINTH, high],
-                    tint,
-                    "bd",
-                )?;
-            }
-        }
+    for [from, to] in front_plinth_runs(plan) {
+        d.cuboid(
+            "wall",
+            [from, depth, 0.],
+            [to, depth + PLINTH, high],
+            tint,
+            "bd",
+        )?;
     }
     d.cuboid("wall", [-PLINTH, 0., 0.], [0., depth, high], tint, "rd")?;
     d.cuboid(

@@ -55,7 +55,7 @@
                     [["none", "none"], ["none", "none"], ["none", "none"]]],
   "fullCages": true,
   "/cages": "Pale off-white welded cages, their bars a little heavier and wider apart than the shop house's (m), a touch of rust.",
-  "cageColor": "#cfcabb", "cageRust": 0.25, "cageBar": 0.026, "cageRail": 0.038, "cageSpacing": 0.21,
+  "cageColor": "#cfcabb", "cageRust": 0.25, "cageBar": 0.02, "cageRail": 0.03, "cageSpacing": 0.24,
   "cagePlans": [[[], ["washing", "storage"], []]],
   "canopiesPlans": [[[], [1, 0], [0, 0]], [[], [0, 0], [0, 0]], [[], [0, 0], [0, 0]], [[], [0, 0], [0, 0]]],
   "storagePlans": [[0, 0, 0.5]],

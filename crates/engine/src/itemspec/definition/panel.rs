@@ -24,6 +24,8 @@ pub(super) const GROUPS: &[&str] = &[
 ];
 /// Smallest distance between an opening and the panel edge or another opening.
 pub(super) const MARGIN: f64 = 0.02;
+/// The same for a seat (a recess another part fills), where the wall left beside it is hidden.
+const SEAT_MARGIN: f64 = 0.002;
 const ARCH_SEGMENTS: usize = 16;
 const SLIVER: f64 = 1e-3;
 const DEFAULT_SILL_THICKNESS: f64 = 0.03;
@@ -51,6 +53,9 @@ pub(super) struct Opening {
     /// The radius its two upright front arrises are rounded with; 0 leaves them sharp.
     #[serde(skip_serializing_if = "is_zero")]
     jambs: f64,
+    /// A recess another part is laid in: no features, and zones run on behind it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    seat: bool,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Panel {
@@ -267,6 +272,8 @@ pub(super) fn resolve(
             "A panel has at most 32 openings, counting every copy.",
         ));
     }
+    // A seat's wall is hidden by what fills it, unless a bevel needs the room to round it.
+    let seat_margin = if radius > 0. { margin } else { SEAT_MARGIN };
     for (opening, pointer, id, derived) in expanded {
         let copy = Context {
             definition: context.definition,
@@ -277,7 +284,7 @@ pub(super) fn resolve(
             &copy,
             opening,
             [width, height, thickness],
-            margin,
+            if opening.seat { seat_margin } else { margin },
             setbacks,
             &pointer,
         )?;
@@ -304,8 +311,13 @@ pub(super) fn resolve(
             ));
         }
         // Rounded jambs take their radius from the wall beside the opening.
-        let between = margin + resolved.jambs;
         if let Some(other) = openings.iter().find(|other| {
+            let margin = if resolved.seat || other.seat {
+                seat_margin
+            } else {
+                margin
+            };
+            let between = margin + resolved.jambs;
             resolved.x < other.x + other.width + other.jambs + between - 1e-9
                 && other.x < resolved.x + resolved.width + other.jambs + between - 1e-9
                 && resolved.z < other.z + other.height + margin - 1e-9
@@ -431,6 +443,9 @@ fn resolve_opening(
             "Rounded jambs are a radius smaller than the depth of a rectangular opening.".into(),
         ));
     }
+    if opening.seat && (recess.is_none() || opening.sill.is_some()) {
+        return Err(fail("/seat", "A seat is a recess without a sill.".into()));
+    }
     if recess.is_some() && (opening.frame.is_some() || opening.glazing.is_some()) {
         return Err(fail(
             "",
@@ -508,6 +523,7 @@ fn resolve_opening(
         glazing,
         sill,
         jambs,
+        seat: opening.seat,
     })
 }
 
@@ -915,11 +931,11 @@ impl Panel {
     }
 
     /// The openings a face shows, as `[x, z, width, height]` in part coordinates: every
-    /// opening on the front, the ones cut through on the back.
+    /// opening on the front but its seats, the ones cut through on the back.
     pub(super) fn openings_on(&self, front: bool) -> Vec<[f64; 4]> {
         self.openings
             .iter()
-            .filter(|opening| front || opening.recess.is_none())
+            .filter(|opening| !opening.seat && (front || opening.recess.is_none()))
             .map(|opening| [opening.x, opening.z, opening.width, opening.height])
             .collect()
     }
@@ -947,7 +963,7 @@ impl Panel {
             feature("base", None, y, &[[0., 0.], [w, 0.]], false);
             feature("top", None, y, &[[0., h], [w, h]], false);
         }
-        for opening in &self.openings {
+        for opening in self.openings.iter().filter(|opening| !opening.seat) {
             for y in [0., t] {
                 if y > 0. && opening.recess.is_some() {
                     continue;

@@ -35,7 +35,7 @@ pub fn headed_roller_shutter(
 /// The curtain's corrugation unless given: [pitch, rise] of a slat in meters.
 pub const SLATS: [f64; 2] = [0.09, 0.022];
 /// A corrugation of fewer, deeper slats, which reads from across a street.
-pub const BOLD_SLATS: [f64; 2] = [0.15, 0.034];
+pub const BOLD_SLATS: [f64; 2] = [0.15, 0.029];
 
 /// [`headed_roller_shutter`] with its curtain's slats as given: [pitch from 0.04 to 0.5 m,
 /// rise from 0.005 to 0.04 m out of the curtain's plane].

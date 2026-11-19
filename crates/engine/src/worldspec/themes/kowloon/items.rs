@@ -42,7 +42,7 @@ mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "10";
+const VERSION: &str = "11";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 /// The default `weight` of a fixture's small hardware (clips, straps, brackets, bolts, lines):
@@ -486,15 +486,15 @@ fn window(
             }
             depth => Some(depth),
         },
-        // Drawn bolder than the facades' own windows, to read from across the street:
-        // `frameWidth` (m of perimeter frame, 0.03–0.15, 0.06), `mullion` (m, 0.02–0.12,
-        // 0.046), `glazingBar` (m, 0.012–0.08, 0.034) and `handle` (m, the radius of a lever
-        // handle's rod, 0.003–0.03, 0.011).
+        // Drawn a little bolder than the facades' own windows, to read as drawn lines from
+        // across the street: `frameWidth` (m of perimeter frame, 0.03–0.15, 0.04), `mullion`
+        // (m, 0.02–0.12, 0.036), `glazingBar` (m, 0.012–0.08, 0.025) and `handle` (m, the
+        // radius of a lever handle's rod, 0.003–0.03, 0.009).
         weight: Some(windows::Weight {
-            frame: a.bounded("frameWidth", 0.06, 0.03..=0.15)?,
-            mullion: a.bounded("mullion", 0.046, 0.02..=0.12)?,
-            bar: a.bounded("glazingBar", 0.034, 0.012..=0.08)?,
-            handle: a.bounded("handle", 0.011, 0.003..=0.03)?,
+            frame: a.bounded("frameWidth", 0.04, 0.03..=0.15)?,
+            mullion: a.bounded("mullion", 0.036, 0.02..=0.12)?,
+            bar: a.bounded("glazingBar", 0.025, 0.012..=0.08)?,
+            handle: a.bounded("handle", 0.009, 0.003..=0.03)?,
         }),
     };
     let glowing = look.lit && (glow.is_some() || options.room.is_some());
@@ -559,8 +559,8 @@ fn window(
 /// of the guarded opening on the wall plane. Parameters: `pattern` (`bars` | `grid` |
 /// `diamond`, `bars`), `width` (m, 1.2), `height` (m, 1.4), `color` (#2a2c2e), `share` (the
 /// part of the height it covers, from the top: 0.5 guards the upper half; 0.1–1, 1). Few
-/// heavy bars, to read from across the street: `bar` (m, infill bars, 0.004–0.1, 0.026),
-/// `border` (m, 0.004–0.1, 0.036) and `spacing` (how many times the facades' own 0.13 m
+/// bold bars, to read from across the street: `bar` (m, infill bars, 0.004–0.1, 0.02),
+/// `border` (m, 0.004–0.1, 0.03) and `spacing` (how many times the facades' own 0.13 m
 /// (bars), 0.2 m (grid) or 0.24 m (diamond) the bars stand apart, 0.5–4, 1.6).
 fn security_bars(
     name: &str,
@@ -573,11 +573,11 @@ fn security_bars(
     let height = a.number("height", 1.4)?;
     let color = a.color("color", "#2a2c2e")?;
     let share = a.bounded("share", 1., 0.1..=1.)?;
-    let bar = a.bounded("bar", 0.026, 0.004..=0.1)?;
+    let bar = a.bounded("bar", 0.02, 0.004..=0.1)?;
     let gauge = windows::Gauge {
         bar,
         rail: (bar + 0.002).min(0.1),
-        border: a.bounded("border", 0.036, 0.004..=0.1)?,
+        border: a.bounded("border", 0.03, 0.004..=0.1)?,
         spacing: a.bounded("spacing", 1.6, 0.5..=4.)?,
     };
     a.finish()?;
@@ -1055,19 +1055,20 @@ fn steel_rail(
             d.tube(
                 "metal",
                 &[[start, -0.035, z], [end, -0.035, z]],
-                0.028,
+                0.02,
                 steel,
                 10,
             )?;
         }
-        // Few heavy posts and rails: they read as drawn lines from across the street.
+        // Few bold posts (4.6 cm) and rails (4 cm): they read as drawn lines from across the
+        // street.
         let posts = (length / 1.8).ceil() as usize;
         for j in 0..=posts {
             let x = start + (end - start) * j as f64 / posts as f64;
             d.tube(
                 "metal",
-                &[[x, -0.035, upstand - 0.02], [x, -0.035, 1.115]],
-                0.033,
+                &[[x, -0.035, upstand - 0.02], [x, -0.035, 1.105]],
+                0.023,
                 steel,
                 10,
             )?;
@@ -1088,8 +1089,9 @@ fn steel_rail(
 /// an angle), `seed` (weathering). The board stands between its two outriggers, one under its
 /// foot and one over its head, each braced from the wall on the side away from the board, so
 /// no steel crosses a lettered face. A `horizontal` board flat to the wall hangs level from one
-/// pole with two stays; every fixing is a bolted plate. The steel is heavy (6 cm outriggers,
-/// 2 cm tie rods) and the artwork stands centimeters off the face: see `SIGN_ART`.
+/// pole with two stays; every fixing is a bolted plate. The steel is bold (4.4 cm outriggers,
+/// 1.8 cm tie rods: `SIGN_RAIL`) and the artwork stands centimeters off the face: see
+/// `SIGN_ART`.
 fn board_sign(
     name: &str,
     values: &Values,
@@ -1119,9 +1121,8 @@ fn board_sign(
     let panel_colors = [a.color("panel", "#d2a23a")?, a.color("panel2", "#d2a23a")?];
     let ties = a.boolean("ties", true)?;
     // `face`: the lettering face (`kai`, `hei`, `song`, `brush`, `heavy`, `round`, `slim`), or
-    // `auto` (the default): `kai`, and the bolder `hei` where the glyphs are under half a
-    // meter, whose brushed strokes would be hairlines from across the street (`heavy` closes
-    // up on dense characters at that size).
+    // `auto` (the default): `kai`, and the bold `heavy` where the glyphs are under half a
+    // meter, whose brushed strokes would be hairlines from across the street.
     const FACES: [&str; 8] = [
         "auto", "kai", "hei", "song", "brush", "heavy", "round", "slim",
     ];
@@ -1157,11 +1158,7 @@ fn board_sign(
         text
     };
     let face: Face = if face == "auto" {
-        if sign_em(width, height, &text, !horizontal) < 0.5 {
-            Face::Hei
-        } else {
-            Face::Kai
-        }
+        auto_face(sign_em(width, height, &text, !horizontal))
     } else {
         serde_json::from_value(Value::String(face)).map_err(|e| format!("{name}: face: {e}"))?
     };
@@ -1248,7 +1245,7 @@ fn board_sign(
             d.tube(
                 "metal",
                 &[[anchor, 0.012, top], [anchor, y, top], far],
-                0.028,
+                SIGN_RAIL,
                 hardware.tint,
                 10,
             )?;
@@ -1286,7 +1283,7 @@ fn board_sign(
         // The board stands between two outriggers, one under its foot and one over its head,
         // in the middle of its depth: no steel crosses either lettered face. Each is braced
         // from the wall on the side away from the board, and clips grip the board's edges.
-        let rail = 0.03;
+        let rail = SIGN_RAIL;
         let rails = [(-rail, -1.), (height + rail, 1.)];
         // The middle of the board's depth, behind its face line.
         let middle = [0.0225 * sin, -0.0225 * cos];
@@ -1339,7 +1336,13 @@ fn board_sign(
                 };
                 ([anchor, 0.02, z + away * 0.3], [brace, reach - 0.0225])
             };
-            d.tube("metal", &[from, [to[0], to[1], z]], 0.021, hardware.tint, 8)?;
+            d.tube(
+                "metal",
+                &[from, [to[0], to[1], z]],
+                SIGN_BRACE,
+                hardware.tint,
+                8,
+            )?;
         }
         // Clips over the frame at the board's foot and head, in the board's own frame.
         let grip = proud + 0.006;
@@ -1365,8 +1368,23 @@ fn board_sign(
 /// showed through its lettering in diagonal bands), in a border line twice as wide with half
 /// as many rust runs, each twice as wide.
 const SIGN_ART: signs::panel::Art = signs::panel::Art { lift: 6., line: 2. };
-/// The radius of a sign's tie rods and stays in meters.
-const SIGN_TIE: f64 = 0.011;
+/// The radii of a board sign's outriggers (and a level board's pole), its braces, and its tie
+/// rods and stays in meters: 4.4, 3 and 1.8 cm thick.
+const SIGN_RAIL: f64 = 0.022;
+const SIGN_BRACE: f64 = 0.015;
+const SIGN_TIE: f64 = 0.009;
+
+/// The face an `auto` sign letters in for glyphs about `em` m tall: the bold `heavy` only
+/// where glyphs are between 0.35 and 0.5 m, large enough that its dense strokes stay open
+/// from across the street yet small enough that brushed strokes would thin to hairlines;
+/// the brushed `kai` otherwise (on small boards, fascias and plates `heavy` fills in).
+fn auto_face(em: f64) -> signs::lettering::Face {
+    if (0.35..0.5).contains(&em) {
+        signs::lettering::Face::Heavy
+    } else {
+        signs::lettering::Face::Kai
+    }
+}
 
 /// About how tall a sheet sign's glyphs are in meters: `text` set down (or along) a
 /// `width` by `height` board inside its frame and border.
@@ -1404,8 +1422,8 @@ fn anti_climb(
             color,
             &weathering(name, 0.),
             balconies::Fan {
-                rim: 0.018,
-                spoke: 0.012,
+                rim: 0.015,
+                spoke: 0.01,
                 spokes: 7,
             },
         )
@@ -1474,10 +1492,10 @@ fn plants(
 /// plan fixes instead of the seed: `contents` (`auto` | `plants` | `washing` | `storage`
 /// (stacked cartons) | `mixed` | `empty` | `aircon` (an old window unit standing in it),
 /// `auto`), `roof` (`auto` | `none` | `sheet`, `auto`) and `roofColor` (of a `sheet` roof,
-/// #7f9a6c). The welding, of few heavy bars that read from across the street (the facades'
+/// #7f9a6c). The welding, of few bold bars that read from across the street (the facades'
 /// own cages are of 12 mm bars 0.11 m apart): `bar` (m, infill bar thickness, 0.004–0.05,
-/// 0.024), `rail` (m, frame rail thickness, 0.008–0.08, 0.036), `spacing` (m between infill
-/// bars, which share each side evenly, 0.04–0.5, 0.19; the floor's runners and the wall stays
+/// 0.018), `rail` (m, frame rail thickness, 0.008–0.08, 0.028), `spacing` (m between infill
+/// bars, which share each side evenly, 0.04–0.5, 0.22; the floor's runners and the wall stays
 /// are of the bars' weight) and `rust` (the most rust the seed mixes into the paint, 0–1, 0.35); `louvred`
 /// (false) turns an `aircon` unit's louvred grille out whatever its model.
 fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, String> {
@@ -1519,9 +1537,9 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
             _ => return Err(format!("{name}: roof must be one of auto, none, sheet.")),
         },
         roof_color: Some(roof_color),
-        bar: Some(a.number("bar", 0.024)?),
-        rail: Some(a.number("rail", 0.036)?),
-        spacing: Some(a.number("spacing", 0.19)?),
+        bar: Some(a.number("bar", 0.018)?),
+        rail: Some(a.number("rail", 0.028)?),
+        spacing: Some(a.number("spacing", 0.22)?),
         rust: a.optional_number("rust")?,
         middle: None,
         middle_gap: None,
@@ -2119,14 +2137,14 @@ fn ground_bay(
     let bars = a.bounded("gateBars", 1., 0.5..=3.)?;
     let backing = a.bounded("gateBacking", 0., 0. ..=2.)?;
     // `gateSpacing`: m between the lattice's uprights (0.08–0.45, 0.22). An item's gate is a
-    // few bold bars (uprights 2.6 cm wide, links 1.8 cm, before `gateBars`), which read from
+    // few bold bars (uprights 2.2 cm wide, links 1.6 cm, before `gateBars`), which read from
     // across a street. `slat`: m between a shutter's slats (0.04–0.5, 0.15).
     let spacing = a.bounded("gateSpacing", 0.22, 0.08..=0.45)?;
     let plan = ground::Plan {
         gate_bars: (bars != 1.).then_some(bars),
         gate_backing: (backing > 0.)
             .then(|| plan.gate.unwrap_or_default().map(|v| (v * backing).min(1.))),
-        gate_lattice: Some([0.026, 0.018, spacing]),
+        gate_lattice: Some([0.022, 0.016, spacing]),
         shutter_slats: Some(shutter_slats(&mut a)?),
         ..plan
     };
@@ -2294,14 +2312,15 @@ fn aerial(
         stays: a.integer("stays", 0, 0..=4)?,
         spread: a.bounded("spread", 0.8, 0.2..=5.)?,
         bearing: a.bounded("bearing", 0., -360. ..=360.)?.to_radians(),
-        // Drawn heavy, to read against the sky from the street: `mast` (m, 0.004–0.1, 0.05),
-        // `boom` (0.034), `element` (0.026; an array has `elements`, 2–9, 4) and `stay` (0.02),
-        // where the facades' aerials have a 30 mm mast, 12 mm elements in fives and 6 mm stays.
-        mast: a.bounded("mast", 0.05, 0.004..=0.1)?,
-        boom: a.bounded("boom", 0.034, 0.004..=0.1)?,
-        element: a.bounded("element", 0.026, 0.004..=0.1)?,
+        // Drawn bold, to read against the sky from the street: `mast` (m, 0.004–0.1, 0.04),
+        // `boom` (0.026), `element` (0.02; an array has `elements`, 2–9, 4) and `stay` (a guy
+        // wire, 0.014), where the facades' aerials have a 30 mm mast, 12 mm elements in fives
+        // and 6 mm stays.
+        mast: a.bounded("mast", 0.04, 0.004..=0.1)?,
+        boom: a.bounded("boom", 0.026, 0.004..=0.1)?,
+        element: a.bounded("element", 0.02, 0.004..=0.1)?,
         elements: a.integer("elements", 4, 2..=9)?,
-        stay: a.bounded("stay", 0.02, 0.004..=0.1)?,
+        stay: a.bounded("stay", 0.014, 0.004..=0.1)?,
     };
     a.finish()?;
     let kit = kit(&key, 1, 0.)?;
@@ -2439,9 +2458,9 @@ fn washing(
             "paint",
             &[[span[0], 0., 0.], [span[1], 0., 0.]],
             if support == laundry::Support::Line {
-                0.006 + 0.005 * (weight - 1.)
+                0.006 + 0.002 * (weight - 1.)
             } else {
-                0.016 + 0.006 * (weight - 1.)
+                0.016 + 0.004 * (weight - 1.)
             },
             [0.4; 3],
             8,
@@ -2481,7 +2500,7 @@ fn hangers(
         d.tube(
             "paint",
             &[[row.span[0], 0., 0.], [row.span[1], 0., row.slope * length]],
-            0.016 + 0.006 * (weight - 1.),
+            0.016 + 0.004 * (weight - 1.),
             [0.4; 3],
             8,
         )
@@ -2533,7 +2552,7 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         .optional_text("text")?
         .filter(|text| !(invent && text.is_empty()));
     let subtitle = a.optional_text("subtitle")?;
-    // `auto`: `kai`, and the bolder `hei` where the main block's glyphs are under half a meter.
+    // `auto`: `kai`, and the bold `heavy` where the main block's glyphs are under half a meter.
     let face = a.text("face", "kai")?;
     if ![
         "auto", "hei", "song", "kai", "brush", "heavy", "round", "slim",
@@ -2558,11 +2577,7 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     let main = text.unwrap_or(business.name);
     let face: Face = if face == "auto" {
         let down = direction == signs::lettering::Direction::Ttb;
-        if sign_em(width, height, &main, down) < 0.5 {
-            Face::Hei
-        } else {
-            Face::Kai
-        }
+        auto_face(sign_em(width, height, &main, down))
     } else {
         serde_json::from_value(Value::String(face)).map_err(|e| format!("{name}: face: {e}"))?
     };
@@ -2667,9 +2682,10 @@ fn projecting(
         &mut SeededRng::from_text(&key),
     )?
     .ok_or_else(|| format!("{name}: no sign fits a {ceiling} m pier with {reach} m reach."))?;
-    // Bold artwork on rods and flat bars twice as heavy, to read from across the street.
+    // Bold artwork on rods and flat bars 1.6 times as heavy (stays and hanging rods about
+    // 1.9 cm thick), to read from across the street.
     projected.proposal.art = SIGN_ART;
-    projected.proposal.gauge = 2.;
+    projected.proposal.gauge = 1.6;
     draw(cancelled, |mesh| {
         projected.proposal.draw(mesh, &|_| 1., &settings)
     })

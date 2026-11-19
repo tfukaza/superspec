@@ -406,19 +406,19 @@ pub fn hang_with(
                 "paint",
                 place(x, 0.045, 0.),
                 place(x, -0.03, 0.),
-                heavy(0.013, 0.024),
+                heavy(0.013, 0.02),
                 g.fitting_tint,
             )?,
             Fitting::Bar([x0, x1, y]) => drawing.tube(
                 "paint",
                 &[place(x0, y, 0.), place(x1, y, 0.)],
-                heavy(0.005, 0.011),
+                heavy(0.005, 0.009),
                 g.fitting_tint,
                 4,
             )?,
             Fitting::Hook(y) => {
                 let mut points = vec![place(0., y, 0.)];
-                let loop_radius = heavy(0.019, 0.03);
+                let loop_radius = heavy(0.019, 0.026);
                 for step in 0..=6 {
                     let angle = PI / 2. - step as f64 / 6. * PI * 1.25;
                     points.push(place(
@@ -427,7 +427,7 @@ pub fn hang_with(
                         0.,
                     ));
                 }
-                drawing.tube("paint", &points, heavy(0.003, 0.008), g.fitting_tint, 4)?;
+                drawing.tube("paint", &points, heavy(0.003, 0.007), g.fitting_tint, 4)?;
             }
         }
     }

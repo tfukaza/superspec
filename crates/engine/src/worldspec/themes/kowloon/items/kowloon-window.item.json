@@ -25,10 +25,10 @@
     "handles": {"type": "boolean", "default": true},
     "glow": {"type": "color", "default": "#ffe7ad"},
     "room": {"type": "number", "default": 2.6, "min": 0, "max": 6, "unit": "m"},
-    "frameWidth": {"type": "number", "default": 0.06, "min": 0.03, "max": 0.15, "unit": "m"},
-    "mullion": {"type": "number", "default": 0.046, "min": 0.02, "max": 0.12, "unit": "m"},
-    "glazingBar": {"type": "number", "default": 0.034, "min": 0.012, "max": 0.08, "unit": "m"},
-    "barsBar": {"type": "number", "default": 0.026, "min": 0.004, "max": 0.1, "unit": "m"},
+    "frameWidth": {"type": "number", "default": 0.04, "min": 0.03, "max": 0.15, "unit": "m"},
+    "mullion": {"type": "number", "default": 0.036, "min": 0.02, "max": 0.12, "unit": "m"},
+    "glazingBar": {"type": "number", "default": 0.025, "min": 0.012, "max": 0.08, "unit": "m"},
+    "barsBar": {"type": "number", "default": 0.02, "min": 0.004, "max": 0.1, "unit": "m"},
     "barsSpacing": {"type": "number", "default": 1.6, "min": 0.5, "max": 4}
   },
   "parts": [

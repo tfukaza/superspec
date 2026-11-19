@@ -33,7 +33,7 @@
         "up": [0, 1, 0],
         "capped": true,
         "fittings": [
-          {"kind": "flange", "id": "seam", "at": {"every": 1.3, "inset": 0.6}, "overhang": 0.025, "thickness": 0.032}
+          {"kind": "flange", "id": "seam", "at": {"every": 1.3, "inset": 0.6}, "overhang": 0.025, "thickness": 0.026}
         ]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
@@ -49,7 +49,7 @@
         "bendRadius": 0.3,
         "up": [0, 1, 0],
         "capped": false,
-        "fittings": [{"kind": "flange", "id": "joint", "at": {"from": "start", "offset": 0.05}, "overhang": 0.025, "thickness": 0.032}]
+        "fittings": [{"kind": "flange", "id": "joint", "at": {"from": "start", "offset": 0.05}, "overhang": 0.025, "thickness": 0.026}]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "end": "galvanized"}
     },
@@ -76,7 +76,7 @@
         "points": [["width * 0.2", "-axis", "firstFloor + j * storyHeight + storyHeight - 0.45"], ["width * 0.2", 0.05, "firstFloor + j * storyHeight + storyHeight - 0.45"]],
         "up": [0, 0, 1],
         "capped": false,
-        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.061}, "overhang": 0.04, "thickness": 0.022, "bolts": 4}]
+        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.0585}, "overhang": 0.04, "thickness": 0.017, "bolts": 4}]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
     }

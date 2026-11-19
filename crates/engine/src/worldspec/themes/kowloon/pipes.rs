@@ -96,7 +96,7 @@ impl PipeSystem {
     }
     fn strap_length(&self) -> f64 {
         let plain = (self.options.radius * 0.65).max(0.024);
-        self.heavier(plain, plain * 0.7)
+        self.heavier(plain, plain * 0.45)
     }
 
     pub fn straight(
@@ -210,7 +210,7 @@ impl PipeSystem {
             unit(axis)?,
             self.heavier(
                 self.options.radius * 1.23,
-                self.options.radius * 0.12 + 0.004,
+                self.options.radius * 0.08 + 0.003,
             ),
             self.socket_length(),
         )
@@ -239,29 +239,29 @@ impl PipeSystem {
             drawing,
             center,
             tangent,
-            self.heavier(r * 1.12, r * 0.1 + 0.005),
+            self.heavier(r * 1.12, r * 0.07 + 0.0035),
             self.strap_length(),
         )?;
         // The wall plate's thickness: its middle plane stands half of it off the wall.
-        let thick = self.heavier(0.012, 0.01);
+        let thick = self.heavier(0.012, 0.006);
         let stem = (r * 0.45).max(0.018);
         self.member(
             drawing,
             add(wall, scale(out, thick / 2.)),
             add(center, scale(out, -r * 0.9)),
             across,
-            self.heavier(r * 0.6, r * 0.2 + 0.012),
-            self.heavier(stem, stem * 0.7),
+            self.heavier(r * 0.6, r * 0.13 + 0.008),
+            self.heavier(stem, stem * 0.45),
         )?;
         let plate = add(wall, scale(out, thick / 2.));
-        let reach = self.heavier(r * 1.9, r * 0.3 + 0.03);
+        let reach = self.heavier(r * 1.9, r * 0.2 + 0.02);
         let broad = (r * 0.9).max(0.045);
         self.member(
             drawing,
             add(plate, scale(across, -reach)),
             add(plate, scale(across, reach)),
             tangent,
-            self.heavier(broad, broad * 0.5),
+            self.heavier(broad, broad * 0.33),
             thick,
         )?;
         let bolt = (r * 0.14).max(0.006);
@@ -271,10 +271,10 @@ impl PipeSystem {
                 "metal",
                 add(
                     add(wall, scale(out, thick)),
-                    scale(across, sign * self.heavier(r * 1.5, r * 0.3 + 0.018)),
+                    scale(across, sign * self.heavier(r * 1.5, r * 0.2 + 0.012)),
                 ),
                 out,
-                self.heavier(bolt, bolt * 0.6 + 0.004),
+                self.heavier(bolt, bolt * 0.4 + 0.0027),
                 self.options.color,
                 self.options.weathering.as_ref(),
             )?;

@@ -26,7 +26,7 @@ pub(super) fn wall_plate(
     color: V3,
 ) -> Result<(), String> {
     // Drawn heavy: a thick plate under bolt heads large enough to read from the street.
-    const THICK: f64 = 0.016;
+    const THICK: f64 = 0.012;
     d.cuboid(
         "metal",
         [x - half_width, 0., z - half_height],
@@ -34,7 +34,7 @@ pub(super) fn wall_plate(
         color,
         "b",
     )?;
-    let radius = (half_width.min(half_height) * 0.3).clamp(0.011, 0.018);
+    let radius = (half_width.min(half_height) * 0.3).clamp(0.008, 0.014);
     let (dx, dz) = (
         (half_width - radius * 1.7).max(0.),
         (half_height - radius * 1.7).max(0.),
@@ -70,8 +70,8 @@ pub(super) fn pipe_clip(
     color: V3,
 ) -> Result<(), String> {
     // Drawn heavy: a broad band, thick ears and bolt heads that read from the street.
-    let (band, half) = (radius * 1.3 + 0.004, (radius * 0.75).max(0.036));
-    const EAR: f64 = 0.018;
+    let (band, half) = (radius * 1.26 + 0.003, (radius * 0.65).max(0.03));
+    const EAR: f64 = 0.013;
     d.tube(
         "metal",
         &[[x, y, z - half], [x, y, z + half]],
@@ -89,7 +89,7 @@ pub(super) fn pipe_clip(
             .collect();
         d.face("metal", &ring, [0., 0., hint], color)?;
     }
-    let ear = band + (radius * 1.6).max(0.07);
+    let ear = band + (radius * 1.6).max(0.06);
     for side in [-1., 1.] {
         // The strap back to the wall, then the ear on it.
         let strap = [x + side * band * 0.6, x + side * band];
@@ -113,7 +113,7 @@ pub(super) fn pipe_clip(
             "metal",
             [x + side * (band + ear) / 2., EAR, z],
             [0., 1., 0.],
-            (radius * 0.3).clamp(0.013, 0.02),
+            (radius * 0.3).clamp(0.01, 0.016),
             shade(color, 1.25),
             None,
         )?;
@@ -122,7 +122,7 @@ pub(super) fn pipe_clip(
 }
 
 /// The `[width, height, depth]` of a junction box where none is given.
-const BOX: V3 = [0.18, 0.23, 0.08];
+const BOX: V3 = [0.16, 0.2, 0.075];
 
 /// A lidded steel junction box on the wall, centred on x = 0 with its foot at z = 0: body,
 /// overlapping lid with a bolt at each corner, and `stubs` conduit stubs out of its foot.
@@ -136,15 +136,15 @@ pub(super) fn junction(
     d.cuboid("metal", [-half, 0., 0.], [half, depth, height], color, "b")?;
     let lid = shade(color, 0.88);
     // Drawn heavy: a thick lid lapping well over the body, and bolt heads to match.
-    const LID: f64 = 0.016;
+    const LID: f64 = 0.012;
     d.cuboid(
         "metal",
-        [-half - 0.012, depth, -0.012],
-        [half + 0.012, depth + LID, height + 0.012],
+        [-half - 0.01, depth, -0.01],
+        [half + 0.01, depth + LID, height + 0.01],
         lid,
         "b",
     )?;
-    let bolt = (width.min(height) * 0.08).clamp(0.011, 0.02);
+    let bolt = (width.min(height) * 0.08).clamp(0.008, 0.016);
     for sx in [-1., 1.] {
         for z in [bolt * 2., height - bolt * 2.] {
             fasteners::bolt(
@@ -162,8 +162,8 @@ pub(super) fn junction(
         let x = -half + width * (k as f64 + 0.5) / stubs as f64;
         d.tube(
             "metal",
-            &[[x, depth * 0.5, 0.], [x, depth * 0.5, -0.09]],
-            (width / stubs as f64 * 0.22).clamp(0.014, 0.022),
+            &[[x, depth * 0.5, 0.], [x, depth * 0.5, -0.08]],
+            (width / stubs as f64 * 0.22).clamp(0.011, 0.018),
             shade(color, 0.7),
             8,
         )?;
@@ -172,8 +172,8 @@ pub(super) fn junction(
 }
 
 /// `kowloon/junction-box`: a lidded steel junction box bolted to the wall. Anchor:
-/// bottom-centre on the wall plane. Parameters: `width` (m, 0.05–1, 0.18), `height` (m,
-/// 0.05–1, 0.23), `depth` (m, 0.02–0.4, 0.08), `stubs` (conduit stubs below, 0–4, 2),
+/// bottom-centre on the wall plane. Parameters: `width` (m, 0.05–1, 0.16), `height` (m,
+/// 0.05–1, 0.2), `depth` (m, 0.02–0.4, 0.075), `stubs` (conduit stubs below, 0–4, 2),
 /// `color` (#8d8b80).
 pub(super) fn junction_box(
     name: &str,
@@ -206,7 +206,7 @@ pub(super) fn junction_box(
 /// sign's pole, an air conditioner). Slots: `cable` (tinted per vertex), `metal` (clips and
 /// boxes). Parameters: `span` (m, -60–60, 3), `rise` (m, -30–30, 0), `sag` (m of the longest
 /// run, 0–5, 0.25), `count` (cables in the bundle, 1–12, 1), `spread` (m between them at the
-/// fixings, 0–0.5, 0.055), `radius` (m, 0.002–0.05, 0.013: drawn heavier than a real cable,
+/// fixings, 0–0.5, 0.045), `radius` (m, 0.002–0.05, 0.0075: drawn heavier than a real cable,
 /// which is a hairline from the street), `standoff` (m from the wall,
 /// 0–2, 0.03), `out` (m from the wall at the far end; default `standoff`), `corner` (m,
 /// 0–60, 0: none), `cornerRadius` (m, 0.02–5, 0.25), `boxes` (`none` | `start` | `end` |
@@ -223,8 +223,8 @@ pub(super) fn cable(
     let rise = a.bounded("rise", 0., -30. ..=30.)?;
     let sag = a.bounded("sag", 0.25, 0. ..=5.)?;
     let count = a.integer("count", 1, 1..=12)?;
-    let spread = a.bounded("spread", 0.055, 0. ..=0.5)?;
-    let radius = a.bounded("radius", 0.013, 0.002..=0.05)?;
+    let spread = a.bounded("spread", 0.045, 0. ..=0.5)?;
+    let radius = a.bounded("radius", 0.0075, 0.002..=0.05)?;
     let standoff = a.bounded("standoff", 0.03, 0. ..=2.)?;
     let out = a.optional_number("out")?.unwrap_or(standoff);
     let corner = a.bounded("corner", 0., 0. ..=60.)?;
@@ -331,7 +331,7 @@ pub(super) fn cable(
         }
         let steel = srgb("#77766c");
         // A clip is a block that swallows the bundle: broad enough to read from the street.
-        let clip = (radius * 2.).max(0.026);
+        let clip = (radius * 2.).max(0.018);
         let high = (count - 1) as f64 * spread + clip;
         if clips {
             for (index, s) in knots.iter().enumerate() {
@@ -462,7 +462,7 @@ pub(super) fn roof_clutter(
     let pipework = (pipe_count > 0)
         .then(|| {
             pipes::PipeSystem::new(pipes::Options {
-                radius: 0.038,
+                radius: 0.034,
                 color,
                 sides: 10,
                 variant: "pipe-standard".into(),
@@ -506,7 +506,7 @@ pub(super) fn roof_clutter(
                     d.tube(
                         "metal",
                         &[leg, [leg[0], leg[1], tall + 0.06]],
-                        0.012,
+                        0.009,
                         tint,
                         5,
                     )?;
@@ -651,7 +651,7 @@ pub(super) fn roof_clutter(
                     ]
                 })
                 .collect();
-            d.tube("cable", &path, 0.013, srgb("#24231f"), 6)?;
+            d.tube("cable", &path, 0.0075, srgb("#24231f"), 6)?;
         }
         Ok(())
     })

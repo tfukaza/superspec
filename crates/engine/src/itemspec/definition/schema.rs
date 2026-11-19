@@ -665,6 +665,22 @@ pub struct ArcDefinition {
     /// Named features that follow the arc at `[out, up]`, beside `base` and `top`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rings: Vec<RingDefinition>,
+    /// Bands of an upright outer face set back into the section, where another part is laid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recesses: Vec<ArcRecessDefinition>,
+}
+/// A recess of an arc's section: the part of the upright outer face (an edge of constant `out`
+/// listed upward) between the heights `from` and `to`, set back `depth` into the section.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArcRecessDefinition {
+    pub from: Scalar,
+    pub to: Scalar,
+    pub depth: Scalar,
+    /// Copies along one axis; the index reads as a number.
+    pub repeat: Option<RepeatAxis>,
+    /// The recess (or each copy) is cut only when this is positive.
+    pub when: Option<Scalar>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -712,6 +728,11 @@ pub struct OpeningDefinition {
     /// the piers beside it) with this radius, in two chords of the panel's `front`.
     #[serde(default, skip_serializing_if = "Scalar::is_zero")]
     pub jambs: Scalar,
+    /// A recess cut for another part laid in it (tiles, a plinth): the wall goes on behind
+    /// that part as if it were whole, so the recess reports no `opening-edge` or `sill`, stops
+    /// no zone, and may come within 2 mm of the panel's edge and of other openings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seat: bool,
     /// Copies of the opening along one axis, named `<id>-<i>`; the index reads as a number.
     pub repeat: Option<RepeatAxis>,
     /// The opening (or each copy) is cut only when this is positive.

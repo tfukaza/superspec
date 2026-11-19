@@ -196,20 +196,20 @@ pub fn drying_rack_with(
             "metal",
             [x, 0., z],
             [x, depth, z + 0.04],
-            weighed(weight, 0.025, 0.042),
+            weighed(weight, 0.025, 0.036),
             steel,
         )?;
         frame.bar(
             "metal",
             [x, 0., z - 0.25],
             [x, depth * 0.7, z + 0.02],
-            weighed(weight, 0.018, 0.034),
+            weighed(weight, 0.018, 0.028),
             steel,
         )?;
     }
     // Heavy poles are fewer: two where three thin ones lay.
     let poles = if depth > 0.5 && weight < 1.5 { 3 } else { 2 };
-    let bamboo = weighed(weight, 0.013, 0.021);
+    let bamboo = weighed(weight, 0.013, 0.017);
     for i in 0..poles {
         let y = depth * (0.35 + 0.65 * i as f64 / (poles - 1) as f64);
         d.tube(
@@ -272,7 +272,7 @@ pub fn drying_pole_with(
     d.tube(
         "paint",
         &[[x, 0., z], [x, length, z + length * 0.12]],
-        weighed(weight, 0.014, 0.022),
+        weighed(weight, 0.014, 0.018),
         srgb("#c8b888"),
         6,
     )?;
@@ -284,7 +284,7 @@ pub fn drying_pole_with(
     .tube(
         "metal",
         &[[x, 0., z], [x, 0.06, z + 0.007]],
-        weighed(weight, 0.024, 0.036),
+        weighed(weight, 0.024, 0.031),
         shade(srgb("#a4a9aa"), 0.6),
         6,
     )?;
@@ -342,14 +342,14 @@ pub fn drying_lines_with(
             "metal",
             [x, y, 0.],
             [x, y, 1.9],
-            weighed(weight, 0.04, 0.055),
+            weighed(weight, 0.04, 0.05),
             srgb("#a4a9aa"),
         )?;
         frame.bar(
             "metal",
             [x, y - 0.4, 1.9],
             [x, y + 0.4, 1.9],
-            weighed(weight, 0.03, 0.045),
+            weighed(weight, 0.03, 0.04),
             srgb("#a4a9aa"),
         )?;
     }
@@ -358,7 +358,7 @@ pub fn drying_lines_with(
             "paint",
             [span[0], y + offset, 1.88],
             [span[1], y + offset, 1.88],
-            weighed(weight, 0.008, 0.02),
+            weighed(weight, 0.008, 0.014),
             srgb("#2a2927"),
         )?;
         laundry::washing_with(
@@ -483,7 +483,7 @@ pub fn planned_cage(
     };
     let (runner, runner_pitch, cross_pitch, stay) = if plan.bold {
         (
-            bar * 0.75,
+            bar,
             side_pitch,
             pitch * (0.2 / pitch).ceil().max(1.),
             [0.04, 0.02],
@@ -986,7 +986,7 @@ pub fn meter_bank_with(
             0.13,
             srgb("#d8d8cc"),
         )?;
-        conduit(weighed(weight, 0.011, 0.018), settings)?
+        conduit(weighed(weight, 0.011, 0.0145), settings)?
             .weighted(weight)?
             .run(
                 d,

@@ -33,7 +33,10 @@
         "section": [[0, 0], [0, {"derived": "top"}], ["-thickness", {"derived": "top"}], ["-thickness", "height - 0.22"]],
         "patternAnchor": ["-u0", 0],
         "rings": [{"name": "pavement", "at": [0, 0]},
-                  {"name": "coping", "at": [0, {"derived": "top"}]}]},
+                  {"name": "coping", "at": [0, {"derived": "top"}]}],
+        "recesses": [{"from": 0, "to": {"parameter": "plinth"}, "depth": 0.05, "when": "plinth > 0"},
+                     {"from": "groundHeight + j * storyHeight + 0.06", "to": "groundHeight + j * storyHeight + sill - 0.06", "depth": 0.05,
+                      "repeat": {"name": "j", "count": "floors - 1"}, "when": "tileStrip"}]},
       "slots": {"side": "wall-round"},
       "zones": [{"name": "runoff-coping", "below": "coping", "length": {"parameter": "parapet"}, "u0": {"parameter": "u0"}}]
     },
@@ -52,7 +55,7 @@
       "when": "tileStrip",
       "generator": {"kind": "arc", "radius": {"parameter": "radius"}, "turn": {"parameter": "turn"}, "segments": {"parameter": "segments"},
         "closed": false,
-        "section": [[0, 0], [0.015, 0], [0.015, "sill - 0.12"], [0, "sill - 0.12"]],
+        "section": [[0, 0], [0.01, 0], [0.01, "sill - 0.12"], [0, "sill - 0.12"]],
         "patternAnchor": ["-u0", "-(groundHeight + j * storyHeight + 0.06)"]},
       "placement": {"position": [0, 0, "groundHeight + j * storyHeight + 0.06"]},
       "slots": {"side": "tile"}

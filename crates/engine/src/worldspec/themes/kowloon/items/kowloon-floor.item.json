@@ -61,9 +61,9 @@
     "cageFull": {"type": "boolean", "default": false},
     "cageColor": {"type": "color", "default": "#c9c3b2"},
     "cageRust": {"type": "number", "default": 0.3, "min": 0, "max": 1},
-    "cageBar": {"type": "number", "default": 0.024, "min": 0.004, "max": 0.05, "unit": "m"},
-    "cageRail": {"type": "number", "default": 0.036, "min": 0.008, "max": 0.08, "unit": "m"},
-    "cageSpacing": {"type": "number", "default": 0.19, "min": 0.04, "max": 0.5, "unit": "m"},
+    "cageBar": {"type": "number", "default": 0.018, "min": 0.004, "max": 0.05, "unit": "m"},
+    "cageRail": {"type": "number", "default": 0.028, "min": 0.008, "max": 0.08, "unit": "m"},
+    "cageSpacing": {"type": "number", "default": 0.22, "min": 0.04, "max": 0.5, "unit": "m"},
     "cagePlan": {"type": "grid", "default": [], "choices": ["auto", "plants", "washing", "storage", "mixed", "empty"]},
     "storage": {"type": "number", "default": 0, "min": 0, "max": 1},
     "windowTransom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
@@ -77,7 +77,12 @@
     "banks": "count(spanPlan)",
     "bays": "select(windows, select(banks > 0, banks, max(1, floor((width - edge * 2) / bayWidth))), 0)",
     "start": "(width - bays * bayWidth) / 2",
-    "inset": "(bayWidth - windowWidth) / 2"
+    "inset": "(bayWidth - windowWidth) / 2",
+    "foot": "max(plinth, dado * (level == 0))",
+    "footTop": "select(bays > 0, min(foot, sill - 0.003), foot)",
+    "seatStart": "arris * arrisStart + 0.003",
+    "seatEnd": "width - arris * arrisEnd - 0.003",
+    "footEnd": "select(serviceDoorWidth > 0, serviceDoorAt - serviceDoorWidth / 2 - 0.003, seatEnd)"
   },
   "parts": [
     {
@@ -98,7 +103,28 @@
            "u": {"from": "start", "offset": "cell(doorPlan, 0)"}, "v": {"from": "start", "offset": 0.03}},
           {"id": "serviceDoor", "when": "serviceDoorWidth > 0",
            "width": {"parameter": "serviceDoorWidth"}, "height": {"parameter": "serviceDoorHeight"},
-           "u": {"from": "start", "offset": "serviceDoorAt - serviceDoorWidth / 2"}, "v": {"from": "start", "offset": 0.03}}
+           "u": {"from": "start", "offset": "serviceDoorAt - serviceDoorWidth / 2"}, "v": {"from": "start", "offset": 0.03}},
+          {"id": "tileSeat", "mode": "recess", "depth": 0.05, "seat": true, "repeat": {"name": "i", "count": {"derived": "bays"}},
+           "when": "(foot < 0.055) * select(count(spandrelPlan) > 0, cell(spandrelPlan, i), tileBands) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))",
+           "width": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)", "height": "sill - 0.12",
+           "u": {"from": "start", "offset": "(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2"}, "v": {"from": "start", "offset": 0.06}},
+          {"id": "tileStripSeat", "mode": "recess", "depth": 0.05, "seat": true, "when": "tileStrip * (foot < 0.055) * (bays == 0)",
+           "width": "seatEnd - seatStart", "height": "sill - 0.12",
+           "u": {"from": "start", "offset": {"derived": "seatStart"}}, "v": {"from": "start", "offset": 0.06}},
+          {"id": "tileStartSeat", "mode": "recess", "depth": 0.05, "seat": true,
+           "when": "(foot < 0.055) * tileStart * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, 0), tileBands) * (select(cell(windowPlan, 0) == 0, random(seed, level, 0, 11) < windowChance, cell(windowPlan, 0) >= 2)) * (select(banks > 0, cell(spanPlan, 0, 0), start + 0.12) - 0.003 - seatStart > 0.01)",
+           "width": "select(banks > 0, cell(spanPlan, 0, 0), start + 0.12) - 0.003 - seatStart", "height": "sill - 0.12",
+           "u": {"from": "start", "offset": {"derived": "seatStart"}}, "v": {"from": "start", "offset": 0.06}},
+          {"id": "tileEndSeat", "mode": "recess", "depth": 0.05, "seat": true,
+           "when": "(foot < 0.055) * tileEnd * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, bays - 1), tileBands) * (select(cell(windowPlan, bays - 1) == 0, random(seed, level, bays - 1, 11) < windowChance, cell(windowPlan, bays - 1) >= 2)) * (seatEnd - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12) - 0.003 > 0.01)",
+           "width": "seatEnd - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12) - 0.003", "height": "sill - 0.12",
+           "u": {"from": "start", "offset": "select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12) + 0.003"}, "v": {"from": "start", "offset": 0.06}},
+          {"id": "footSeat", "mode": "recess", "depth": 0.05, "seat": true, "when": "(foot > 0) * (count(doorPlan) < 2) * (footTop > 0.013) * (footEnd - seatStart > 0.01)",
+           "width": "footEnd - seatStart", "height": "footTop - 0.003",
+           "u": {"from": "start", "offset": {"derived": "seatStart"}}, "v": {"from": "start", "offset": 0.003}},
+          {"id": "footEndSeat", "mode": "recess", "depth": 0.05, "seat": true, "when": "(foot > 0) * (count(doorPlan) < 2) * (footTop > 0.013) * (serviceDoorWidth > 0) * (seatEnd - serviceDoorAt - serviceDoorWidth / 2 - 0.003 > 0.01)",
+           "width": "seatEnd - serviceDoorAt - serviceDoorWidth / 2 - 0.003", "height": "footTop - 0.003",
+           "u": {"from": "start", "offset": "serviceDoorAt + serviceDoorWidth / 2 + 0.003"}, "v": {"from": "start", "offset": 0.003}}
         ]
       },
       "slots": {"front": "wall", "edge": "wall", "reveal": "wall"},
@@ -138,23 +164,23 @@
     {
       "id": "dado",
       "when": "(dado > 0) * (level == 0)",
-      "generator": {"kind": "box", "size": ["select(serviceDoorWidth > 0, serviceDoorAt - serviceDoorWidth / 2, width)", 0.015, {"parameter": "dado"}]},
+      "generator": {"kind": "panel", "width": "select(serviceDoorWidth > 0, serviceDoorAt - serviceDoorWidth / 2, width)", "height": {"parameter": "dado"}, "thickness": 0.015},
       "placement": {"position": [0, -0.015, 0]},
-      "slots": {"side": "dado"}
+      "slots": {"front": "dado", "edge": "dado"}
     },
     {
       "id": "dadoEnd",
       "when": "(dado > 0) * (level == 0) * (serviceDoorWidth > 0)",
-      "generator": {"kind": "box", "size": ["width - serviceDoorAt - serviceDoorWidth / 2", 0.015, {"parameter": "dado"}]},
+      "generator": {"kind": "panel", "width": "width - serviceDoorAt - serviceDoorWidth / 2", "height": {"parameter": "dado"}, "thickness": 0.015},
       "placement": {"position": ["serviceDoorAt + serviceDoorWidth / 2", -0.015, 0]},
-      "slots": {"side": "dado"}
+      "slots": {"front": "dado", "edge": "dado"}
     },
     {
       "id": "plinth",
       "when": "plinth > 0",
-      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.018, {"parameter": "plinth"}], "bevel": "min(0.008, plinth / 4)", "bevelAxis": "x"},
+      "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": {"parameter": "plinth"}, "thickness": 0.018, "bevel": "min(0.008, plinth / 4)"},
       "placement": {"position": [0, -0.018, 0]},
-      "slots": {"side": "plinth", "top": "plinth", "bottom": "plinth"}
+      "slots": {"front": "plinth", "edge": "plinth"}
     },
     {
       "id": "aircon",
@@ -164,7 +190,7 @@
         "parameters": {"split": {"choose": [false, true], "by": "select(cell(fixturePlan, i) == 0, random(seed, level, i, 1) >= airconChance, cell(fixturePlan, i) == 3)"},
                        "clearance": {"expr": "select(level == 0, 0.45, 1.6)"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
-      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) + cell(fixtureAt, i, 0)", 0, "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72)"]}
+      "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2) + cell(fixtureAt, i, 0)", "-0.01 * select(count(spandrelPlan) > 0, cell(spandrelPlan, i), tileBands) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))", "sill + select(count(fixtureAt, i) >= 2, cell(fixtureAt, i, 1), -0.72)"]}
     },
     {
       "id": "vent",
@@ -202,30 +228,30 @@
       "id": "tiles",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
       "when": "select(count(spandrelPlan) > 0, cell(spandrelPlan, i), tileBands) * (select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2))",
-      "generator": {"kind": "box", "size": ["select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)", 0.015, "sill - 0.12"]},
-      "placement": {"position": ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, 0.06]},
-      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+      "generator": {"kind": "panel", "width": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)", "height": "sill - 0.12", "thickness": 0.01},
+      "placement": {"position": ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.01, 0.06]},
+      "slots": {"front": "tile", "edge": "tile"}
     },
     {
       "id": "tileStrip",
       "when": "tileStrip",
-      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.015, "sill - 0.12"]},
-      "placement": {"position": [0, -0.015, 0.06]},
-      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+      "generator": {"kind": "panel", "width": {"parameter": "width"}, "height": "sill - 0.12", "thickness": 0.01},
+      "placement": {"position": [0, -0.01, 0.06]},
+      "slots": {"front": "tile", "edge": "tile"}
     },
     {
       "id": "tileStart",
       "when": "tileStart * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, 0), tileBands) * (select(cell(windowPlan, 0) == 0, random(seed, level, 0, 11) < windowChance, cell(windowPlan, 0) >= 2)) * (select(banks > 0, cell(spanPlan, 0, 0), start + 0.12) > 0.02)",
-      "generator": {"kind": "box", "size": ["select(banks > 0, cell(spanPlan, 0, 0), start + 0.12)", 0.015, "sill - 0.12"]},
-      "placement": {"position": [0, -0.015, 0.06]},
-      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+      "generator": {"kind": "panel", "width": "select(banks > 0, cell(spanPlan, 0, 0), start + 0.12)", "height": "sill - 0.12", "thickness": 0.01},
+      "placement": {"position": [0, -0.01, 0.06]},
+      "slots": {"front": "tile", "edge": "tile"}
     },
     {
       "id": "tileEnd",
       "when": "tileEnd * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, bays - 1), tileBands) * (select(cell(windowPlan, bays - 1) == 0, random(seed, level, bays - 1, 11) < windowChance, cell(windowPlan, bays - 1) >= 2)) * (width - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12) > 0.02)",
-      "generator": {"kind": "box", "size": ["width - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", 0.015, "sill - 0.12"]},
-      "placement": {"position": ["select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", -0.015, 0.06]},
-      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+      "generator": {"kind": "panel", "width": "width - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", "height": "sill - 0.12", "thickness": 0.01},
+      "placement": {"position": ["select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", -0.01, 0.06]},
+      "slots": {"front": "tile", "edge": "tile"}
     },
     {
       "id": "cage",
@@ -270,7 +296,7 @@
      "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52))",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52))",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54))"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53)"]]},
     {"name": "repair-inner", "part": "wall", "repeat": {"name": "k", "count": "max(1, floor(width / 2.6))"}, "when": "(random(seed, level, k, 55) < 0.9) * ((k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 < width - 0.6)",
      "points": [["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52)) - 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"], ["min(width - 0.06, (k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.7 + 1.1 * random(seed, level, k, 52)) - 0.05",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"min(sill - 0.05, 0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.4 + 0.5 * random(seed, level, k, 54)) - 0.05"], ["(k + 0.12 + 0.6 * random(seed, level, k, 51)) * 2.6 + 0.05",0,"0.1 + (sill - 0.55) * random(seed, level, k, 53) + 0.05"]]},
-    {"name": "sill", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"]]},
+    {"name": "sill", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.01, "sill - 0.06"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.01, "sill - 0.06"]]},
     {"name": "rust", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",
      "points": [["(select(banks > 0,  (cell(spanPlan,  i,  0) + cell(spanPlan,  i,  1)) / 2,  start + i * bayWidth + bayWidth / 2)) - min((select(banks > 0,  cell(spanPlan,  i,  1) - cell(spanPlan,  i,  0),  windowWidth)) * 0.55,  1.2) / 2 + 0.03 - 0.035", -0.008, "sill - 0.01"], ["(select(banks > 0,  (cell(spanPlan,  i,  0) + cell(spanPlan,  i,  1)) / 2,  start + i * bayWidth + bayWidth / 2)) - min((select(banks > 0,  cell(spanPlan,  i,  1) - cell(spanPlan,  i,  0),  windowWidth)) * 0.55,  1.2) / 2 + 0.03 + 0.035", -0.008, "sill - 0.01"]], "zone": {"length": "(sill - 0.01) - (sill - 0.4 - 0.4 * random(seed, level, i, 31))"}},
     {"name": "rust", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",

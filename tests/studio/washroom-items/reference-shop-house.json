@@ -46,8 +46,8 @@
     [[], ["window", "window"], ["window", "window"], ["window", "window"]]
   ],
   "/fixtures": "Rusty cages holding old window units on storey 2's left and middle banks and storey 3's middle one; split condensers at window height over the lower right corner of the wide bank. fixtureAtPlans moves a bank's fixture: [m along the bank from its centre, m of its foot above the sill].",
-  "/cages": "Welded of few heavy bars painted a rusty off-white, drawn bolder than life so they read from the street: bar and frame-rail thickness and bar spacing in m; rust is the most the seed mixes into the paint.",
-  "cageColor": "#c9c3b2", "cageRust": 0.3, "cageBar": 0.024, "cageRail": 0.036, "cageSpacing": 0.19,
+  "/cages": "Welded of few bold bars painted a rusty off-white, wide apart and drawn a little heavier than life so they read from the street: bar and frame-rail thickness and bar spacing in m; rust is the most the seed mixes into the paint.",
+  "cageColor": "#c9c3b2", "cageRust": 0.3, "cageBar": 0.018, "cageRail": 0.028, "cageSpacing": 0.22,
   "/tank": "A ribbed galvanised water tank about 2.4 m tall right of the stair hut: shell radius and height, stand height, ribs and conical lid rise.",
   "tankRadius": 0.62, "tankHeight": 1.4, "tankStand": 0.72, "tankRibs": 7, "tankLid": 0.24,
   "fixturesPlans": [
@@ -83,7 +83,7 @@
   "boardTexts": ["永昌藥行", "興隆五金", "電器修理"],
   "boardPlans": [
     [[-1.03, 4.72, 0.94, 2.82, 0, 0, 0, 0.85, 1.18, -0.08, 0]],
-    [[0.02, 6.05, 0.94, 3.33, 1, 0, 53.13, 0.78, 0, 0, 1], [-0.02, 4.95, 1.95, 0.64, 0, 1, 0, 0.83, -0.12, 2.05, 2]],
+    [[0.02, 6.05, 0.94, 3.33, 1, 0, 53.13, 0.78, 0, 0, 1], [-0.02, 4.95, 1.95, 0.64, 0, 1, 0, 0.83, -0.12, 2.05, 2, 0, 0, 0, 1]],
     [],
     []
   ]
