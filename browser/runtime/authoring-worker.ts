@@ -217,29 +217,45 @@ async function handle(message: AuthoringMessage): Promise<void> {
     }
     if (action === "bake-project-fields" && "meshes" in request) {
       // The CPU-only fields of a scene's hybrid materials, one receiver at a time; a mesh that fails does not stop the others.
-      for (const name of JSON.parse(active.project_library_assets(JSON.stringify(request.project))) as string[]) {
+      const started = performance.now();
+      // The project as text, once: the list of its library images and (unless planes are bound to it) the bakes read it.
+      const stated = JSON.stringify(request.project);
+      for (const name of JSON.parse(active.project_library_assets(stated)) as string[]) {
         images[name] = await libraryAsset(name);
         active.set_asset(name, images[name]);
       }
       // The occluder service's planes these meshes' materials read, bound for the field bakes below.
       const occlusion = request.occlusion ? await occluded(active, request.project as unknown as Record<string, unknown>, requestId, request.meshes.map(entry => entry.mesh)) : undefined;
-      const encodedProject = occlusion?.encoded ?? JSON.stringify(request.project);
+      const encodedProject = occlusion?.encoded ?? stated;
+      const readyAt = performance.now();
       const projectFields: NonNullable<AuthoringResult["projectFields"]> = [];
       const transfer: ArrayBufferLike[] = [];
-      for (const { mesh, names } of request.meshes) {
-        const reply = JSON.parse(active.bake_project_fields(encodedProject, requestId, mesh, JSON.stringify(names)));
-        if (!reply.success) { projectFields.push({ mesh, error: (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n") }); continue; }
-        const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
-        transfer.push(...fields.map(field => field.buffer));
-        projectFields.push({ mesh, width: reply.width, height: reply.height, fields, ...(occlusion?.keys.has(mesh) ? { planes: occlusion.keys.get(mesh) } : {}) });
-      }
-      self.postMessage({ requestId, projectFields, ...(occlusion?.report ? { occlusion: occlusion.report } : {}) }, { transfer: transfer as Transferable[] });
+      // The project is parsed, its items placed and its models composed once for all the meshes. A project that cannot
+      // be prepared fails every mesh with the reason, as a bake of each would.
+      const messages = (reply: { diagnostics?: { message: string }[] }) => (reply.diagnostics ?? []).map(finding => finding.message).join("\n");
+      const opened = JSON.parse(active.open_project_fields(encodedProject, requestId));
+      const openedAt = performance.now();
+      try {
+        for (const { mesh, names } of request.meshes) {
+          const reply = opened.success ? JSON.parse(active.bake_open_project_fields(requestId, mesh, JSON.stringify(names))) : opened;
+          if (!reply.success) { projectFields.push({ mesh, error: messages(reply) }); continue; }
+          const fields = Array.from({ length: reply.fields as number }, (_, index) => active.field_texels(index));
+          transfer.push(...fields.map(field => field.buffer));
+          projectFields.push({ mesh, width: reply.width, height: reply.height, fields, ...(occlusion?.keys.has(mesh) ? { planes: occlusion.keys.get(mesh) } : {}) });
+        }
+      } finally { active.close_project_fields(); }
+      // The worker's steps, milliseconds: the project as text with its library images (and planes), the project
+      // prepared by the engine, and the meshes' bakes.
+      const timings = { readyMs: Math.round(readyAt - started), openMs: Math.round(openedAt - readyAt), bakeMs: Math.round(performance.now() - openedAt), meshes: request.meshes.length };
+      self.postMessage({ requestId, projectFields, timings, ...(occlusion?.report ? { occlusion: occlusion.report } : {}) }, { transfer: transfer as Transferable[] });
       return;
     }
     const exporting = action === "export-project";
     const shading = action === "shade-project";
     const whole = exporting || shading || action === "preview-project";
+    const started = performance.now();
     let encoded = whole && "project" in request ? JSON.stringify(request.project) : JSON.stringify(request);
+    const encodedAt = performance.now();
     // A shader preview compiles recipes but reads no image.
     const catalog = shading ? [] : JSON.parse(whole ? active.project_library_assets(encoded) : active.library_assets(encoded)) as string[];
     for (const name of catalog) {
@@ -272,8 +288,11 @@ async function handle(message: AuthoringMessage): Promise<void> {
       self.postMessage({ requestId, download: bytes.buffer, ...(occlusion ? { occlusion } : {}) }, { transfer: [bytes.buffer] });
       return;
     }
-    const result = JSON.parse(shading ? active.shade_project(encoded, requestId)
-      : await distributed(active, images, () => whole ? active.preview_project(encoded, requestId) : active.build(encoded, requestId)));
+    const builtAt = performance.now();
+    const answer = shading ? active.shade_project(encoded, requestId)
+      : await distributed(active, images, () => whole ? active.preview_project(encoded, requestId) : active.build(encoded, requestId));
+    const answeredAt = performance.now();
+    const result = JSON.parse(answer);
     if (!result.success) {
       self.postMessage({ requestId, diagnostics: result.diagnostics });
       return;
@@ -282,10 +301,15 @@ async function handle(message: AuthoringMessage): Promise<void> {
     if (shading && "layouts" in request && request.layouts) {
       // The receivers' atlases as the CPU bake lays them out, for a GPU bake in UV space. A scene the layout refuses
       // (a degenerate receiver) is still shown per pixel: the reason travels with the result.
+      const parsedAt = performance.now();
       const reply = JSON.parse(active.layout_project(encoded, requestId));
       if (reply.success) {
         const records = active.layout_records();
-        self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, layouts: { ...reply.layouts, records } }, { transfer: [bytes.buffer, records.buffer] });
+        // The worker's share of a scene's opening, milliseconds: the project as text, the engine's description of it
+        // (the text read by the engine included), that answer read back, and the layouts.
+        const timings = { encodeMs: Math.round(encodedAt - started), describeMs: Math.round(answeredAt - builtAt), readMs: Math.round(parsedAt - answeredAt),
+          layoutMs: Math.round(performance.now() - parsedAt), projectBytes: encoded.length, answerBytes: answer.length };
+        self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, layouts: { ...reply.layouts, records }, timings }, { transfer: [bytes.buffer, records.buffer] });
         return;
       }
       result.metadata.layoutError = (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n");

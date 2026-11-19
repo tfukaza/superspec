@@ -5,7 +5,7 @@ import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
 import { ATLAS_MAPPING_FRAGMENT, ATLAS_NORMAL_FRAGMENT, ATLAS_VERTEX, LATTICE_MAPPING_FRAGMENT, MAX_TILES, PLANE_VALUES, STACK_COMPOSE_FRAGMENT, TILE_CELLS, TILE_START,
   atlasFragment, attachmentReads, intrinsicTileFragment, latticeTiles, outputCpuFields, outputIntrinsic, outputReads, planeFragment, programLayout,
   type AtlasAttachment, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
-import { BakeGraph, type DrawStep, type GraphInstance, type NodeOp, type NodeSpec, type TargetSpec } from "./bake-graph.ts";
+import { BakeGraph, type BandWork, type DrawStep, type GraphInstance, type NodeOp, type NodeSpec, type TargetSpec } from "./bake-graph.ts";
 
 /**
  * GPU preview bake: a MaterialSpec program's shader (`Program::shader`, see shade.ts) drawn over a
@@ -23,10 +23,11 @@ import { BakeGraph, type DrawStep, type GraphInstance, type NodeOp, type NodeSpe
  */
 export const GPU_PREVIEW_PROFILE = "gpu-preview";
 /**
- * GPU memory the baked maps of one scene may take, mips included. It is both allowances of the scene view: the maps
- * on screen (scene-bake.ts refuses a mesh beyond it, which then stays on its per-pixel look) and the maps the pass
+ * GPU memory the baked maps of one scene may take, mips included. It is the allowance of the scene view: for the maps
+ * on screen (scene-bake.ts refuses a mesh beyond it, which then stays on its per-pixel look), for the maps the pass
  * graph keeps after their last user (`GraphLimits.idleBytes`), so a scene that fits on screen is also kept whole while
- * a control is dragged or another scene is shown, and a second idle scene pushes the first one's oldest maps out.
+ * a control is dragged, and for both together (`GraphLimits.totalBytes`): besides the maps on screen the graph keeps
+ * what still fits (the textures only other passes read, the scene shown before), the oldest dropped first.
  * Measured on the item washroom (115 receivers, 736 textures, 128 texels per meter, real GPU): the maps on screen take
  * 39.4 MiB at 256 px and 71.2 MiB at 512 px; after a wall drag and release the graph holds 853 textures, 62.5 and
  * 129.4 MiB (117 idle, 23.2 and 59.7 MiB). The old count of 96 idle nodes kept under a seventh of the scene's textures.
@@ -42,6 +43,8 @@ function sceneMapMebibytes(): number {
  * its size (a 16 by 16 map with mips is 1.4 KiB of texels).
  */
 export const NODE_FLOOR_BYTES = 16 * 1024;
+/** Attachments of an atlas bake that only its normals pass reads. */
+const INTERMEDIATE_ATTACHMENTS: ReadonlySet<string> = new Set(["height", "offset"]);
 /** Bumped when the bake's output for the same inputs changes; part of every cache key. */
 const GPU_PREVIEW_VERSION = 1;
 
@@ -132,8 +135,9 @@ export interface LiveArgumentOperation { id: string; arguments: Record<string, {
  * One receiver's atlas bake: the nodes of its pass graph (bake-graph.ts) by name. The evaluate pass's textures are one
  * node per attachment of the program's layout (`base`, `properties`, `height`, and by program `emissive`, `offset`,
  * `live0`...; see `AtlasProgramLayout`), and `normal` is the normals pass's, which reads `height` (and `offset`). Every
- * node stays materialized, so a later pass can read it, and is shared with any other bake that wants the same texels.
- * `key` names the whole bake (`GpuBaker.atlasKey`). The maps hold one use of each node until `releaseAtlasMaps`.
+ * node is shared with any other bake that wants the same texels. `key` names the whole bake (`GpuBaker.atlasKey`).
+ * The maps hold one use of each node a viewer shows until `releaseAtlasMaps`; the nodes only other passes read
+ * (`height`, `offset`, a layered slot's planes) are the graph's to keep (`GpuBaker.keepIntermediates`).
  */
 export interface AtlasMaps {
   profile: typeof GPU_PREVIEW_PROFILE;
@@ -145,10 +149,7 @@ export interface AtlasMaps {
   baseColor: THREE.Texture;
   /** Packed properties: R=1, G=roughness, B=metalness. */
   properties: THREE.Texture;
-  /** Height in meters (with the program's `receiver_normal` output beside it when it has one). */
-  heightMap: THREE.Texture;
   emissive?: THREE.Texture;
-  offset?: THREE.Texture;
   normal: THREE.Texture;
   /** Live renderer argument textures by the identity `layout.liveOperations` names them with. */
   live: Record<string, THREE.Texture>;
@@ -430,6 +431,25 @@ export interface BakeOptions {
 }
 
 const yieldToBrowser = (): Promise<void> => new Promise(done => setTimeout(done, 0));
+
+/**
+ * Runs `callback` in a task of its own as soon as the browser has had a turn (its input, its frames). Not a timer:
+ * timers set from timers wait at least 4 ms each once they are a few deep, which a loop of awaited timers always is.
+ */
+const nextTurn = (() => {
+  if (typeof MessageChannel === "undefined") return (callback: () => void): void => { setTimeout(callback, 0); };
+  const channel = new MessageChannel(), waiting: (() => void)[] = [];
+  channel.port1.onmessage = () => { waiting.shift()?.(); };
+  return (callback: () => void): void => { waiting.push(callback); channel.port2.postMessage(0); };
+})();
+/** A band's draws are waited for at most this long before the next band is issued anyway. */
+const BAND_WAIT_MS = 250;
+/** The GPU is asked every turn of the browser for this long after a band, before it is asked by timer. */
+const BAND_SPIN_MS = 3;
+/** The time a band should take the GPU: bands are sized to it from the speed the GPU has shown for the program. */
+const BAND_TARGET_MS = 16;
+/** The most texels in a band, however fast the GPU: a 2048 px square. */
+const BAND_TEXELS_MAX = 1 << 22;
 
 /** A bake whose WebGL context went away under it: it ends without a result, like one a newer edit cancelled. */
 class Abandoned extends Error {}
@@ -877,6 +897,7 @@ export class GpuBaker {
    * and otherwise by its inputs, and a program without relief has the flat normal, drawn once per size.
    */
   private async bakeNow(shading: MaterialShading, uniforms: Uniforms, domain: BakeDomain, options: BakeOptions, holds: object[]): Promise<GpuBake | null> {
+    // (A swatch keeps the fixed bands: one bake at a time is on screen, and its first look is a small one.)
     const { measure = false, bandTexels = BAND_TEXELS, fields = {} } = options;
     const reason = this.unavailable();
     if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
@@ -1012,7 +1033,7 @@ export class GpuBaker {
     generation: () => this.generation,
     mips: textures => this.mips(textures),
     settle: target => this.settle(target),
-    yield: yieldToBrowser,
+    yield: issued => this.afterBand(issued),
     batch: draws => {
       // The renderer's state is saved once for the band and restored before the browser's next turn: the viewer's own
       // frames render with it in between.
@@ -1024,10 +1045,64 @@ export class GpuBaker {
     // A scene of items has a receiver per part and face group (the item washroom: 115 receivers, 736 nodes, most of
     // them small). While an item control is dragged the scene is shown per pixel and every node is idle; they must
     // all still be there on release. What bounds them is memory alone, and the same memory that bounds the maps on
-    // screen (`SCENE_MAP_BYTES`): a scene that may be displayed may also be kept whole while it is not.
-  }, { idleBytes: SCENE_MAP_BYTES, nodeFloorBytes: NODE_FLOOR_BYTES });
+    // screen (`SCENE_MAP_BYTES`): a scene that may be displayed may also be kept whole while it is not. The same
+    // number bounds the two together: the maps on screen come first, and what is kept besides them (a scene's
+    // intermediates, the scene before it) is what still fits, so the allowance is what the bakes take of the GPU.
+  }, { idleBytes: SCENE_MAP_BYTES, nodeFloorBytes: NODE_FLOOR_BYTES, totalBytes: SCENE_MAP_BYTES });
   /** Whether `renderInto` is called from the graph's batch, which saves and restores the renderer's state around it. */
   private batching = false;
+
+  /**
+   * How a bake draws a large node: in bands of rows, with the browser given a turn between them, so no single draw
+   * keeps the GPU longer than its watchdog allows or the viewer's frames waiting.
+   *
+   * `gpu` (the default) paces the bands by the GPU: the next band is issued when the GPU has executed the one before
+   * (a fence, polled each turn), so the GPU is never more than a band behind. A scene's bakes (atlases and layered
+   * slots) also size their bands by it: how long a band took says how many texels of that program (`NodeOp.pace`) the
+   * GPU draws in `BAND_TARGET_MS`. A program's bands start at `BAND_TEXELS` and take that many texels from then on
+   * (up to `BAND_TEXELS_MAX`), so a GPU that is fast at it draws a whole atlas at once and a slow one keeps the small
+   * bands. The time measured includes the wait for the fence, so the speed is never overstated.
+   *
+   * `timer` is the pace before this: a zero timer between bands of `BAND_TEXELS`, which the browser stretches to 4 ms
+   * in a loop whatever the GPU is doing (most of a large scene's bake time on a fast GPU). `?bakepace=timer` in the
+   * viewer, for comparisons, and where the context has no fences.
+   */
+  bandPacing: "gpu" | "timer" = "gpu";
+  /** A fixed number of texels per band for every program, when set (`?bakeband=<texels>` in the viewer, for measurements). */
+  bandTexels?: number;
+  /** Texels a millisecond the GPU has shown for each program it drew in bands, by `NodeOp.pace`. */
+  private readonly bandRates = new Map<string, number>();
+
+  /** Texels per band for a node, by what the GPU has shown for its operation's program. */
+  private bandTexelsFor(spec: NodeSpec): number {
+    if (this.bandTexels !== undefined) return this.bandTexels;
+    const rate = this.bandPacing === "gpu" ? this.bandRates.get(spec.op.pace ?? spec.op.label) : undefined;
+    return rate === undefined ? BAND_TEXELS : Math.min(BAND_TEXELS_MAX, Math.max(BAND_TEXELS, Math.floor(rate * BAND_TARGET_MS)));
+  }
+
+  private afterBand(issued: BandWork[]): Promise<void> {
+    if (this.bandPacing === "timer") return yieldToBrowser();
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    const sync = typeof gl.fenceSync === "function" && !gl.isContextLost() ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
+    if (!sync) return yieldToBrowser();
+    gl.flush();
+    return new Promise(done => {
+      const started = performance.now();
+      const poll = (): void => {
+        const waited = performance.now() - started;
+        if (!this.lost && !gl.isContextLost() && waited < BAND_WAIT_MS && gl.clientWaitSync(sync, 0, 0) === gl.TIMEOUT_EXPIRED) {
+          // Asked again every turn at first (a fast GPU answers within a few), then at a timer's pace, not in a spin.
+          if (waited < BAND_SPIN_MS) nextTurn(poll); else setTimeout(poll, 1);
+          return;
+        }
+        gl.deleteSync(sync);
+        // What the band's operations drew in that time (each as if it had the GPU to itself: never too fast).
+        for (const { op, texels } of issued) this.bandRates.set(op.pace ?? op.label, texels / Math.max(waited, 0.05));
+        done();
+      };
+      nextTurn(poll);
+    });
+  }
 
   /** Forces the GPU to finish what was drawn into a target (draw calls return before they run): one texel is read from it. */
   private settle(target: THREE.WebGLRenderTarget): void {
@@ -1171,6 +1246,15 @@ export class GpuBaker {
   nodeKeys = true;
 
   /**
+   * Whether a scene bake's maps hold every texture of its pass graph. Off (the default), they hold what a viewer shows
+   * (base color, properties, normal, emissive, live arguments); the textures only other passes read (the height and
+   * offset the normal is made from, a layered slot's planes and tiles) are the graph's to keep while its memory allows
+   * (`NodeSpec.transient`), which is most of a layered scene's memory. On (`?bakekeep=all` in the viewer), every
+   * texture stays in use for as long as its mesh is on screen, as before; for comparisons.
+   */
+  keepIntermediates = false;
+
+  /**
    * The key of an INTRINSIC bake of a program: the program and its own inputs alone (source, parameter and seed values,
    * images, CPU fields) over `domain`, a rectangle of surface coordinates named by the caller. No receiver and no atlas
    * are in it, so every receiver whose mapping nodes read the intrinsic node (`mappingOp`) shares one texture, and a
@@ -1303,7 +1387,7 @@ export class GpuBaker {
   private atlasEvaluateOp(shading: MaterialShading, layout: AtlasProgramLayout, geometry: THREE.BufferGeometry, bind: () => Uniforms, holds: object[]): NodeOp {
     let pass: Pass | undefined, bound: Uniforms | undefined;
     return {
-      label: "evaluate",
+      label: "evaluate", pace: atlasPassKey(shading.shader, layout),
       prepare: async () => { pass = await this.atlasPass(shading.shader, layout, this.compileTarget()); this.hold(pass, holds); },
       draw: ({ node, output, rows }) => {
         // Assigned at every draw: another bake may have used the program since the last band.
@@ -1349,8 +1433,10 @@ export class GpuBaker {
   private atlasNodes(shading: MaterialShading, layout: AtlasProgramLayout, atlas: { layout: AtlasLayout; geometry: THREE.BufferGeometry },
     keyOf: (attachment: AtlasAttachment) => string, evaluate: NodeOp): NodeSpec[] {
     const { width, height } = atlas.layout;
+    // The height and the offset are read by the normals pass alone: nothing shows them.
     const specs: NodeSpec[] = layout.attachments.map((name, output) =>
-      ({ id: name, key: keyOf(name), target: GpuBaker.atlasTarget(name, width, height, layout), op: evaluate, output }));
+      ({ id: name, key: keyOf(name), target: GpuBaker.atlasTarget(name, width, height, layout), op: evaluate, output,
+        ...(this.keepIntermediates || !INTERMEDIATE_ATTACHMENTS.has(name) ? {} : { transient: true }) }));
     const bend = layout.attachments.includes("offset");
     const flat = !shading.shader.outputs.includes("height") && !layout.orient && !bend;
     const target = GpuBaker.atlasTarget("normal", width, height, layout);
@@ -1382,7 +1468,7 @@ export class GpuBaker {
 
   private async bakeAtlasNow(shading: MaterialShading, uniforms: Uniforms, atlas: AtlasBakeInput,
     previous: AtlasMaps | undefined, options: AtlasBakeOptions, holds: object[]): Promise<{ maps: AtlasMaps; timings: AtlasBakeTimings } | null> {
-    const { measure = false, bandTexels = BAND_TEXELS, fields = {} } = options;
+    const { measure = false, bandTexels = (spec: NodeSpec) => this.bandTexelsFor(spec), fields = {} } = options;
     const reason = this.unavailable();
     if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
     const layout = atlas.program ?? this.atlasProgram(shading);
@@ -1429,8 +1515,7 @@ export class GpuBaker {
     const live: Record<string, THREE.Texture> = {};
     for (const name of layout.attachments) if (name.startsWith("live")) live[`gpu-live-${name.slice(4)}`] = nodes.texture(name)!;
     const maps: AtlasMaps = { profile: GPU_PREVIEW_PROFILE, key, width, height, layout, nodes, baseColor: nodes.texture("base")!,
-      properties: nodes.texture("properties")!, heightMap: nodes.texture("height")!, emissive: nodes.texture("emissive"), offset: nodes.texture("offset"),
-      normal: nodes.texture("normal")!, live };
+      properties: nodes.texture("properties")!, emissive: nodes.texture("emissive"), normal: nodes.texture("normal")!, live };
     const { timings } = result;
     return { maps, timings: { compile: hadPass ? 0 : timings.prepare, evaluate: timings.draw.evaluate ?? 0, normals: timings.draw.normals ?? 0, mips: timings.mips,
       total: timings.total, bands: result.bands, drawn: result.drawn, reused: result.reused, units: { bake: bakeUnits, limit: unitLimit } } };
@@ -1551,7 +1636,7 @@ export class GpuBaker {
 
   private async bakeStackNow(base: MaterialShading, uniforms: Uniforms, stack: StackInput, atlas: AtlasBakeInput,
     previous: AtlasMaps | undefined, options: AtlasBakeOptions, holds: object[]): Promise<{ maps: AtlasMaps; timings: AtlasBakeTimings } | null> {
-    const { measure = false, bandTexels = BAND_TEXELS, fields = {} } = options;
+    const { measure = false, bandTexels = (spec: NodeSpec) => this.bandTexelsFor(spec), fields = {} } = options;
     const reason = this.unavailable();
     if (reason) throw new Error(`GPU preview unavailable: ${reason}.`);
     const composite = atlas.program ?? this.stackProgram(base, stack);
@@ -1681,6 +1766,11 @@ export class GpuBaker {
     const defaults: NodeSpec[] = [...fallbacks].map(channel => ({ id: `fallback/${channel}`, key: `stack-fallback:1:${channel}`,
       target: GpuBaker.planeTarget(channel, width, height), op: this.fillOp("fallback", ...(fills[channel] ?? [0, 0, 0])) }));
     const specs = [...before, ...defaults, ...after];
+    // The planes, tiles and fallbacks are read by the composition and the normals pass alone: nothing shows them.
+    if (!this.keepIntermediates) {
+      const shown = new Set<string>(["base", "properties", "emissive", "normal", ...live]);
+      for (const spec of specs) if (!shown.has(spec.id)) spec.transient = true;
+    }
     const hadPasses = passKeys.every(key => this.planePasses.has(key));
     const signature = signatures.join("|");
     const result = await this.graph.realize(specs, previous?.nodes, {
@@ -1694,8 +1784,8 @@ export class GpuBaker {
     const liveTextures: Record<string, THREE.Texture> = {};
     for (const name of live) liveTextures[`gpu-live-${name.slice(4)}`] = nodes.texture(name)!;
     const maps: AtlasMaps = { profile: GPU_PREVIEW_PROFILE, key: `stack:${hash(signature)}:${composite.key}:${atlas.layout.key}`, width, height, layout: composite, nodes,
-      baseColor: nodes.texture("base")!, properties: nodes.texture("properties")!, heightMap: nodes.texture(heightId)!,
-      emissive: emissive ? nodes.texture("emissive") : undefined, offset: offset ? nodes.texture(offset) : undefined, normal: nodes.texture("normal")!, live: liveTextures };
+      baseColor: nodes.texture("base")!, properties: nodes.texture("properties")!,
+      emissive: emissive ? nodes.texture("emissive") : undefined, normal: nodes.texture("normal")!, live: liveTextures };
     const { timings } = result;
     const evaluate = ["base", "layer", "tile", "lattice", "compose", "fallback"].reduce((sum, label) => sum + (timings.draw[label] ?? 0), 0);
     return { maps, timings: { compile: hadPasses ? 0 : timings.prepare, evaluate, normals: timings.draw.normals ?? 0, mips: timings.mips,
@@ -1715,7 +1805,7 @@ export class GpuBaker {
   private stackEvaluateOp(label: string, key: string, fragment: string, geometry: THREE.BufferGeometry, bind: () => Uniforms, holds: object[], below: string[]): NodeOp {
     let pass: Pass | undefined, bound: Uniforms | undefined;
     return {
-      label,
+      label, pace: key,
       prepare: async () => { pass = await this.planePass(key, ATLAS_VERTEX, fragment, this.atlasIdle); this.hold(pass, holds); },
       draw: ({ node, output, rows, inputs }) => {
         // Assigned at every draw: another bake may have used the program since the last band.
@@ -1734,7 +1824,7 @@ export class GpuBaker {
   private tileOp(key: string, fragment: string, origin: [number, number], step: number, bind: () => Uniforms, holds: object[]): NodeOp {
     let pass: Pass | undefined, bound: Uniforms | undefined;
     return {
-      label: "tile",
+      label: "tile", pace: key,
       prepare: async () => { pass = await this.planePass(key, VERTEX, fragment, this.geometry); this.hold(pass, holds); },
       draw: ({ node, output, rows }) => {
         const uniform = pass!.material.uniforms;

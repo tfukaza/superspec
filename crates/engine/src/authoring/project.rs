@@ -337,10 +337,11 @@ impl Session {
                     .map(|mesh| mesh.id.clone())
                     .collect();
                 // Contacts with the rest of the scene become `contact` features, as in scene projects.
+                let touching = ContactScene::new(&base);
                 request.receivers = receivers(&base, &ids, &transforms)
                     .into_iter()
                     .map(|mut receiver| {
-                        receiver.contacts = contacts(&base, &receiver);
+                        receiver.contacts = touching.contacts(&base, &receiver);
                         receiver
                     })
                     .collect();
@@ -630,6 +631,8 @@ impl Session {
         let mut claimed = BTreeSet::new();
         let mut materials = serde_json::Map::new();
         let mut distributed = None;
+        // Made for the first receiver that asks, and used by every one after it.
+        let touching = std::cell::OnceCell::new();
         for assignment in &project.materials {
             if !valid_identity(&assignment.id) || !identities.insert(assignment.id.as_str()) {
                 return Err(fail(format!(
@@ -668,7 +671,9 @@ impl Session {
                 receivers(&scene, &ids, &transforms)
                     .into_iter()
                     .map(|mut receiver| {
-                        receiver.contacts = contacts(&scene, &receiver);
+                        receiver.contacts = touching
+                            .get_or_init(|| ContactScene::new(&scene))
+                            .contacts(&scene, &receiver);
                         receiver
                     })
                     .collect(),
@@ -721,15 +726,64 @@ pub(super) fn material_request(
     source: &str,
     receivers: Vec<Receiver>,
 ) -> Request {
+    // Features and anchors are part of a receiver's layout, which is also asked for one
+    // receiver at a time (`project_layouts`), so every mesh's are passed along.
+    request_with(
+        project,
+        assignment,
+        source,
+        receivers,
+        project.features.clone(),
+        project.anchors.clone(),
+    )
+}
+
+/// [`material_request`] over one receiver alone, with that receiver's named features and
+/// pattern anchor and no other mesh's: a bake or a layout reads them by the receiver's own
+/// identity, so the request describes the same bake. A host that bakes a scene's receivers one
+/// at a time (field bakes) would otherwise copy every mesh's features for each of them.
+pub(super) fn receiver_request(
+    project: &Project,
+    assignment: &MaterialAssignment,
+    source: &str,
+    receiver: Receiver,
+) -> Request {
+    let features = project
+        .features
+        .get_key_value(&receiver.id)
+        .map(|(id, features)| (id.clone(), features.clone()))
+        .into_iter()
+        .collect();
+    let anchors = project
+        .anchors
+        .get_key_value(&receiver.id)
+        .map(|(id, anchor)| (id.clone(), *anchor))
+        .into_iter()
+        .collect();
+    request_with(
+        project,
+        assignment,
+        source,
+        vec![receiver],
+        features,
+        anchors,
+    )
+}
+
+fn request_with(
+    project: &Project,
+    assignment: &MaterialAssignment,
+    source: &str,
+    receivers: Vec<Receiver>,
+    features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
+    anchors: BTreeMap<String, super::Anchor>,
+) -> Request {
     // What the project binds to these receivers: their planes and named features.
     let of = |receiver: &Receiver| receiver.id.clone();
     let planes: BTreeMap<_, _> = receivers
         .iter()
         .filter_map(|receiver| Some((of(receiver), project.planes.get(&receiver.id)?.clone())))
         .collect();
-    // Features and anchors are part of a receiver's layout, which is also asked for one
-    // receiver at a time (`project_layouts`), so every mesh's are passed along.
-    let features = project.features.clone();
     Request {
         kind: "material".into(),
         entry: assignment.entry.clone(),
@@ -749,7 +803,7 @@ pub(super) fn material_request(
         profile: project.profile,
         texel_density: project.texel_density,
         receivers,
-        anchors: project.anchors.clone(),
+        anchors,
         materials: if planes.is_empty() {
             BTreeMap::new()
         } else {
@@ -960,6 +1014,8 @@ impl Session {
             .collect();
         let mut materials = serde_json::Map::new();
         let mut meshes = serde_json::Map::new();
+        // Made for the first receiver whose material queries its features.
+        let touching = std::cell::OnceCell::new();
         for assignment in &project.materials {
             let source = project.modules.get(&assignment.entry).ok_or_else(|| {
                 fail(format!(
@@ -1064,7 +1120,9 @@ impl Session {
                     }
                 }
                 if wants_features || layer_queries.iter().any(|(derived, _, _)| *derived) {
-                    receiver.contacts = contacts(&scene, &receiver);
+                    receiver.contacts = touching
+                        .get_or_init(|| ContactScene::new(&scene))
+                        .contacts(&scene, &receiver);
                 }
                 let named = project.features.get(&receiver.id).map(Vec::as_slice);
                 let features = if wants_features {
@@ -1170,47 +1228,96 @@ fn closest_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f
     at(vb * denominator, vc * denominator)
 }
 
-/// Crease and rim edges of `receiver` that lie on another visible mesh of `scene`: both ends and
-/// the midpoint within [`CONTACT_TOLERANCE`] of its triangles. A wall's base on a slab or a
-/// crate's bottom edges on the ground are contacts.
-pub(super) fn contacts(scene: &Scene, receiver: &Receiver) -> Vec<super::Contact> {
-    let tolerance = CONTACT_TOLERANCE;
-    let others: Vec<_> = scene
-        .manifest
-        .meshes
-        .iter()
-        .filter(|mesh| mesh.visible && mesh.id != receiver.id)
-        .collect();
-    let point = |index: usize| -> [f64; 3] {
-        std::array::from_fn(|axis| f64::from(scene.positions[index * 3 + axis]))
-    };
-    let touches = |p: [f64; 3]| {
-        others.iter().any(|mesh| {
-            let [low, high] = mesh.bounds;
-            let outside = (0..3).any(|i| p[i] < low[i] - tolerance || p[i] > high[i] + tolerance);
-            !outside
-                && scene.indices[mesh.index_start..mesh.index_start + mesh.index_count]
+/// A scene prepared for finding the contacts of its receivers ([`ContactScene::contacts`]): the
+/// bounds of every triangle of its visible meshes, so a point is measured only against the
+/// triangles it can touch. Measuring every edge end of every receiver against every triangle
+/// of the meshes near it was most of the time a scene of many receivers took to describe.
+pub(super) struct ContactScene {
+    /// Each visible mesh, by its place in the scene's manifest, with its triangles' bounds
+    /// (low corner, then high) in index order.
+    meshes: Vec<(usize, Vec<[f32; 6]>)>,
+}
+
+impl ContactScene {
+    pub(super) fn new(scene: &Scene) -> Self {
+        let meshes = scene
+            .manifest
+            .meshes
+            .iter()
+            .enumerate()
+            .filter(|(_, mesh)| mesh.visible)
+            .map(|(at, mesh)| {
+                let boxes = scene.indices[mesh.index_start..mesh.index_start + mesh.index_count]
                     .chunks_exact(3)
-                    .any(|triangle| {
-                        let [a, b, c] =
-                            [0, 1, 2].map(|k| point(mesh.vertex_start + triangle[k] as usize));
-                        let q = closest_on_triangle(p, a, b, c);
-                        let gap: f64 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum::<f64>();
-                        gap <= tolerance * tolerance
+                    .map(|triangle| {
+                        let mut bounds = [f32::INFINITY; 6];
+                        bounds[3..].fill(f32::NEG_INFINITY);
+                        for corner in triangle {
+                            let at = (mesh.vertex_start + *corner as usize) * 3;
+                            for axis in 0..3 {
+                                let value = scene.positions[at + axis];
+                                bounds[axis] = bounds[axis].min(value);
+                                bounds[axis + 3] = bounds[axis + 3].max(value);
+                            }
+                        }
+                        bounds
                     })
-        })
-    };
-    crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices)
-        .into_iter()
-        .filter(|feature| {
-            let middle = std::array::from_fn(|i| (feature.start[i] + feature.end[i]) * 0.5);
-            touches(feature.start) && touches(feature.end) && touches(middle)
-        })
-        .map(|feature| super::Contact {
-            start: feature.start,
-            end: feature.end,
-        })
-        .collect()
+                    .collect();
+                (at, boxes)
+            })
+            .collect();
+        Self { meshes }
+    }
+
+    /// Crease and rim edges of `receiver` that lie on another visible mesh of `scene` (the scene
+    /// this was made for): both ends and the midpoint within [`CONTACT_TOLERANCE`] of its
+    /// triangles. A wall's base on a slab or a crate's bottom edges on the ground are contacts.
+    pub(super) fn contacts(&self, scene: &Scene, receiver: &Receiver) -> Vec<super::Contact> {
+        let tolerance = CONTACT_TOLERANCE;
+        // A triangle whose bounds a point is farther from than this cannot be within the tolerance
+        // of it, whatever the rounding of the exact measure below; the measure decides the rest.
+        let reach = tolerance * 1.001 + 1e-9;
+        let point = |index: usize| -> [f64; 3] {
+            std::array::from_fn(|axis| f64::from(scene.positions[index * 3 + axis]))
+        };
+        let touches = |p: [f64; 3]| {
+            self.meshes.iter().any(|(mesh, boxes)| {
+                let mesh = &scene.manifest.meshes[*mesh];
+                let [low, high] = mesh.bounds;
+                let outside =
+                    (0..3).any(|i| p[i] < low[i] - tolerance || p[i] > high[i] + tolerance);
+                !outside
+                    && mesh.id != receiver.id
+                    && scene.indices[mesh.index_start..mesh.index_start + mesh.index_count]
+                        .chunks_exact(3)
+                        .zip(boxes)
+                        .any(|(triangle, bounds)| {
+                            if (0..3).any(|i| {
+                                p[i] < f64::from(bounds[i]) - reach
+                                    || p[i] > f64::from(bounds[i + 3]) + reach
+                            }) {
+                                return false;
+                            }
+                            let [a, b, c] =
+                                [0, 1, 2].map(|k| point(mesh.vertex_start + triangle[k] as usize));
+                            let q = closest_on_triangle(p, a, b, c);
+                            let gap: f64 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum::<f64>();
+                            gap <= tolerance * tolerance
+                        })
+            })
+        };
+        crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices)
+            .into_iter()
+            .filter(|feature| {
+                let middle = std::array::from_fn(|i| (feature.start[i] + feature.end[i]) * 0.5);
+                touches(feature.start) && touches(feature.end) && touches(middle)
+            })
+            .map(|feature| super::Contact {
+                start: feature.start,
+                end: feature.end,
+            })
+            .collect()
+    }
 }
 
 pub(super) fn receivers(

@@ -13,6 +13,8 @@ pub struct Authoring {
     /// The fields of the last field bake, each moved in from the engine and out to the host.
     field_texels: Vec<Vec<f32>>,
     layout_records: Vec<f32>,
+    /// The project prepared for field bakes (see [`Authoring::open_project_fields`]).
+    project_fields: Option<superspec_engine::authoring::ProjectFields>,
     staged: crate::staged::StagedExport,
     /// Whether the host answers [`host_cancelled`] (see [`Authoring::set_cancellable`]).
     cancellable: bool,
@@ -266,6 +268,85 @@ impl Authoring {
                 serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
             }
         }
+    }
+
+    /// Prepares a scene project for the field bakes of several of its meshes
+    /// ([`Self::bake_open_project_fields`]): the project is parsed, its items placed and its
+    /// models composed once, not once per mesh. The assets must stay as they are until
+    /// [`Self::close_project_fields`], which releases what this holds.
+    pub fn open_project_fields(&mut self, source: &str, revision: u32) -> String {
+        self.project_fields = None;
+        let result = (|| {
+            if source.len() > 32 * 1024 * 1024 {
+                return Err(vec![Diagnostic::message(
+                    "project",
+                    "Authoring project allowance exceeded.",
+                )]);
+            }
+            let project: Project = serde_json::from_str(source)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            self.session.prepare_project_fields(
+                &project,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| cancelled_by_host(self.cancellable),
+            )
+        })();
+        match result {
+            Ok(prepared) => {
+                self.project_fields = Some(prepared);
+                serde_json::json!({"success":true}).to_string()
+            }
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// [`Self::bake_project_fields`] for one mesh of the project [`Self::open_project_fields`]
+    /// prepared: the same fields, without preparing the project again.
+    pub fn bake_open_project_fields(&mut self, revision: u32, mesh: &str, names: &str) -> String {
+        let result = (|| {
+            let prepared = self.project_fields.as_ref().ok_or_else(|| {
+                vec![Diagnostic::message(
+                    "project",
+                    "No project is open for field bakes.",
+                )]
+            })?;
+            let names: Vec<String> = serde_json::from_str(names)
+                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            self.session.bake_prepared_fields(
+                prepared,
+                mesh,
+                &names,
+                revision as u64,
+                &|name| {
+                    self.assets
+                        .get(name)
+                        .or_else(|| self.occlusion.planes.get(name))
+                        .cloned()
+                        .ok_or_else(|| format!("Asset {name} was not supplied."))
+                },
+                &|| cancelled_by_host(self.cancellable),
+            )
+        })();
+        match result {
+            Ok(baked) => self.keep_fields(baked),
+            Err(diagnostics) => {
+                serde_json::json!({"success":false,"diagnostics":diagnostics}).to_string()
+            }
+        }
+    }
+
+    /// Releases the project [`Self::open_project_fields`] prepared.
+    pub fn close_project_fields(&mut self) {
+        self.project_fields = None;
     }
 
     /// The atlas layout of every assigned receiver of a scene project, as its CPU bake lays them

@@ -74,6 +74,11 @@ export interface DrawStep {
 export interface NodeOp {
   /** Names the operation in timings. */
   label: string;
+  /**
+   * Names what the operation's speed per texel depends on (its program), for a device that sizes bands by the speed it
+   * measured (`GraphDevice.yield`, `RealizeOptions.bandTexels`); the label when absent.
+   */
+  pace?: string;
   /** Compiles what the operation draws with. Every dirty node's operation is prepared before anything is drawn. */
   prepare?(): Promise<void>;
   draw(step: DrawStep): void;
@@ -92,6 +97,14 @@ export interface NodeSpec {
   output?: number;
   /** The nodes it reads, by the role the operation knows them by. */
   inputs?: Record<string, string>;
+  /**
+   * An intermediate: other nodes of the bake read it while they are drawn, and nothing reads it afterwards (a height
+   * the normal was made from, a layer's plane under the composed map). The instance does not hold it: once the bake is
+   * complete it is kept like any node without a user, for as long as the graph's limits allow, and a later bake that
+   * draws a node reading it finds it there or draws it again. It is not drawn at all while every node that reads it
+   * holds what is wanted.
+   */
+  transient?: boolean;
 }
 
 /** What needs the WebGL context. */
@@ -102,11 +115,17 @@ export interface GraphDevice {
   mips(textures: THREE.Texture[]): void;
   /** Waits for the GPU to finish drawing into a target (measurements only). */
   settle?(target: THREE.WebGLRenderTarget): void;
-  /** Gives the browser a turn between bands. */
-  yield?(): Promise<void>;
+  /**
+   * Gives the browser a turn between bands. `issued` lists what the band just drawn was: each operation and the texels
+   * it drew, for a device that measures how long the GPU took over them.
+   */
+  yield?(issued: BandWork[]): Promise<void>;
   /** Runs the draws of one band of a level, so what they share (saving and restoring the renderer's state) is done once. */
   batch?(draws: () => void): void;
 }
+
+/** One operation's share of a band: the texels it drew. */
+export interface BandWork { op: NodeOp; texels: number }
 
 export interface GraphLimits {
   /**
@@ -121,13 +140,19 @@ export interface GraphLimits {
   nodeFloorBytes?: number;
   /** A further bound on their number, for a host that wants one (none by default). */
   idleNodes?: number;
+  /**
+   * A bound on everything the graph holds, nodes in use included (none by default): nodes without a user are dropped,
+   * least recently used first, while the nodes in use and the kept ones together exceed it. Nodes in use are never
+   * dropped, so the bound is exceeded only by what their users hold.
+   */
+  totalBytes?: number;
 }
 
-/** The nodes of one realized graph, by name. It holds one use of each until it is released. */
+/** The nodes of one realized graph, by name, without its intermediates (`NodeSpec.transient`). It holds one use of each until it is released. */
 export class GraphInstance {
   released = false;
   readonly nodes: ReadonlyMap<string, GraphNode>;
-  /** The resolved key each node was realized for. */
+  /** The resolved key each node was realized for, intermediates included. */
   readonly keys: ReadonlyMap<string, string>;
   constructor(nodes: ReadonlyMap<string, GraphNode>, keys: ReadonlyMap<string, string>) { this.nodes = nodes; this.keys = keys; }
   node(id: string): GraphNode | undefined { return this.nodes.get(id); }
@@ -151,8 +176,11 @@ export interface RealizeOptions {
   allocate?: (bytes: number) => void;
   /** Called once, before the first draw over a texture of the previous instance. */
   beforeOverwrite?: () => void;
-  /** Texels per band: larger nodes are drawn in bands of rows with the browser given a turn between them. */
-  bandTexels?: number;
+  /**
+   * Texels per band: larger nodes are drawn in bands of rows with the browser given a turn between them. A function
+   * gives each node its own (an operation the GPU is known to draw fast may take more at a time).
+   */
+  bandTexels?: number | ((spec: NodeSpec) => number);
   /** Waits for the GPU after each level so timings are real (a stall; tests and diagnostics). */
   measure?: boolean;
 }
@@ -199,10 +227,14 @@ export class BakeGraph {
 
   private alive(node: GraphNode): boolean { return node.generation === this.device.generation(); }
 
-  /** Where each node's texels come from: a texture that holds them, the previous instance's texture drawn over, or a new one. */
+  /**
+   * Where each node's texels come from: a texture that holds them, the previous instance's texture drawn over, or a new
+   * one. An intermediate is listed only when a node that will be drawn reads it (through other intermediates or not):
+   * one that nothing holds is not drawn for nodes that already hold what they made from it.
+   */
   private choose(specs: NodeSpec[], keys: Map<string, string>, previous: GraphInstance | undefined, inPlace: boolean): Choice[] {
     const prior = previous && !previous.released ? previous : undefined;
-    return specs.map(spec => {
+    const choices: Choice[] = specs.map(spec => {
       const want = keys.get(spec.id)!;
       const mine = prior?.nodes.get(spec.id);
       const usable = mine && this.alive(mine) ? mine : undefined;
@@ -212,6 +244,17 @@ export class BakeGraph {
       if (usable && inPlace && usable.users === 1 && usable.signature === targetSignature(spec.target)) return { spec, want, kind: "over", node: usable };
       return { spec, want, kind: "fresh" };
     });
+    if (!specs.some(spec => spec.transient)) return choices;
+    const byId = new Map(choices.map(choice => [choice.spec.id, choice]));
+    const needed = new Set<string>();
+    const need = (choice: Choice): void => {
+      if (needed.has(choice.spec.id)) return;
+      needed.add(choice.spec.id);
+      if (choice.kind === "held") return;
+      for (const id of Object.values(choice.spec.inputs ?? {})) { const input = byId.get(id); if (input) need(input); }
+    };
+    for (const choice of choices) if (!choice.spec.transient) need(choice);
+    return choices.filter(choice => needed.has(choice.spec.id));
   }
 
   /** How many nodes of `specs` would be drawn now, given the instance they replace. */
@@ -233,23 +276,45 @@ export class BakeGraph {
     return { key: "", signature: targetSignature(spec), target, texture, bytes: targetBytes(spec), users: 0, generation, fresh: true };
   }
 
-  private retain(node: GraphNode): void { node.users++; this.idle.delete(node); }
+  /** Memory of the nodes in use, of the context generation it was counted in. */
+  private used = { bytes: 0, generation: -1 };
+
+  /** The memory of the nodes in use now (nodes of a context that went away count for nothing). */
+  private usedBytes(): number {
+    const generation = this.device.generation();
+    if (this.used.generation !== generation) this.used = { bytes: 0, generation };
+    return this.used.bytes;
+  }
+
+  private retain(node: GraphNode): void {
+    const used = this.usedBytes();
+    if (node.users++ === 0 && node.generation === this.used.generation) this.used.bytes = used + node.bytes;
+    this.idle.delete(node);
+  }
 
   /** Gives up one use of a node: a complete one without users waits for another, an incomplete one is freed. */
   private drop(node: GraphNode): void {
     if (--node.users > 0) return;
+    const used = this.usedBytes();
+    if (node.generation === this.used.generation) this.used.bytes = used - node.bytes;
     if (!node.key || !this.alive(node) || this.complete.get(node.key) !== node) {
       if (node.key && this.complete.get(node.key) === node) this.complete.delete(node.key);
       node.target.dispose();
       return;
     }
     this.idle.delete(node); this.idle.add(node);
+    this.trim();
+  }
+
+  /** Drops nodes without a user, least recently used first, until what is kept is within the limits with `coming` more bytes in use. */
+  private trim(coming = 0): void {
     const floor = this.limits.nodeFloorBytes ?? 0;
     const charged = (kept: GraphNode) => Math.max(kept.bytes, floor);
+    const room = (this.limits.totalBytes ?? Infinity) - this.usedBytes() - coming;
     let bytes = 0;
     for (const kept of this.idle) bytes += charged(kept);
     for (const kept of [...this.idle]) {
-      if (this.idle.size <= (this.limits.idleNodes ?? Infinity) && bytes <= this.limits.idleBytes) break;
+      if (this.idle.size <= (this.limits.idleNodes ?? Infinity) && bytes <= this.limits.idleBytes && bytes <= room) break;
       bytes -= charged(kept);
       this.idle.delete(kept); this.complete.delete(kept.key);
       kept.target.dispose();
@@ -331,7 +396,11 @@ export class BakeGraph {
         this.retain(choice.node); staged.set(choice.spec.id, choice.node);
         if (choice.kind === "held") result.reused++;
       }
-      if (freshBytes) options.allocate?.(freshBytes);
+      if (freshBytes) {
+        options.allocate?.(freshBytes);
+        // Kept nodes make room for the new ones (those this bake reads are in use by now).
+        this.trim(freshBytes);
+      }
       const work: { spec: NodeSpec; want: string; node: GraphNode }[] = [];
       let overwrite = false;
       for (const choice of choices) {
@@ -345,11 +414,11 @@ export class BakeGraph {
           node.key = "";
         } else {
           node = this.create(choice.spec.target, generation);
-          node.users = 1; staged.set(choice.spec.id, node);
+          this.retain(node); staged.set(choice.spec.id, node);
         }
         work.push({ spec: choice.spec, want: choice.want, node });
       }
-      const bandTexels = options.bandTexels ?? Infinity;
+      const bandTexels = typeof options.bandTexels === "function" ? options.bandTexels : () => (options.bandTexels as number | undefined) ?? Infinity;
       const pending = new Set(work.map(item => item.spec.id));
       let remaining = work;
       while (remaining.length) {
@@ -357,20 +426,23 @@ export class BakeGraph {
         if (!level.length) throw new Error("Bake graph nodes read each other in a circle.");
         const plans = level.map(item => {
           const { width, height } = item.spec.target;
-          const rows = Math.min(height, Math.max(1, Math.floor(bandTexels / width)));
+          const rows = Math.min(height, Math.max(1, Math.floor(bandTexels(item.spec) / width)));
           const inputs = Object.fromEntries(Object.entries(item.spec.inputs ?? {}).map(([role, id]) => [role, staged.get(id)!]));
           return { ...item, rows, bands: Math.ceil(height / rows), inputs };
         });
         const bands = Math.max(...plans.map(plan => plan.bands));
         let waited = false;
+        let issued: BandWork[] = [];
         for (let band = 0; band < bands; band++) {
           if (band > 0) {
-            await (this.device.yield?.() ?? new Promise<void>(done => setTimeout(done, 0)));
+            await (this.device.yield?.(issued) ?? new Promise<void>(done => setTimeout(done, 0)));
             if (!current()) { undo(); return null; }
           }
           const draws = (): void => {
+            issued = [];
             for (const plan of plans) {
               if (band >= plan.bands) continue;
+              issued.push({ op: plan.spec.op, texels: plan.spec.target.width * Math.min(plan.rows, plan.spec.target.height - band * plan.rows) });
               const before = performance.now();
               plan.spec.op.draw({ node: plan.node, output: plan.spec.output ?? 0, inputs: plan.inputs, first: band === 0,
                 rows: plan.bands > 1 ? { start: band * plan.rows, count: Math.min(plan.rows, plan.spec.target.height - band * plan.rows) } : null });
@@ -406,7 +478,11 @@ export class BakeGraph {
     } catch (error) { undo(); throw error; }
     this.release(previous);
     this.totals.drawn += result.drawn.length; this.totals.reused += result.reused;
-    result.instance = new GraphInstance(staged, new Map(specs.map(spec => [spec.id, keys.get(spec.id)!])));
+    // The instance holds what the bake is for; its intermediates are kept as nodes without a user are.
+    const transient = new Set(specs.filter(spec => spec.transient).map(spec => spec.id));
+    const held = new Map([...staged].filter(([id]) => !transient.has(id)));
+    result.instance = new GraphInstance(held, new Map(specs.map(spec => [spec.id, keys.get(spec.id)!])));
+    for (const [id, node] of staged) if (transient.has(id)) this.drop(node);
     result.timings.total = performance.now() - started;
     return result;
   }

@@ -874,6 +874,8 @@ class Studio {
       // Baked maps follow the receivers' atlases, which these size.
       baking ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
     let packet: ScenePacket, metadata: AuthoringMetadata;
+    let opening: Record<string, unknown> | undefined, applied = 0;
+    const entered = performance.now();
     // Before the uniforms change: a bake they start asks for CPU fields of this project.
     const previous = this.bakeProject;
     this.bakeProject = candidate;
@@ -881,7 +883,12 @@ class Studio {
       ({ packet, metadata } = this.shaded);
     } else {
       this.bakeProject = previous;
+      // Where the time to a scene's first picture goes (`data-scene-open`, milliseconds): the engine's description with
+      // the layouts (the worker's whole turn, the project's way there and the answer's way back included), the page's
+      // preparation of the looks, and putting the scene on screen (which waits for the first look's programs).
+      const clock = performance.now();
       const result = await this.authoring.shadeProject(candidate, revision, baking);
+      const described = performance.now();
       if (revision !== this.revision) return false;
       if (result.error || !result.packet || !result.metadata || result.diagnostics?.length) {
         this.diagnostics(result.diagnostics ?? [], candidate); void this.recipe?.refresh();
@@ -896,9 +903,15 @@ class Studio {
       if (baking && !bake) element("viewport").dataset.sceneBakeFallback = String(metadata.layoutError ?? "the engine returned no receiver layouts");
       else delete element("viewport").dataset.sceneBakeFallback;
       const decorate = await this.scene.prepareShading(shading, values, async name => candidate.assets[name] ?? libraryAsset(name), bake, layerValues);
+      const prepared = performance.now();
       if (revision !== this.revision) return false;
       this.bakeProject = candidate;
       if (!await this.scene.apply(packet, () => revision === this.revision, fit, decorate)) { this.bakeProject = previous; return false; }
+      applied = performance.now();
+      // (`readMs`: an opened project's file read and admitted, before this; `keyMs`: finding out that the scene must be
+      // described again. The rest of the opening follows below.)
+      opening = { revision, ...(opened && this.openStarted !== undefined ? { readMs: Math.round(entered - this.openStarted) } : {}), keyMs: Math.round(clock - entered), engineMs: Math.round(described - clock),
+        prepareMs: Math.round(prepared - described), applyMs: Math.round(applied - prepared), ...(result.timings ? { engine: result.timings } : {}) };
       this.shownResolution = undefined;
       this.shaded = { key, metadata, packet };
     }
@@ -923,6 +936,8 @@ class Studio {
     this.showInspection(shown); this.channels.show(packet); this.showMeshes(packet); void this.recipe?.refresh();
     element("scene-title").textContent = packet.manifest.name || candidate.entry;
     element("model-details").textContent = `${packet.manifest.meshes.filter(mesh => mesh.visible).length} meshes · ${packet.manifest.vertexCount.toLocaleString()} vertices · meters, Z up`;
+    // `panelsMs`: the panels of the Studio brought up to date, after the scene is on screen.
+    if (opening) element("viewport").dataset.sceneOpen = JSON.stringify({ ...opening, panelsMs: Math.round(performance.now() - applied) });
     element("viewport").dataset.inputRevision = String(revision);
     // Weathering layers are composed in the GPU bake; the per-pixel look (first look, drags, `?preview=shader`) shows a layered slot's base alone.
     const gpuBaked = element("viewport").dataset.preview === "gpu-bake";
@@ -1004,6 +1019,8 @@ class Studio {
       try { result = await this.lane.bakeProjectFields(project, missing, this.revision, occlusion); }
       catch (error) { if (error instanceof DOMException && error.name === "AbortError") return null; throw error; }
       if (result.error || !result.projectFields) throw new Error(result.error ?? result.diagnostics?.[0]?.message ?? "the CPU field bake failed");
+      // What the last request for CPU fields took (`data-scene-fields-bake`): the whole turn, and the worker's steps.
+      element("viewport").dataset.sceneFieldsBake = JSON.stringify({ ms: Math.round(performance.now() - started), ...(result.timings ?? {}) });
       if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - started);
       for (const baked of result.projectFields) {
         const request = requests.find(candidate => candidate.mesh === baked.mesh), asked = missing.find(candidate => candidate.mesh === baked.mesh);
@@ -1126,8 +1143,12 @@ class Studio {
   }
 
   /** Stages a complete saved project, including its base source, before replacing any editor state. */
+  /** When the project being opened was handed over, for `data-scene-open`. */
+  private openStarted?: number;
+
   private async openProject(file: File): Promise<void> {
     const revision = this.begin("Opening project…");
+    this.openStarted = performance.now();
     this.documentRevision++;
     if (file.size > MAX_PROJECT_FILE_BYTES) throw new Error(`${file.name} exceeds the ${megabytes(MAX_PROJECT_FILE_BYTES)} project file limit.`);
     const candidate = await openProject(file, this.kind);

@@ -261,3 +261,112 @@ test("an intrinsic node keyed without receiver geometry is shared by per-receive
   const back = (await graph.realize(receiver("wall", "p1", "wall-4m"), wall2.instance))!;
   assert.deepEqual(back.drawn, ["base"]);
 });
+
+/** A bake whose height is an intermediate: only the normals pass reads it. */
+function lean(log: string[], key: string): NodeSpec[] {
+  const specs = bake(log, key);
+  specs[1].transient = true;
+  return specs;
+}
+
+test("an intermediate is the graph's to keep, and is drawn only for a node that reads it", async () => {
+  const { device: made, log } = device();
+  const graph = new BakeGraph(made);
+  const first = (await graph.realize(lean(log, "a")))!;
+  assert.deepEqual(first.drawn, ["base", "height", "normal"]);
+  // The instance holds what the bake is for; the height waits without a user, and counts for none of the instance's memory.
+  assert.equal(first.instance.node("height"), undefined);
+  assert.ok(first.instance.complete);
+  assert.deepEqual(graph.stats(), { nodes: 3, bytes: targetBytes(target("", 8, 8, "mips")) * 2 + targetBytes(target("")), idle: 1, idleBytes: targetBytes(target("")) });
+  assert.equal(graph.bytes([first.instance]), targetBytes(target("", 8, 8, "mips")) * 2);
+
+  // The base color changes: the height is not read, so it is neither drawn nor counted as reused.
+  log.length = 0;
+  const specs = lean(log, "a");
+  specs[0].key = "b:base";
+  const base = (await graph.realize(specs, first.instance))!;
+  assert.deepEqual(base.drawn, ["base"]);
+  assert.equal(base.reused, 1);
+  assert.equal(graph.dirty(specs, base.instance), 0);
+
+  // The height changes: it is drawn (into a new texture) for the normal that reads it, and kept after.
+  log.length = 0;
+  specs[1].key = "b:height";
+  const height = (await graph.realize(specs, base.instance))!;
+  assert.deepEqual(height.drawn, ["height", "normal"]);
+  assert.equal(graph.stats().idle, 2, "the height before it is kept too, while memory allows");
+});
+
+test("a dropped intermediate is not drawn again until a node that reads it is", async () => {
+  const { device: made, log } = device();
+  // Nothing without a user is kept.
+  const graph = new BakeGraph(made, { idleBytes: 0 });
+  const first = (await graph.realize(lean(log, "a")))!;
+  assert.equal(graph.stats().nodes, 2);
+  assert.ok(first.instance.complete);
+  // The same bake again: the normal holds what was made from the height, so the height is not wanted.
+  log.length = 0;
+  const same = (await graph.realize(lean(log, "a"), first.instance))!;
+  assert.deepEqual(same.drawn, []);
+  assert.equal(log.length, 0);
+  // Another receiver's bake of the same texels shares the two maps and draws nothing either.
+  const other = (await graph.realize(lean(log, "a")))!;
+  assert.deepEqual(other.drawn, []);
+  // The normal's own key changes: it is drawn, and the height it reads with it.
+  const specs = lean(log, "a");
+  specs[2].key = "normals:2";
+  const normal = (await graph.realize(specs, same.instance))!;
+  assert.deepEqual(normal.drawn, ["height", "normal"]);
+  assert.deepEqual(log.filter(line => !line.startsWith("mips")), ["evaluate height#1", "normals normal#0 height=height"]);
+  assert.equal(graph.stats().nodes, 3, "the other bake's normal, this one's, and the base they share");
+});
+
+test("the graph's memory is bounded as a whole: nodes in use first, kept ones while they fit", async () => {
+  const { device: made, log } = device();
+  const each = targetBytes(target(""));
+  const single = (key: string): NodeSpec[] => [{ id: "only", key, target: target(key), op: op("draw", log) }];
+  const graph = new BakeGraph(made, { idleBytes: Infinity, totalBytes: each * 3 });
+  const a = (await graph.realize(single("a")))!, b = (await graph.realize(single("b")))!, c = (await graph.realize(single("c")))!;
+  graph.release(a.instance); graph.release(b.instance);
+  assert.equal(graph.stats().idle, 2, "one in use and two kept fit");
+  // A new node needs room: the least recently used kept node goes before it is made.
+  const d = (await graph.realize(single("d")))!;
+  assert.deepEqual(graph.stats(), { nodes: 3, bytes: each * 3, idle: 1, idleBytes: each });
+  log.length = 0;
+  const again = (await graph.realize(single("b")))!;
+  assert.deepEqual(log, [], "the more recently used one is still there");
+  // Nodes in use are never dropped, whatever the bound.
+  const e = (await graph.realize(single("e")))!;
+  assert.equal(graph.stats().nodes, 4);
+  assert.equal(graph.stats().idle, 0);
+  for (const made of [c, d, again, e]) graph.release(made.instance);
+  assert.deepEqual(graph.stats(), { nodes: 3, bytes: each * 3, idle: 3, idleBytes: each * 3 });
+});
+
+test("each node is drawn in bands of its own size, and the device is told what a band drew", async () => {
+  const log: string[] = [];
+  const state = { generation: 0 };
+  const issued: string[] = [];
+  const made: GraphDevice = {
+    generation: () => state.generation,
+    mips: () => {},
+    yield: async work => { issued.push(work.map(({ op, texels }) => `${op.pace ?? op.label}:${texels}`).join(" ")); },
+  };
+  const graph = new BakeGraph(made);
+  // Two nodes of one level: the slow program's in bands of 16 texels (two rows of 8), the fast one's in bands of 48.
+  const slow = op("slow", log, { pace: "program a" }), fast = op("fast", log);
+  const specs: NodeSpec[] = [
+    { id: "a", key: "a", target: target("a"), op: slow },
+    { id: "b", key: "b", target: target("b"), op: fast },
+  ];
+  const result = (await graph.realize(specs, undefined, { bandTexels: spec => spec.op === slow ? 16 : 48 }))!;
+  assert.equal(result.bands, 4);
+  assert.deepEqual(log, [
+    "slow a#0 rows 0+2", "fast b#0 rows 0+6",
+    "slow a#0 rows 2+2", "fast b#0 rows 6+2",
+    "slow a#0 rows 4+2",
+    "slow a#0 rows 6+2",
+  ]);
+  // After every band but the last: what it drew, by the operation's pace (its label without one).
+  assert.deepEqual(issued, ["program a:16 fast:48", "program a:16 fast:16", "program a:16"]);
+});

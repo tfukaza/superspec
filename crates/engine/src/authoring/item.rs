@@ -645,7 +645,9 @@ impl Session {
                     if !placed.model.images.contains_key(texture) {
                         let bytes =
                             assets(texture).map_err(|error| fail(format!("{texture}: {error}")))?;
-                        let decoded = image::decode(&bytes).map_err(&fail)?;
+                        // Validated once per content: a project's items are placed several
+                        // times for one request (bindings, composition, layouts, field bakes).
+                        let decoded = self.validate_image(&bytes).map_err(&fail)?;
                         placed.model.images.insert(
                             texture.clone(),
                             ImageResource {
@@ -711,9 +713,10 @@ impl Session {
             let bytes = assets(&decal.image).map_err(|error| {
                 fail(format!("Decal {} image {}: {error}", decal.id, decal.image))
             })?;
-            let decoded = image::decode(&bytes).map_err(&fail)?;
-            let image_id = format!("studio/decal/image/{:x}", Sha256::digest(&bytes));
-            let material_id = format!("studio/decal/material/{:x}", Sha256::digest(&bytes));
+            let decoded = self.validate_image(&bytes).map_err(&fail)?;
+            let digest = Sha256::digest(&bytes);
+            let image_id = format!("studio/decal/image/{digest:x}");
+            let material_id = format!("studio/decal/material/{digest:x}");
             placed
                 .model
                 .images

@@ -253,6 +253,8 @@ export interface AuthoringResult {
   fields?: BakedFields;
   /** Receiver atlases, when a shade request asked for them. */
   layouts?: ProjectLayouts;
+  /** With the layouts: how long the worker's steps took, in milliseconds, and the sizes of the texts it passed. */
+  timings?: Record<string, number>;
   /** Baked fields by mesh, for a `bake-project-fields` request; a mesh whose bake failed carries the reason instead. */
   projectFields?: ({ mesh: string; planes?: Record<string, string> } & (BakedFields | { error: string }))[];
   /** What the occluder service baked or found held for the request, when it ran. */

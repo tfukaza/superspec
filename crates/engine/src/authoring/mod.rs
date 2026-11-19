@@ -7,7 +7,7 @@ mod project;
 pub(crate) mod receiver;
 pub mod recipe;
 pub(crate) use item::PlacedItemState;
-pub use layout::{LAYOUT_RECORD, ProjectLayouts, ReceiverLayout};
+pub use layout::{LAYOUT_RECORD, ProjectFields, ProjectLayouts, ReceiverLayout};
 pub use material::{FieldBake, PendingBake};
 pub use project::{
     Base, MAX_ASSIGNMENTS, MAX_MODELS, MaterialAssignment, ModelSource, Project, ProjectOutput,
