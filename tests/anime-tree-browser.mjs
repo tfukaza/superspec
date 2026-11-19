@@ -6,7 +6,8 @@
  *     cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants
  * LOOKS (default leaves,sprays,shells,impostors,painted) are pictured each as <look>-sun.png (the sun behind the
  * camera), <look>-shade.png (against the sun) and <look>-close.png in OUT (default generated/verification/anime-tree);
- * PLANTS (default 0) are the plants' indexes. ORBIT=<n> adds n pictures a few degrees apart (<look>-orbit-<k>.png);
+ * PLANTS (default 0) are the plants' indexes (the lane's trees are 0 to 3, its shrubs 4 to 6, and -1 its bed of
+ * groundcover), the views shrinking with the first one's height; FAR=1 adds <look>-far.png from 60 m. ORBIT=<n> adds n pictures a few degrees apart (<look>-orbit-<k>.png);
  * TIME=1 prints each look's build time, instances, triangles and median frame time with every plant of ROW (default
  * 0,1,2,3,4,5,6) drawn. DATA names the plants' document. The real GPU wants
  * BROWSER_ARGS="--use-angle=d3d11 --ignore-gpu-blocklist".
@@ -60,14 +61,20 @@ try {
     const shown = await page.evaluate(({ indexes, look, sun }) => window.lab.show(indexes, look, sun), { indexes, look, sun });
     const plant = shown.plants[0], [cx, cy, cz] = plant.centre, top = plant.base[2] + plant.height;
     console.log(`${look}: built in ${shown.ms.toFixed(0)} ms: ${shown.built.map(part => `${part.name} ${part.instances ?? "?"} instances, ${part.triangles ?? "?"} triangles`).join("; ")}`);
-    const around = (degrees, distance, lift) => { const a = degrees * Math.PI / 180; return [cx + Math.cos(a) * distance, cy + Math.sin(a) * distance, cz + lift]; };
+    // A low plant is pictured from nearer: the views shrink with its height (a tree's is about 9.5 m).
+    const s = Math.min(1, Math.max(0.3, plant.height / 9.5));
+    const around = (degrees, distance, lift) => { const a = degrees * Math.PI / 180; return [cx + Math.cos(a) * distance * s, cy + Math.sin(a) * distance * s, cz + lift * s]; };
     // The sun behind the camera and to its left, the camera raised as the avenue view's is; then against the sun.
-    await shoot(`${look}-sun`, around(sun[0] + 28, 27, 6), [cx, cy, cz - 1.6], 26);
+    await shoot(`${look}-sun`, around(sun[0] + 28, 27, 6), [cx, cy, cz - 1.6 * s], 26);
     await page.evaluate(() => window.lab.wall(false));
-    await shoot(`${look}-shade`, around(sun[0] + 208, 27, 3), [cx, cy, cz - 1.6], 26);
+    await shoot(`${look}-shade`, around(sun[0] + 208, 27, 3), [cx, cy, cz - 1.6 * s], 26);
     await page.evaluate(() => window.lab.wall(true));
-    await shoot(`${look}-close`, around(sun[0] + 40, 9.5, 1.5), [cx, cy, top - 2.2], 30);
-    for (let k = 0; k < Number(process.env.ORBIT ?? 0); k++) await shoot(`${look}-orbit-${k}`, around(sun[0] + 28 + 4 * k, 17, 4), [cx, cy, cz - 0.5], 26);
+    await shoot(`${look}-close`, around(sun[0] + 40, 9.5, 1.5), [cx, cy, top - 2.2 * s], 30);
+    // From above with the sun behind, as the lane's avenue view looks down on its trees.
+    await shoot(`${look}-above`, around(sun[0] + 12, 13, 10), [cx, cy, cz], 34);
+    // FAR=1: from 60 m, as down a street, to see that leaves and limbs stay shapes.
+    if (process.env.FAR === "1") await shoot(`${look}-far`, [cx + Math.cos((sun[0] + 28) * Math.PI / 180) * 60, cy + Math.sin((sun[0] + 28) * Math.PI / 180) * 60, cz + 6], [cx, cy, cz - 1], 14);
+    for (let k = 0; k < Number(process.env.ORBIT ?? 0); k++) await shoot(`${look}-orbit-${k}`, around(sun[0] + 28 + 4 * k, 17, 4), [cx, cy, cz - 0.5 * s], 26);
     if (process.env.TIME === "1") {
       const row = (process.env.ROW ?? "0,1,2,3,4,5,6").split(",").map(Number);
       const all = await page.evaluate(({ row, look, sun }) => window.lab.show(row, look, sun), { row, look, sun });

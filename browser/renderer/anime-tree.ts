@@ -51,10 +51,10 @@ export function animeTree(mass: FoliageMass, placement: THREE.Matrix4, look: Ani
   const cluster = 0.85 * small;
   let parts: THREE.Mesh[];
   if (look === "leaves") {
-    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 0 : 3, tier: 0.6, under: 0.3 });
+    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 1 : 3, tier: low_plant ? 0.25 : 0.6, under: 0.3 });
     parts = [animeLeaves(crown, uniforms, { length: 0.19 * small, width: 0.36, whorl: low_plant ? 4 : 6, whorlMore: low_plant ? 2 : 3, glints: 0.5 })];
   } else if (look === "sprays") {
-    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 0 : 4, tier: 0.6, under: 0.3 });
+    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 1 : 4, tier: low_plant ? 0.25 : 0.6, under: 0.3 });
     parts = [animeSprays(stationCards(crown, 0.34 * small, 0.5), uniforms)];
   } else if (look === "shells") {
     const crown = analyseCrown(mass, placement, { spacing: 0.42 * small, clusterRadius: cluster });

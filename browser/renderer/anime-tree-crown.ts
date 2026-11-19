@@ -210,11 +210,11 @@ export const ANIME_LIGHT = {
   /** How far full occlusion darkens, and how far being seen from beneath does. */
   occlusion: 0.5, underside: 0.35,
   /** A whole leaf's random shift of light: what makes single leaves read. */
-  jitter: 0.2,
+  jitter: 0.26,
   /** Steps of the ramp. */
   bands: 12,
   /** The light stretched about its middle, and shifted. */
-  contrast: 1.3, offset: 0.03,
+  contrast: 1.35, offset: -0.05,
   /** Warm light through leaves on the crown's edge seen against the sun. */
   back: 0.16,
   /** The fewest pixels a leaf and a spray card are long, and the pixels a limb is thickened by on each side. */

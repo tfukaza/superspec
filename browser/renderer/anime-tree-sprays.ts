@@ -78,7 +78,7 @@ void main() {
   if (alpha < 0.02) discard;
   // The spray's tip leans into the light of where it points; leaves behind others sit a little deeper.
   vec3 n = normalize(vNormal + vUp * (vUv.y - 0.4) * 0.3);
-  float light = atSeen(atLightValue(n, vOcclusion + (1.0 - leaf.r) * 0.16, leaf.g * 0.75 + vJitter.x * 0.25), normalize(vNormal), vToCamera);
+  float light = atSeen(atLightValue(n, vOcclusion + (1.0 - leaf.r) * 0.4, leaf.g * 0.75 + vJitter.x * 0.25), normalize(vNormal), vToCamera);
   vec3 colour = atRampColour(atGlint(light, vJitter.y));
   gl_FragColor = vec4(atBackLight(colour, n, vToCamera, vOcclusion), alpha);
   #include <colorspace_fragment>

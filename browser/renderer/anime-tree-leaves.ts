@@ -95,14 +95,15 @@ export function animeLeaves(crown: Crown, uniforms: Record<string, THREE.IUnifor
   const between = (a: number, b: number) => a + (b - a) * random();
   const origins: number[] = [], alongs: number[] = [], shades: number[] = [], tones: number[] = [];
   const up = new THREE.Vector3(0, 0, 1), axis = new THREE.Vector3(), u = new THREE.Vector3(), w = new THREE.Vector3(), d = new THREE.Vector3(), middle = new THREE.Vector3(), foot = new THREE.Vector3();
-  const leaf = (from: THREE.Vector3, size: number, width: number, cluster: Crown["clusters"][number], phase: number, boost: number) => {
+  // `buried`: how far the leaf lies under its own whorl's other leaves, as occlusion.
+  const leaf = (from: THREE.Vector3, size: number, width: number, cluster: Crown["clusters"][number], phase: number, boost: number, buried = 0) => {
     middle.copy(from).addScaledVector(d, 0.5 * size);
     const shade = crownShade(crown, cluster, middle);
     // A leaf reaching toward the light is lit a little more than its place alone says.
     shade.normal.addScaledVector(d, 0.3).normalize();
     origins.push(from.x + d.x * 0.03 * size, from.y + d.y * 0.03 * size, from.z + d.z * 0.03 * size, size);
     alongs.push(d.x, d.y, d.z, width);
-    shades.push(shade.normal.x, shade.normal.y, shade.normal.z, boost > 0 ? shade.occlusion * 0.6 : shade.occlusion);
+    shades.push(shade.normal.x, shade.normal.y, shade.normal.z, Math.min(1, boost > 0 ? shade.occlusion * 0.6 : shade.occlusion + buried));
     tones.push(random(), phase, boost);
   };
   for (const station of crown.stations) {
@@ -122,7 +123,7 @@ export function animeLeaves(crown: Crown, uniforms: Record<string, THREE.IUnifor
       d.copy(axis).multiplyScalar(Math.cos(tilt)).addScaledVector(u, Math.cos(azimuth) * Math.sin(tilt)).addScaledVector(w, Math.sin(azimuth) * Math.sin(tilt));
       d.z -= between(0.02, 0.25); d.normalize();
       const size = length * big * between(0.65, 1.3) * (terminal ? 0.9 : 1);
-      leaf(station.position, size, size * widthShare * between(0.7, 1.3), cluster, phase, 0);
+      leaf(station.position, size, size * widthShare * between(0.7, 1.3), cluster, phase, 0, terminal ? 0 : 0.08 + 0.26 * random());
     }
     if (random() < glints && station.occlusion < 0.4 && station.normal.z > 0.25) {
       // Highlights: two or three small leaves standing above the whorl.
