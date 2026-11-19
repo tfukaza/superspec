@@ -204,7 +204,9 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
  * The ramp the leaves are painted with, dark to light, as display colours (sampled from the anime tree concept: a deep
  * cool green in the shade through muted olives to a pale yellow-olive in the light), and a trunk's two browns.
  */
-export const ANIME_RAMP = ["#2b312b", "#343a30", "#3e4435", "#4a4e39", "#5c5d42", "#78764f", "#a19c6c"] as const;
+// The darkest four steps a fifth to a tenth darker and a little cooler than first sampled, so the shade reads deeper
+// against the unchanged mids and lights.
+export const ANIME_RAMP = ["#222824", "#2a302a", "#333a2f", "#404534", "#5c5d42", "#78764f", "#a19c6c"] as const;
 
 /** How the leaves are lit: see `ANIME_SHADE_GLSL`. */
 export const ANIME_LIGHT = {
