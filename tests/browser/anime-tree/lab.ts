@@ -6,7 +6,7 @@
  */
 import * as THREE from "three";
 import type { FoliageMass } from "../../../browser/model/packet.ts";
-import { animeTree, type AnimeTreeLook } from "../../../browser/renderer/anime-tree.ts";
+import { animeTree, animeTreeBark, type AnimeTreeLook } from "../../../browser/renderer/anime-tree.ts";
 import { sprayAtlas } from "../../../browser/renderer/anime-tree-crown.ts";
 import { paintedMass } from "../../../browser/renderer/painted-mass.ts";
 import { programSun } from "../../../browser/renderer/shade.ts";
@@ -66,20 +66,27 @@ const lab = {
     const built: Record<string, unknown>[] = [];
     let ms = 0;
     for (const index of indexes) {
-      const patch = `lane-plant-${index}`, mine = batches.filter(batch => batch.foliage.patch === patch);
+      // A negative index is the bed of groundcover (it has no bark).
+      const patch = index < 0 ? "lane-groundcover" : `lane-plant-${index}`, mine = batches.filter(batch => batch.foliage.patch === patch);
       const bark = mine.filter(batch => batch.foliage.family === "bark").sort((a, b) => a.foliage.level - b.foliage.level)[0];
       const carrier = mine.find(batch => batch.foliage.mass);
-      if (!bark || !carrier) throw new Error(`No plant ${patch}.`);
-      const geometry = new THREE.BufferGeometry();
-      geometry.setAttribute("position", new THREE.Float32BufferAttribute(bark.mesh.positions, 3));
-      geometry.setAttribute("normal", new THREE.Float32BufferAttribute(bark.mesh.normals, 3));
-      geometry.setIndex(bark.mesh.indices);
-      const trunk = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color: "#6a5a48" }));
-      trunk.applyMatrix4(placement(bark));
-      trunk.castShadow = trunk.receiveShadow = true;
-      trunk.name = `${patch}/bark`;
-      plants.add(trunk);
+      if (!carrier) throw new Error(`No plant ${patch}.`);
       const mass = carrier.foliage.mass!, at = placement(carrier);
+      if (bark) {
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute("position", new THREE.Float32BufferAttribute(bark.mesh.positions, 3));
+        geometry.setAttribute("normal", new THREE.Float32BufferAttribute(bark.mesh.normals, 3));
+        geometry.setIndex(bark.mesh.indices);
+        // The painted mass keeps a plain bark here (the scene's own bark material is a Studio program); the
+        // illustrated looks bring theirs.
+        const painted = look === "painted" || look === "bare" ? null : animeTreeBark(mass, at, programSun, time);
+        const trunk = new THREE.Mesh(geometry, painted?.material ?? new THREE.MeshLambertMaterial({ color: "#6a5a48" }));
+        if (painted) trunk.customDepthMaterial = painted.depth;
+        trunk.applyMatrix4(placement(bark));
+        trunk.castShadow = true; trunk.receiveShadow = !painted;
+        trunk.name = `${patch}/bark`;
+        plants.add(trunk);
+      }
       const started = performance.now();
       const parts = look === "bare" ? [] : look === "painted" ? paintedMass(mass, at) : animeTree(mass, at, look, programSun, time);
       ms += performance.now() - started;

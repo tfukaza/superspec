@@ -5,7 +5,7 @@ import { attributeName } from "./batch.ts";
 import { followPaintedFinishing, programSun, programTime, type MaterialShading } from "./shade.ts";
 import { sceneFieldUniforms } from "./scene-fields.ts";
 import { paintedMass } from "./painted-mass.ts";
-import { animeTree, animeTreeLook } from "./anime-tree.ts";
+import { animeTree, animeTreeBark, animeTreeLook } from "./anime-tree.ts";
 
 /**
  * Foliage in the viewer (roadmap stage 6, TreeSpec phase 4): instanced batches that carry a foliage look
@@ -811,6 +811,14 @@ export class FoliageView {
             const look = animeTreeLook(mass);
             if (!look) { parts.push(...paintedMass(mass, placement)); continue; }
             const drawn = animeTree(mass, placement, look, programSun, programTime);
+            // The plant's bark is painted to match, in its own material's stead, at every level that draws it.
+            const bark = animeTreeBark(mass, placement, programSun, programTime);
+            followPaintedFinishing(bark.material);
+            for (const other of patch.levels) if (other.look.family === "bark" && !other.mesh.userData.animeBark) {
+              other.mesh.userData.animeBark = other.mesh.material;
+              other.mesh.material = bark.material;
+              other.mesh.customDepthMaterial = bark.depth;
+            }
             for (const part of drawn) {
               followPaintedFinishing(part.material as THREE.Material);
               // A look that draws from an atlas of its own draws it now, before the sun's shadow pass needs it.

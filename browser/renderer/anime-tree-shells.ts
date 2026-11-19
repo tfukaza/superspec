@@ -99,7 +99,7 @@ export function shellCards(crown: Crown, each = 16, size = 0.62, seed = 43): Spr
   const widest = Math.max(...crown.clusters.map(cluster => cluster.radii.x * cluster.radii.y), 1e-6);
   for (const cluster of crown.clusters) {
     if (cluster.stations < 3) continue;
-    const count = Math.max(6, Math.round(each * cluster.radii.x * cluster.radii.y / widest * 1.6));
+    const count = Math.max(8, Math.round(each * Math.sqrt(cluster.radii.x * cluster.radii.y / widest) * 1.6));
     for (let k = 0; k < count; k++) {
       // Anywhere on the shell but its underside's middle.
       const z = -0.35 + 1.35 * random(), turn = random() * Math.PI * 2, flat = Math.sqrt(Math.max(0, 1 - Math.min(1, z * z)));
@@ -110,7 +110,7 @@ export function shellCards(crown: Crown, each = 16, size = 0.62, seed = 43): Spr
       position.add(cluster.centre);
       const shade = crownShade(crown, cluster, position.clone().addScaledVector(d, 0.35 * length));
       cards.push({ position, axis: d.clone().multiplyScalar(0.8).addScaledVector(up, 0.25).add(new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(0.5)).normalize(),
-        normal: shade.normal, occlusion: shade.occlusion, size: length, whorl: random() < 0.2 });
+        normal: shade.normal, occlusion: shade.occlusion, size: length, kind: random() < 0.2 ? "whorl" : "fan" });
     }
   }
   return cards;

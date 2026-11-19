@@ -25,6 +25,8 @@ export interface CrownCluster {
   /** How much of the sky above it other clusters cover, 0 to 1. */
   covered: number;
   stations: number;
+  /** Its dome when tiered: how high it stands (1 the usual) and where its top is, in its radii from its middle. */
+  dome?: { height: number; x: number; y: number };
 }
 export interface Crown { stations: CrownStation[]; clusters: CrownCluster[]; centre: THREE.Vector3; radii: THREE.Vector3; scale: number;
   /** How far the stations were gathered onto their clusters' domes, 0 (not at all) to 1. */
@@ -51,7 +53,7 @@ export function crownShade(crown: Pick<Crown, "centre" | "radii" | "tier">, clus
   // Under a tiered cluster's dome: in the dome's shade, and facing down.
   let below = 0;
   if (crown.tier) {
-    below = Math.min(1, Math.max(0, (domeHeight(Math.hypot(d.x, d.y)) - d.z) * 2.4 - 0.15));
+    below = Math.min(1, Math.max(0, (domeHeight(cluster, d.x, d.y) - d.z) * 2.4 - 0.15));
     own.z -= 1.1 * below;
     own.normalize();
   }
@@ -62,21 +64,22 @@ export function crownShade(crown: Pick<Crown, "centre" | "radii" | "tier">, clus
   const normal = own.multiplyScalar(0.72).addScaledVector(broad, 0.28).add(new THREE.Vector3(0, 0, 0.22)).normalize();
   const inner = 1 - Math.min(1, d.length()), under = Math.min(1, Math.max(0, -d.z)), deep = 1 - Math.min(1, c.length());
   // Clusters above shade its top less the higher a point stands in it; its underside is in its own shade.
-  const occlusion = Math.min(1, 0.38 * cluster.covered * (1 - 0.35 * Math.max(0, Math.min(1, d.z))) + 0.25 * inner + 0.35 * under + 0.28 * deep + 0.42 * below);
+  const occlusion = Math.min(1, 0.55 * cluster.covered * (1 - 0.35 * Math.max(0, Math.min(1, d.z))) + 0.25 * inner + 0.35 * under + 0.28 * deep + 0.42 * below);
   return { normal, occlusion };
 }
 
-/** A tiered cluster's dome: its height over the cluster's middle, in the cluster's vertical radii, `flat` radii out. */
-function domeHeight(flat: number): number {
-  const f = Math.min(1, flat);
-  return 0.95 * Math.sqrt(1 - 0.85 * f * f) - 0.3;
+/** A tiered cluster's dome: its height over the cluster's middle, in the cluster's vertical radii, at (x, y) radii from it. */
+function domeHeight(cluster: CrownCluster, x: number, y: number): number {
+  const dome = cluster.dome ?? { height: 1, x: 0, y: 0 };
+  const f = Math.min(1, Math.hypot(x - dome.x, y - dome.y));
+  return dome.height * (0.95 * Math.sqrt(1 - 0.85 * f * f) - 0.3);
 }
 
 /**
  * The crown of `mass` placed by `placement`: stations every `spacing` meters along its twigs (and at every tip),
  * grouped into clusters about `clusterRadius` meters in radius.
  */
-export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, options: { spacing?: number; clusterRadius?: number; seed?: number; fill?: number; tier?: number; under?: number } = {}): Crown {
+export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, options: { spacing?: number; clusterRadius?: number; seed?: number; fill?: number; tier?: number; under?: number; vary?: number } = {}): Crown {
   const scale = placement.getMaxScaleOnAxis();
   const spacing = (options.spacing ?? 0.3) * scale, clusterRadius = (options.clusterRadius ?? 0.85) * scale;
   const random = generator(options.seed ?? 17);
@@ -114,13 +117,20 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
   // moving every centre to the middle of its stations.
   const order = stations.map((_, index) => index);
   for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
-  let centres: THREE.Vector3[] = [];
-  // Clusters are flatter than wide (tiers): vertical distances count for more.
-  const stretch = 1.5;
-  const distance = (p: THREE.Vector3, q: THREE.Vector3) => Math.hypot(p.x - q.x, p.y - q.y, (p.z - q.z) * stretch);
+  // Clusters are flatter than wide (tiers): vertical distances count for more. No two are alike: each has its own
+  // size, and many are long one way across (a share `vary` of the full variety; 0 makes them all round and equal).
+  type Centre = THREE.Vector3 & { size: number; long: number; cos: number; sin: number };
+  let centres: Centre[] = [];
+  const stretch = 1.5, vary = options.vary ?? 1;
+  const distance = (c: Centre, p: THREE.Vector3) => {
+    const x = p.x - c.x, y = p.y - c.y;
+    return Math.hypot((x * c.cos + y * c.sin) / c.long, -x * c.sin + y * c.cos, (p.z - c.z) * stretch) / c.size;
+  };
   for (const index of order) {
     const p = stations[index].position;
-    if (!centres.some(c => distance(c, p) < clusterRadius * 1.35)) centres.push(p.clone());
+    if (centres.some(c => distance(c, p) < clusterRadius * 1.35)) continue;
+    const turn = random() * Math.PI, pick = random(), size = random();
+    centres.push(Object.assign(p.clone(), { size: 1 + vary * (size * size * 0.9 - 0.3), long: 1 + vary * (pick < 0.55 ? 0.9 * random() : 0), cos: Math.cos(turn), sin: Math.sin(turn) }));
   }
   for (let round = 0; round < 4; round++) {
     const sums = centres.map(() => new THREE.Vector3()), counts = centres.map(() => 0);
@@ -129,11 +139,13 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
       centres.forEach((c, i) => { const d = distance(c, station.position); if (d < nearest) { nearest = d; best = i; } });
       station.cluster = best; sums[best].add(station.position); counts[best]++;
     }
-    const kept: THREE.Vector3[] = [];
-    centres.forEach((c, i) => { if (counts[i] > 0) kept.push(sums[i].multiplyScalar(1 / counts[i])); });
+    const kept: Centre[] = [];
+    centres.forEach((c, i) => { if (counts[i] > 0) kept.push(Object.assign(sums[i].multiplyScalar(1 / counts[i]), { size: c.size, long: c.long, cos: c.cos, sin: c.sin })); });
     if (round < 3) centres = kept;
   }
-  const clusters: CrownCluster[] = centres.map(c => ({ centre: c.clone(), radii: new THREE.Vector3(), covered: 0, stations: 0 }));
+  // Some domes stand high, some lie nearly flat, and their tops are off their middles.
+  const clusters: CrownCluster[] = centres.map(c => ({ centre: new THREE.Vector3(c.x, c.y, c.z), radii: new THREE.Vector3(), covered: 0, stations: 0,
+    dome: { height: 1 + vary * (random() * 0.8 - 0.45), x: vary * (random() - 0.5) * 0.6, y: vary * (random() - 0.5) * 0.6 } }));
   for (const station of stations) {
     const cluster = clusters[station.cluster], d = station.position.clone().sub(cluster.centre);
     cluster.radii.add(d.multiply(d)); cluster.stations++;
@@ -142,7 +154,7 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
     const n = Math.max(1, cluster.stations), floor = 0.35 * clusterRadius;
     const rx = Math.max(floor, 1.9 * Math.sqrt(cluster.radii.x / n)), ry = Math.max(floor, 1.9 * Math.sqrt(cluster.radii.y / n));
     const wide = Math.max(rx, ry);
-    cluster.radii.set(Math.max(rx, 0.7 * wide), Math.max(ry, 0.7 * wide), Math.min(Math.max(floor, 1.9 * Math.sqrt(cluster.radii.z / n)), 0.72 * wide));
+    cluster.radii.set(Math.max(rx, 0.5 * wide), Math.max(ry, 0.5 * wide), Math.min(Math.max(floor, 1.9 * Math.sqrt(cluster.radii.z / n)), 0.72 * wide));
   }
   for (const cluster of clusters) {
     let above = 0;
@@ -157,7 +169,7 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
     cluster.covered = 1 - Math.exp(-0.75 * above);
   }
   // Fuller clusters: `fill` more stations about each one, pointing out of its cluster.
-  const fill = options.fill ?? 0, spread = 0.38 * scale;
+  const fill = options.fill ?? 0, spread = 0.45 * scale;
   for (const station of stations.slice()) {
     for (let k = 0; k < fill; k++) {
       const cluster = clusters[station.cluster];
@@ -173,8 +185,7 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
   const tier = options.tier ?? 0, under = options.under ?? 0;
   if (tier > 0) for (const station of stations) {
     const cluster = clusters[station.cluster], d = station.position.clone().sub(cluster.centre);
-    const flat = Math.hypot(d.x / cluster.radii.x, d.y / cluster.radii.y);
-    let dome = cluster.radii.z * domeHeight(flat), pull = 1 - 0.14 * tier;
+    let dome = cluster.radii.z * domeHeight(cluster, d.x / cluster.radii.x, d.y / cluster.radii.y), pull = 1 - 0.14 * tier;
     if (random() < under) { dome -= cluster.radii.z * (0.3 + 0.4 * random()); pull *= 0.85; }
     station.position.set(cluster.centre.x + d.x * pull, cluster.centre.y + d.y * pull, cluster.centre.z + d.z + (dome - d.z) * tier);
   }
@@ -195,7 +206,7 @@ export const ANIME_RAMP = ["#2b312b", "#343a30", "#3e4435", "#4a4e39", "#5c5d42"
 /** How the leaves are lit: see `ANIME_SHADE_GLSL`. */
 export const ANIME_LIGHT = {
   /** Share of the light that comes from straight above whatever the sun (top-lit clusters). */
-  top: 0.38,
+  top: 0.3,
   /** How far full occlusion darkens, and how far being seen from beneath does. */
   occlusion: 0.5, underside: 0.35,
   /** A whole leaf's random shift of light: what makes single leaves read. */
@@ -206,6 +217,8 @@ export const ANIME_LIGHT = {
   contrast: 1.3, offset: 0.03,
   /** Warm light through leaves on the crown's edge seen against the sun. */
   back: 0.16,
+  /** The fewest pixels a leaf and a spray card are long, and the pixels a limb is thickened by on each side. */
+  leafPixels: 7, cardPixels: 13, barkPixels: 0.9,
 } as const;
 
 /** The uniforms of `ANIME_SHADE_GLSL`; `sun` and `time` are the scene's shared ones. */
@@ -217,8 +230,32 @@ export function animeUniforms(sun: THREE.IUniform<THREE.Vector3>, time: THREE.IU
     atCurve: { value: new THREE.Vector4(ANIME_LIGHT.contrast, ANIME_LIGHT.offset, ANIME_LIGHT.back, ANIME_LIGHT.underside) },
     // Wind: direction (x, y), sway in meters at a crown's edge, gusts a second.
     atWind: { value: new THREE.Vector4(0.8, 0.6, 0.035, 0.6) },
+    atMinimum: { value: new THREE.Vector3(ANIME_LIGHT.leafPixels, ANIME_LIGHT.cardPixels, ANIME_LIGHT.barkPixels) },
+    atViewport,
   };
 }
+
+/** The height in pixels of what is being drawn into, kept by `trackViewport`. */
+const atViewport = { value: 1000 };
+/** Keeps `atViewport` as `mesh` is drawn (the sun's shadow pass draws with the last view's). */
+export function trackViewport(mesh: THREE.Mesh): void {
+  const before = mesh.onBeforeRender, size = new THREE.Vector4();
+  mesh.onBeforeRender = function (renderer, ...rest) { atViewport.value = renderer.getCurrentViewport(size).w; before.call(this, renderer, ...rest); };
+}
+
+/**
+ * Vertex shader GLSL: `atPixel(world)` is the meters one pixel spans at a point of the scene. Nothing is drawn thinner
+ * than an illustrator's brush: `atMinimum` holds the fewest pixels a leaf is long, a card is long, and the pixels a
+ * limb is thickened by on each side.
+ */
+export const ANIME_VERTEX_GLSL = /* glsl */`
+uniform vec3 atMinimum;
+uniform float atViewport;
+float atPixel(vec3 world) {
+  float depth = isOrthographic ? 1.0 : (projectionMatrix * viewMatrix * vec4(world, 1.0)).w;
+  return 2.0 * depth / (projectionMatrix[1][1] * atViewport);
+}
+`;
 
 /**
  * Shared GLSL. `atLightValue(normal, occlusion, jitter)` is the light of a leaf in [0, 1]: half the sun on its puffy
@@ -244,6 +281,10 @@ float atLightValue(vec3 n, float occlusion, float jitter) {
   v = (v - 0.5) * atCurve.x + 0.5 + atCurve.y + (jitter - 0.5) * atLight.z;
   return clamp(v, 0.0, 1.0);
 }
+// A highlight leaf: lighter by boost where it is already in the light, an ordinary leaf in the shade.
+float atGlint(float light, float boost) {
+  return min(1.0, light + boost * smoothstep(0.5, 0.75, light));
+}
 vec3 atRampColour(float v) {
   float q = min((floor(v * atLight.w) + 0.5) / atLight.w, 0.9999) * 6.0;
   float i = floor(q);
@@ -253,7 +294,9 @@ vec3 atRampColour(float v) {
   if (i > 2.5) { a = atRamp[3]; b = atRamp[4]; }
   if (i > 3.5) { a = atRamp[4]; b = atRamp[5]; }
   if (i > 4.5) { a = atRamp[5]; b = atRamp[6]; }
-  return mix(a, b, q - i);
+  vec3 colour = mix(a, b, q - i);
+  // The few leaves in full light: paler still.
+  return mix(colour, colour * 1.16 + vec3(0.012, 0.01, 0.0), step(0.93, v));
 }
 vec3 atBackLight(vec3 colour, vec3 n, vec3 toCamera, float occlusion) {
   float against = max(0.0, dot(-toCamera, sun));
@@ -268,12 +311,14 @@ vec3 atSway(vec3 world, float phase, float weight) {
 `;
 
 /** A pointed leaf's outline in a 2D canvas, from the origin along +y, `length` long (the context is transformed to it). */
-function leafPath(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, length: number, width: number, half = 0): void {
+function leafPath(context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D, length: number, width: number, half = 0, bend = 0): void {
+  // `bend` curls the leaf sideways toward its tip, as a share of its length.
+  const tip = bend * length, a = tip * 0.15, b = tip * 0.6;
   context.beginPath();
   context.moveTo(0, 0);
-  context.bezierCurveTo(width * 0.95, length * 0.22, width * 0.62, length * 0.68, 0, length);
-  if (half) context.lineTo(0, 0);
-  else context.bezierCurveTo(-width * 0.62, length * 0.68, -width * 0.95, length * 0.22, 0, 0);
+  context.bezierCurveTo(a + width * 0.95, length * 0.22, b + width * 0.62, length * 0.68, tip, length);
+  if (half) context.quadraticCurveTo(b, length * 0.6, 0, 0);
+  else context.bezierCurveTo(b - width * 0.62, length * 0.68, a - width * 0.95, length * 0.22, 0, 0);
   context.closePath();
 }
 
@@ -295,29 +340,32 @@ export function keepTargetAlpha(mesh: THREE.Mesh): void {
 }
 
 /** One leaf stamped at (x, y) along `angle` (radians from +y toward +x, y up): red its tone, green its own id. */
-function stampLeaf(context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D, x: number, y: number, angle: number, length: number, width: number, tone: number, id: number): void {
+function stampLeaf(context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D, x: number, y: number, angle: number, length: number, width: number, tone: number, id: number, bend = 0): void {
   const colour = (t: number) => `rgb(${Math.round(255 * Math.min(1, t))},${Math.round(255 * id)},0)`;
   context.save();
   context.translate(x, y);
   context.rotate(-angle);
-  leafPath(context, length, width);
+  leafPath(context, length, width, 0, bend);
   context.fillStyle = colour(tone);
   context.fill();
   // One half a little darker (a folded leaf) and a fine midrib.
-  leafPath(context, length, width, 1);
+  leafPath(context, length, width, 1, bend);
   context.fillStyle = colour(tone * 0.9);
   context.fill();
   context.strokeStyle = colour(tone * 0.78);
-  context.lineWidth = length * 0.03;
-  context.beginPath(); context.moveTo(0, length * 0.04); context.lineTo(0, length * 0.9); context.stroke();
+  context.lineWidth = length * 0.045;
+  context.beginPath(); context.moveTo(0, length * 0.04); context.quadraticCurveTo(bend * length * 0.6, length * 0.6, bend * length * 0.92, length * 0.9); context.stroke();
   context.restore();
 }
 
 export const SPRAY_GRID = 4;
+/** The atlas's cells in order: fans, then whorls, then highlight sprigs. */
+export const SPRAY_FANS = 8, SPRAY_WHORLS = 4, SPRAY_SPRIGS = 4;
 let sprays: THREE.DataTexture | undefined;
 /**
- * An atlas of 4 × 4 painted sprays of distinct pointed leaves, for cards: ten fans (leaves spreading from a stem at the
- * card's foot, a smaller tier above) and six whorls (leaves all round the card's middle). Texels: r a leaf's tone (the
+ * An atlas of 4 × 4 painted sprays of distinct pointed leaves, for cards: eight fans (leaves spreading from a stem at
+ * the card's foot, often a smaller tier above), four whorls (leaves all round the card's middle) and four sprigs (one to
+ * three leaves filling the card, for small highlight cards). Texels: r a leaf's tone (the
  * leaves behind darker, a darker half and midrib), g the leaf's own id (the same over the whole leaf, so a light step
  * taken from it falls on whole leaves), a coverage with antialiased edges. A card's uv has v = 0 at its tip.
  */
@@ -346,36 +394,47 @@ export function sprayAtlas(cell = 256): THREE.DataTexture {
         data[i + 3] = Math.max(data[i + 3], alpha);
       }
     };
+    // No two sprays alike: each has its own number of leaves, spread, lean, and leaves slender or broad, straight or
+    // curled.
     const leaves: { x: number; y: number; angle: number; length: number; order: number }[] = [];
-    if (index < 10) {
-      // A fan: a tier of leaves from the stem's foot and a smaller one from higher up it.
-      const lean = between(-0.12, 0.12);
-      lay(0.5, () => { context.strokeStyle = "rgb(110,128,0)"; context.lineWidth = 0.012; context.beginPath(); context.moveTo(0, 0); context.lineTo(lean * 0.4, 0.42); context.stroke(); });
-      for (const [foot, count, reach, spread] of [[0.1, 5 + Math.floor(random() * 3), 0.46, 1.35], [0.36, 4 + Math.floor(random() * 3), 0.4, 1.2]] as const) {
+    const slender = between(0.2, 0.4), curl = between(-0.22, 0.22);
+    if (index < SPRAY_FANS) {
+      // A fan: a tier of leaves from the stem's foot and often a smaller one from higher up it, upright or leaning
+      // to one side.
+      const lean = between(-0.4, 0.4), tiers = random() < 0.7 ? 2 : 1, wide = between(0.75, 1.45);
+      lay(0.5, () => { context.strokeStyle = "rgb(110,128,0)"; context.lineWidth = 0.03; context.lineCap = "round"; context.beginPath(); context.moveTo(0, 0.02); context.lineTo(Math.sin(lean) * 0.3, 0.3); context.stroke(); });
+      for (const [foot, count, reach, spread] of ([[0.1, 3 + Math.floor(random() * 5), 0.46, wide], [0.36, 2 + Math.floor(random() * 5), 0.4, wide * 0.9]] as const).slice(0, tiers)) {
         for (let k = 0; k < count; k++) {
-          const angle = lean + (count > 1 ? (k / (count - 1) * 2 - 1) : 0) * spread + between(-0.14, 0.14);
+          const angle = lean + (count > 1 ? (k / (count - 1) * 2 - 1) : 0) * spread + between(-0.2, 0.2);
           // Side leaves are shorter and lie behind the middle ones.
-          const length = reach * (1 - 0.3 * Math.abs(angle - lean) / spread) * between(0.85, 1.1);
-          leaves.push({ x: lean * foot + Math.sin(angle) * 0.03, y: foot + Math.cos(angle) * 0.03, angle, length, order: -Math.abs(angle - lean) + foot + between(-0.2, 0.2) });
+          const length = reach * (1 - 0.3 * Math.abs(angle - lean) / spread) * between(0.7, 1.15);
+          leaves.push({ x: Math.sin(lean) * foot + Math.sin(angle) * 0.03, y: foot + Math.cos(angle) * 0.03, angle, length, order: -Math.abs(angle - lean) + foot + between(-0.2, 0.2) });
         }
       }
-    } else {
+    } else if (index < SPRAY_FANS + SPRAY_WHORLS) {
       // A whorl seen from above: leaves all round, the last ones over the first.
-      const count = 7 + Math.floor(random() * 3), turn = between(0, Math.PI * 2);
+      const count = 5 + Math.floor(random() * 5), turn = between(0, Math.PI * 2);
       for (let k = 0; k < count; k++) {
-        const angle = turn + k / count * Math.PI * 2 + between(-0.2, 0.2);
-        leaves.push({ x: Math.sin(angle) * 0.03, y: 0.5 + Math.cos(angle) * 0.03, angle, length: between(0.34, 0.44), order: random() });
+        const angle = turn + k / count * Math.PI * 2 + between(-0.3, 0.3);
+        leaves.push({ x: Math.sin(angle) * 0.03, y: 0.5 + Math.cos(angle) * 0.03, angle, length: between(0.28, 0.46), order: random() });
       }
       for (let k = 0; k < 3; k++) {
         const angle = between(0, Math.PI * 2);
         leaves.push({ x: 0, y: 0.5, angle, length: between(0.2, 0.28), order: 2 + random() });
       }
+    } else {
+      // A sprig for highlights: one to three leaves filling the card, from its foot.
+      const count = 1 + Math.floor(random() * 3), lean = between(-0.25, 0.25);
+      for (let k = 0; k < count; k++) {
+        const angle = lean + (count > 1 ? (k / (count - 1) * 2 - 1) * between(0.35, 0.6) : 0);
+        leaves.push({ x: 0, y: 0.04, angle, length: between(0.62, 0.9) * (1 - 0.25 * Math.abs(angle - lean)), order: -Math.abs(angle - lean) });
+      }
     }
     leaves.sort((p, q) => p.order - q.order);
     leaves.forEach((leaf, k) => {
       // Later leaves lie on top and are lighter; every leaf has its own id.
-      const depth = leaves.length > 1 ? k / (leaves.length - 1) : 1, id = between(0.04, 1), width = leaf.length * between(0.25, 0.32);
-      lay(id, () => stampLeaf(context, leaf.x, leaf.y, leaf.angle, leaf.length, width, 0.62 + 0.38 * depth, id));
+      const depth = leaves.length > 1 ? k / (leaves.length - 1) : 1, id = between(0.04, 1), width = leaf.length * slender * between(0.8, 1.2), bend = curl + between(-0.12, 0.12);
+      lay(id, () => stampLeaf(context, leaf.x, leaf.y, leaf.angle, leaf.length, width, 0.62 + 0.38 * depth, id, bend));
     });
   }
   // Every texel a leaf does not fully cover takes the tone and id of the nearest one it does (two sweeps of a
