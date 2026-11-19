@@ -45,6 +45,10 @@ function reach(mass: FoliageMass, placement: THREE.Matrix4): { low: number; high
  */
 export function animeTree(mass: FoliageMass, placement: THREE.Matrix4, look: AnimeTreeLook, sun: THREE.IUniform<THREE.Vector3>, time: THREE.IUniform<number>): THREE.Mesh[] {
   const uniforms = animeUniforms(sun, time);
+  // The mass's grade darkens or lightens the ramp: its value against the lane trees' own (0.8), so the lane's darker
+  // groundcover is darker here too. (The rest of the grade belongs to the painted mass's own colours.)
+  const value = mass.palette && mass.palette.value !== 1 ? Math.min(1.15, Math.max(0.6, mass.palette.value / 0.8)) : 1;
+  for (const colour of uniforms.atRamp.value as THREE.Color[]) colour.multiplyScalar(value);
   const { low, high } = reach(mass, placement), scale = placement.getMaxScaleOnAxis();
   // A tree's crown is some 6 m high; a shrub's a meter or two; groundcover is many small plants (its field's cells are fine).
   const low_plant = mass.cell < 0.2, small = low_plant ? 0.5 : Math.min(1, Math.max(0.55, (high - low) / (5 * scale)));

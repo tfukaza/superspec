@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ANIME_SHADE_GLSL, ANIME_VERTEX_GLSL, SPRAY_FANS, SPRAY_GRID, SPRAY_SPRIGS, SPRAY_WHORLS, generator, keepTargetAlpha, sprayAtlas, type Crown } from "./anime-tree-crown.ts";
+import { ANIME_SHADE_GLSL, ANIME_VERTEX_GLSL, SPRAY_FANS, SPRAY_GRID, SPRAY_SPRIGS, SPRAY_WHORLS, coverageAlpha, generator, sprayAtlas, type Crown } from "./anime-tree-crown.ts";
 
 /**
  * Illustrated tree, look `sprays`: many small cards at the stations of the crown (anime-tree-crown.ts), each textured
@@ -143,7 +143,7 @@ export function animeSprays(cards: SprayCard[], uniforms: Record<string, THREE.I
   const material = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, alphaToCoverage: true });
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "anime/sprays";
-  keepTargetAlpha(mesh);
+  coverageAlpha(material);
   mesh.customDepthMaterial = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, defines: { AT_DEPTH: 1 } });
   mesh.userData.animeTree = { instances: cards.length, triangles: cards.length * 2 };
   return mesh;

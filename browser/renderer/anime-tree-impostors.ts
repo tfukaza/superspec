@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ANIME_SHADE_GLSL, crownShade, generator, keepTargetAlpha, type Crown, type CrownStation } from "./anime-tree-crown.ts";
+import { ANIME_SHADE_GLSL, coverageAlpha, crownShade, generator, type Crown, type CrownStation } from "./anime-tree-crown.ts";
 import { animeLeaves } from "./anime-tree-leaves.ts";
 
 /**
@@ -202,7 +202,7 @@ export function animeImpostors(crown: Crown, uniforms: Record<string, THREE.IUni
   // shadow pass before that casts nothing from the cards.
   const ensure = (renderer: THREE.WebGLRenderer) => { if (!made.baked) bake(renderer, made, uniforms); };
   mesh.onBeforeRender = ensure;
-  keepTargetAlpha(mesh);
+  coverageAlpha(material);
   mesh.userData.animeTree = { instances: clusters.length, triangles: clusters.length * 2, bake: (renderer: THREE.WebGLRenderer) => ensure(renderer) };
   return mesh;
 }

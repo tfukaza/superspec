@@ -64,7 +64,7 @@ export function crownShade(crown: Pick<Crown, "centre" | "radii" | "tier">, clus
   const normal = own.multiplyScalar(0.72).addScaledVector(broad, 0.28).add(new THREE.Vector3(0, 0, 0.22)).normalize();
   const inner = 1 - Math.min(1, d.length()), under = Math.min(1, Math.max(0, -d.z)), deep = 1 - Math.min(1, c.length());
   // Clusters above shade its top less the higher a point stands in it; its underside is in its own shade.
-  const occlusion = Math.min(1, 0.55 * cluster.covered * (1 - 0.35 * Math.max(0, Math.min(1, d.z))) + 0.25 * inner + 0.35 * under + 0.28 * deep + 0.42 * below);
+  const occlusion = Math.min(1, 0.75 * cluster.covered * (1 - 0.35 * Math.max(0, Math.min(1, d.z))) + 0.32 * inner + 0.35 * under + 0.28 * deep + 0.42 * below);
   return { normal, occlusion };
 }
 
@@ -208,7 +208,7 @@ export const ANIME_LIGHT = {
   /** Share of the light that comes from straight above whatever the sun (top-lit clusters). */
   top: 0.3,
   /** How far full occlusion darkens, and how far being seen from beneath does. */
-  occlusion: 0.5, underside: 0.35,
+  occlusion: 0.5, underside: 0.25,
   /** A whole leaf's random shift of light: what makes single leaves read. */
   jitter: 0.26,
   /** Steps of the ramp. */
@@ -329,16 +329,17 @@ function canvas2d(width: number, height: number): { canvas: OffscreenCanvas | HT
 }
 
 /**
- * For a mesh whose fragments' alpha is their coverage (alpha to coverage): the target's own alpha is left as it is
- * while the mesh is drawn. Three's canvas has an alpha channel, so an edge's partial alpha written to it would let
- * the page show through the picture along every leaf's edge.
+ * For a material whose fragments' alpha is their coverage (alpha to coverage): what it writes to the target's alpha.
+ * The colour replaces what was there, but its alpha is added to it, so a leaf's soft edge over another leaf leaves
+ * the target opaque there. Otherwise an edge's partial alpha would show the page through three's canvas (which has an
+ * alpha channel) and the backdrop through the scene's target (whose alpha its output pass lays over the backdrop)
+ * along every leaf's edge. Where the edge is drawn before what lies behind it, the fringe remains.
  */
-export function keepTargetAlpha(mesh: THREE.Mesh): void {
-  const before = mesh.onBeforeRender, after = mesh.onAfterRender;
-  mesh.onBeforeRender = function (renderer, ...rest) { before.call(this, renderer, ...rest); renderer.getContext().colorMask(true, true, true, false); };
-  mesh.onAfterRender = function (renderer, ...rest) { renderer.getContext().colorMask(true, true, true, true); after.call(this, renderer, ...rest); };
+export function coverageAlpha(material: THREE.Material): void {
+  material.blending = THREE.CustomBlending;
+  material.blendSrc = THREE.OneFactor; material.blendDst = THREE.ZeroFactor;
+  material.blendSrcAlpha = THREE.OneFactor; material.blendDstAlpha = THREE.OneFactor;
 }
-
 /** One leaf stamped at (x, y) along `angle` (radians from +y toward +x, y up): red its tone, green its own id. */
 function stampLeaf(context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D, x: number, y: number, angle: number, length: number, width: number, tone: number, id: number, bend = 0): void {
   const colour = (t: number) => `rgb(${Math.round(255 * Math.min(1, t))},${Math.round(255 * id)},0)`;
