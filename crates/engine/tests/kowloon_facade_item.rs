@@ -1303,6 +1303,12 @@ fn a_steel_balcony_has_rails_where_a_parapet_is_solid() {
         assert_eq!(bound.contains_key("balcony/metal"), rail == "steel");
         if rail == "steel" {
             assert!(bound.contains_key("balcony/paint"));
+            // The slab, support cheeks and rail upstand are a single concrete pour.
+            // A white slab under a separately tinted upstand paints a continuous stripe.
+            let concrete = &bound["balcony/concrete"].colors;
+            assert!(!concrete.is_empty());
+            assert!(concrete.iter().all(|color| color == &concrete[0]));
+            assert!(concrete[0][..3].iter().all(|channel| *channel < 0.7));
         }
         for (id, before) in unbound {
             let after = &bound[&id];

@@ -230,7 +230,7 @@
       "when": "balcony * (uppers >= 1) * (width >= 3)",
       "generator": {"kind": "native", "name": "kowloon/balcony",
         "parameters": {"width": {"expr": "balconyEnd - balconyFrom"}, "depth": {"parameter": "balconyDepth"}, "thickness": 0.27, "parapet": true, "parapet_height": 0.95,
-                       "brackets": {"parameter": "balconyBrackets"}, "color": "#ffffff", "upstand": 0.465,
+                       "brackets": {"parameter": "balconyBrackets"}, "color": "#c5c0b3", "trim": "#c5c0b3", "upstand": 0.465,
                        "rail": {"parameter": "balconyRail"}, "rail_color": {"parameter": "frame"}}},
       "placement": {"position": ["(balconyFrom + balconyEnd) / 2", 0, {"derived": "base"}]},
       "slots": {"concrete": "suspended-concrete", "wall": "wall", "metal": "metal", "paint": "paint"}
