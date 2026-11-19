@@ -10,6 +10,7 @@ import {
 
 const flag = param.vec2({ default: vec2(0.55, 0.43), range: [0.1, 3], unit: "m", label: "Flag size" });
 const stagger = param.scalar({ default: 0.5, range: [0, 0.99], label: "Row offset" });
+const joints = param.scalar({ default: 1, range: [0, 1], label: "Drawn joints (0 where the stones are modelled)" });
 const jointWidth = param.scalar({ default: 0.012, range: [0.002, 0.05], unit: "m", label: "Joint width" });
 const stone = param.vec3({ default: vec3(0.39, 0.37, 0.3), range: [0, 1], label: "Flag colour" });
 const variation = param.scalar({ default: 0.32, range: [0, 0.8], label: "Tone variation" });
@@ -31,7 +32,7 @@ const faced = mul(mul(mix(stone, mul(stone, vec3(1.25, 1.24, 1.2)), newer), mul(
 // Joints, wider where their edges have crumbled; and a crack across some flags, wandering from side to side.
 const crumbled = add(jointWidth, mul(mul(jointWidth, 1.5), smoothstep(0.55, 0.85, valueNoise(mul(at, 9), seed("flag-crumble")))));
 const pixel = max(footprint, 0.001);
-const joint = sub(1, smoothstep(mul(crumbled, 0.5), add(mul(crumbled, 0.5), pixel), grid.sideDistance));
+const joint = mul(joints, sub(1, smoothstep(mul(crumbled, 0.5), add(mul(crumbled, 0.5), pixel), grid.sideDistance)));
 const isCracked = step(sub(1, cracked), hash(grid.cell, seed("flag-cracked")));
 const lean = sub(hash(grid.cell, seed("flag-lean")), 0.5);
 const wobble = mul(sub(valueNoise(mul(at, 14), seed("flag-wobble")), 0.5), 0.05);

@@ -513,8 +513,9 @@ fn choices_and_dimensions_reach_the_fixture() {
         for corners in m.indices.chunks_exact(3) {
             let [a, b, c] = [0, 1, 2].map(|k| m.positions[corners[k] as usize]);
             let centre = [0, 1].map(|k| (a[k] + b[k] + c[k]) / 3.);
-            // (A slab's top sinks at most 5 mm; its 8 mm chamfer falls below this.)
-            if a[2] > -0.007 && b[2] > -0.007 && c[2] > -0.007 {
+            // A slab's top is level and sinks at most 5 mm; its chamfer slopes into the joint.
+            let level = (a[2] - b[2]).abs() < 1e-9 && (a[2] - c[2]).abs() < 1e-9;
+            if level && a[2] > -0.007 {
                 slabs += 1;
                 assert!(
                     !(centre[0] > 3. && centre[0] < 21. && centre[1] > -5.9 && centre[1] < -4.1),

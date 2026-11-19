@@ -138,7 +138,7 @@ function facadeMaterials() {
     { id: "tube-light", entry: "kowloon-tube-light.material.ts", parameters: {}, seed: 7, meshes: [] },
     // A lit upper room's walls and ceiling (tinted): a soft warm glow under its own tube, far dimmer than the tube.
     { id: "room-lit", entry: "kowloon-tube-light.material.ts", parameters: { tint: [1, 0.8, 0.55], glow: 0.08, aged: 0, dust: 0, falloff: 0.85 }, seed: 7, meshes: [] },
-    { id: "shop-floor", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, fractures: 0.3, stone: [0.62, 0.61, 0.58], variation: 0.04, grime: 0.25, spots: 0.25 }, seed: 4, meshes: [] },
+    { id: "shop-floor", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, joints: 0, cracked: 0, fractures: 0.3, stone: [0.62, 0.61, 0.58], variation: 0.04, grime: 0.25, spots: 0.25 }, seed: 4, meshes: [] },
     // Street-weathered galvanized sheet (a roof tank's shell): a neutral dull grey, not the washroom duct's blue-grey.
     { id: "weathered-galvanized", entry: steel, parameters: { substrate: [0.42, 0.41, 0.38], metalness: 0.5, roughness: 0.62, edgeRust: 0.7, surfaceRust: 0.35, rainRust: 0.85 }, seed: 7, meshes: [] },
     // The building's ducts and their fittings: galvanized sheet gone dull, rust spread over it in spots and a faint bloom,
@@ -151,7 +151,7 @@ function facadeMaterials() {
     { id: "street-metal", entry: steel, parameters: { ...plain, substrate: [0.62, 0.62, 0.6], metalness: 0.2, roughness: 0.75, edgeRust: 0.85, surfaceRust: 0.4, rainRust: 0.85 }, seed: 17, meshes: [] },
     { id: "lamp-lens", entry: "kowloon-tube-light.material.ts", parameters: { tint: [1, 0.82, 0.55], glow: 0.35, aged: 0.2, dust: 0.6 }, seed: 7, meshes: [] },
     { id: "weathered-timber", entry: "wood.material.ts", parameters: { light: [0.42, 0.6, 0.92], dark: [0.2, 0.28, 0.42] }, seed: 7, meshes: [] },
-    { id: "avenue-paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.66, 0.66, 0.65], variation: 0.08, grime: 1, spots: 0.5, wet: 0.5 }, seed: 21, meshes: [] },
+    { id: "avenue-paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, joints: 0, cracked: 0, stone: [0.66, 0.66, 0.65], variation: 0.08, grime: 1, spots: 0.5, wet: 0.5 }, seed: 21, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.92, surfaceRust: 0.38, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
     { id: "aged-metal", entry: steel, parameters: { ...plain, substrate: [0.72, 0.72, 0.7], metalness: 0.35, roughness: 0.6, edgeRust: 0.9, surfaceRust: 0.4, rainRust: 0.9 }, seed: 5, meshes: [] },
@@ -159,8 +159,8 @@ function facadeMaterials() {
     { id: "canvas", entry: "kowloon-canvas.material.ts", parameters: { clothA: [0.86, 0.85, 0.82], clothB: [0.86, 0.85, 0.82], striped: 0, bleaching: 0, soil: 0.4, wallRuns: 1 }, seed: 7, meshes: [] },
     // The street: flagged pavement and its kerb (their stones shaded by tints), and the asphalt beyond.
     // (The pavement item lays its own stones, so the recipe's flags are made too large to show: one stone a receiver.)
-    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.62, 0.62, 0.61], variation: 0.06, grime: 1, wet: 0.6 }, seed: 7, meshes: [] },
-    { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
+    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, joints: 0, cracked: 0, stone: [0.62, 0.62, 0.61], variation: 0.06, grime: 1, wet: 0.6 }, seed: 7, meshes: [] },
+    { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, joints: 0, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
     { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.1, wearing: 0.12, stains: 0.12 }, seed: 7, meshes: [] },
     { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
   ];

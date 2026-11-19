@@ -317,18 +317,30 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
     // Use with VIEWPORT=1080x1080 for a square video.
     if (process.env.RECORD) {
       const seconds = Number(process.env.RECORD), swing = Number(process.env.ORBIT_DEGREES ?? 45) * Math.PI / 180;
-      const centre = [(x0 + front) / 2, cy, (z0 + z1) / 2], fov = Number(process.env.RECORD_FOV ?? 24), recordElevation = Number(process.env.RECORD_ELEVATION ?? 10) * Math.PI / 180;
+      // RECORD_CENTRE=<dx>,<dy>,<z>: moves the swing's centre from the building's middle (metres; z absolute), e.g. over the avenue.
+      const [dx, dy, dz] = (process.env.RECORD_CENTRE ?? "0,0,").split(",").map(v => v === "" ? null : Number(v));
+      const centre = [(x0 + front) / 2 + dx, cy + dy, dz ?? (z0 + z1) / 2], fov = Number(process.env.RECORD_FOV ?? 24), recordElevation = Number(process.env.RECORD_ELEVATION ?? 10) * Math.PI / 180;
       const recordDistance = Number(process.env.RECORD_DISTANCE ?? 62);
+      // RECORD_AZIMUTH: the swing's middle direction, degrees from +x toward +y (default: the reference view's).
+      const recordAzimuth = process.env.RECORD_AZIMUTH ? Number(process.env.RECORD_AZIMUTH) * Math.PI / 180 : azimuth;
       // The viewport fills the page, so the canvas is the page's size (the Studio's panels otherwise take half of it).
       await page.evaluate(() => Object.assign(document.querySelector("#viewport").style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh", zIndex: "50", margin: "0" }));
       await waitForFrames(page, 10);
-      const result = await page.evaluate(async ({ id, centre, azimuth, swing, seconds, fov, elevation, distance, fps, hide }) => {
+      const result = await page.evaluate(async ({ id, centre, azimuth, swing, seconds, fov, elevation, distance, fps, hide, drop }) => {
         const s = window.__scene;
         // The building only: its own meshes, without the neighbour stubs it stands against.
-        const hidden = new RegExp(hide);
         const parts = new Set();
-        s.models.traverse(m => { if (m.isMesh) { m.visible = m.name.startsWith(`${id}/`) && !hidden.test(m.name) && !m.userData?.foliage; if (m.visible) parts.add(m.name.split("/").slice(0, 4).join("/")); } });
-        (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = false; if (m.userData.source) m.userData.source.visible = false; } });
+        if (hide !== "none") {
+          const hidden = new RegExp(hide);
+          s.models.traverse(m => { if (m.isMesh) { m.visible = m.name.startsWith(`${id}/`) && !hidden.test(m.name) && !m.userData?.foliage; if (m.visible) parts.add(m.name.split("/").slice(0, 4).join("/")); } });
+          (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = false; if (m.userData.source) m.userData.source.visible = false; } });
+        } else {
+          // RECORD_HIDE=none: the whole scene (lane, avenue, plants) as the views show it, less what RECORD_DROP names
+          // (a pattern over mesh and model names, e.g. the neighbouring buildings).
+          (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = true; if (m.userData.source) m.userData.source.visible = true; } });
+          if (drop) { const dropped = new RegExp(drop); s.models.traverse(m => { if (m.isMesh && dropped.test(m.name)) m.visible = false; }); }
+          s.models.traverse(m => { if (m.isMesh && m.visible) parts.add(m.name.split("/").slice(0, 2).join("/")); });
+        }
         s.renderer.shadowMap.needsUpdate = true;
         s.camera.fov = fov; s.camera.updateProjectionMatrix();
         const place = t => {
@@ -338,6 +350,11 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
         };
         place(0);
         for (let i = 0; i < 30; i++) await new Promise(r => requestAnimationFrame(r));
+        // The scene's own frame time along the swing, before recording: a draw per animation frame, GPU finished each time.
+        const gl = s.renderer.getContext(), times = [];
+        for (let i = 0; i < 120; i++) { const t0 = performance.now(); place(i / 120); gl.finish(); times.push(performance.now() - t0); await new Promise(r => requestAnimationFrame(r)); }
+        times.sort((a, b) => a - b);
+        const frameMs = { median: times[60], p90: times[108], max: times[119] };
         const canvas = document.querySelector("#viewport canvas");
         // Each frame is drawn, then encoded (WebCodecs, H.264) with its own fixed timestamp, so the video runs at an even
         // `fps` however long a frame takes to draw. The node side wraps the chunks in an MP4 (tools/video/mp4.mjs).
@@ -360,10 +377,11 @@ const page = await browser.newPage({ viewport: { width: viewWidth, height: viewH
           if (encoder.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
         }
         await encoder.flush(); encoder.close();
-        return { failure, description, samples, frames: count, size: [canvas.width, canvas.height], parts: [...parts].sort() };
-      }, { id: facade.id, centre, azimuth, swing, seconds, fov, elevation: recordElevation, distance: recordDistance, fps: Number(process.env.RECORD_FPS ?? 60),
-        hide: process.env.RECORD_HIDE ?? "\\/party|neighbour|frontage|stub" });
+        return { failure, description, samples, frames: count, size: [canvas.width, canvas.height], parts: [...parts].sort(), frameMs, calls: s.renderer.info.render.calls };
+      }, { id: facade.id, centre, azimuth: recordAzimuth, swing, seconds, fov, elevation: recordElevation, distance: recordDistance, fps: Number(process.env.RECORD_FPS ?? 60),
+        hide: process.env.RECORD_HIDE ?? "\\/party|neighbour|frontage|stub", drop: process.env.RECORD_DROP ?? "" });
       console.log(`record parts shown: ${result.parts.join(" ")}`);
+      console.log(`record frame time (draw + GPU finish): median ${result.frameMs.median.toFixed(1)} ms, p90 ${result.frameMs.p90.toFixed(1)} ms, max ${result.frameMs.max.toFixed(1)} ms; last draw calls ${result.calls}`);
       if (result.failure || !result.description) throw new Error(`encoding failed: ${result.failure ?? "no decoder description"}`);
       const { mp4 } = await import("../tools/video/mp4.mjs");
       const file = resolve(out, "building-orbit.mp4");

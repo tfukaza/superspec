@@ -21,12 +21,12 @@ use superspec_types::rng::SeededRng;
 /// paving material bound over them decides their colour and the tints only vary it.
 const PAVING: &str = "#8f8e8a";
 /// The joint between paving and kerb stones, and how far a paving stone's top edge is
-/// chamfered into it: together a dark band wide enough to read as a drawn line from across
-/// a street.
-const JOINT: f64 = 0.014;
-const BEVEL: f64 = 0.008;
-/// How dark a stone's chamfer and sides are, of its own tint.
-const JOINT_SHADE: f64 = 0.42;
+/// chamfered into it: together a fine band a step darker than the stone, a light drawn line
+/// rather than a dark one.
+const JOINT: f64 = 0.007;
+const BEVEL: f64 = 0.0035;
+/// How dark a stone's chamfer and sides, and the bed in the joints, are of its own tint.
+const JOINT_SHADE: f64 = 0.78;
 
 /// A paving stone over `[x0, y0, x1, y1]` (the joint already taken off), its top at `top`
 /// and its foot in the bed at z = -0.04: the top face in `tint`, and a chamfer round it over
@@ -412,7 +412,7 @@ pub(super) fn pavement(
             "paving",
             [x0, -depth + kerb, -height],
             [x1, 0., -0.035],
-            shade(color, 0.55),
+            shade(color, JOINT_SHADE),
             "d",
         )?;
         let columns = ((x1 - x0) / stone).round().max(1.) as usize;
@@ -637,7 +637,7 @@ pub(super) fn pavement_corner(
             [0., turn],
             segments,
             false,
-            shade(color, 0.55),
+            shade(color, JOINT_SHADE),
         )?;
         // The rows of the straight pavements run on as rings, each of its own count of stones.
         let rows = ((depth - kerb) / stone).round().max(1.) as usize;
@@ -818,7 +818,7 @@ pub(super) fn pedestrian_avenue(
                 "paving",
                 [x0, y0, -height],
                 [x1, 0., -0.035],
-                shade(color, 0.55),
+                shade(color, JOINT_SHADE),
                 "d",
             )?;
             let rows = ((-y0) / course).round().max(1.) as usize;
