@@ -1304,6 +1304,7 @@ fn sill(height: f64) -> Vec<program::NamedFeature> {
             [0.9, 0., height + 0.1],
         ],
         closed: false,
+        zone: None,
     }]
 }
 
@@ -1433,6 +1434,7 @@ fn an_item_s_features_become_named_receiver_features_in_world_meters() {
         width: 0.,
         reach: Default::default(),
         within: 0.,
+        zone: None,
     };
     let features = [
         feature("sill", vec![[0., 0., 1.], [1., 0., 1.]], false),
@@ -1498,6 +1500,7 @@ output height = 0.001 * grain * (1 - joint / 0.03);";
                     name: name.into(),
                     points: vec![start, [start[0] + 0.01, 0., start[2] + 0.004]],
                     closed: false,
+                    zone: None,
                 });
             }
         }

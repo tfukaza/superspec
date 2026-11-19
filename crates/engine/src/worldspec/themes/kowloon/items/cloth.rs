@@ -33,8 +33,9 @@ fn gcd(a: usize, b: usize) -> usize {
 
 /// `kowloon/sagging-tarp`: a sheet of canvas hung between fixings on the wall and either
 /// poles at its front edge or a light steel frame. Between its fixings every edge hangs in a
-/// catenary, the field bellies below them, pleats run out from the front fixings and the
-/// front edge ripples; ropes tie the eyelets to wall hooks and the corners to the pole tops,
+/// catenary, the field bellies below them, sharp creases run out from every fixing (shaded
+/// in their troughs), a slack sheet gathers in a few seeded deep folds that deepen toward
+/// its hem, and the front edge ripples; a scalloped valance has a bound hem; ropes tie the eyelets to wall hooks and the corners to the pole tops,
 /// and each pole is tied back to the wall by a stay. Anchor: the centre of its rear edge on
 /// the wall plane; it reaches `depth` out and its front fixings are `drop` lower. Slots:
 /// `tarp` (cloth, hems and ropes, tinted per vertex), `metal`. Parameters: `width` (m,
@@ -84,14 +85,14 @@ pub(super) fn sagging_tarp(
     let leans: Vec<[f64; 2]> = (0..supports)
         .map(|_| [rng.float(-0.05, 0.05), rng.float(0.02, 0.09)])
         .collect();
-    // Columns: whole stripes and whole scallops, about 7 cm wide, four at least to a lobe.
+    // Columns: whole stripes and whole scallops, about 5 cm wide, six at least to a lobe.
     let unit = {
         let (s, c) = (stripes.max(1), scallops.max(1));
         s / gcd(s, c) * c
     };
-    let mut per = ((width / 0.07 / unit as f64).ceil() as usize).max(1);
+    let mut per = ((width / 0.05 / unit as f64).ceil() as usize).max(1);
     if scallops > 0 {
-        per = per.max((4 * scallops).div_ceil(unit));
+        per = per.max((6 * scallops).div_ceil(unit));
     }
     let columns = unit * per;
     if columns > 720 {
@@ -99,9 +100,66 @@ pub(super) fn sagging_tarp(
             "{name}: stripes and scallops need {columns} columns; at most 720."
         ));
     }
-    let rows = ((depth / 0.11).ceil() as usize).clamp(6, 24);
+    let rows = ((depth / 0.07).ceil() as usize).clamp(8, 36);
     let eyelets = (width / 0.65).round().max(1.) as usize;
     let loose = if frame { 0.35 } else { 1. };
+    // Creases run out from every fixing; a slack sheet also gathers in a few deep folds that
+    // deepen toward its hem: [u of the fold, half its width in m, its share of the depth].
+    let eyelet_phases: Vec<f64> = (0..=eyelets).map(|_| rng.float(0., 2. * PI)).collect();
+    let gathers = if frame {
+        0
+    } else {
+        ((width / 1.3).round() as usize).clamp(2, 6)
+    };
+    let deep: Vec<[f64; 3]> = (0..gathers)
+        .map(|k| {
+            [
+                (k as f64 + rng.float(0.2, 0.8)) / gathers as f64,
+                rng.float(0.14, 0.26),
+                rng.float(0.7, 1.2),
+            ]
+        })
+        .collect();
+    let give = if frame { 0.6 } else { 1. };
+    // A crease's profile across it: 1 in its sharp trough, falling to 0 midway to the next.
+    let crease = |x: f64| {
+        let s = 1. - sin(x).abs();
+        s * s
+    };
+    // The folds at (u, v): how far they sink the cloth (in shares of its sag) and how much of
+    // a trough's shadow it holds (0 to 1), to darken the cloth along its creases.
+    let folds_at = |u: f64, v: f64| -> (f64, f64) {
+        let (mut sink, mut shadow) = (0., 0.);
+        for (p, phase) in phases.iter().enumerate() {
+            let dx = (u - p as f64 / (supports - 1) as f64) * width;
+            let dy = (1. - v) * depth;
+            let r = hypot(dx, dy);
+            let reach = (r / 0.08).min(1.) / (1. + (r / 0.95) * (r / 0.95));
+            let c = crease(atan2(dy, dx) * 4.5 + phase) * reach;
+            sink += 0.22 * c;
+            shadow += 0.8 * c;
+        }
+        for (i, phase) in eyelet_phases.iter().enumerate() {
+            let dx = (u - i as f64 / eyelets as f64) * width;
+            let dy = v * depth;
+            let r = hypot(dx, dy);
+            let reach = (r / 0.05).min(1.) / (1. + (r / 0.45) * (r / 0.45));
+            let c = crease(atan2(dy, dx) * 3. + phase) * reach;
+            sink += 0.12 * c;
+            shadow += 0.55 * c;
+        }
+        let toward = ((v - 0.25) / 0.75).max(0.);
+        let toward = toward * toward.sqrt();
+        for [at, half, share] in &deep {
+            // A round-bottomed trough, so the hem hangs in festoons rather than points.
+            let t = ((u - at) * width) / half;
+            let f = (1. - t * t).max(0.);
+            let f = f * f * toward * share;
+            sink += 0.45 * f;
+            shadow += f;
+        }
+        (sink * give, shadow.min(1.) * (sag / 0.15).min(1.))
+    };
     // The cloth's surface over (u across, v from the wall to the front).
     let surface = |u: f64, v: f64| -> V3 {
         let span = (u * (supports - 1) as f64).min((supports - 1) as f64 - 1e-9);
@@ -118,16 +176,9 @@ pub(super) fn sagging_tarp(
             * (1. - v)
             * (1. - v)
             * (1. - v);
-        // Pleats run out from each front fixing, and the free edge ripples.
-        let mut folds = 0.;
-        for (p, phase) in phases.iter().enumerate() {
-            let dx = (u - p as f64 / (supports - 1) as f64) * width;
-            let dy = (1. - v) * depth;
-            let r = hypot(dx, dy);
-            folds +=
-                sin(atan2(dy, dx) * 9. + phase) * (r / 0.12).min(1.) / (1. + (r / 0.6) * (r / 0.6));
-        }
-        folds += 0.8
+        // Creases run out from the fixings and gather near the hem, and the free edge ripples.
+        let creases = folds_at(u, v).0;
+        let mut folds = 0.8
             * sin(2. * PI * u * width / ripple[1] + ripple[0])
             * v
             * v
@@ -139,7 +190,8 @@ pub(super) fn sagging_tarp(
         [
             -width / 2. + u * width + (0.5 - u) * 2. * pinch,
             0.03 + v * (depth - 0.03) - front * 0.35 * v,
-            -(drop + low) * v - front * v * v.sqrt() - belly - rear + folds * sag * 0.3 * loose,
+            -(drop + low) * v - front * v * v.sqrt() - belly - rear + folds * sag * 0.3 * loose
+                - creases * sag,
         ]
     };
     let soil = |u: f64, v: f64, base: V3| -> V3 {
@@ -152,7 +204,26 @@ pub(super) fn sagging_tarp(
             srgb("#a99d88"),
             0.1 + 0.12 * value_noise(u * width * 0.6, v * depth * 0.8, noise_seed + 3.),
         );
-        std::array::from_fn(|k| faded[k] * (1. - grime * [0.42, 0.49, 0.55][k]))
+        // Its creases' troughs hold a shadow and the dirt that runs into them.
+        let trough = 1. - 0.3 * folds_at(u, v).1;
+        std::array::from_fn(|k| faded[k] * (1. - grime * [0.42, 0.49, 0.55][k]) * trough)
+    };
+    // The valance hangs from the front edge, `row` (0 to 1) of the way down to its hem, which
+    // is cut in round lobes; returns the point and how far it hangs.
+    let lobe = if scallops > 0 { valance * 0.5 } else { 0. };
+    let valance_at = |u: f64, row: f64| -> (V3, f64) {
+        let top = surface(u, 1.);
+        let t = (u * scallops as f64).fract();
+        let round = (1. - (2. * t - 1.) * (2. * t - 1.)).max(0.).sqrt();
+        // A straight hem on a slack sheet hangs unevenly.
+        let uneven = if scallops == 0 && !frame {
+            0.55 + 0.45 * value_noise(u * width * 1.3, 3.5, noise_seed)
+        } else {
+            1.
+        };
+        let hang = (valance - lobe + lobe * round) * uneven;
+        let sway = 0.018 * sin(2. * PI * u * width / 0.9 + ripple[0]) * sin(row * PI * 0.7);
+        ([top[0], top[1] + sway, top[2] - hang * row], hang)
     };
     let bands = stripes.max(1);
     let band_color = |band: usize| if band % 2 == 1 { stripe } else { color };
@@ -179,31 +250,19 @@ pub(super) fn sagging_tarp(
                 .collect();
             two_sided(d, "tarp", &grid)?;
             if valance > 0. {
-                // The valance hangs from the front edge; its hem is cut in round lobes.
-                let lobe = if scallops > 0 { valance * 0.36 } else { 0. };
                 let grid: Vec<Vec<PatchVertex>> = [0., 0.45, 0.8, 1.]
                     .into_iter()
                     .map(|row: f64| {
                         (0..=per_band)
                             .map(|i| {
                                 let u = (band * per_band + i) as f64 / columns as f64;
-                                let top = surface(u, 1.);
-                                let t = (u * scallops as f64).fract();
-                                let round = (1. - (2. * t - 1.) * (2. * t - 1.)).max(0.).sqrt();
-                                // A straight hem on a slack sheet hangs unevenly.
-                                let uneven = if scallops == 0 && !frame {
-                                    0.55 + 0.45 * value_noise(u * width * 1.3, 3.5, noise_seed)
-                                } else {
-                                    1.
-                                };
-                                let hang = (valance - lobe + lobe * round) * uneven;
-                                let sway = 0.018
-                                    * sin(2. * PI * u * width / 0.9 + ripple[0])
-                                    * sin(row * PI * 0.7);
+                                let (at, hang) = valance_at(u, row);
+                                // Its cut edge is a little darker, so the lobes read.
+                                let hemmed = if row == 1. && scallops > 0 { 0.8 } else { 0.92 };
                                 PatchVertex {
-                                    at: [top[0], top[1] + sway, top[2] - hang * row],
+                                    at,
                                     uv: [u * width, depth + hang * row],
-                                    tint: soil(u, 1. - 0.02 * row, shade(base, 0.92)),
+                                    tint: soil(u, 1. - 0.02 * row, shade(base, hemmed)),
                                 }
                             })
                             .collect()
@@ -211,6 +270,13 @@ pub(super) fn sagging_tarp(
                     .collect();
                 two_sided(d, "tarp", &grid)?;
             }
+        }
+        if valance > 0. && scallops > 0 {
+            // The scalloped hem's bound edge.
+            let path: Vec<V3> = (0..=columns)
+                .map(|i| valance_at(i as f64 / columns as f64, 1.).0)
+                .collect();
+            d.tube("tarp", &path, 0.004, edge, 4)?;
         }
         // Hems: a rolled edge all round.
         let across = |v: f64| -> Vec<V3> {

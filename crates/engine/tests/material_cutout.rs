@@ -427,6 +427,7 @@ fn a_layer_combines_what_it_gives_with_the_surface_beneath_and_leaves_the_rest()
         name: "follow".into(),
         points: vec![[-5., 0., 0.], [5., 0., 0.]],
         closed: false,
+        zone: None,
     };
     let named = program::NamedFeatures::new(std::slice::from_ref(&line)).unwrap();
     let features = program::FeatureSet::new(Vec::new());

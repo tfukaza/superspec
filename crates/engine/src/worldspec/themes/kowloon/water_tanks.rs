@@ -278,7 +278,15 @@ fn cone_lid(
             [0.55; 3],
         )?;
     }
-    Ok(())
+    // The collar the manhole stands on.
+    drawing.disc(
+        "metal",
+        [0., 0., z + rise],
+        top,
+        [0., 0., 1.],
+        [0.88; 3],
+        48,
+    )
 }
 /// [`round_tank`] with whatever `shape` fixes of it.
 pub fn shaped_round_tank(
@@ -300,6 +308,12 @@ pub fn shaped_round_tank(
     let height = rng.float(1.05, 1.3);
     let base = rng.float(0.42, 0.53);
     let paint = srgb(rng.pick(&["#b6b8ae", "#a5ada5", "#9da9a4"]));
+    let radius = shape.radius.unwrap_or(radius);
+    let height = shape.height.unwrap_or(height);
+    let base = shape.stand.unwrap_or(base);
+    // What stands on the top (the manhole, its bolts and handle, the ladder's head) rises
+    // with a conical lid.
+    let lift = shape.lid;
     let steel = Steel {
         slot: "metal",
         tint: srgb("#626d64"),
@@ -394,13 +408,29 @@ pub fn shaped_round_tank(
     let polished = drawing
         .pen
         .with_brushed_metal(drawing.repeat("brushed-metal"))?;
-    for t in [0.25, 0.55, 0.82] {
-        let z = base + 0.14 + (height - 0.3) * t;
+    // Three hoops, or the caller's evenly spaced rolled ribs, a little fuller and prouder.
+    let (hoops, rib, proud): (Vec<f64>, f64, f64) = match shape.ribs {
+        None => (
+            [0.25, 0.55, 0.82]
+                .map(|t| base + 0.14 + (height - 0.3) * t)
+                .to_vec(),
+            0.009,
+            0.004,
+        ),
+        Some(n) => (
+            (0..n)
+                .map(|i| base + 0.1 + (height - 0.2) * (i as f64 + 0.5) / n as f64)
+                .collect(),
+            0.013,
+            0.006,
+        ),
+    };
+    for z in hoops {
         let path: Vec<_> = (0..49)
             .map(|i| {
                 [
-                    cos(i as f64 / 48. * PI * 2.) * (radius + 0.004),
-                    sin(i as f64 / 48. * PI * 2.) * (radius + 0.004),
+                    cos(i as f64 / 48. * PI * 2.) * (radius + proud),
+                    sin(i as f64 / 48. * PI * 2.) * (radius + proud),
                     z,
                 ]
             })
@@ -410,21 +440,28 @@ pub fn shaped_round_tank(
             mesh: drawing.mesh,
             repeats: drawing.repeats,
         }
-        .tube("metal", &path, 0.009, [0.85; 3], 6)?;
+        .tube("metal", &path, rib, [0.85; 3], 6)?;
     }
+    if lift > 0. {
+        cone_lid(
+            &mut Fixture {
+                pen: polished.clone(),
+                mesh: drawing.mesh,
+                repeats: drawing.repeats,
+            },
+            radius,
+            base + height - 0.01,
+            lift + 0.01,
+            0.23,
+        )?;
+    }
+    let crown = base + height + lift;
     Fixture {
         pen: polished,
         mesh: drawing.mesh,
         repeats: drawing.repeats,
     }
-    .drum(
-        "metal",
-        [0., 0., base + height + 0.01],
-        0.21,
-        0.045,
-        [0.9; 3],
-        32,
-    )?;
+    .drum("metal", [0., 0., crown + 0.01], 0.21, 0.045, [0.9; 3], 32)?;
     {
         let mut hd = Fixture {
             pen: hardware.clone(),
@@ -436,7 +473,7 @@ pub fn shaped_round_tank(
             steel::bolt(
                 &mut hd,
                 steel,
-                [0.18 * cos(angle), 0.18 * sin(angle), base + height + 0.057],
+                [0.18 * cos(angle), 0.18 * sin(angle), crown + 0.057],
                 [0., 0., 1.],
                 0.009,
             )?;
@@ -444,17 +481,17 @@ pub fn shaped_round_tank(
         hd.tube(
             "metal",
             &[
-                [-0.07, 0., base + height + 0.057],
-                [-0.07, 0., base + height + 0.112],
-                [0.07, 0., base + height + 0.112],
-                [0.07, 0., base + height + 0.057],
+                [-0.07, 0., crown + 0.057],
+                [-0.07, 0., crown + 0.112],
+                [0.07, 0., crown + 0.112],
+                [0.07, 0., crown + 0.057],
             ],
             0.009,
             steel.tint,
             8,
         )?;
         let ladder_x = -radius - 0.13;
-        let top = base + height + 0.16;
+        let top = crown + 0.16;
         for y in [-0.16, 0.16] {
             steel::member(
                 &mut hd,

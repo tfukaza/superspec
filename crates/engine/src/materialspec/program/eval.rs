@@ -1418,6 +1418,26 @@ impl<'a> Context<'a, '_> {
             B::FeatureDistance | B::FeatureTangent => {
                 return self.named_query(name == B::FeatureTangent, a, mark, out);
             }
+            B::ZoneCoord | B::ZoneExtent => {
+                let set = self
+                    .scratch
+                    .named
+                    .and_then(|named| named.zones(a[0].text()));
+                let (hit, visited) = match set {
+                    Some(set) => set.at(self.sample.world, self.sample.normal),
+                    None => (None, 0),
+                };
+                // u and v change one meter per meter, so they carry the sample's footprint.
+                *out = match (hit, name == B::ZoneCoord) {
+                    (Some(hit), true) => {
+                        Value::Number([hit.u, hit.v, hit.id], 3, self.sample.footprint)
+                    }
+                    (Some(hit), false) => Value::Number([1., hit.limit, hit.scale], 3, 0.),
+                    (None, true) => Value::Number([0., -1., 0.], 3, 0.),
+                    (None, false) => Value::Number([0.; 3], 3, 0.),
+                };
+                return self.charge_features(visited, mark);
+            }
             B::Runoff => {
                 let work = self.inputs.edges.len() * 16;
                 self.steps += work;

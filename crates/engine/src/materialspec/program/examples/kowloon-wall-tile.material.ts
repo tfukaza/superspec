@@ -1,11 +1,12 @@
 // Small glazed wall tiles as an old Kowloon facade wears them (the spandrels under a shop house's windows): every
 // tile a little off its neighbours in tone, a few replaced over the years with whatever was to hand, the glaze faded
 // in clouds, chips at the edges and a missing tile here and there showing the bedding, and joints black with dirt
-// that has crept onto the faces beside them and run down in streaks. Edge streaks under sills and fixtures are
-// layers over it (kowloon-grime-streaks).
+// that has crept onto the faces beside them and run down in streaks. Water from the sill or ledge above a tiled panel
+// runs down its vertical joints: from the panel's top edge each of some joints carries a dark thread of its own length,
+// widest where it starts and thinning as it falls.
 import {
-  defineMaterial, layer, param, tileAndGrout, rectangularGrid, vec2, vec3, add, sub, mul, mix, min, step, smoothstep,
-  hash, valueNoise, seed, surface,
+  defineMaterial, layer, param, tileAndGrout, rectangularGrid, vec2, vec3, add, sub, mul, div, mix, min, max, clamp, floor,
+  step, smoothstep, hash, valueNoise, seed, surface, world, boundsMax,
 } from "@superspec/material/v1";
 
 const tileSize = param.scalar({ default: 0.1, range: [0.03, 0.6], unit: "m", label: "Tile size" });
@@ -19,6 +20,8 @@ const wear = param.scalar({ default: 0.22, range: [0, 0.6], label: "Chipped edge
 const missing = param.scalar({ default: 0.02, range: [0, 1], label: "Missing tiles" });
 const grime = param.scalar({ default: 0.6, range: [0, 1], label: "Grime" });
 const glazeRoughness = param.scalar({ default: 0.32, range: [0, 1], label: "Glaze roughness" });
+const jointRuns = param.scalar({ default: 0.55, range: [0, 1], label: "Joints with runs" });
+const runReach = param.scalar({ default: 0.6, range: [0.05, 3], unit: "m", label: "Longest joint run" });
 
 const size = vec2(tileSize, tileSize);
 const tiles = tileAndGrout({ size, groutWidth: jointWidth, chipAmount: wear, chipSize: 0.012, missingChance: missing });
@@ -35,13 +38,25 @@ const faded = mix(faced, add(mul(faced, 0.6), vec3(0.19, 0.19, 0.17)), mul(fade,
 const beside = sub(1, smoothstep(0.002, mul(tileSize, 0.24), grid.sideDistance));
 const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(9, 0.8)), seed("tile-streaks")));
 const patches = smoothstep(0.5, 0.8, valueNoise(add(mul(surface, 2.3), vec2(4.1, 9.7)), seed("tile-patches")));
-const film = mul(grime, min(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.4)), mul(streaks, 0.22)), 0.85));
+const film = mul(grime, min(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.12)), mul(streaks, 0.12)), 0.85));
+
+// Runs down the vertical joints from the panel's top (surface x runs along the wall, y up it).
+const joint = floor(add(div(surface.x, tileSize), 0.5));
+const toJoint = mul(sub(div(surface.x, tileSize), sub(joint, 0.5)), tileSize);
+const offJoint = min(toJoint, sub(tileSize, toJoint));
+const runLength = mul(runReach, add(0.15, mul(0.85, hash(vec2(joint, 3.1), seed("joint-run")))));
+const fall = clamp(sub(1, div(max(sub(boundsMax.z, world.z), 0), runLength)), 0, 1);
+const runOn = step(hash(vec2(joint, 7.7), seed("joint-on")), jointRuns);
+const thread = add(0.6, mul(0.4, valueNoise(vec2(mul(joint, 5.3), mul(world.z, 7)), seed("joint-thread"))));
+const runCore = sub(1, smoothstep(mul(jointWidth, 0.5), add(jointWidth, mul(tileSize, mul(0.18, fall))), offJoint));
+const runs = mul(mul(mul(grime, runOn), mul(fall, fall)), mul(runCore, thread));
 
 export default defineMaterial({
   name: "Kowloon wall tile",
   base: { baseColor: faded, roughness: glazeRoughness, metalness: 0 },
   layers: [
     layer({ id: "film", mask: film, baseColor: vec3(0.085, 0.078, 0.062), roughness: 0.88 }),
+    layer({ id: "runs", mask: min(runs, 0.92), baseColor: vec3(0.075, 0.064, 0.048), roughness: 0.9 }),
     layer({ id: "chips", mask: tiles.chip, baseColor: vec3(0.42, 0.39, 0.33), roughness: 0.8, height: { add: -0.0012 } }),
     layer({ id: "bedding", mask: tiles.substrate, baseColor: vec3(0.3, 0.285, 0.25), roughness: 0.95 }),
     layer({ id: "joints", mask: tiles.joint, baseColor: mix(vec3(0.16, 0.15, 0.13), vec3(0.03, 0.028, 0.024), grime), roughness: 0.95, height: { add: -0.0025 } }),

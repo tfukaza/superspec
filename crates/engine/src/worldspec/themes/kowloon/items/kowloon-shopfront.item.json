@@ -60,7 +60,7 @@
       "when": "1 - open",
       "generator": {"kind": "box", "size": ["width + 0.3", 0.02, "height - 0.4"]},
       "placement": {"position": ["-(width + 0.3) / 2", 0.3, 0]},
-      "slots": {"side": "pane"}
+      "slots": {"side": "recess"}
     },
     {
       "id": "room",

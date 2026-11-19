@@ -173,13 +173,13 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  * items declare on their `wall` slot.
  */
 const kowloonSlots = { wall: "render-paint", "wall-round": "render-paint-round", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile",
-  glass: "window-glass", pane: "room-dark",
+  glass: "window-glass", pane: "room-dark", recess: "recess-plaster",
   galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
   opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",
   tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
   // A sign's ground is worn and stained. Its lettering stays the shipped glyph sheet: bound to `sign-lettering` and
   // baked (even at 800 texels a meter) the strokes come out as smears and the cutout is lost, so that recipe waits.
-  rust: "rusted-pipe", board: "sign-board", lettering: "sign-lettering", "tube-light": "tube-light", "shop-floor": "shop-floor",
+  rust: "rusted-pipe", board: "sign-board", lettering: "sign-lettering", "tube-light": "tube-light", "room-lit": "room-lit", "shop-floor": "shop-floor",
   // The pavement's stones and kerb, and the plastered walls inside an open shop (tinted per vertex).
   paving: "paving", kerb: "kerb", "roof-tile": "paving", interior: "shop-plaster" };
 export const facade = {

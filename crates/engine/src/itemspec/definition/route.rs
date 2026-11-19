@@ -1092,6 +1092,7 @@ impl Route {
                     width,
                     reach: Default::default(),
                     within: 0.,
+                    zone: None,
                 }
             };
         let start = self.path.at(0.);
@@ -1141,6 +1142,7 @@ impl Route {
                     width: 0.,
                     reach: Default::default(),
                     within: 0.,
+                    zone: None,
                 });
             }
         }

@@ -1144,14 +1144,14 @@ impl Session {
                 .map(|seed| crate::materialspec::program::seed_value(assignment.seed, &seed.name))
                 .collect();
             let wants_features = shader.features;
-            // A program with CPU-only operations (runoff) or external planes also gets a plan: a
-            // shader that reads the CPU-baked fields as textures, with its own seeds (it holds
-            // less of the program).
+            // A program with CPU-only operations (runoff, zones) or external planes also gets a
+            // plan: a shader that reads the CPU-baked fields as textures, with its own seeds (it
+            // holds less of the program).
             if program
                 .metadata()
                 .required_inputs
                 .iter()
-                .any(|input| input == "edges" || input.starts_with("plane:"))
+                .any(|input| input == "edges" || input == "zones" || input.starts_with("plane:"))
             {
                 match program.shader_plan() {
                     Ok(plan) if !plan.cpu_fields.is_empty() => {

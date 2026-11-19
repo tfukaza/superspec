@@ -323,6 +323,13 @@ The building's look is recipes and layers that any item can use; none is tied to
   ends of short edges and climbed the wall above a floor line. `kowloon-grime-streaks` now also follows a `guard`: the
   same edge drawn 5 cm uphill. The two distances differ by the cosine of the angle off straight below, which keeps
   streaks under their edge. The items draw `eave`/`eave-above`, `sill-above`, `drip-above` and `ledge-above`.
+- **Zones instead of searching.** The items now state where runoff hangs (ItemSpec README, weathering zones): the
+  storeys' walls `runoff-top` below their tops and `runoff-sill` below their sills (stopping at the openings below),
+  the ground storey `runoff-top`, the parapet and the round corner's wall `runoff-coping`, the corner's string courses
+  and ledge `runoff-top` (u by their chords, continuing from the sides), and zones on the `drip`s of air conditioners and
+  the roof outlet, the balcony's `ledge`, a board sign's `top` and its `fixing-drip` (reach item, onto the wall). A
+  material reads `zoneCoord`/`zoneExtent` and never climbs above an edge. Not yet zoned: window heads (the window is
+  below them), canopies and awnings (no edge features), notices.
 - **Recipes**: `kowloon-wall-tile`, `kowloon-window-glass`, `kowloon-aircon` and `kowloon-poster-print` (catalog sheets
   by the mesh's UVs, aged), `kowloon-canvas`, `kowloon-sign-board`, `kowloon-sign-lettering`, `kowloon-paving`,
   `kowloon-asphalt`.

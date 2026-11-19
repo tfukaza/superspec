@@ -43,6 +43,7 @@ fn scattered(names: &[&str], count: usize) -> Vec<NamedFeature> {
                 name: (*name).to_owned(),
                 points,
                 closed: false,
+                zone: None,
             });
         }
     }
@@ -188,6 +189,7 @@ fn named_feature_sets_are_bounded_and_refused_rather_than_cut() {
         name: name.to_owned(),
         points,
         closed,
+        zone: None,
     };
     let square = vec![[0., 0., 0.], [1., 0., 0.], [1., 0., 1.], [0., 0., 1.]];
     let open = NamedFeatures::new(&[feature("edge", square.clone(), false)]).unwrap();

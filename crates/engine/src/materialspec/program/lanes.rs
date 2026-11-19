@@ -143,6 +143,8 @@ fn reads_sample(builtin: Builtin) -> bool {
             | Builtin::CreaseAdjacentNormal
             | Builtin::FeatureDistance
             | Builtin::FeatureTangent
+            | Builtin::ZoneCoord
+            | Builtin::ZoneExtent
     )
 }
 
@@ -527,6 +529,8 @@ impl<'a, 'b> Lanes<'a, 'b> {
                 | Builtin::CreaseAdjacentNormal
                 | Builtin::FeatureDistance
                 | Builtin::FeatureTangent
+                | Builtin::ZoneCoord
+                | Builtin::ZoneExtent
         );
         let result = if uniform {
             for (slot, operand) in gathered.iter_mut().zip(operands) {

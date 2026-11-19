@@ -166,10 +166,7 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     );
     // Over the paint: the repairs and peels placed by the floor's frames, the inked edges every
     // wall carries, then the layers that follow a feature.
-    assert_eq!(
-        floor.layers["wall"][1].entry,
-        "kowloon-repairs.material.ts"
-    );
+    assert_eq!(floor.layers["wall"][1].entry, "kowloon-repairs.material.ts");
     assert_eq!(
         floor.layers["wall"][2].entry,
         "kowloon-edge-ink.material.ts"
@@ -200,11 +197,13 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
             .iter()
             .any(|f| f.name == "pavement")
     );
+    // The tiled spandrels carry their own runs down the joints (kowloon-wall-tile); over them
+    // only the rust runs from the fixtures.
     let tiles: Vec<_> = floor.layers["tile"]
         .iter()
-        .filter_map(|layer| layer.follow.get("source").cloned())
+        .map(|layer| layer.entry.as_str())
         .collect();
-    assert_eq!(tiles, ["sill", "drip"]);
+    assert_eq!(tiles, ["kowloon-rust-run.material.ts"]);
     // Sub-item features land on the floor's own parts, in floor coordinates: each window's
     // sill where it stands (at the sill height, 0.95 m), beside the wall's own opening sills.
     let sills: Vec<_> = floor
@@ -597,8 +596,12 @@ fn the_reference_plan_builds_its_shops_balcony_roof_and_pavement() {
         "side-0/cable-2/cable",
         "side-0/cable-4/",
         "side-1/cable-1/",
-        "side-2/cableAuto-0/",
         "side-0/floor-0/canopy-0/sheet",
+        // Slices of the neighbours against the back and the left, before their facades.
+        "party-2/",
+        "party-3/",
+        "side-2/floor-0/",
+        "side-3/floor-0/",
         "roofRail-2/",
         "roofRail-3/",
         "roofClutter-0/metal",
@@ -607,7 +610,14 @@ fn the_reference_plan_builds_its_shops_balcony_roof_and_pavement() {
     ] {
         assert!(has(piece), "{piece} is missing");
     }
-    for piece in ["roofRail-0/", "roofRail-1/", "side-0/cableAuto-0/"] {
+    for piece in [
+        "roofRail-0/",
+        "roofRail-1/",
+        "side-0/cableAuto-0/",
+        "side-2/cableAuto-0/",
+        "party-0/",
+        "party-1/",
+    ] {
         assert!(!has(piece), "{piece} should not be there");
     }
     // The cable round the corner ends on the side street's wall: beyond the front's end in
@@ -1612,12 +1622,21 @@ fn sashes_grilles_and_lit_rooms_follow_a_windows_controls() {
     // A louvred top light is slats instead of one pane.
     let louvred = window(&[("openChance", json!(0)), ("louvre", json!("right"))]);
     assert!(corners(&louvred, "window/glass") > corners(&shut, "window/glass"));
-    // A lit room's back panel is in the lit lamps' slot, and its panes are left out to show it.
+    // A lit room is drawn in depth, its walls in `room-lit` and its lamp's tube in the lit
+    // lamps' slot, and its panes are left out to show it; at `room` 0 it is a flat back panel
+    // in the lamps' slot. An unlit window keeps its dark room.
     assert_eq!(corners(&shut, "window/tube-light"), 0);
+    assert_eq!(corners(&shut, "window/room-lit"), 0);
+    let flat = window(&[("lit", json!(true)), ("room", json!(0))]);
+    assert_eq!(corners(&flat, "window/tube-light"), 6);
+    assert_eq!(corners(&flat, "window/room-lit"), 0);
     let lit = window(&[("lit", json!(true))]);
-    assert_eq!(corners(&lit, "window/tube-light"), 6);
-    assert_eq!(corners(&lit, "window/glass"), 0);
-    assert_eq!(corners(&lit, "window/pane"), 0);
+    assert!(corners(&lit, "window/tube-light") > 6);
+    assert!(corners(&lit, "window/room-lit") > 6);
+    for item in [&flat, &lit] {
+        assert_eq!(corners(item, "window/glass"), 0);
+        assert_eq!(corners(item, "window/pane"), 0);
+    }
     // A grille over the upper half starts halfway up the opening.
     let whole = window(&[("bars", json!(true)), ("barsPattern", json!("diamond"))]);
     let upper = window(&[
@@ -1705,4 +1724,291 @@ fn a_back_door_stands_in_an_opening_of_the_ground_storeys_wall() {
         let placed = side(&[("backDoor", json!(true)), ("backDoorAt", json!(at))]);
         assert!((translation(&placed, "backDoor")[0] - at).abs() < 1e-9);
     }
+}
+
+/// The world positions and tints of the meshes whose ids hold every name of `piece` in order,
+/// in one slot.
+fn piece_vertices(item: &GeneratedItem, piece: &str, slot: &str) -> Vec<([f64; 3], [f64; 4])> {
+    let wanted: Vec<&str> = piece.split('/').filter(|s| !s.is_empty()).collect();
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut found = vec![];
+    for (node, matrix) in item.geometry.nodes.iter().zip(&transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            let mut segments = mesh.id.split('/');
+            if mesh.material_slot != slot || !wanted.iter().all(|n| segments.any(|s| s == *n)) {
+                continue;
+            }
+            for (p, c) in mesh.positions.iter().zip(&mesh.colors) {
+                found.push((matrix.point(*p), *c));
+            }
+        }
+    }
+    found
+}
+
+/// Whether a mesh's id holds every name of `piece` in order.
+fn has_piece(item: &GeneratedItem, piece: &str) -> bool {
+    let wanted: Vec<&str> = piece.split('/').filter(|s| !s.is_empty()).collect();
+    item.geometry.meshes.iter().any(|m| {
+        let mut segments = m.id.split('/');
+        wanted.iter().all(|name| segments.any(|s| s == *name))
+    })
+}
+
+#[test]
+fn party_edges_stand_a_neighbour_against_the_building() {
+    let building = |overrides: &[(&str, serde_json::Value)]| {
+        let mut all = vec![
+            ("signs", json!(false)),
+            ("roofRailPlan", json!([0, 0, 1, 1])),
+        ];
+        all.extend(overrides.iter().cloned());
+        generate("kowloon-building.item.json", &all)
+    };
+    let has = |item: &GeneratedItem, prefix: &str| {
+        item.geometry
+            .meshes
+            .iter()
+            .any(|m| m.id.split('/').any(|s| s == prefix))
+    };
+    // None by default: every edge is its own facade.
+    let bare = building(&[]);
+    assert!(!(0..4).any(|e| has(&bare, &format!("party-{e}"))));
+    // A wall replaces the back's facade (and its roof rail) with a plain wall a little proud
+    // of it, past both its ends; a street edge keeps its facade whatever its plan says.
+    let walled = building(&[("partyPlans", json!(["wall", "none", "wall", "none"]))]);
+    assert!(has(&walled, "party-2") && !has(&walled, "side-2") && !has(&walled, "roofRail-2"));
+    assert!(has(&walled, "side-0") && !has(&walled, "party-0") && has(&walled, "roofRail-3"));
+    let wall = piece_vertices(&walled, "party-2", "wall");
+    let (low_y, high_y) = wall.iter().fold((f64::MAX, f64::MIN), |(a, b), (p, _)| {
+        (a.min(p[1]), b.max(p[1]))
+    });
+    // The back edge (y = 7) faces +y: the wall's face stands 8 cm out, its back in the wall.
+    assert!(
+        (high_y - 7.08).abs() < 1e-6 && low_y > 6.7,
+        "{low_y}..{high_y}"
+    );
+    let top = wall.iter().map(|(p, _)| p[2]).fold(f64::MIN, f64::max);
+    let parapet = top_of(&bare, "side-2");
+    assert!(
+        (top - parapet).abs() < 1.0,
+        "the wall's top {top} by the parapet's {parapet}"
+    );
+    // It is stained: its tints vary from its foot to its top.
+    let shades: BTreeSet<i64> = wall
+        .iter()
+        .map(|(_, c)| ((c[0] + c[1] + c[2]) * 50.) as i64)
+        .collect();
+    assert!(shades.len() > 8, "{} shades", shades.len());
+    // A stub keeps the facade behind a slice of the neighbour 1.1 to 1.9 m deep, with
+    // windows, at the storeys its plan gives; the seed varies the rest.
+    let stubbed = |storeys: u32, seed: u32| {
+        building(&[
+            ("partyPlans", json!(["none", "none", "stub", "stub"])),
+            ("partyStoreyPlans", json!([0, 0, storeys, 0])),
+            ("seed", json!(seed)),
+        ])
+    };
+    let stub = stubbed(2, 3);
+    assert!(has(&stub, "side-2") && has(&stub, "party-2") && has(&stub, "party-3"));
+    let slice = piece_vertices(&stub, "party-2", "wall");
+    let deepest = slice.iter().map(|(p, _)| p[1]).fold(f64::MIN, f64::max);
+    assert!((8.1..=8.9).contains(&deepest), "reaches y = {deepest}");
+    let height = slice.iter().map(|(p, _)| p[2]).fold(f64::MIN, f64::max);
+    // Two storeys (3.35 m and 3 m) and a parapet of 0.4 to 1 m.
+    assert!((6.7..=7.4).contains(&height), "{height}");
+    assert!(!piece_vertices(&stub, "party-2", "pane").is_empty());
+    assert!(!piece_vertices(&stub, "party-2", "frame").is_empty());
+    // The left edge (x = 0) faces -x: its slice stands out beyond it.
+    let left = piece_vertices(&stub, "party-3", "wall");
+    assert!(left.iter().all(|(p, _)| p[0] < 1e-6));
+    // A party edge has no seeded back door of its own.
+    assert!(!has(&stub, "backDoor"));
+    let heights: BTreeSet<i64> = (0..6)
+        .map(|seed| {
+            piece_vertices(&stubbed(0, seed), "party-3", "wall")
+                .iter()
+                .map(|(p, _)| p[2])
+                .fold(f64::MIN, f64::max)
+        })
+        .map(|h| (h * 10.) as i64)
+        .collect();
+    assert!(heights.len() > 1, "seeds give one height: {heights:?}");
+}
+
+#[test]
+fn awning_plans_conduit_colour_and_a_rusted_head_box_reach_their_natives() {
+    let plan = plan("small-warehouse.json");
+    let overrides: Vec<(&str, serde_json::Value)> = plan
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let small = generate("kowloon-building.item.json", &overrides);
+    // The planned pale conduits.
+    let conduit = piece_vertices(&small, "side-0/conduit-0", "metal");
+    assert!(!conduit.is_empty());
+    assert!(
+        conduit.iter().all(|(_, c)| c[0] > 0.3 && c[2] > 0.3),
+        "the conduit is pale"
+    );
+    // The shutter's head box is streaked: rust and grey both show on its face.
+    let head: Vec<[f64; 4]> = piece_vertices(&small, "side-0/ground/shop-0/bay", "metal")
+        .into_iter()
+        .filter(|(p, _)| p[2] > 2.45 && p[1] < -0.12)
+        .map(|(_, c)| c)
+        .collect();
+    let rusty = head.iter().filter(|c| c[0] > c[2] * 2.).count();
+    let shades: BTreeSet<i64> = head.iter().map(|c| ((c[0] - c[2]) * 200.) as i64).collect();
+    assert!(
+        rusty > 20 && shades.len() > 8,
+        "{rusty} rusty of {}, {} shades",
+        head.len(),
+        shades.len()
+    );
+    // The number plate's face is planned (a bold one reads from across the street).
+    let plate = |face: &str| {
+        generate(
+            "kowloon-sign.item.json",
+            &[
+                ("mount", json!("flat")),
+                ("text", json!("12")),
+                ("width", json!(0.27)),
+                ("height", json!(0.21)),
+                ("face", json!(face)),
+            ],
+        )
+        .geometry_key
+    };
+    assert_ne!(plate("kai"), plate("heavy"));
+    assert!(has_piece(&small, "plaque-0-0/flat/"));
+    // Awning plans per bay: stripes and sag reach the striped canvas and the tarp.
+    let ground = |overrides: &[(&str, serde_json::Value)]| {
+        let mut all = vec![
+            ("width", json!(9.0)),
+            ("shopSpans", json!([[0.4, 2.7], [3.05, 8.75]])),
+            ("awningPlan", json!(["tarp", "striped"])),
+            ("shopPlan", json!(["gate", "gate"])),
+        ];
+        all.extend(overrides.iter().cloned());
+        generate("kowloon-ground-floor.item.json", &all)
+    };
+    let plain = ground(&[]);
+    let planned = ground(&[
+        ("awningStripePlan", json!([0, 25])),
+        ("awningSagPlan", json!([0.6, 0])),
+    ]);
+    let count = |item: &GeneratedItem, piece: &str| piece_vertices(item, piece, "tarp").len();
+    assert!(count(&planned, "shop-1/tarp") > count(&plain, "shop-1/tarp"));
+    let lowest = |item: &GeneratedItem| {
+        piece_vertices(item, "shop-0/tarp", "tarp")
+            .iter()
+            .map(|(p, _)| p[2])
+            .fold(f64::MAX, f64::min)
+    };
+    assert!(lowest(&planned) < lowest(&plain) - 0.1);
+}
+
+/// The length of a polyline.
+fn polyline_length(points: &[[f64; 3]]) -> f64 {
+    points
+        .windows(2)
+        .map(|pair| {
+            (0..3)
+                .map(|i| (pair[1][i] - pair[0][i]).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .sum()
+}
+
+/// The reference building states where its runoff hangs: a zone below every storey's top and
+/// every sill, the coping and the round corner's string courses, whose `u` runs on from side to
+/// corner to side, and no zone ever reaches above its edge.
+#[test]
+fn the_reference_buildings_runoff_zones_run_on_round_the_corner() {
+    use superspec_engine::{authoring::item_features, materialspec::program::NamedFeatures};
+    let plan = plan("reference-shop-house.json");
+    let overrides: Vec<(&str, serde_json::Value)> = plan
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let building = generate("kowloon-building.item.json", &overrides);
+    let zones = |name: &str| -> Vec<&item::Feature> {
+        building
+            .geometry
+            .features
+            .iter()
+            .filter(|f| f.name == name && f.zone.is_some())
+            .collect()
+    };
+    for name in ["runoff-top", "runoff-sill", "runoff-coping", "drip"] {
+        assert!(!zones(name).is_empty(), "no {name} zone");
+    }
+    // Every storey top of the front side and of the corner's courses, at the same heights.
+    let tops = zones("runoff-top");
+    let corner: Vec<_> = tops
+        .iter()
+        .filter(|f| f.part.starts_with("cornerRound"))
+        .collect();
+    assert!(!corner.is_empty());
+    for course in &corner {
+        let start = course.points[0];
+        let end = *course.points.last().unwrap();
+        let zone = course.zone.as_ref().unwrap();
+        // The side that ends where the course starts, and the one that starts where it ends.
+        let meets = |at: [f64; 3], first: bool| {
+            tops.iter()
+                .filter(|f| f.part.starts_with("side-"))
+                .find(|f| {
+                    let p = if first {
+                        f.points[0]
+                    } else {
+                        *f.points.last().unwrap()
+                    };
+                    (0..3).all(|i| (p[i] - at[i]).abs() < 0.02)
+                })
+                .unwrap_or_else(|| panic!("no side's top meets the course at {at:?}"))
+        };
+        let before = meets(start, false);
+        let after = meets(end, true);
+        let ending = before.zone.as_ref().unwrap().u0 + polyline_length(&before.points);
+        assert!((ending - zone.u0).abs() < 0.03, "{ending} then {}", zone.u0);
+        let leaving = zone.u0 + polyline_length(&course.points);
+        let next = after.zone.as_ref().unwrap().u0;
+        assert!((leaving - next).abs() < 0.03, "{leaving} then {next}");
+    }
+    // On a front storey's wall: just below its top it is in the storey's zone, just above it
+    // (the storey above or the parapet) in no storey's zone but the next.
+    let identity = [
+        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
+    ];
+    let side: Vec<_> = building
+        .geometry
+        .features
+        .iter()
+        .filter(|f| f.part == "side-0")
+        .cloned()
+        .collect();
+    let named = NamedFeatures::new(&item_features(&side, &identity)).unwrap();
+    let top = tops
+        .iter()
+        .filter(|f| f.part == "side-0")
+        .max_by(|a, b| a.points[0][2].total_cmp(&b.points[0][2]))
+        .unwrap();
+    let [a, b] = [top.points[0], *top.points.last().unwrap()];
+    let middle: [f64; 3] = std::array::from_fn(|i| (a[i] + b[i]) / 2.);
+    // Facing out of the front: the side runs along +x, so its front faces -y.
+    let out = [0., -1., 0.];
+    let set = named.zones("runoff-top").unwrap();
+    let below = set.at([middle[0], middle[1], middle[2] - 0.05], out).0;
+    assert!(
+        below.is_some_and(|hit| (hit.v - 0.05).abs() < 1e-6),
+        "{below:?}"
+    );
+    assert!(
+        set.at([middle[0], middle[1], middle[2] + 0.05], out)
+            .0
+            .is_none()
+    );
 }

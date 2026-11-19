@@ -142,6 +142,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
             "external",
             "feature_distance",
             "feature_tangent",
+            "zone_coord",
+            "zone_extent",
             "alpha_cutout",
             "authored_mask",
             "ramp",
@@ -170,8 +172,8 @@ fn the_catalog_keeps_every_original_builtin_and_adds_only_receiver_queries() {
 #[test]
 fn catalog_lists_the_documented_builtins_once() {
     let names: Vec<_> = operations().iter().map(|operation| operation.id).collect();
-    assert_eq!(names.len(), 59);
-    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 59);
+    assert_eq!(names.len(), 61);
+    assert_eq!(names.iter().collect::<BTreeSet<_>>().len(), 61);
     for operation in operations() {
         assert_eq!(operation.version, 1, "{}", operation.id);
         assert!(!operation.overloads.is_empty(), "{}", operation.id);
@@ -285,6 +287,8 @@ fn constant_literal_and_dependency_flags_match_the_documented_rules() {
             "external",
             "feature_distance",
             "feature_tangent",
+            "zone_coord",
+            "zone_extent",
             "authored_mask",
             "ramp",
             "instance_attribute",

@@ -769,7 +769,8 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         lowest(&slot_points(&striped, "metal"), 2) > -1.5,
         "a frame has no posts"
     );
-    // A scalloped hem rises between its lobes: fewer points hang at its full depth.
+    // A scalloped hem rises between its lobes: less of its width (in centimetre columns,
+    // whatever the hem's bound edge adds) hangs at its full depth.
     let straight = tarp(&[
         ("stripes", json!(30)),
         ("valance", json!(0.25)),
@@ -781,7 +782,9 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         slot_points(meshes, "tarp")
             .iter()
             .filter(|p| p[2] < -0.4 - 0.245)
-            .count()
+            .map(|p| (p[0] * 100.).round() as i64)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
     };
     assert!(
         deep(&striped) * 2 < deep(&straight),
@@ -994,6 +997,302 @@ fn cables_sag_round_corners_and_hardware_is_bolted() {
             &natives,
             "kowloon/roof-clutter",
             &values(&[("ventSide", json!("middle"))])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_lit_window_shows_its_room_in_depth() {
+    let natives = Natives::new();
+    let window = |entries: &[(&str, Value)]| {
+        let mut all = vec![
+            ("width", json!(1.8)),
+            ("height", json!(1.5)),
+            ("recess", json!(0.25)),
+            ("glow", json!("#ffe7ad")),
+        ];
+        all.extend(entries.iter().cloned());
+        generate(&natives, "kowloon/window", &values(&all)).unwrap()
+    };
+    // Unset, and on an unlit window, the room changes nothing.
+    let flat = window(&[("lit", json!(true))]);
+    assert_eq!(
+        fingerprint(&flat),
+        fingerprint(&window(&[("lit", json!(true)), ("room", json!(0))]))
+    );
+    assert_eq!(
+        fingerprint(&window(&[])),
+        fingerprint(&window(&[("room", json!(2.5))]))
+    );
+    assert!(flat.iter().all(|m| m.material_slot != "room-lit"));
+    for seed in 0..6 {
+        let lit = window(&[
+            ("lit", json!(true)),
+            ("room", json!(2.5)),
+            ("seed", json!(seed)),
+        ]);
+        check("lit room", &lit);
+        assert!(lit.iter().all(|m| m.material_slot != "glass"));
+        // Back wall, side walls and ceiling stand behind the recess, 2.5 m deep, and reach past
+        // the opening; the floor lies below the sill and the ceiling above the head.
+        let walls = slot_points(&lit, "room-lit");
+        let depth = |p: &[f64; 3]| p[1].abs();
+        assert!(walls.iter().all(|p| depth(p) >= 0.25 - 1e-6), "{seed}");
+        let far = walls.iter().map(depth).fold(0., f64::max);
+        assert!((far - 2.75).abs() < 1e-6, "{seed}: {far}");
+        assert!(lowest(&walls, 0) < -0.9 - 0.1 && highest(&walls, 0) > 0.9 + 0.1);
+        assert!(lowest(&walls, 2) < -0.5 && highest(&walls, 2) > 1.5);
+        // Its walls are lit, warm and darker than white: the lamp's colour, softened.
+        let colors: Vec<&[f64; 4]> = lit
+            .iter()
+            .filter(|m| m.material_slot == "room-lit")
+            .flat_map(|m| &m.colors)
+            .collect();
+        assert!(
+            colors
+                .iter()
+                .all(|c| c[0] >= c[2] && c[0] < 0.9 && c[0] > 0.02),
+            "{seed}"
+        );
+        // A tube under the ceiling, in the lamps' own slot, well inside the room.
+        let tube = slot_points(&lit, "tube-light");
+        assert!(!tube.is_empty() && tube.iter().all(|p| depth(p) > 0.8 && p[2] > 1.2));
+    }
+    assert!(
+        generate(
+            &natives,
+            "kowloon/window",
+            &values(&[("lit", json!(true)), ("room", json!(0.3))])
+        )
+        .is_err()
+    );
+}
+
+fn triangles(meshes: &[ItemMesh]) -> usize {
+    meshes.iter().map(|m| m.indices.len() / 3).sum()
+}
+
+#[test]
+fn tank_shape_cage_welding_and_bracket_plates_reach_their_fixtures() {
+    let natives = Natives::new();
+    let top = |meshes: &[ItemMesh]| {
+        meshes
+            .iter()
+            .flat_map(|m| &m.positions)
+            .map(|p| p[2])
+            .fold(f64::MIN, f64::max)
+    };
+    // A shaped tank: a 1.4 m shell on a 0.72 m stand under a 0.24 m conical lid, its access
+    // ladder's head 0.16 m over the collar; the seeded tank stays under 2 m.
+    let seeded = generate(&natives, "kowloon/water-tank", &Values::new()).unwrap();
+    let shaped = |entries: &[(&str, Value)]| {
+        let mut all = vec![
+            ("height", json!(1.4)),
+            ("stand", json!(0.72)),
+            ("lid", json!(0.24)),
+            ("ribs", json!(7)),
+        ];
+        all.extend(entries.iter().cloned());
+        generate(&natives, "kowloon/water-tank", &values(&all))
+    };
+    let tall = shaped(&[]).unwrap();
+    check("shaped tank", &tall);
+    assert!(top(&seeded) < 2., "{}", top(&seeded));
+    assert!(
+        (top(&tall) - (0.72 + 1.4 + 0.24 + 0.16)).abs() < 0.02,
+        "{}",
+        top(&tall)
+    );
+    // Ribs and a lid add to the shell; without them the shaped tank keeps three hoops.
+    let plain = generate(
+        &natives,
+        "kowloon/water-tank",
+        &values(&[("height", json!(1.4)), ("stand", json!(0.72))]),
+    )
+    .unwrap();
+    assert!(triangles(&tall) > triangles(&plain));
+    assert!((top(&plain) - (0.72 + 1.4 + 0.16)).abs() < 0.02);
+    for bad in [
+        ("lid", json!(2)),
+        ("ribs", json!(1.5)),
+        ("height", json!(9)),
+    ] {
+        assert!(shaped(&[bad.clone()]).is_err(), "{bad:?}");
+    }
+    assert!(
+        generate(
+            &natives,
+            "kowloon/water-tank",
+            &values(&[("kind", json!("box")), ("lid", json!(0.2))])
+        )
+        .is_err()
+    );
+    // Finer, closer cage bars: more of them, each thinner; unset, the welding is the seed's.
+    let cage = |entries: &[(&str, Value)]| generate(&natives, "kowloon/cage", &values(entries));
+    let welded = cage(&[]).unwrap();
+    assert_eq!(
+        fingerprint(&welded),
+        fingerprint(&cage(&[("louvred", json!(false))]).unwrap())
+    );
+    let fine = cage(&[
+        ("bar", json!(0.008)),
+        ("rail", json!(0.02)),
+        ("spacing", json!(0.09)),
+        ("rust", json!(0.3)),
+        ("color", json!("#c9c3b2")),
+    ])
+    .unwrap();
+    check("fine cage", &fine);
+    assert!(triangles(&fine) > triangles(&welded));
+    for bad in [
+        ("bar", json!(0.2)),
+        ("spacing", json!(0.01)),
+        ("rust", json!(2)),
+    ] {
+        assert!(cage(&[bad.clone()]).is_err(), "{bad:?}");
+    }
+    // A caged unit turned louvred stands on the cage floor, its casing inside the cage.
+    for seed in 0..4 {
+        let unit = cage(&[
+            ("contents", json!("aircon")),
+            ("louvred", json!(true)),
+            ("width", json!(0.98)),
+            ("height", json!(0.68)),
+            ("depth", json!(0.52)),
+            ("seed", json!(seed)),
+        ])
+        .unwrap();
+        check("caged unit", &unit);
+        let casing = slot_points(&unit, "aircon");
+        assert!(!casing.is_empty(), "{seed}");
+        assert!(
+            lowest(&casing, 2) >= 0.04 && highest(&casing, 2) < 0.68,
+            "{seed}"
+        );
+        assert!(lowest(&casing, 1) > -0.52 - 1e-6, "{seed}");
+    }
+    // Bolted plates on the bracket arms, only when asked for.
+    for name in ["kowloon/aircon", "kowloon/condenser"] {
+        let bare = generate(&natives, name, &Values::new()).unwrap();
+        assert_eq!(
+            fingerprint(&bare),
+            fingerprint(&generate(&natives, name, &values(&[("plates", json!(false))])).unwrap())
+        );
+        let plated = generate(&natives, name, &values(&[("plates", json!(true))])).unwrap();
+        check(name, &plated);
+        assert!(triangles(&plated) > triangles(&bare), "{name}");
+    }
+}
+
+#[test]
+fn a_slack_tarp_is_creased_from_its_fixings_and_shaded_in_its_troughs() {
+    let natives = Natives::new();
+    let tarp = |entries: &[(&str, Value)]| {
+        let meshes = generate(&natives, "kowloon/sagging-tarp", &values(entries)).unwrap();
+        check("sagging-tarp", &meshes);
+        meshes
+    };
+    // Across the sheet near its hem (away from its hemmed sides and ropes): per column of
+    // vertices, the lowest point and its tint's lightness.
+    let band = |meshes: &[ItemMesh]| {
+        let mut columns = std::collections::BTreeMap::<i64, (f64, f64)>::new();
+        for m in meshes.iter().filter(|m| m.material_slot == "tarp") {
+            for (p, c) in m.positions.iter().zip(&m.colors) {
+                if (p[1] + 1.05).abs() < 0.03 && p[0].abs() < 1.4 {
+                    let entry = columns
+                        .entry((p[0] / 0.05).round() as i64)
+                        .or_insert((f64::MAX, 0.));
+                    if p[2] < entry.0 {
+                        *entry = (p[2], c[0] + c[1] + c[2]);
+                    }
+                }
+            }
+        }
+        columns.into_values().collect::<Vec<_>>()
+    };
+    let taut = tarp(&[("sag", json!(0)), ("tilt", json!(0))]);
+    let slack = tarp(&[("sag", json!(0.3)), ("tilt", json!(0))]);
+    // Its creases' troughs are shaded: the slack sheet's tints there vary far more.
+    let spread = |meshes: &[ItemMesh]| {
+        let light: Vec<f64> = band(meshes).iter().map(|c| c.1).collect();
+        let high = light.iter().copied().fold(f64::MIN, f64::max);
+        (high - light.iter().copied().fold(f64::MAX, f64::min)) / high
+    };
+    assert!(
+        spread(&slack) > spread(&taut) + 0.08,
+        "{} against {}",
+        spread(&slack),
+        spread(&taut)
+    );
+    // Its creases and gathered folds sink its front half in troughs: across the sheet its
+    // height dips again and again, where a smooth sag dips once.
+    let dips = |meshes: &[ItemMesh]| {
+        let z: Vec<f64> = band(meshes).iter().map(|c| c.0).collect();
+        z.windows(3)
+            .filter(|w| w[1] < w[0] - 1e-4 && w[1] < w[2] - 1e-4)
+            .count()
+    };
+    assert!(dips(&slack) >= 4, "{} dips", dips(&slack));
+    // Its seed moves the folds.
+    assert_ne!(
+        fingerprint(&slack),
+        fingerprint(&tarp(&[
+            ("sag", json!(0.3)),
+            ("tilt", json!(0)),
+            ("seed", json!(5))
+        ]))
+    );
+}
+
+#[test]
+fn a_party_neighbour_is_a_stained_wall_or_a_slice_of_a_building() {
+    let natives = Natives::new();
+    let party = |entries: &[(&str, Value)]| {
+        let meshes = generate(&natives, "kowloon/party", &values(entries)).unwrap();
+        check("party", &meshes);
+        meshes
+    };
+    // A wall stands 8 cm out of the wall plane (the front faces -y), past both ends of its
+    // edge, about as high as the parapet top it is given.
+    let wall = party(&[("length", json!(7)), ("top", json!(13))]);
+    let points = slot_points(&wall, "wall");
+    assert!((lowest(&points, 1) + 0.08).abs() < 1e-9);
+    assert!((lowest(&points, 0) + 0.06).abs() < 1e-9 && (highest(&points, 0) - 7.06).abs() < 1e-9);
+    assert!((12.6..=13.95).contains(&highest(&points, 2)));
+    assert!(slot_points(&wall, "pane").is_empty());
+    // A stub is a slice 1.1 to 1.9 m deep with windows on its faces, at the storeys it is
+    // given: two storeys of 3.3 and 3 m under a parapet of 0.4 to 1 m.
+    let stub = party(&[
+        ("kind", json!("stub")),
+        ("length", json!(7)),
+        ("own", json!(2)),
+    ]);
+    let points = slot_points(&stub, "wall");
+    assert!(
+        (-1.9..=-1.1).contains(&lowest(&points, 1)),
+        "{}",
+        lowest(&points, 1)
+    );
+    assert!(
+        (6.7..=7.3).contains(&highest(&points, 2)),
+        "{}",
+        highest(&points, 2)
+    );
+    assert!(!slot_points(&stub, "pane").is_empty() && !slot_points(&stub, "frame").is_empty());
+    // Its seed picks its storeys when none are given.
+    let tops: std::collections::BTreeSet<i64> = (0..8)
+        .map(|seed| {
+            let meshes = party(&[("kind", json!("stub")), ("seed", json!(seed))]);
+            (highest(&slot_points(&meshes, "wall"), 2) * 10.) as i64
+        })
+        .collect();
+    assert!(tops.len() > 2, "{tops:?}");
+    assert!(
+        generate(
+            &natives,
+            "kowloon/party",
+            &values(&[("kind", json!("tower"))])
         )
         .is_err()
     );

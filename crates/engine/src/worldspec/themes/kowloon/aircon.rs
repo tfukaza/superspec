@@ -308,6 +308,7 @@ fn brackets(
     drop: f64,
     tint: V3,
     weathering: Option<&Settings>,
+    plates: bool,
 ) -> Result<(), String> {
     let fall = drop.min(0.32);
     let pen = if let Some(s) = weathering {
@@ -339,6 +340,31 @@ fn brackets(
             [[1., 0., 0.], [0., 0., 1.]],
             [0.035, 0.004],
         )?;
+        if plates {
+            // A bolted wall plate where the arm meets the wall, and bolts through the arm's
+            // flange where the casing sits on it.
+            steel::fixing_plate(
+                &mut d,
+                steel,
+                &Plate {
+                    center: [x, 0., z - 0.045],
+                    across: [1., 0., 0.],
+                    up: [0., 0., 1.],
+                    out: [0., 1., 0.],
+                    size: [0.09, 0.13],
+                    bolts: 4,
+                },
+            )?;
+            for share in [0.35, 0.75] {
+                steel::bolt(
+                    &mut d,
+                    steel,
+                    [x + 0.002, depth * share, z - 0.035],
+                    [0., 0., 1.],
+                    0.007,
+                )?;
+            }
+        }
         if fall < 0.12 {
             continue;
         }
@@ -462,6 +488,14 @@ fn wear(rng: &mut SeededRng, weights: [f64; 3]) -> usize {
 fn body(rng: &mut SeededRng) -> V3 {
     srgb(rng.pick(&["#e0ddd2", "#cfc8b4", "#b8bcc0", "#d8d0bc"]))
 }
+/// What a caller adds to a unit beyond the seeded one; the default adds nothing.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options {
+    /// Bolted wall plates under the bracket arms and bolts through the arms.
+    pub plates: bool,
+    /// The outward face always shows the louvred grille (the seed's model picks it otherwise).
+    pub louvred: bool,
+}
 /// Window-mounted unit. Returned facade footprint is also the source of its wall stain.
 pub fn air_conditioner(
     d: &mut Fixture<'_, '_>,
@@ -470,6 +504,18 @@ pub fn air_conditioner(
     drop: f64,
     rng: &mut SeededRng,
     weathering: Option<&Settings>,
+) -> Result<Bounds, String> {
+    air_conditioner_with(d, x, z, drop, rng, weathering, Options::default())
+}
+/// [`air_conditioner`] with what `options` adds.
+pub fn air_conditioner_with(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    drop: f64,
+    rng: &mut SeededRng,
+    weathering: Option<&Settings>,
+    options: Options,
 ) -> Result<Bounds, String> {
     if [x, z, drop]
         .iter()
@@ -496,7 +542,7 @@ pub fn air_conditioner(
     let x0 = x - w / 2.;
     let x1 = x + w / 2.;
     let b = 0.012;
-    let rear = 16 + model + if wear > 0 { 4 } else { 0 };
+    let rear = if options.louvred { 16 } else { 16 + model } + if wear > 0 { 4 } else { 0 };
     let side = wear;
     let top = if wear > 0 && rng.chance(0.6) { 4 } else { 3 };
     casing(
@@ -581,7 +627,16 @@ pub fn air_conditioner(
         shade(srgb("#7a4a2a"), 0.75),
         rng.float(0.2, 0.85),
     );
-    brackets(d, [x0, x1], depth - 0.02, z, drop, steel, weathering)?;
+    brackets(
+        d,
+        [x0, x1],
+        depth - 0.02,
+        z,
+        drop,
+        steel,
+        weathering,
+        options.plates,
+    )?;
     let hose = x + rng.float(-0.2, 0.2);
     let extent = rng.float(0.3, 0.7).min(drop) - 0.005;
     if extent > 0.15 {
@@ -880,6 +935,16 @@ pub fn condenser(
     rng: &mut SeededRng,
     weathering: Option<&Settings>,
 ) -> Result<Bounds, String> {
+    condenser_with(d, span, rng, weathering, Options::default())
+}
+/// [`condenser`] with what `options` adds (`louvred` does not apply to a condenser).
+pub fn condenser_with(
+    d: &mut Fixture<'_, '_>,
+    span: [f64; 4],
+    rng: &mut SeededRng,
+    weathering: Option<&Settings>,
+    options: Options,
+) -> Result<Bounds, String> {
     let [x0, x1, z, height] = span;
     if span.iter().any(|v| !v.is_finite() || v.abs() > 10000.)
         || !(CONDENSER_ROOM..=100.).contains(&(x1 - x0))
@@ -1010,6 +1075,7 @@ pub fn condenser(
         0.32,
         steel,
         weathering,
+        options.plates,
     )?;
     let rise = rng.float(0.5, 1.3).min(height - 0.2);
     line_set(d, [right + 0.035, (y0 + y1) / 2., z + 0.14], rise, rng)?;

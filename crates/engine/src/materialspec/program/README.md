@@ -265,6 +265,29 @@ and a program measures to them with `feature_distance("name", maxDistance)` and
   opening-edge, sill, base, top) into named features under the item's placement;
   `Request::features` and `Project::features` bind them to receivers.
 
+## Weathering zones
+
+A named feature may also be the edge of a zone its owner states (`NamedFeature::zone`, see
+`zones.rs` and the ItemSpec README): where runoff, rust or soot hangs below a sill, a roofline,
+a drip. `zone_coord("name")` (TS `zoneCoord`) is `vec3(u, v, id)` of the zone the sample lies in:
+`u` meters along the edge (continuing from zone to zone as the owner numbers them), `v` meters
+below it along downhill (0 at the edge, never above it), `id` the zone's identity in [0, 1);
+`vec3(0, -1, 0)` outside every zone. `zone_extent("name")` (`zoneExtent`) is
+`vec3(inside, limit, scale)`: 1 inside, where the zone ends in this column (its length or the next
+edge below) and the owner's scale; `vec3(0)` outside. Where zones of the name overlap, the one whose
+edge is nearest above wins (the least `v`). A layer follows zones as it follows features
+(`follow: {"zone": "runoff-top"}` or a list).
+
+- No search for edges per texel beyond the receiver's own few zone segments, and on the GPU a
+  texture read: both are CPU-only operations, so a program's plan bakes the fields that use them on
+  the CPU (`Shader::cpu_fields`) and the shader reads those fields; its per-pixel preview is outside
+  every zone. Name the zone values with a field (a `const`) so there is a field to bake.
+- A grime layer then samples its tile at `vec2(u / period + shift(id), v / length)`, fading with
+  `v / limit`: streaks start at their edge, stop at the next edge below and never climb.
+- Zones are part of a receiver's named features, so they are part of its layout's key; a value
+  that reads one is not intrinsic. Native and Wasm bake them with the same code, byte for byte
+  (`tests/item-zone-parity.mjs`).
+
 ## Intrinsic values
 
 A value is intrinsic (`Dependencies::intrinsic`) when it reads nothing of a sample but its

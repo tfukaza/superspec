@@ -98,21 +98,25 @@ try {
       }, process.env.ATLASES);
       console.log(found.join("\n"));
     }
-    // The sun, as in the reference picture: high (55 degrees) and from the front, a little toward the side the narrow face
-    // turns from (SUN=<azimuth>,<elevation> degrees from +x toward +y sets its direction), and softened.
+    // The sun stands to the upper left of the reference camera, as in both reference pictures: `sunOffset` degrees round
+    // from the camera's azimuth (-50, toward the viewer's left) and `sunElevation` high (48), so every caster throws its
+    // shadow down and to the right where the camera sees it (a sun just off the camera hid each shadow behind its caster).
+    // A plan's "/view" may state either; SUN=<azimuth>,<elevation> (degrees from +x toward +y) replaces both.
+    const plannedView = { azimuth: 22, sunOffset: -50, sunElevation: 48, ...JSON.parse(overrides ?? "{}")["/view"] };
+    const sunAt = `${plannedView.azimuth + plannedView.sunOffset},${plannedView.sunElevation}`;
     // LIGHT: "keep" leaves the scene's lighting alone; otherwise the sun is turned round and `softSun` (below) is merged into
     // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
     // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
     const softSun = {
       intensity: 1.8, color: [1, 0.9, 0.77],
       shadow: {
-        // An edge that is tight at contact and widens fast with the distance to what casts it: a small caster (a cage, a
-        // bracket, a pipe) has no umbra left a hand's breadth away and its shadow fades out, while a balcony or an awning,
-        // far wider than its penumbra, still shades clearly.
-        softness: 0.04, spread: 0.16, maxSoftness: 0.5,
-        // A light shade with only a slight cool cast, as in the reference picture, faintly mottled (broad, gentle
-        // patches about 1.5 m across) with a slight wobble to its edge.
-        darkness: 0.1, tintStrength: 0.2, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
+        // An edge that is tight at contact and widens with the distance to what casts it: a thin caster (a cage bar, a
+        // bracket, a pipe) a hand's breadth off the wall leaves a soft, light shadow, while a course, a sign, a cage, an
+        // awning or the building itself, wider than its penumbra, shades clearly.
+        softness: 0.03, spread: 0.08, maxSoftness: 0.35,
+        // A soft cool shade, as in the reference pictures, faintly mottled (broad, gentle patches about 1.5 m across) with a
+        // slight wobble to its edge: clear enough that large forms read (darkness 0.1, tried first, washed out everything).
+        darkness: 0.34, tintStrength: 0.28, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.45,
         noise: { scale: 1.5, edge: 0.04, amount: 0.08, seed: 7 },
       },
     };
@@ -139,7 +143,7 @@ try {
       s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
       window.__facadeLighting = record;
       return { before, after: JSON.stringify(light), scene: JSON.stringify({ ...record, lights: undefined }) };
-    }, { sun: process.env.SUN ?? "6,52", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep",
+    }, { sun: process.env.SUN ?? sunAt, soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep",
       scene: { ...softScene, ...JSON.parse(process.env.LIGHT_SCENE ?? "{}") } });
     console.log(`sun before ${lit.before}`);
     if (lit.after) console.log(`sun after  ${lit.after}\nscene ${lit.scene}`);
@@ -198,7 +202,7 @@ try {
       left: { position: [(x0 + front) / 2 - 4, y0 - 26, cz + 2], target: [(x0 + front) / 2, y0, cz], bare: true },
       // High three-quarter from the street corner, looking down on the roof: its rail, tank, stair hut, ladder, aerials
       // and the aerial's cable, and what stands about on it.
-      roof: { position: [front + 8, y1 + 7, z1 + 8], target: [(x0 + front) / 2, cy, z1 - 1.2], bare: true },
+      roof: { position: [front + 6, y1 + 5, z1 + 6], target: [(x0 + front) / 2, cy, z1 - 2], bare: true },
     };
     // Only the picture: the page's panels over the viewport are hidden (CHROME=1 keeps them).
     if (process.env.CHROME !== "1") await page.evaluate(() => {
@@ -223,6 +227,22 @@ try {
         (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = !view.bare; if (m.userData.source) m.userData.source.visible = !view.bare; } }); s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));
+      // PICK=<view>:<x>,<y>;<x>,<y>: what mesh (and material) the picture shows at those points, in the picture's pixels.
+      for (const spec of (process.env.PICK ?? "").split(" ").filter(spec => spec.startsWith(`${name}:`))) {
+        const points = spec.slice(name.length + 1).split(";").map(point => point.split(",").map(Number));
+        const scale = Number(process.env.SCALE ?? 1);
+        const hits = await page.evaluate(({ points, scale }) => {
+          const s = window.__scene, T = window.__three, canvas = document.querySelector("#viewport canvas"), ray = new T.Raycaster();
+          const meshes = []; s.models.traverse(m => { if (m.isMesh && m.visible) meshes.push(m); });
+          return points.map(([x, y]) => {
+            ray.setFromCamera(new T.Vector2((x / scale) / canvas.clientWidth * 2 - 1, 1 - (y / scale) / canvas.clientHeight * 2), s.camera);
+            const hit = ray.intersectObjects(meshes, false)[0];
+            const material = hit?.object.material, target = hit && s.sceneBaker?.current?.entries.find(entry => entry.target.mesh === hit.object)?.target;
+            return `${x},${y}: ${hit ? `${hit.object.name} [${target?.material ?? material?.type}] at ${hit.point.toArray().map(v => v.toFixed(2))}` : "nothing"}`;
+          });
+        }, { points, scale });
+        console.log(hits.map(line => `pick ${name} ${line}`).join("\n"));
+      }
     }
     console.log(`Wrote ${wanted?.length ?? Object.keys(views).length} pictures to ${out}${errors.length ? `; page errors:\n${errors.slice(0, 8).join("\n")}` : ""}`);
   }

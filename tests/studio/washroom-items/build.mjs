@@ -107,7 +107,7 @@ function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
     // The reference shop house's cream render: the concrete's plaster coat, with patches lost to the concrete beneath.
-    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.1, chipRelief: 0.001, darknessA: 0.12, darknessB: 0.12, blendContrast: 1, hueAmount: 0, hueAngle: 60 }, seed: 11, meshes: [] },
+    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.3, chipRelief: 0.0012, darknessA: 0.6, darknessB: 0.45, blendContrast: 2.2, hueAmount: 0.04, hueAngle: 60, intactRoughness: 0.85 }, seed: 11, meshes: [] },
     // The fixtures are drawn with their paint as vertex tints (a frame's green, a cage's khaki, an awning's stripes), which
     // the picture keeps over their baked looks (`?bakedtints=on`): so their materials are pale, and add only what age
     // does to the paint: dullness, dirt and rust.
@@ -118,6 +118,8 @@ function facadeMaterials() {
     // the room, its curtains and drapes).
     { id: "window-glass", entry: "kowloon-window-glass.material.ts", parameters: { tint: [0.135, 0.127, 0.112], sky: 1, lamps: 0.22, dirt: 0.6 }, seed: 7, meshes: [] },
     { id: "room-dark", entry: steel, parameters: { ...plain, substrate: [0.85, 0.85, 0.85], metalness: 0, roughness: 0.92, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
+    // The back of a closed bay's recess (behind a gate or shutter): grimy dark plaster, untinted.
+    { id: "recess-plaster", entry: steel, parameters: { ...plain, substrate: [0.2, 0.185, 0.16], metalness: 0, roughness: 0.95, edgeRust: 0, surfaceRust: 0.1, rainRust: 0.25 }, seed: 5, meshes: [] },
     // The spandrels' small grey-green tiles, dirty in the joints.
     { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.065, glaze: [0.205, 0.26, 0.19], spare: [0.235, 0.29, 0.22], replaced: 0.012, missing: 0.03, variation: 0.12, grime: 0.8 }, seed: 7, meshes: [] },
     // Fixtures: printed air conditioner casings, painted steel gone dull and rusty, and thin galvanized sheet.
@@ -130,6 +132,8 @@ function facadeMaterials() {
     { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.3, fading: 0.3 }, seed: 7, meshes: [] },
     // Lit tubes in the shops, and a shop's concrete floor: grey, lightly soiled, never dark.
     { id: "tube-light", entry: "kowloon-tube-light.material.ts", parameters: {}, seed: 7, meshes: [] },
+    // A lit upper room's walls and ceiling (tinted): a soft warm glow under its own tube, far dimmer than the tube.
+    { id: "room-lit", entry: "kowloon-tube-light.material.ts", parameters: { tint: [1, 0.8, 0.55], glow: 0.1, aged: 0, dust: 0 }, seed: 7, meshes: [] },
     { id: "shop-floor", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, fractures: 0.3, stone: [0.62, 0.61, 0.58], variation: 0.04, grime: 0.25, spots: 0.25 }, seed: 4, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.7, surfaceRust: 0.3, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },

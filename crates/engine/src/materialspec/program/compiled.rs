@@ -190,6 +190,9 @@ pub(super) enum Builtin {
     /// Queries of the receiver's features of one name.
     FeatureDistance,
     FeatureTangent,
+    /// Coordinates in the zones the receiver's owner states, of one name.
+    ZoneCoord,
+    ZoneExtent,
     AdjustNormal,
     TriplanarWeights,
     VariedColor,
@@ -259,6 +262,8 @@ impl Builtin {
             "crease_adjacent_normal" => Self::CreaseAdjacentNormal,
             "feature_distance" => Self::FeatureDistance,
             "feature_tangent" => Self::FeatureTangent,
+            "zone_coord" => Self::ZoneCoord,
+            "zone_extent" => Self::ZoneExtent,
             "adjust_normal" => Self::AdjustNormal,
             "triplanar_weights" => Self::TriplanarWeights,
             "varied_color" => Self::VariedColor,
@@ -430,7 +435,9 @@ impl Costing<'_> {
                     | Builtin::CreaseTangent
                     | Builtin::CreaseAdjacentNormal
                     | Builtin::FeatureDistance
-                    | Builtin::FeatureTangent => cost.queries += 1,
+                    | Builtin::FeatureTangent
+                    | Builtin::ZoneCoord
+                    | Builtin::ZoneExtent => cost.queries += 1,
                     _ => {}
                 }
             }

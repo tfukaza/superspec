@@ -281,6 +281,16 @@ impl Walk<'_> {
                         }
                         found.sample = found.sample.union(S::WORLD).union(S::FOOTPRINT);
                     }
+                    Builtin::ZoneCoord | Builtin::ZoneExtent => {
+                        use SampleInputs as S;
+                        // A zone belongs to the receiver's owner, like its features.
+                        found.features = true;
+                        found.sample = found
+                            .sample
+                            .union(S::WORLD)
+                            .union(S::NORMAL)
+                            .union(S::FOOTPRINT);
+                    }
                     Builtin::External => {
                         if let Some(Kind::Text(name)) = args.first().map(|a| &a.kind) {
                             found.externals.insert(name.to_string());

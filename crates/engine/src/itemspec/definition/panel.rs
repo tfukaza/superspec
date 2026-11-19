@@ -914,6 +914,16 @@ impl Panel {
         Ok(())
     }
 
+    /// The openings a face shows, as `[x, z, width, height]` in part coordinates: every
+    /// opening on the front, the ones cut through on the back.
+    pub(super) fn openings_on(&self, front: bool) -> Vec<[f64; 4]> {
+        self.openings
+            .iter()
+            .filter(|opening| front || opening.recess.is_none())
+            .map(|opening| [opening.x, opening.z, opening.width, opening.height])
+            .collect()
+    }
+
     /// Features and the pattern anchor in part coordinates.
     pub(super) fn features(&self, part: &str) -> (Vec<Feature>, PatternAnchor) {
         let (w, h, t) = (self.width, self.height, self.thickness);
@@ -930,6 +940,7 @@ impl Panel {
                 width: 0.,
                 reach: Default::default(),
                 within: 0.,
+                zone: None,
             });
         };
         for y in [0., t] {

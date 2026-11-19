@@ -452,7 +452,10 @@ struct Emitter<'a> {
 fn uses_cpu_only(node: &Node) -> bool {
     match &node.kind {
         // An external input is a plane over the receiver's texels, like a baked CPU field.
-        Kind::Builtin(Builtin::Runoff | Builtin::External, _) => true,
+        Kind::Builtin(
+            Builtin::Runoff | Builtin::External | Builtin::ZoneCoord | Builtin::ZoneExtent,
+            _,
+        ) => true,
         Kind::Unary(_, a) | Kind::Member(a, _) => uses_cpu_only(a),
         Kind::Binary(_, a, b) => uses_cpu_only(a) || uses_cpu_only(b),
         Kind::Select(a, b, c) => uses_cpu_only(a) || uses_cpu_only(b) || uses_cpu_only(c),
@@ -779,6 +782,8 @@ impl<'a> Emitter<'a> {
                     | B::CreaseTangent
                     | B::CreaseAdjacentNormal
                     | B::FeatureTangent
+                    | B::ZoneCoord
+                    | B::ZoneExtent
                     | B::AdjustNormal
                     | B::TriplanarWeights
                     | B::VariedColor
@@ -1213,6 +1218,9 @@ impl<'a> Emitter<'a> {
             ),
             // The preview reads no source edges.
             B::Runoff => "0.0".into(),
+            // Nor zones: a plan reads them as textures the CPU baked; a preview is outside every zone.
+            B::ZoneCoord => "vec3(0.0, -1.0, 0.0)".into(),
+            B::ZoneExtent => "vec3(0.0)".into(),
             // Outside a CPU field the shader has no plane to read: the fallback.
             B::External => a[1].clone(),
             B::CreaseDistance | B::CreaseNormal | B::CreaseTangent | B::CreaseAdjacentNormal => {

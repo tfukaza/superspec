@@ -559,6 +559,9 @@ impl PreparedItem {
                     feature.normal = unit(matrix.direction(feature.normal)).map_err(|e| {
                         fail(&self.definition.source, "/features", "ITEM_FEATURE", e)
                     })?;
+                    feature.place_zone(matrix).map_err(|e| {
+                        fail(&self.definition.source, "/features", "ITEM_FEATURE", e)
+                    })?;
                     geometry.features.push(feature);
                 }
                 geometry

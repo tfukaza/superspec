@@ -454,6 +454,7 @@ mod tests {
             name: name.into(),
             points: vec![[0., 0., 0.], [1., 0., 0.]],
             closed: false,
+            zone: None,
         };
         let features = [feature("base"), feature("sill"), feature("follow")];
         use crate::materialspec::program::{Follow, followed_features};

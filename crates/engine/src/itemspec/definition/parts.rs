@@ -198,8 +198,115 @@ pub(super) struct PreparedPart {
     placement: Matrix,
     slots: BTreeMap<String, String>,
     pointer: String,
+    /// Zones below the features the generator reports.
+    zones: Vec<ZoneRule>,
 }
+
+/// A part's zone rule with its values resolved (see `schema::ZoneRuleDefinition`).
+#[derive(Clone, Debug, Serialize)]
+struct ZoneRule {
+    name: String,
+    below: String,
+    face: Option<String>,
+    length: f64,
+    depth: f64,
+    u0: f64,
+    scale: f64,
+    id: f64,
+    until: bool,
+    clip: bool,
+}
+
+/// A zone's checked length, depth, scale and identity from its definition's values.
+fn zone_values(
+    context: &Context<'_>,
+    pointer: &str,
+    [length, depth, scale, seed]: [Option<&Scalar>; 4],
+) -> Result<(f64, f64, f64, f64), ItemDiagnostic> {
+    let read = |value: Option<&Scalar>, field: &str, fallback: f64| match value {
+        Some(value) => context.scalar(value, &format!("{pointer}/{field}")),
+        None => Ok(fallback),
+    };
+    let length = read(length, "length", 0.)?;
+    let depth = read(depth, "depth", crate::materialspec::program::ZONE_DEPTH)?;
+    let scale = read(scale, "scale", 1.)?;
+    let seed = read(seed, "seed", 0.)?;
+    if !(length > 0. && length <= 1000.) || !(depth > 0. && depth <= 10.) || !scale.is_finite() {
+        return Err(context.fail(
+            pointer,
+            "ITEM_ZONE",
+            "A zone has a length from 0 to 1000 m, a depth from 0 to 10 m and a finite scale.",
+        ));
+    }
+    Ok((
+        length,
+        depth,
+        scale,
+        crate::materialspec::program::zone_id(&[seed.to_bits()]),
+    ))
+}
+
 impl PreparedPart {
+    /// The generator's features with the zones this part's rules hang below them: on the
+    /// feature itself where the zone takes its name, else on a copy under the zone's name.
+    fn zoned(&self, features: Vec<Feature>) -> Vec<Feature> {
+        if self.zones.is_empty() {
+            return features;
+        }
+        let mut result = features.clone();
+        for rule in &self.zones {
+            for (index, feature) in features.iter().enumerate() {
+                if feature.name != rule.below
+                    || rule.face.as_ref().is_some_and(|face| *face != feature.face)
+                    || feature.points.is_empty()
+                {
+                    continue;
+                }
+                let first = feature.points[0];
+                let (mut stops, mut holes) = (Vec::new(), Vec::new());
+                // A level edge of a panel knows the openings below it, in its own u and v.
+                let level = feature
+                    .points
+                    .iter()
+                    .all(|p| (p[2] - first[2]).abs() < 1e-9);
+                if let (PartShape::Panel(panel), true, true) =
+                    (&self.shape, level, rule.until || rule.clip)
+                {
+                    for [x, z, width, height] in panel.openings_on(feature.face == "front") {
+                        let head = z + height;
+                        if head > first[2] - 1e-9 {
+                            continue;
+                        }
+                        let (from, to) = (rule.u0 + x, rule.u0 + x + width);
+                        if rule.until {
+                            stops.push([from, to, first[2] - head]);
+                        } else {
+                            holes.push([from, to, first[2] - head, first[2] - z]);
+                        }
+                    }
+                }
+                let zone = crate::materialspec::program::Zone {
+                    down: [0., 0., -1.],
+                    length: rule.length,
+                    depth: rule.depth,
+                    u0: rule.u0 + first[0],
+                    id: rule.id,
+                    scale: rule.scale,
+                    stops,
+                    holes,
+                };
+                if rule.name == feature.name {
+                    result[index].zone = Some(zone);
+                } else {
+                    let mut copy = feature.clone();
+                    copy.name = rule.name.clone();
+                    copy.zone = Some(zone);
+                    result.push(copy);
+                }
+            }
+        }
+        result
+    }
     pub(super) fn key(&self) -> &str {
         &self.key
     }
@@ -679,12 +786,60 @@ pub(super) fn prepare(
                 attachment.direction = placement.direction(attachment.direction);
                 attachments.push(attachment);
             }
+            let mut zones = Vec::with_capacity(part.zones.len());
+            if part.zones.len() > 16 {
+                return Err(context.fail(
+                    &format!("{pointer}/zones"),
+                    "ITEM_ZONE",
+                    "A part has at most 16 zone rules.",
+                ));
+            }
+            for (index, rule) in part.zones.iter().enumerate() {
+                let at = format!("{pointer}/zones/{index}");
+                let name = rule.name.clone().unwrap_or_else(|| rule.below.clone());
+                if !bounded_name(&name) || !bounded_name(&rule.below) {
+                    return Err(context.fail(
+                        &at,
+                        "ITEM_ZONE",
+                        "A zone rule names a generated feature and a bounded zone name.",
+                    ));
+                }
+                let (length, depth, scale, id) = zone_values(
+                    context,
+                    &at,
+                    [
+                        Some(&rule.length),
+                        rule.depth.as_ref(),
+                        rule.scale.as_ref(),
+                        Some(&rule.seed),
+                    ],
+                )?;
+                zones.push(ZoneRule {
+                    name,
+                    below: rule.below.clone(),
+                    face: rule.face.clone(),
+                    length,
+                    depth,
+                    u0: context.scalar(&rule.u0, &format!("{at}/u0"))?,
+                    scale,
+                    id,
+                    until: rule.until == super::ZoneStop::Openings,
+                    clip: rule.clip == super::ZoneStop::Openings,
+                });
+            }
             let mut hash = Sha256::new();
             hash.update(b"itemspec-part-geometry-v1\0");
             hash.update(
                 serde_json::to_vec(&(id, &shape, placement.0, &part.slots))
                     .map_err(|e| context.fail(&pointer, "ITEM_JSON", e.to_string()))?,
             );
+            // Zones are part of the part's features; a part without any keeps its key.
+            if !zones.is_empty() {
+                hash.update(
+                    serde_json::to_vec(&zones)
+                        .map_err(|e| context.fail(&pointer, "ITEM_JSON", e.to_string()))?,
+                );
+            }
             parts.push(PreparedPart {
                 id: copy.id.clone(),
                 key: format!("{:x}", hash.finalize()),
@@ -692,6 +847,7 @@ pub(super) fn prepare(
                 placement,
                 slots: part.slots.clone(),
                 pointer: generator,
+                zones,
             });
         }
     }
@@ -863,6 +1019,34 @@ pub(super) fn authored(
                     within
                 }
             };
+            let zone = match &definition.zone {
+                None => None,
+                Some(zone) => {
+                    let at = format!("{pointer}/zone");
+                    let (length, depth, scale, id) = zone_values(
+                        &copy,
+                        &at,
+                        [
+                            Some(&zone.length),
+                            zone.depth.as_ref(),
+                            zone.scale.as_ref(),
+                            Some(&zone.seed),
+                        ],
+                    )?;
+                    let down = unit(zone.down)
+                        .map_err(|e| context.fail(&format!("{at}/down"), "ITEM_ZONE", e))?;
+                    Some(crate::materialspec::program::Zone {
+                        down,
+                        length,
+                        depth,
+                        u0: copy.scalar(&zone.u0, &format!("{at}/u0"))?,
+                        id,
+                        scale,
+                        stops: Vec::new(),
+                        holes: Vec::new(),
+                    })
+                }
+            };
             result.push(Feature {
                 name: definition.name.clone(),
                 part,
@@ -874,6 +1058,7 @@ pub(super) fn authored(
                 width: copy.scalar(&definition.width, &format!("{pointer}/width"))?,
                 reach: definition.reach,
                 within,
+                zone,
             });
             if result.len() > 4096 {
                 return Err(context.fail(
@@ -1228,6 +1413,7 @@ pub(super) fn build(
             ])
         };
         let (features, anchor) = part.features();
+        let features = part.zoned(features);
         let surface = matches!(part.shape, PartShape::Panel(_) | PartShape::Arc(_));
         // A sub-item's features are surface features where they came from a panel; their
         // normals follow the inverse transpose as a panel's do (a rigid placement keeps both).
@@ -1245,6 +1431,7 @@ pub(super) fn build(
                 unit(matrix.direction(feature.normal))
             }
             .map_err(failure)?;
+            feature.place_zone(matrix).map_err(failure)?;
             geometry.features.push(feature);
         }
         geometry.anchors.push(PatternAnchor {

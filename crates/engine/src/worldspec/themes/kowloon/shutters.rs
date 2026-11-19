@@ -2,6 +2,8 @@
 use super::{
     mesh::Mesh,
     metal::Kind,
+    noise::value_noise,
+    palette::{mix, srgb},
     pen::{Pen, Tint},
     weathered::{Mapping, Settings},
 };
@@ -146,13 +148,59 @@ pub fn headed_roller_shutter(
     } else {
         color
     };
+    let [left, right, top] = [x0 - 0.06, x1 + 0.06, head + box_height];
+    if rust == 0. {
+        return hardware.cuboid(
+            mesh,
+            "metal",
+            [left, 0., head],
+            [right, 0.13, top],
+            &boxed,
+            settings.metal.repeat,
+            "b",
+        );
+    }
     hardware.cuboid(
         mesh,
         "metal",
-        [x0 - 0.06, 0., head],
-        [x1 + 0.06, 0.13, head + box_height],
+        [left, 0., head],
+        [right, 0.13, top],
         &boxed,
         settings.metal.repeat,
-        "b",
-    )
+        "bf",
+    )?;
+    // A rusted box's face is streaked: runs of rust down from its top, heavier toward its
+    // drip edge, over patches where the grey paint still holds.
+    let streaked = |p: V3| -> Result<V3, String> {
+        let low = 1. - (p[2] - head) / box_height;
+        let streak = value_noise(p[0] * 13., p[2] * 1.3, 31.);
+        let fine = value_noise(p[0] * 41., p[2] * 2.5, 37.);
+        let held = value_noise(p[0] * 2.4, p[2] * 5., 43.);
+        let grey = mix(paint, srgb("#8e8b82"), 0.55);
+        let base = mix(grey, paint, (held * 1.6 - 0.4).clamp(0., 1.));
+        let amount =
+            (rust * (0.45 + 0.9 * (streak - 0.5) + 0.45 * (fine - 0.5) + 0.4 * low)).clamp(0., 1.);
+        let rusted = mix(base, srgb("#6b3a20"), amount);
+        let dark = 1. - 0.4 * rust * ((fine - 0.55) / 0.45).max(0.);
+        Ok(rusted.map(|v| v * dark))
+    };
+    let columns = ((right - left) / 0.03).ceil().clamp(1., 400.) as usize;
+    let rows = ((box_height / 0.05).ceil() as usize).clamp(2, 16);
+    for i in 0..columns {
+        let [a, b] = [i, i + 1].map(|k| left + (right - left) * k as f64 / columns as f64);
+        for j in 0..rows {
+            let [c, e] = [j, j + 1].map(|k| head + box_height * k as f64 / rows as f64);
+            hardware.face(
+                mesh,
+                "metal",
+                &[[a, 0.13, c], [b, 0.13, c], [b, 0.13, e], [a, 0.13, e]],
+                [0., 1., 0.],
+                &Tint::Field(&streaked),
+                settings.metal.repeat,
+                None,
+                None,
+            )?;
+        }
+    }
+    Ok(())
 }

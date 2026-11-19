@@ -133,11 +133,14 @@ pub(super) fn shop_room(
                 .moved([-width / 2., 0., floor])?
                 .facing([0.; 3], [1., 0., 0.], [0., -1., 0.])?;
             // The line is 0.2 m under the head, behind the raised shutter.
-            let headroom = (height - 2.).clamp(0.3, 0.95);
+            let shortest = (height - 2.).clamp(0.3, 0.95);
             let clear = (hang_clear - 0.2).max(0.);
             let drop = hang_drop
                 .map_or((clear + 0.8).min(height - 1.25), |drop| drop - 0.2)
-                .max(headroom);
+                .max(shortest);
+            // Over the way in nothing comes lower than 2 m above the floor.
+            let headroom = (height - 2.2).max(0.);
+            // Three rows, overlapping: a near-continuous wall of goods under the head.
             shop::provisions::hung(
                 &mut on(mesh, inside)?,
                 &shop::provisions::Hang {
@@ -145,6 +148,7 @@ pub(super) fn shop_room(
                     clear: clear.min(drop),
                     drop,
                     way: (width >= 3.).then_some([width / 2. - 0.6, width / 2. + 0.6, headroom]),
+                    rows: 3,
                 },
                 &mut kit.rng(&format!("{key}/front-goods"))?,
             )?;

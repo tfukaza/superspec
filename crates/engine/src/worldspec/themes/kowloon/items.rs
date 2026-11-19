@@ -38,10 +38,11 @@ use superspec_types::rng::SeededRng;
 
 mod cloth;
 mod hardware;
+mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "4";
+const VERSION: &str = "5";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -317,7 +318,8 @@ pub struct Natives {
 /// `kowloon/aircon`: a window air conditioner on its wall bracket, one of four seeded
 /// models. Anchor: bottom-centre of the casing on the wall plane; brackets and drain hang
 /// below z = 0. Parameters: `drop` (m of room below the casing for its supports and drain,
-/// 0.7), `seed`.
+/// 0.7), `plates` (bolted wall plates under the bracket arms and bolts through them, false),
+/// `louvred` (the outward face always the louvred grille, false), `seed`.
 fn aircon(
     name: &str,
     values: &Values,
@@ -325,23 +327,29 @@ fn aircon(
 ) -> Result<NativeOutput, String> {
     let mut arguments = Arguments::new(name, values);
     let drop = arguments.number("drop", 0.7)?;
+    let options = super::aircon::Options {
+        plates: arguments.boolean("plates", false)?,
+        louvred: arguments.boolean("louvred", false)?,
+    };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
     draw(cancelled, |mesh| {
-        super::aircon::air_conditioner(
+        super::aircon::air_conditioner_with(
             &mut fixture(mesh, "window-unit")?,
             0.,
             0.,
             drop,
             &mut rng,
             None,
+            options,
         )
         .map(|_| ())
     })
 }
 
 /// `kowloon/condenser`: a split-system condenser on wall brackets. Anchor: bottom-centre
-/// on the wall plane. Parameters: `width` (m, 0.95), `height` (m, 0.6), `seed`.
+/// on the wall plane. Parameters: `width` (m, 0.95), `height` (m, 0.6), `plates` (bolted
+/// wall plates under the bracket arms and bolts through them, false), `seed`.
 fn condenser(
     name: &str,
     values: &Values,
@@ -350,14 +358,19 @@ fn condenser(
     let mut arguments = Arguments::new(name, values);
     let width = arguments.number("width", 0.95)?;
     let height = arguments.number("height", 0.6)?;
+    let options = super::aircon::Options {
+        plates: arguments.boolean("plates", false)?,
+        louvred: false,
+    };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
     draw(cancelled, |mesh| {
-        super::aircon::condenser(
+        super::aircon::condenser_with(
             &mut fixture(mesh, "condenser")?,
             [-width / 2., width / 2., 0., height],
             &mut rng,
             None,
+            options,
         )
         .map(|_| ())
     })
@@ -453,8 +466,20 @@ fn window(
         handles: a.boolean("handles", false)?,
         glow,
         glow_slot: glow.map(|_| "tube-light"),
+        // `room`: m deep (0.5–6) a `lit` window's room reaches behind its recess, drawn in
+        // depth instead of the flat back panel: walls, ceiling and floor in `room-lit`, tinted
+        // by `glow`; a tube fixture on the ceiling in `tube-light`; a cupboard and curtains or a
+        // blind as plain silhouettes in `stock` (0: none, the flat panel; an unlit window
+        // ignores it).
+        room: match a.bounded("room", 0., 0. ..=6.)? {
+            depth if depth <= 0. => None,
+            depth if depth < 0.5 => {
+                return Err(format!("{name}: room must be 0 or lie in 0.5..6."));
+            }
+            depth => Some(depth),
+        },
     };
-    let glowing = look.lit && glow.is_some();
+    let glowing = look.lit && (glow.is_some() || options.room.is_some());
     let key = a.seed()?;
     let mut rng = SeededRng::from_text(&key);
     a.finish()?;
@@ -1272,7 +1297,10 @@ fn plants(
 /// plan fixes instead of the seed: `contents` (`auto` | `plants` | `washing` | `storage`
 /// (stacked cartons) | `mixed` | `empty` | `aircon` (an old window unit standing in it),
 /// `auto`), `roof` (`auto` | `none` | `sheet`, `auto`) and `roofColor` (of a `sheet` roof,
-/// #7f9a6c).
+/// #7f9a6c). The welding: `bar` (m, infill bar thickness, 0.004–0.05, 0.012), `rail` (m,
+/// frame rail thickness, 0.008–0.08, 0.028), `spacing` (m between infill bars, 0.04–0.5,
+/// 0.11) and `rust` (the most rust the seed mixes into the paint, 0–1, 0.35); `louvred`
+/// (false) turns an `aircon` unit's louvred grille out whatever its model.
 fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let width = a.number("width", 1.9)?;
@@ -1311,7 +1339,12 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
             _ => return Err(format!("{name}: roof must be one of auto, none, sheet.")),
         },
         roof_color: Some(roof_color),
+        bar: a.optional_number("bar")?,
+        rail: a.optional_number("rail")?,
+        spacing: a.optional_number("spacing")?,
+        rust: a.optional_number("rust")?,
     };
+    let louvred = a.boolean("louvred", false)?;
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
@@ -1325,13 +1358,17 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         )?;
         if unit {
             // Drawn after the cage from a stream of its own, so the cage stays the seed's.
-            super::aircon::air_conditioner(
+            super::aircon::air_conditioner_with(
                 &mut fixture(mesh, "cage")?,
                 0.,
                 cage.heights[0] + 0.045,
                 0.,
                 &mut SeededRng::from_text(&format!("{key}/unit")),
                 None,
+                super::aircon::Options {
+                    plates: false,
+                    louvred,
+                },
             )?;
         }
         Ok(())
@@ -1873,7 +1910,10 @@ fn ground_bay(
 
 /// `kowloon/water-tank`: a rooftop water tank on its stand, round stainless or boxed, with
 /// inlet pipework (roof frame). Anchor: bottom-centre of the stand. Parameters: `kind`
-/// (`round` | `box`, `round`), `seed`.
+/// (`round` | `box`, `round`), `seed`, and what a round tank may fix instead of its seed:
+/// `radius` (m, 0.3–1.5), `height` (m of shell, 0.6–3), `stand` (m of stand under it, 0.2–3),
+/// `ribs` (rolled ribs round the shell, 0–24; three hoops when left out) and `lid` (m of rise
+/// of a conical lid, 0–1, 0: the flat top).
 fn water_tank(
     name: &str,
     values: &Values,
@@ -1885,7 +1925,27 @@ fn water_tank(
         return Err(format!("{name}: kind must be one of round, box."));
     }
     let key = a.seed()?;
+    let shape = water_tanks::RoundShape {
+        radius: a.optional_number("radius")?,
+        height: a.optional_number("height")?,
+        stand: a.optional_number("stand")?,
+        ribs: match a.optional_number("ribs")? {
+            None => None,
+            Some(n) if n.fract() == 0. && (0. ..=24.).contains(&n) => Some(n as usize),
+            Some(_) => return Err(format!("{name}: ribs must be a whole number in 0..24.")),
+        },
+        lid: a.bounded("lid", 0., 0. ..=1.)?,
+    };
     a.finish()?;
+    if round == "box"
+        && ["radius", "height", "stand", "ribs", "lid"]
+            .iter()
+            .any(|key| values.contains_key(*key))
+    {
+        return Err(format!(
+            "{name}: radius, height, stand, ribs and lid shape a round tank only."
+        ));
+    }
     let settings = water_tanks::Settings {
         weathering: weathering(&key, 0.),
         brushed: binding("brushed-metal"),
@@ -1894,7 +1954,7 @@ fn water_tank(
         let d = &mut on(mesh, room_pen("water-tank", [0.; 3])?)?;
         let rng = &mut SeededRng::from_text(&key);
         if round == "round" {
-            water_tanks::round_tank(d, [0.; 3], rng, &settings)
+            water_tanks::shaped_round_tank(d, [0.; 3], rng, &settings, &shape)
         } else {
             water_tanks::box_tank(d, [0.; 3], rng, &settings)
         }
@@ -2828,6 +2888,7 @@ impl Natives {
             ("kowloon/ladder", street::ladder),
             ("kowloon/sagging-tarp", cloth::sagging_tarp),
             ("kowloon/sheet-canopy", cloth::sheet_canopy),
+            ("kowloon/party", party::party),
             ("kowloon/cable", hardware::cable),
             ("kowloon/junction-box", hardware::junction_box),
             ("kowloon/roof-clutter", hardware::roof_clutter),

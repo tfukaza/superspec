@@ -53,7 +53,8 @@ impl Trade {
             Self::Roast => roast::interior(rng),
             Self::Hardware => hardware::interior(rng),
             Self::Herbalist => herbalist::interior(rng),
-            Self::ReferenceProvisions | Self::Provisions => provisions::interior(),
+            Self::ReferenceProvisions => provisions::interior(),
+            Self::Provisions => provisions::fitted_interior(),
         }
     }
     fn display(self) -> Option<display::Trade> {

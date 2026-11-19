@@ -190,12 +190,51 @@ pub fn item_features(
                 + transform[12 + row]
         })
     };
+    let turn = |d: [f64; 3]| -> [f64; 3] {
+        let turned: [f64; 3] = std::array::from_fn(|row| {
+            transform[row] * d[0] + transform[4 + row] * d[1] + transform[8 + row] * d[2]
+        });
+        let length = turned.iter().map(|v| v * v).sum::<f64>().sqrt();
+        if length > 1e-12 {
+            turned.map(|v| v / length)
+        } else {
+            d
+        }
+    };
     features
         .iter()
-        .map(|feature| program::NamedFeature {
-            name: feature.name.clone(),
-            points: feature.points.iter().map(place).collect(),
-            closed: feature.closed,
+        .map(|feature| {
+            let points: Vec<[f64; 3]> = feature.points.iter().map(place).collect();
+            // A zone's identity is where its edge starts in the world (to the millimeter), its
+            // name and the seed its owner gave it: every receiver that holds the zone sees one
+            // identity, and every edge its own.
+            let zone = feature.zone.as_ref().map(|zone| {
+                let start = points.first().copied().unwrap_or_default();
+                let millimeters = start.map(|v| (v * 1000.).round() as i64 as u64);
+                let name = feature
+                    .name
+                    .bytes()
+                    .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+                    });
+                program::Zone {
+                    down: turn(zone.down),
+                    id: program::zone_id(&[
+                        millimeters[0],
+                        millimeters[1],
+                        millimeters[2],
+                        name,
+                        zone.id.to_bits(),
+                    ]),
+                    ..zone.clone()
+                }
+            });
+            program::NamedFeature {
+                name: feature.name.clone(),
+                points,
+                closed: feature.closed,
+                zone,
+            }
         })
         .collect()
 }

@@ -325,6 +325,30 @@ pub struct CagePlan {
     /// Whether it has its corrugated roof, and that roof's paint (the seed's when `None`).
     pub roof: Option<bool>,
     pub roof_color: Option<V3>,
+    /// Thickness of the infill bars in meters (0.012).
+    pub bar: Option<f64>,
+    /// Thickness of the frame rails and corner posts in meters (0.028, the posts 0.002 more).
+    pub rail: Option<f64>,
+    /// Spacing of the infill bars in meters (0.11; the floor's runners stay 0.2 apart).
+    pub spacing: Option<f64>,
+    /// The most rust (0–1) mixed into an unbaked cage's paint; the seed picks up to it (0.35).
+    pub rust: Option<f64>,
+}
+impl CagePlan {
+    fn validate(&self) -> Result<(), String> {
+        let within = |value: Option<f64>, range: std::ops::RangeInclusive<f64>| {
+            value.is_none_or(|v| range.contains(&v))
+        };
+        if within(self.bar, 0.004..=0.05)
+            && within(self.rail, 0.008..=0.08)
+            && within(self.spacing, 0.04..=0.5)
+            && within(self.rust, 0. ..=1.)
+        {
+            Ok(())
+        } else {
+            Err("A window cage's bars are 4–50 mm, its rails 8–80 mm, its bars 0.04–0.5 m apart and its rust 0–1.".into())
+        }
+    }
 }
 /// Welded enclosure, fixing hardware, optional corrugated roof and seeded household contents.
 pub fn cage(
@@ -358,7 +382,14 @@ pub fn planned_cage(
         return Err("Invalid window cage.".into());
     }
     validate_weathering(settings)?;
-    let paint = metal_color(c.color, rng.float(0., 0.35), settings);
+    plan.validate()?;
+    let oxidation = rng.float(0., 0.35);
+    let oxidation = plan.rust.map_or(oxidation, |most| oxidation / 0.35 * most);
+    let paint = metal_color(c.color, oxidation, settings);
+    let bar = plan.bar.unwrap_or(0.012);
+    let frame_rail = plan.rail.unwrap_or(0.028);
+    let post = plan.rail.map_or(0.03, |r| r + 0.002);
+    let pitch = plan.spacing.unwrap_or(0.11);
     let pen = if let Some(s) = settings {
         d.pen.with_weathering(
             d.mesh,
@@ -436,29 +467,29 @@ pub fn planned_cage(
         y += 0.11;
     }
     for z in [z0, (z0 + z1) / 2., z1] {
-        rail([x0, depth, z], [x1, depth, z], 0.028)?;
+        rail([x0, depth, z], [x1, depth, z], frame_rail)?;
         for x in [x0, x1] {
-            rail([x, 0., z], [x, depth, z], 0.028)?;
+            rail([x, 0., z], [x, depth, z], frame_rail)?;
         }
     }
     for x in [x0, x1] {
-        rail([x, depth, z0], [x, depth, z1], 0.03)?;
+        rail([x, depth, z0], [x, depth, z1], post)?;
     }
-    let mut x = x0 + 0.11;
+    let mut x = x0 + pitch;
     while x < x1 - 0.04 {
-        rail([x, depth, z0], [x, depth, z1], 0.012)?;
-        x += 0.11;
+        rail([x, depth, z0], [x, depth, z1], bar)?;
+        x += pitch;
     }
     for x in [x0, x1] {
-        let mut y = 0.11;
+        let mut y = pitch;
         while y < depth - 0.03 {
-            rail([x, y, z0], [x, y, z1], 0.012)?;
-            y += 0.11;
+            rail([x, y, z0], [x, y, z1], bar)?;
+            y += pitch;
         }
     }
     let mut x = x0 + 0.2;
     while x < x1 - 0.1 {
-        rail([x, 0., z0], [x, depth, z0], 0.012)?;
+        rail([x, 0., z0], [x, depth, z0], bar)?;
         x += 0.2;
     }
     // A planned roof draws from its own stream, so the contents stay the seed's.

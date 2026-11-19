@@ -34,7 +34,8 @@
         "patternAnchor": ["-u0", 0],
         "rings": [{"name": "pavement", "at": [0, 0]},
                   {"name": "coping", "at": [0, {"derived": "top"}]}, {"name": "coping-above", "at": [0, "top + 0.3"]}]},
-      "slots": {"side": "wall-round"}
+      "slots": {"side": "wall-round"},
+      "zones": [{"name": "runoff-coping", "below": "coping", "length": {"parameter": "parapet"}, "u0": {"parameter": "u0"}}]
     },
     {
       "id": "plinth",
@@ -66,7 +67,8 @@
         "patternAnchor": ["-u0", "-(groundHeight + j * storyHeight)"],
         "rings": [{"name": "eave", "at": [0, 0]}, {"name": "eave-above", "at": [0, 0.3]}]},
       "placement": {"position": [0, 0, "groundHeight + j * storyHeight"]},
-      "slots": {"side": "trim"}
+      "slots": {"side": "trim"},
+      "zones": [{"name": "runoff-top", "below": "eave", "length": "select(j == 0, groundHeight, storyHeight)", "u0": {"parameter": "u0"}}]
     },
     {
       "id": "ledge",
@@ -77,7 +79,8 @@
         "patternAnchor": ["-u0", "-height"],
         "rings": [{"name": "eave", "at": [0, 0]}, {"name": "eave-above", "at": [0, 0.3]}]},
       "placement": {"position": [0, 0, {"derived": "height"}]},
-      "slots": {"side": "trim"}
+      "slots": {"side": "trim"},
+      "zones": [{"name": "runoff-top", "below": "eave", "length": {"parameter": "storyHeight"}, "u0": {"parameter": "u0"}}]
     },
     {
       "id": "coping",

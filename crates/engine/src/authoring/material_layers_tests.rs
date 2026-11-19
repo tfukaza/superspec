@@ -72,6 +72,7 @@ fn sill() -> Vec<program::NamedFeature> {
         name: "sill".into(),
         points: vec![[-1., 0., 0.4], [2., 0., 0.4]],
         closed: false,
+        zone: None,
     }]
 }
 

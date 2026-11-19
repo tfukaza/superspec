@@ -16,6 +16,7 @@ mod numeric;
 mod planes;
 mod syntax;
 mod ts;
+mod zones;
 pub use deps::{Dependencies, DependencyTable, SampleInputs};
 pub use eval::{FieldSelection, OutputSet};
 pub use features::{
@@ -24,6 +25,7 @@ pub use features::{
     followed_names, orient_relief, receiver_features, receiver_seams,
 };
 pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
+pub use zones::{DEFAULT_DEPTH as ZONE_DEPTH, Zone, ZoneHit, ZoneSet, zone_id};
 pub use ts::{
     EditFailure, EditOp, Edited, Inspection, Patch, Span, apply as apply_edit,
     inspect as inspect_recipe,

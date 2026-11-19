@@ -759,6 +759,17 @@ impl Checker<'_> {
                     {
                         self.external(plane, result, &expr.mark)?;
                     }
+                    if let ("zone_coord" | "zone_extent", Some(Expression::Text(zone))) =
+                        (name.as_str(), args.first().map(|v| &v.kind))
+                    {
+                        if !super::features::valid_feature_name(zone) {
+                            return Err(self.program.diagnostic(
+                                "MS_TYPE",
+                                "Zone names are at most 64 letters, digits, '.', '_' or '-'.",
+                                &expr.mark,
+                            ));
+                        }
+                    }
                     if let (
                         "feature_distance" | "feature_tangent",
                         Some(Expression::Text(feature)),
@@ -882,6 +893,15 @@ fn dependencies(
                     }) = args.first()
                     {
                         inputs.insert(format!("feature:{feature}"));
+                    }
+                }
+                if matches!(operation.id, "zone_coord" | "zone_extent") {
+                    if let Some(Expr {
+                        kind: Expression::Text(zone),
+                        ..
+                    }) = args.first()
+                    {
+                        inputs.insert(format!("zone:{zone}"));
                     }
                 }
                 if operation.id == "external" {

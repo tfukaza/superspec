@@ -170,6 +170,7 @@ fn features(width: f64) -> Vec<NamedFeature> {
         name: name.into(),
         points: vec![[0., y, z], [width, y, z]],
         closed: false,
+        zone: None,
     };
     vec![
         line("base", 0., 0.),

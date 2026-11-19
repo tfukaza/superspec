@@ -420,6 +420,20 @@ pub struct Feature {
     /// feature's own space; zero for a feature that reaches its part alone.
     #[serde(skip_serializing_if = "is_zero")]
     pub within: f64,
+    /// The weathering zone hanging below the polyline, in the feature's space (its `down`
+    /// turns with the points; `id` is a seed until the feature is placed, see
+    /// `authoring::item_features`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zone: Option<crate::materialspec::program::Zone>,
+}
+impl Feature {
+    /// The feature's points and zone direction through `matrix`.
+    pub(super) fn place_zone(&mut self, matrix: superspec_geometry::Matrix) -> Result<(), String> {
+        if let Some(zone) = &mut self.zone {
+            zone.down = superspec_geometry::math::unit(matrix.direction(zone.down))?;
+        }
+        Ok(())
+    }
 }
 fn is_zero(value: &f64) -> bool {
     *value == 0.

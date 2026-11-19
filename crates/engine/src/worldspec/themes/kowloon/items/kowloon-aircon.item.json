@@ -9,19 +9,20 @@
     "seed": {"type": "integer", "default": 0, "min": 0, "max": 100000000},
     "drop": {"type": "number", "default": 0.6, "min": 0, "max": 3, "unit": "m"},
     "width": {"type": "number", "default": 0.95, "min": 0.91, "max": 2, "unit": "m"},
-    "height": {"type": "number", "default": 0.6, "min": 0.5, "max": 1.2, "unit": "m"}
+    "height": {"type": "number", "default": 0.6, "min": 0.5, "max": 1.2, "unit": "m"},
+    "plates": {"type": "boolean", "default": true}
   },
   "parts": [
     {
       "id": "unit",
       "when": "1 - split",
-      "generator": {"kind": "native", "name": "kowloon/aircon", "parameters": {"drop": {"parameter": "drop"}, "seed": {"parameter": "seed"}}}
+      "generator": {"kind": "native", "name": "kowloon/aircon", "parameters": {"drop": {"parameter": "drop"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "condenser",
       "when": "split",
       "generator": {"kind": "native", "name": "kowloon/condenser",
-        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "height"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "height"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "lines",
@@ -40,8 +41,8 @@
     }
   ],
   "features": [
-    {"name": "drip", "part": "unit", "points": [[-0.32, 0, 0], [0.32, 0, 0]], "width": 0.1},
-    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1},
+    {"name": "drip", "part": "unit", "points": [[-0.32, 0, 0], [0.32, 0, 0]], "width": 0.1, "zone": {"length": 1.5}},
+    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1, "zone": {"length": 1.5}},
     {"name": "drip-above", "part": "unit", "points": [[-0.32, 0, 0.3], [0.32, 0, 0.3]]},
     {"name": "drip-above", "part": "condenser", "points": [["-width / 2", 0, 0.3], ["width / 2", 0, 0.3]]}
   ]

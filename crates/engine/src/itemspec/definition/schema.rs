@@ -92,6 +92,74 @@ pub struct FeatureDefinition {
     /// feature to be given it, in meters (3 by default, at most 50).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub within: Option<Scalar>,
+    /// Makes the polyline the edge of a weathering zone (see [`ZoneDefinition`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<ZoneDefinition>,
+}
+
+/// A weathering zone below an edge: what hangs from it (runoff, rust, soot) and how far. Its
+/// coordinates are `u`, meters along the edge from `u0` at its first point, and `v`, meters
+/// below the edge along `down`. A material reads them with `zoneCoord`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneDefinition {
+    /// The greatest drop below the edge, in meters.
+    pub length: Scalar,
+    /// Downhill along the surface, in the definition's coordinates.
+    #[serde(default = "downward")]
+    pub down: [f64; 3],
+    /// How far off the edge's surface the zone reaches, in meters (0.03 by default).
+    pub depth: Option<Scalar>,
+    /// `u` at the edge's first point.
+    #[serde(default)]
+    pub u0: Scalar,
+    /// A value given to the zone's materials (`zoneExtent`), 1 by default.
+    pub scale: Option<Scalar>,
+    /// Varies the zone's identity (`zoneCoord`'s id) beyond where it stands.
+    #[serde(default)]
+    pub seed: Scalar,
+}
+fn downward() -> [f64; 3] {
+    [0., 0., -1.]
+}
+
+/// A part's rule for zones below the features its generator reports (`top`, `sill`, ...): the
+/// item knows where each edge is and what stands below it, so its zones start at the edge and
+/// stop where the next edge below stops the water. `u` is `u0` plus the edge's start along the
+/// part's X axis, then meters along the edge, so walls placed with the `u0` of a footprint run
+/// on round a building. On a panel, `until: "openings"` ends a column at the head of an opening
+/// below the edge, and `clip: "openings"` leaves the opening's own rectangle out.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ZoneRuleDefinition {
+    /// The zone's name, as a layer follows it; the feature's own name when absent.
+    pub name: Option<String>,
+    /// The generated feature the zone hangs below.
+    pub below: String,
+    /// Only the feature on this face (a panel's `front` or `back`); every face when absent.
+    pub face: Option<String>,
+    pub length: Scalar,
+    pub depth: Option<Scalar>,
+    #[serde(default)]
+    pub u0: Scalar,
+    pub scale: Option<Scalar>,
+    #[serde(default)]
+    pub seed: Scalar,
+    #[serde(default = "zone_stop")]
+    pub until: ZoneStop,
+    #[serde(default)]
+    pub clip: ZoneStop,
+}
+/// What ends or cuts a zone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZoneStop {
+    #[default]
+    None,
+    Openings,
+}
+fn zone_stop() -> ZoneStop {
+    ZoneStop::Openings
 }
 
 /// Whose receivers a feature is given to. A generated feature reaches its part. An authored
@@ -477,6 +545,9 @@ pub struct PartDefinition {
     pub repeat: Vec<RepeatAxis>,
     /// The part (or each copy) is emitted only when this is positive.
     pub when: Option<Scalar>,
+    /// Weathering zones below the features the generator reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<ZoneRuleDefinition>,
 }
 
 /// Where a part sits inside its item: a position and extrinsic XYZ rotations in degrees.

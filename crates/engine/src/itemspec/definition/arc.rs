@@ -415,6 +415,7 @@ impl Arc {
                 width: 0.,
                 reach: Default::default(),
                 within: 0.,
+                zone: None,
             })
             .collect();
         for (name, step, facing) in [("start", steps[0], -1.), ("end", steps[self.segments], 1.)] {
@@ -433,6 +434,7 @@ impl Arc {
                 width: 0.,
                 reach: Default::default(),
                 within: 0.,
+                zone: None,
             });
         }
         (

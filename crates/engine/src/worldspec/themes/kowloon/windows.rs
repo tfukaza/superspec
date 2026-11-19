@@ -3,6 +3,7 @@ use super::{
     fasteners::bolt,
     fixture::Fixture,
     palette::{shade, srgb},
+    pen::Tint,
 };
 use serde::Deserialize;
 use superspec_geometry::{
@@ -70,6 +71,269 @@ pub struct Options {
     /// it is drawn in instead of `interior-lit`.
     pub glow: Option<V3>,
     pub glow_slot: Option<&'static str>,
+    /// For a lit window, the depth (m) of a room drawn behind its recess instead of the flat
+    /// back panel: see [`lit_room`].
+    pub room: Option<f64>,
+}
+
+/// The slot of a lit room's walls, ceiling, floor and lamp batten, coloured per vertex in the
+/// warm tint of its light: a host leaves it plain or binds a softly glowing material.
+pub const ROOM_LIT_SLOT: &str = "room-lit";
+
+/// A lit room `depth` deep behind a window's recess, seen through its lights `span`: back,
+/// side walls and ceiling (and a floor) reaching past the opening, darker away from a tube
+/// batten hung at the opening's head, in [`ROOM_LIT_SLOT`] tinted from `light` (the lamp's
+/// colour); the tube in `tube-light`; and, as plain silhouettes in `stock`, a cupboard or shelf
+/// against the back wall and curtains (`curtains`: the share of the width each covers) or a
+/// part-lowered blind on the opening.
+fn lit_room(
+    drawing: &mut Fixture<'_, '_>,
+    span: [f64; 4],
+    recess: f64,
+    depth: f64,
+    light: V3,
+    curtain: V3,
+    curtains: Option<f64>,
+    rng: &mut SeededRng,
+) -> Result<(), String> {
+    let [x0, x1, z0, z1] = span;
+    let slot = ROOM_LIT_SLOT;
+    let (front, back) = (-recess - 0.01, -recess - depth);
+    // The room reaches past the opening on either side, from its floor below the sill to a
+    // ceiling above the head.
+    let side = rng.float(0.2, 0.42);
+    let (left, right) = (x0 - side, x1 + side * rng.float(0.8, 1.2));
+    // A low ceiling just over the head, so its lamp hangs into view through the opening.
+    let (floor, ceiling) = (z0 - 0.85, z1 + rng.float(0.08, 0.16));
+    let lamp = [(left + right) / 2. + rng.float(-0.2, 0.2), back * 0.42];
+    // Old distemper, yellowed: darker than the render outside, warm in the lamp's light.
+    let walls = shade(
+        srgb(rng.pick(&["#c49a68", "#b99468", "#c4a074", "#b3926c"])),
+        rng.float(0.66, 0.78),
+    );
+    // Half the lamp's colour: warm, not orange.
+    let tint = |base: V3| -> V3 { std::array::from_fn(|k| base[k] * (0.5 + 0.5 * light[k])) };
+    let (walls, ceiling_tint, floor_tint) = (
+        tint(walls),
+        tint(shade(walls, 1.08)),
+        tint(shade(srgb("#7a6550"), 0.8)),
+    );
+    // Brightest under the lamp, falling off with distance and towards the floor.
+    let falloff = move |p: V3, base: V3| -> Result<V3, String> {
+        let dx = p[0] - lamp[0];
+        let dy = p[1] - lamp[1];
+        let dz = (ceiling - p[2]).max(0.) * 1.4;
+        let reach = (dx * dx + dy * dy + dz * dz).sqrt();
+        let k = (1.25 - reach * 0.32).clamp(0.3, 1.25);
+        Ok(shade(base, k))
+    };
+    let repeat = drawing.repeat(slot);
+    // A surface split into `cols` by `rows` quads so its shading varies across it.
+    let surface = |drawing: &mut Fixture<'_, '_>,
+                   corner: V3,
+                   u: V3,
+                   v: V3,
+                   [cols, rows]: [usize; 2],
+                   normal: V3,
+                   base: V3|
+     -> Result<(), String> {
+        let field = |p: V3| falloff(p, base);
+        let at = |i: usize, j: usize| -> V3 {
+            let (a, b) = (i as f64 / cols as f64, j as f64 / rows as f64);
+            std::array::from_fn(|k| corner[k] + u[k] * a + v[k] * b)
+        };
+        for i in 0..cols {
+            for j in 0..rows {
+                drawing.pen.face(
+                    drawing.mesh,
+                    slot,
+                    &[at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)],
+                    normal,
+                    &Tint::Field(&field),
+                    repeat,
+                    None,
+                    None,
+                )?;
+            }
+        }
+        Ok(())
+    };
+    let (width, high, long) = (right - left, ceiling - floor, back - front);
+    surface(
+        drawing,
+        [left, back, floor],
+        [width, 0., 0.],
+        [0., 0., high],
+        [3, 2],
+        [0., 1., 0.],
+        walls,
+    )?;
+    for (x, normal, base) in [
+        (left, [1., 0., 0.], shade(walls, 0.9)),
+        (right, [-1., 0., 0.], shade(walls, 0.84)),
+    ] {
+        surface(
+            drawing,
+            [x, front, floor],
+            [0., long, 0.],
+            [0., 0., high],
+            [2, 2],
+            normal,
+            base,
+        )?;
+    }
+    surface(
+        drawing,
+        [left, front, ceiling],
+        [width, 0., 0.],
+        [0., long, 0.],
+        [3, 2],
+        [0., 0., -1.],
+        ceiling_tint,
+    )?;
+    surface(
+        drawing,
+        [left, front, floor],
+        [width, 0., 0.],
+        [0., long, 0.],
+        [1, 1],
+        [0., 0., 1.],
+        floor_tint,
+    )?;
+    // A cupboard or a shelf of things against the back wall, darker than the wall.
+    let piece = rng.float(0.5, 1.1).min(width * 0.45);
+    let at = rng.float(left + 0.05, right - piece - 0.05);
+    let tall = rng.float(0.9, 1.9).min(high - 0.1);
+    let wood = tint(shade(
+        srgb(rng.pick(&["#6a5640", "#5c5a52", "#7a6448"])),
+        0.75,
+    ));
+    // Furniture and curtains stand against the light as silhouettes, plain colours unlit by
+    // it, in the slot of the goods a storeroom's window shows.
+    let figure = "stock";
+    drawing.cuboid(
+        figure,
+        [at, back + 0.01, floor],
+        [at + piece, back + 0.45, floor + tall],
+        wood,
+        "bd",
+    )?;
+    if rng.chance(0.6) {
+        // Things on its top.
+        let mut x = at + 0.04;
+        while x < at + piece - 0.12 {
+            drawing.mesh.spend_work(1)?;
+            let (w, h) = (rng.float(0.08, 0.22), rng.float(0.08, 0.3));
+            drawing.cuboid(
+                figure,
+                [x, back + 0.05, floor + tall],
+                [x + w, back + 0.3, floor + tall + h],
+                tint(shade(
+                    srgb(rng.pick(&["#8a6a4c", "#a89a80", "#6a7072", "#9a5a48"])),
+                    rng.float(0.6, 0.9),
+                )),
+                "bd",
+            )?;
+            x += w + rng.float(0.02, 0.12);
+        }
+    }
+    // The fixture: an enamel batten on two rods, at about the opening's head so it shows from
+    // the street, with its tube in the lit lamps' slot.
+    let length = (width * 0.5).clamp(0.6, 1.2);
+    let [lx, ly] = lamp;
+    let hung = (z1 - rng.float(0., 0.08)).min(ceiling - 0.05);
+    let enamel = tint(srgb("#e0ddd2"));
+    drawing.cuboid(
+        slot,
+        [lx - length / 2., ly - 0.035, hung - 0.04],
+        [lx + length / 2., ly + 0.035, hung],
+        enamel,
+        "",
+    )?;
+    for end in [-1., 1.] {
+        let x = lx + end * (length / 2. - 0.1);
+        drawing.bar(
+            slot,
+            [x, ly, hung],
+            [x, ly, ceiling],
+            0.012,
+            shade(enamel, 0.6),
+        )?;
+    }
+    let pen = drawing.pen.into_part("tube-emitter")?;
+    let mut emitter = Fixture {
+        pen,
+        mesh: &mut *drawing.mesh,
+        repeats: drawing.repeats,
+    };
+    emitter.tube(
+        "tube-light",
+        &[
+            [lx - length / 2. + 0.04, ly, hung - 0.06],
+            [lx + length / 2. - 0.04, ly, hung - 0.06],
+        ],
+        0.015,
+        [1., 0.98, 0.92],
+        6,
+    )?;
+    // Curtains drawn to the sides, in folds, lit from behind; or a blind lowered part way.
+    let fabric = tint(shade(curtain, 0.55));
+    let hang = -recess - 0.06;
+    if let Some(share) = curtains {
+        let w = (x1 - x0) * share;
+        let starts: &[f64] = if rng.chance(0.5) {
+            &[x0, x1 - w]
+        } else if rng.chance(0.5) {
+            &[x0]
+        } else {
+            &[x1 - w]
+        };
+        for &start in starts {
+            for fold in 0..3 {
+                let a = start + w * fold as f64 / 3.;
+                let b = start + w * (fold + 1) as f64 / 3.;
+                let (ya, yb) = (
+                    hang - (fold % 2) as f64 * 0.03,
+                    hang - ((fold + 1) % 2) as f64 * 0.03,
+                );
+                drawing.sheet(
+                    figure,
+                    &[
+                        [a, ya, z0 - 0.1],
+                        [b, yb, z0 - 0.1],
+                        [b, yb, z1 + 0.08],
+                        [a, ya, z1 + 0.08],
+                    ],
+                    shade(fabric, if fold % 2 == 0 { 1. } else { 0.85 }),
+                )?;
+            }
+        }
+    }
+    if rng.chance(0.3) {
+        let low = z1 - (z1 - z0) * rng.float(0.15, 0.32);
+        let blind = tint(shade(
+            srgb(rng.pick(&["#d8ccaa", "#c9b98e", "#b9c0b0"])),
+            0.7,
+        ));
+        drawing.sheet(
+            figure,
+            &[
+                [x0 - 0.02, hang - 0.04, low],
+                [x1 + 0.02, hang - 0.04, low],
+                [x1 + 0.02, hang - 0.04, z1 + 0.08],
+                [x0 - 0.02, hang - 0.04, z1 + 0.08],
+            ],
+            blind,
+        )?;
+        drawing.cuboid(
+            figure,
+            [x0 - 0.02, hang - 0.055, low - 0.02],
+            [x1 + 0.02, hang - 0.025, low],
+            shade(blind, 0.7),
+            "",
+        )?;
+    }
+    Ok(())
 }
 
 fn interior(
@@ -81,6 +345,22 @@ fn interior(
 ) -> Result<(), String> {
     let [x0, x1, z0, z1] = span;
     let depth = look.recess;
+    if let (true, Some(room)) = (look.lit, options.room) {
+        // The shared stream advances as for a flat back, so the sashes open alike.
+        let curtained = rng.chance(0.6);
+        let share = rng.float(0.12, 0.24);
+        let mut own = SeededRng::from_text(&format!("{}/{x0}/{z0}/lit-room", drawing.pen.part));
+        return lit_room(
+            drawing,
+            span,
+            depth,
+            room,
+            options.glow.unwrap_or(srgb("#ffe7ad")),
+            look.curtain,
+            curtained.then_some(share * 1.4),
+            &mut own,
+        );
+    }
     drawing.panel(
         if look.lit {
             options.glow_slot.unwrap_or("interior-lit")

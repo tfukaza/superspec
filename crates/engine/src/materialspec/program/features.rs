@@ -653,6 +653,10 @@ pub struct NamedFeature {
     /// Whether the last point joins the first.
     #[serde(default)]
     pub closed: bool,
+    /// Whether the polyline is also the edge of a weathering zone, which `zone_coord` reads (see
+    /// [`super::Zone`]). It is a feature all the same: distance queries measure to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<super::Zone>,
 }
 
 /// The receiver features one of a layer's own feature names follows: one name, or several whose
@@ -766,9 +770,14 @@ pub const MAX_FEATURE_NAMES: usize = 256;
 pub struct NamedFeatures {
     /// By name, ascending.
     sets: Vec<(String, FeatureSet)>,
+    /// The zones of the features that carry one, by name, ascending.
+    zones: Vec<(String, super::zones::ZoneSet)>,
 }
 
-static NO_NAMED_FEATURES: NamedFeatures = NamedFeatures { sets: Vec::new() };
+static NO_NAMED_FEATURES: NamedFeatures = NamedFeatures {
+    sets: Vec::new(),
+    zones: Vec::new(),
+};
 
 impl NamedFeatures {
     /// A receiver with no named feature.
@@ -831,7 +840,15 @@ impl NamedFeatures {
                 .into_iter()
                 .map(|(name, features)| (name.to_owned(), FeatureSet::new(features)))
                 .collect(),
+            zones: super::zones::zone_sets(named)?,
         })
+    }
+    /// The zones of `name`; none for a name the receiver has no zone of.
+    pub fn zones(&self, name: &str) -> Option<&super::zones::ZoneSet> {
+        let at = self
+            .zones
+            .binary_search_by(|(known, _)| known.as_str().cmp(name));
+        at.ok().map(|at| &self.zones[at].1)
     }
     /// The segments of `name`; none for a name the receiver has no feature of.
     pub fn get(&self, name: &str) -> Option<&FeatureSet> {

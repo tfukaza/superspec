@@ -36,6 +36,18 @@ pub(super) fn interior() -> Interior {
     }
 }
 
+/// The fitted shop's room: grimy plaster over a dark green dado, a smoked ceiling and a
+/// worn floor, so the packed shop reads dim under its tubes.
+pub(super) fn fitted_interior() -> Interior {
+    Interior {
+        floor: srgb("#5f5a50"),
+        ceiling: srgb("#7d7668"),
+        wall: srgb("#857a63"),
+        dado: srgb("#34463e"),
+        dado_height: 1.2,
+    }
+}
+
 fn rows(
     d: &mut Fixture<'_, '_>,
     shelves: &[furniture::Shelf],
@@ -190,16 +202,26 @@ pub(super) fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), St
 const PLASTICS: [&str; 6] = [
     "#a8554a", "#557f66", "#d6cba8", "#71899a", "#a8554a", "#d6cba8",
 ];
-const CARDBOARD: [&str; 4] = ["#b08a58", "#a47d50", "#bd9b6a", "#96744a"];
+const CARDBOARD: [&str; 4] = ["#9c7a4e", "#8f6e47", "#a6875d", "#82653f"];
+// Dusty, sun-faded print; a few goods carry one of the saturated `ACCENTS` instead.
 const LABELS: [&str; 12] = [
-    "#b8433a", "#d9b04a", "#3f6f9f", "#4f8f62", "#e6e0cf", "#d98a4a", "#7a4f86", "#c9697c",
-    "#3f8a86", "#e3cf6a", "#8f2f34", "#f0ead8",
+    "#94554a", "#a8925a", "#4f6478", "#58745c", "#b4ad99", "#a0724c", "#66546a", "#9a6a6c",
+    "#55736e", "#ab9f66", "#743a36", "#bfb6a0",
 ];
 const GLASS: [&str; 5] = ["#3f6a38", "#6a431c", "#b9c4bd", "#274a36", "#8a5a22"];
-const CLOTHS: [&str; 5] = ["#d9b23c", "#e9e4d4", "#9db4c4", "#d9a0a8", "#d9b23c"];
+const CLOTHS: [&str; 5] = ["#c09a3a", "#cdc7b5", "#8a9cab", "#b58c90", "#c09a3a"];
 
 fn tone(rng: &mut SeededRng, palette: &[&str]) -> V3 {
-    shade(srgb(rng.pick(palette)), rng.float(0.82, 1.06))
+    shade(srgb(rng.pick(palette)), rng.float(0.74, 1.))
+}
+
+/// A label's colour: one of `palette`, or `share` of the time a saturated accent.
+fn accented(rng: &mut SeededRng, palette: &[&str], share: f64) -> V3 {
+    if rng.chance(share) {
+        tone(rng, &ACCENTS)
+    } else {
+        tone(rng, palette)
+    }
 }
 
 /// The street-facing arc of a turned profile (`[radius, height]` points from the foot up, one
@@ -455,12 +477,12 @@ fn fill(
         let label = if boxed && rng.chance(0.55) {
             tone(rng, &CARDBOARD)
         } else {
-            tone(rng, &LABELS)
+            accented(rng, &LABELS, 0.06)
         };
         let body = if matches!(kind, Ware::Bottles) {
             tone(rng, &GLASS)
         } else {
-            tone(rng, &LABELS)
+            accented(rng, &LABELS, 0.05)
         };
         let setback = rng.float(0., (shelf.depth - depth).clamp(0., 0.03));
         for _ in 0..facings {
@@ -776,6 +798,10 @@ pub(crate) struct Hang {
     pub drop: f64,
     /// A way through, `[x0, x1, drop]`: over it nothing reaches further down than its own drop.
     pub way: Option<[f64; 3]>,
+    /// Rows of goods, one behind another (1–3). The first is the single row; a second hangs
+    /// 8 cm behind it, overlapping, and fills its gaps; a third, 4 cm in front, is sparse and
+    /// half of it bright accents.
+    pub rows: usize,
 }
 
 /// Goods hung on cords from a line (see [`Hang`]), of varied length and shape: strings of
@@ -787,25 +813,57 @@ pub(crate) fn hung(
     rng: &mut SeededRng,
 ) -> Result<(), String> {
     let Hang {
-        line: [x0, x1, y, ceiling],
+        line: [x0, x1, _, ceiling],
         clear,
         drop,
         way,
+        rows,
     } = *hang;
-    if [x0, x1, y, ceiling, drop, clear]
+    if [x0, x1, hang.line[2], ceiling, drop, clear]
         .iter()
         .chain(way.iter().flatten())
         .any(|v| !v.is_finite() || v.abs() > 1000.)
         || x1 - x0 > 40.
         || !(0.2..=5.).contains(&drop)
         || !(0. ..=5.).contains(&clear)
+        || !(1..=3).contains(&rows)
     {
         return Err(
-            "Hung goods require a bounded line, a drop of 0.2 to 5 meters and a clear length \
-             of 0 to 5."
+            "Hung goods require a bounded line, a drop of 0.2 to 5 meters, a clear length \
+             of 0 to 5 and one to three rows."
                 .into(),
         );
     }
+    for row in 0..rows {
+        hung_row(d, hang, row, rng)?;
+    }
+    Ok(())
+}
+
+/// Saturated colours a few goods carry: red, yellow and green labels, an orange, a blue.
+const ACCENTS: [&str; 6] = [
+    "#c4281f", "#e2b215", "#2a8a3a", "#d4501c", "#1f58a8", "#c4281f",
+];
+
+/// One row of [`hung`]: `row` 0 is the first, 1 behind it and 2 in front.
+fn hung_row(
+    d: &mut Fixture<'_, '_>,
+    hang: &Hang,
+    row: usize,
+    rng: &mut SeededRng,
+) -> Result<(), String> {
+    let Hang {
+        line: [x0, x1, y, ceiling],
+        clear,
+        drop,
+        way,
+        ..
+    } = *hang;
+    let y = y + [0., 0.08, -0.04][row];
+    // The share of pieces in an accent colour, and the run of gaps between them.
+    let accent = [0.07, 0.05, 0.5][row];
+    let gaps = [[0.005, 0.04], [-0.08, 0.], [0.3, 1.1]][row];
+    let pick = |rng: &mut SeededRng, palette: &[&str]| accented(rng, palette, accent);
     let cord = srgb("#8f8468");
     let front = |d: &mut Fixture<'_, '_>, [a, b, low, high]: [f64; 4], depth: f64, tint: V3| {
         d.face(
@@ -820,16 +878,23 @@ pub(crate) fn hung(
             tint,
         )
     };
-    let mut x = x0 + rng.float(0.02, 0.1);
+    let mut x = x0 + rng.float(0.02, if row == 0 { 0.1 } else { 0.3 });
     while x < x1 - 0.08 {
         d.mesh.spend_work(1)?;
+        // No piece is wider than 0.4 m: one starting that far before the way keeps clear of it.
         let limit = match way {
-            Some([a, b, low]) if x + 0.3 > a && x < b => low.min(drop),
+            Some([a, b, low]) if x + 0.4 > a && x < b => low.min(drop),
             _ => drop,
         };
         let sort = rng.integer(0, 12);
-        let start = clear + rng.float(0.02, 0.14);
-        let gap = rng.float(0.015, 0.06);
+        // The row behind hangs a little higher, so its pieces show over the first's.
+        let start = clear
+            + if row == 1 {
+                rng.float(0., 0.06)
+            } else {
+                rng.float(0.02, 0.14)
+            };
+        let gap = rng.float(gaps[0], gaps[1]);
         // The height its body may take.
         let room = limit - start;
         if room < 0.2 {
@@ -841,8 +906,8 @@ pub(crate) fn hung(
             0..=2 => {
                 // A string of packets, each with a printed band.
                 let (w, h) = (rng.float(0.1, 0.14), rng.float(0.13, 0.18));
-                let (color, band) = (tone(rng, &LABELS), tone(rng, &LABELS));
-                let length = room * rng.float(0.5, 1.);
+                let (color, band) = (pick(rng, &LABELS), pick(rng, &LABELS));
+                let length = room * rng.float(0.6, 1.);
                 let mut z = top;
                 while z - h >= top - length.max(h) - 1e-9 {
                     let tilt = rng.float(-0.012, 0.012);
@@ -870,11 +935,11 @@ pub(crate) fn hung(
             3..=5 => {
                 // A bunch of carrier bags, mostly pale: a knotted neck over a full body,
                 // creased down its middle.
-                let (w, h) = (rng.float(0.22, 0.32), rng.float(0.3, 0.48).min(room));
-                let color = tone(
+                let (w, h) = (rng.float(0.24, 0.36), rng.float(0.34, 0.62).min(room));
+                let color = pick(
                     rng,
                     &[
-                        "#e6e0cf", "#e9e4d4", "#d9b04a", "#c9534a", "#9db4c4", "#e6e0cf",
+                        "#d6d0bf", "#cfcab9", "#b8984a", "#a85046", "#8a9cab", "#d6d0bf",
                     ],
                 );
                 let (cx, half, low) = (x + w / 2., w / 2., top - h);
@@ -897,8 +962,8 @@ pub(crate) fn hung(
             6 | 7 => {
                 // A tied sack or a net of balls, banded.
                 let r = rng.float(0.07, 0.11);
-                let h = rng.float(0.28, 0.5).min(room);
-                let (color, band) = (tone(rng, &CLOTHS), tone(rng, &LABELS));
+                let h = rng.float(0.32, 0.62).min(room);
+                let (color, band) = (pick(rng, &CLOTHS), pick(rng, &LABELS));
                 arc(
                     d,
                     [x + r, y, top - h],
@@ -911,7 +976,7 @@ pub(crate) fn hung(
             8 | 9 => {
                 // A long cloth or a garment, folded over.
                 let (w, h) = (rng.float(0.26, 0.4), room * rng.float(0.7, 1.));
-                let color = tone(rng, &CLOTHS);
+                let color = pick(rng, &CLOTHS);
                 let lean = rng.float(-0.02, 0.02);
                 d.sheet(
                     "paint",
@@ -954,8 +1019,8 @@ pub(crate) fn hung(
             }
             _ => {
                 // A card of small wares in rows.
-                let (w, h) = (rng.float(0.2, 0.3), rng.float(0.35, 0.6).min(room));
-                let (first, second) = (tone(rng, &LABELS), tone(rng, &LABELS));
+                let (w, h) = (rng.float(0.2, 0.3), rng.float(0.4, 0.75).min(room));
+                let (first, second) = (pick(rng, &LABELS), pick(rng, &LABELS));
                 front(d, [x, x + w, top - h, top], 0., srgb("#d9d2bd"))?;
                 let rows = ((h - 0.05) / 0.11) as usize;
                 for row in 0..rows {
@@ -1084,7 +1149,8 @@ fn shelf_wares(z: f64, height: f64) -> &'static [Ware] {
 /// stool, and up to three tube lights (slot `tube-light`). Goods are low-detail (see above).
 pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
     room.validate()?;
-    let wood = srgb("#78644b");
+    // Dark, oiled timber, older than the reference shop's.
+    let wood = srgb("#4f3f2d");
     let timber = &room.kit.settings().timber;
     let root = d.pen.clone();
     let (w, depth, h) = (room.width, room.depth, room.height);
@@ -1393,6 +1459,7 @@ pub(crate) fn street_fitted(
                     clear: 0.,
                     drop: 0.6,
                     way: None,
+                    rows: 1,
                 },
                 &mut kit.rng(&format!("{key}/rack-hung-{i}"))?,
             )?;

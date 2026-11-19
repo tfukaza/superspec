@@ -312,6 +312,35 @@ left out (`reachDropped`, `sceneReachDropped`). Generated features (`top`, `sill
 reach their part; to carry one further, author a feature along it. The default leaves geometry
 keys and every receiver's features as they were.
 
+**Weathering zones.** An item says where runoff, rust and soot hang instead of a material
+searching for edges: a zone is a feature's polyline (the edge) with coordinates of its own, `u`
+meters along the edge and `v` meters below it along downhill, which a material reads with
+`zoneCoord` and `zoneExtent` (see the MaterialSpec program README). Nothing above an edge is in
+its zone, so streaks always start at their edge and never climb.
+
+- A part's `zones` rules hang zones below the features its generator reports:
+  `{"name": "runoff-top", "below": "top", "face": "front", "length": 2.8, "u0": {"parameter": "u0"},
+  "until": "openings", "clip": "none", "scale": 1, "seed": 0, "depth": 0.03}` (`below` names the
+  generated feature: a panel's `top`, `sill` or `base`, an arc's `top` or a ring; `face` keeps one
+  face's; `name` defaults to `below`). `u` is `u0` plus the edge's start along the part's X axis,
+  then meters along the edge, so storeys and sides placed with a footprint's `u0` (and an arc round
+  a corner, by its chords) run on round a building. On a panel `until: "openings"` (the default)
+  ends each column at the head of an opening below the edge, and `clip: "openings"` instead leaves
+  the opening's rectangle out and lets the zone go on below it. A rule named after its feature puts
+  the zone on that feature; otherwise a copy under the zone's name carries it.
+- An authored feature carries one with `"zone": {"length", "down" ([0, 0, -1]), "depth" (0.03),
+  "u0", "scale", "seed"}`: an air conditioner's `drip`, a balcony's `ledge`, a sign's fixing. With
+  `reach` it lands on the receivers of other parts (a sign's fixing on the wall behind it).
+- A zone holds the receiver points within `depth` meters of the plane of its edge and `down`, on a
+  face that faces across it, below the edge, within `length` and the column's stop. Where zones of
+  one name overlap, the one whose edge is nearest above wins. A zone's identity (`id` in [0, 1))
+  is hashed from where its edge starts in the world, its name and its seed.
+- Zones are features: they reach receivers as features do, a layer follows them by name or list
+  (`"follow": {"zone": ["runoff-top", "runoff-sill"]}`), and distance queries still measure to
+  their edges. They are part of a part's geometry key and of every bake's layout key. Limits: 16
+  rules a part, 256 stops and holes a zone, 16384 zone edge segments a receiver. `u` and `v` are
+  meters only under rigid placements.
+
 **Slot densities.** `densities` maps a slot to the texels per meter it asks for (1 to 100000):
 `{"lettering": 800}` for a sign, less for stacked goods. It is a default the generated item
 reports (`densities`), not part of its geometry key; whatever its host states comes first. A
