@@ -83,8 +83,11 @@ argument would keep variety without separate bakes.
 
 ## What is left, by size
 
-1. Opening (about 6.6 s to the first picture after the file is read): the engine's description 1.9 s (contacts and
-   the 23 MB answer), the per-pixel looks' compile about 2 s, preparing the looks 0.7 s.
-2. The bake (about 8 s): now mostly the GPU's own time on the walls' eight layers; the slowest program draws about
-   500 texels a millisecond.
-3. An edit re-describes the whole project (1.6 s) and bakes every receiver whose inputs changed.
+1. Opening (about 7.5 s to the first picture after the file is read): the engine's turn 2.7 s (the description 2.1 s,
+   of which contacts and the 23 MB answer are the larger parts; the layouts 0.3 s), preparing the looks 0.7 s, and
+   applying the scene 4.1 s, most of it the per-pixel looks' compile.
+2. The bake (about 4.5 s, beside the opening): 0.9 s of draws when nothing waits; the rest is the GPU kept by the
+   driver compiling the scene's programs.
+3. An edit re-describes the whole project (2.0 s) and bakes every receiver whose inputs changed (2.0 s).
+4. No material of the merged building needs CPU fields any more (its feature-following layers have GPU plans), so
+   field bakes and their cache cost it nothing.
