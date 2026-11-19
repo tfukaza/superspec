@@ -147,11 +147,46 @@ export class AmbientOcclusion {
     denoise.pdMaterial.uniforms.tNoise.value = denoise.pdNoiseTexture;
     this.pass.normalMaterial.side = THREE.DoubleSide;
     faceNormals(this.pass.normalMaterial);
-    const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void };
+    const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget; blendMaterial: THREE.ShaderMaterial };
     const hide = internals._overrideVisibility.bind(this.pass), restore = internals._restoreVisibility.bind(this.pass);
-    let hidden: THREE.Object3D[] = [];
-    internals._overrideVisibility = () => { hide(); hidden = excluded().filter(object => object.visible); for (const object of hidden) object.visible = false; };
-    internals._restoreVisibility = () => { for (const object of hidden) object.visible = true; hidden = []; restore(); };
+    let hidden: THREE.Object3D[] = [], leaves: THREE.Object3D[] = [];
+    // Foliage is drawn by shaders of its own (leaf cards stood up and bent in their vertex shaders), which the pass's one
+    // override material does not run: drawn with it, a canopy's cards lie where their raw vertices are and darken the
+    // building through the tree. So foliage is left out of the depth and normals (it casts no occlusion), and drawn
+    // instead, with its own materials, into a mask against that depth: where a leaf is in front, the image is not
+    // darkened (it receives none either).
+    internals._overrideVisibility = () => {
+      hide();
+      hidden = excluded().filter(object => object.visible);
+      leaves = [];
+      scene.traverse(object => { if (object.visible && (object as THREE.Mesh).isMesh && object.userData.foliage) leaves.push(object); });
+      for (const object of [...hidden, ...leaves]) object.visible = false;
+    };
+    internals._restoreVisibility = () => {
+      for (const object of hidden) object.visible = true;
+      for (const object of leaves) object.visible = true;
+      this.drawFoliageMask(leaves, camera, internals.normalRenderTarget);
+      hidden = []; leaves = [];
+      restore();
+    };
+    // The blend leaves the image as it is where the mask holds a leaf.
+    const blend = internals.blendMaterial;
+    blend.uniforms.tFoliage = { value: this.foliageMask.texture };
+    blend.uniforms.hasFoliage = { value: 0 };
+    blend.fragmentShader = `
+uniform float intensity;
+uniform sampler2D tDiffuse;
+uniform sampler2D tFoliage;
+uniform float hasFoliage;
+varying vec2 vUv;
+void main() {
+  vec4 texel = texture2D( tDiffuse, vUv );
+  float leaf = hasFoliage * texture2D( tFoliage, vUv ).a;
+  gl_FragColor = vec4( mix( mix( vec3( 1. ), texel.rgb, intensity ), vec3( 1. ), leaf ), texel.a );
+}`;
+    blend.needsUpdate = true;
+    const resize = this.pass.setSize.bind(this.pass);
+    this.pass.setSize = (width: number, height: number) => { resize(width, height); this.foliageMask.setSize(width, height); };
     this.composer.addPass(this.pass);
     this.output = new ShaderPass(OUTPUT);
     this.composer.addPass(this.output);
@@ -176,6 +211,55 @@ export class AmbientOcclusion {
     try { this.composer.render(); } finally {
       this.renderer.setClearColor(clear, alpha);
       if (color) this.scene.background = color;
+    }
+  }
+
+  /** Where foliage is the nearest surface, in its alpha (see the constructor). */
+  private readonly foliageMask = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false });
+
+  /**
+   * Draws `leaves` with their own materials into the foliage mask, depth-tested (not written) against the depth the
+   * occlusion pass drew without them, so only leaves in front of what the occlusion sees mark it. The shadow maps are
+   * not redrawn for this draw (it shows only the leaves); nothing else of the renderer's state is changed.
+   */
+  private drawFoliageMask(leaves: THREE.Object3D[], camera: THREE.Camera, depth: THREE.WebGLRenderTarget): void {
+    const blend = (this.pass as unknown as { blendMaterial: THREE.ShaderMaterial }).blendMaterial;
+    blend.uniforms.hasFoliage.value = leaves.length ? 1 : 0;
+    if (!leaves.length || !depth.depthTexture) return;
+    const mask = this.foliageMask;
+    if (mask.depthTexture !== depth.depthTexture) {
+      mask.dispose();
+      mask.depthBuffer = true;
+      mask.depthTexture = depth.depthTexture;
+    }
+    if (mask.width !== depth.width || mask.height !== depth.height) mask.setSize(depth.width, depth.height);
+    const renderer = this.renderer, scene = this.scene;
+    const shown: THREE.Object3D[] = [];
+    const wanted = new Set(leaves);
+    scene.traverse(object => { if (object.visible && (object as THREE.Mesh).isMesh && !wanted.has(object)) { shown.push(object); object.visible = false; } });
+    const background = scene.background, before = renderer.getRenderTarget(), clear = renderer.getClearColor(this.clearColor), alpha = renderer.getClearAlpha();
+    const autoClear = renderer.autoClear, shadows = renderer.shadowMap.autoUpdate, needs = renderer.shadowMap.needsUpdate;
+    try {
+      scene.background = null;
+      renderer.shadowMap.autoUpdate = false; renderer.shadowMap.needsUpdate = false;
+      renderer.setRenderTarget(mask);
+      renderer.setClearColor(0x000000, 0);
+      renderer.clear(true, false, false);
+      renderer.autoClear = false;
+      // Only colour is cleared: the depth is the occlusion pass's, which the leaves are tested against.
+      renderer.state.buffers.depth.setLocked(false);
+      renderer.state.buffers.depth.setMask(false);
+      renderer.state.buffers.depth.setLocked(true);
+      renderer.render(scene, camera);
+    } finally {
+      renderer.state.buffers.depth.setLocked(false);
+      renderer.state.buffers.depth.setMask(true);
+      scene.background = background;
+      renderer.shadowMap.autoUpdate = shadows; renderer.shadowMap.needsUpdate = needs;
+      renderer.autoClear = autoClear;
+      renderer.setClearColor(clear, alpha);
+      renderer.setRenderTarget(before);
+      for (const object of shown) object.visible = true;
     }
   }
 
@@ -210,6 +294,7 @@ export class AmbientOcclusion {
 
   dispose(): void {
     this.pass.dispose();
+    this.foliageMask.dispose();
     this.composer.dispose();
   }
 }
