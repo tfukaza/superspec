@@ -143,7 +143,7 @@ class Studio {
     this.scene = new RustScene(element("viewport"), (mesh, instance) => this.selection(mesh, instance));
     // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
     // Also the contour fuzz prototype and the leaf-card atlas, for previews that build test shapes in the scene.
-    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: leafCardTextures, __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief, __grassTufts: grassTufts });
+    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: () => leafCardTextures(true), __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief, __grassTufts: grassTufts });
     this.parameters = new ParameterControls(element("parameters"), (name, value) => {
       // A shaded scene takes a parameter as a uniform: nothing to wait for.
       this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
@@ -872,7 +872,7 @@ class Studio {
       (candidate.materials ?? []).map(({ id, entry, seed, meshes, layers }) => [id, entry, seed, meshes, layers?.map(layer => [layer.entry, layer.seed, layer.follow])]),
       Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
       // Baked maps follow the receivers' atlases, which these size.
-      baking ? [candidate.resolution, candidate.texelDensity, candidate.profile] : null]);
+      baking ? [candidate.resolution, candidate.texelDensity, candidate.texelDensities, candidate.profile] : null]);
     let packet: ScenePacket, metadata: AuthoringMetadata;
     let opening: Record<string, unknown> | undefined, applied = 0;
     const entered = performance.now();
@@ -986,7 +986,7 @@ class Studio {
     if (this.project.lighting) project.lighting = this.project.lighting; else delete project.lighting;
     // Parameters count whole: finer than that is the engine's to know.
     const scene = JSON.stringify([project.modules, project.models, project.mapping, project.mappings, project.anchors, project.domain, project.gravity, project.edges,
-      project.resolution, project.texelDensity, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
+      project.resolution, project.texelDensity, project.texelDensities, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
     const sun = this.sunKey();
     const key = (mesh: string, name: string, planes: string[]): string => {
       const bound = this.meshBindings[mesh];

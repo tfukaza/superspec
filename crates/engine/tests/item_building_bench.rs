@@ -95,6 +95,27 @@ fn bench_building_project() {
             .project_layouts(project, revision, &asset, &|| false)
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let layout = started.elapsed().as_secs_f64() * 1e3;
+        // A host that wants both prepares the project once: the same description, layouts and scene.
+        let started = Instant::now();
+        let prepared = session
+            .prepare_project(project, revision, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{errors:?}"));
+        let together = session.shade_prepared(&prepared, &|| false).unwrap();
+        let laid = session.layouts_prepared(&prepared, &|| false).unwrap();
+        let once = started.elapsed().as_secs_f64() * 1e3;
+        assert!(
+            together == shaded.metadata,
+            "{label}: a prepared project is described otherwise"
+        );
+        assert!(
+            laid.records == layouts.records,
+            "{label}: a prepared project is laid out otherwise"
+        );
+        assert!(
+            prepared.scene.packet() == shaded.scene(revision as u32).unwrap().packet(),
+            "{label}: a prepared project's scene is another"
+        );
+        println!("{label}: prepared once, described and laid out in {once:.0} ms");
         let texels: usize = layouts.receivers.iter().map(|r| r.width * r.height).sum();
         let records: Vec<u8> = layouts
             .records
@@ -109,6 +130,14 @@ fn bench_building_project() {
             layouts.records.len(),
             digest(&records),
         );
+        if label == "cold" {
+            let atlases = layouts
+                .receivers
+                .iter()
+                .map(|layout| (layout.id.as_str(), layout.width * layout.height))
+                .collect();
+            mesh_cost(&prepared.scene, &atlases);
+        }
         // ITEM_BUILDING_FIELDS=0 leaves the field bakes out (to profile the rest).
         if label != "cold" || std::env::var("ITEM_BUILDING_FIELDS").is_ok_and(|v| v == "0") {
             continue;
@@ -205,5 +234,141 @@ fn bench_building_project() {
             "fields, the project prepared per mesh: {:.0} ms; every texel equal",
             started.elapsed().as_secs_f64() * 1e3
         );
+    }
+}
+
+/// What the scene's meshes cost a renderer and where it could be less without changing a pixel:
+/// vertices against the distinct ones (same position, normal, UV and color, which an index
+/// could share), by material; and meshes that are another mesh moved (which could be instances).
+fn mesh_cost(scene: &superspec_model::Scene, atlases: &std::collections::BTreeMap<&str, usize>) {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    #[derive(Default)]
+    struct Cost {
+        meshes: usize,
+        vertices: usize,
+        distinct: usize,
+        triangles: usize,
+        referenced: usize,
+    }
+    let mut by_material: BTreeMap<String, Cost> = BTreeMap::new();
+    // Meshes by shape: positions from the mesh's low corner (to a tenth of a millimeter),
+    // normals, colors and indices.
+    let mut shapes: HashMap<Vec<u32>, (usize, usize, String, usize)> = HashMap::new();
+    for mesh in scene.manifest.meshes.iter().filter(|mesh| mesh.visible) {
+        let (from, count) = (mesh.vertex_start, mesh.vertex_count);
+        let vertex = |at: usize| -> [u32; 11] {
+            let (p, n, c, uv) = (
+                &scene.positions[(from + at) * 3..][..3],
+                &scene.normals[(from + at) * 3..][..3],
+                &scene.colors[(from + at) * 3..][..3],
+                &scene.uvs[(from + at) * 2..][..2],
+            );
+            std::array::from_fn(|k| {
+                match k {
+                    0..=2 => p[k],
+                    3..=5 => n[k - 3],
+                    6..=8 => c[k - 6],
+                    _ => uv[k - 9],
+                }
+                .to_bits()
+            })
+        };
+        let distinct: HashSet<[u32; 11]> = (0..count).map(vertex).collect();
+        let indices = &scene.indices[mesh.index_start..mesh.index_start + mesh.index_count];
+        let referenced: HashSet<u32> = indices.iter().copied().collect();
+        let cost = by_material
+            .entry(mesh.material.clone().unwrap_or_else(|| "(none)".into()))
+            .or_default();
+        cost.meshes += 1;
+        cost.vertices += count;
+        cost.distinct += distinct.len();
+        cost.triangles += indices.len() / 3;
+        cost.referenced += referenced.len();
+        let low: [f32; 3] = std::array::from_fn(|axis| {
+            (0..count)
+                .map(|at| scene.positions[(from + at) * 3 + axis])
+                .fold(f32::INFINITY, f32::min)
+        });
+        let mut shape: Vec<u32> = Vec::with_capacity(count * 9 + indices.len());
+        for at in 0..count {
+            for axis in 0..3 {
+                let offset = scene.positions[(from + at) * 3 + axis] - low[axis];
+                shape.push((offset * 1e4).round() as u32);
+            }
+            shape.extend(
+                scene.normals[(from + at) * 3..][..3]
+                    .iter()
+                    .map(|v| v.to_bits()),
+            );
+            shape.extend(
+                scene.colors[(from + at) * 3..][..3]
+                    .iter()
+                    .map(|v| v.to_bits()),
+            );
+        }
+        shape.extend(indices);
+        // (With the material: two meshes of one shape share baked maps only under one material.)
+        shape.extend(
+            mesh.material
+                .iter()
+                .flat_map(|material| material.bytes().map(u32::from)),
+        );
+        let texels = atlases.get(mesh.id.as_str()).copied().unwrap_or(0);
+        let entry = shapes
+            .entry(shape)
+            .or_insert((0, count, mesh.id.clone(), 0));
+        entry.0 += 1;
+        // The atlas texels of every such mesh after the first.
+        if entry.0 > 1 {
+            entry.3 += texels;
+        }
+    }
+    let mut total = Cost::default();
+    let mut rows: Vec<(&String, &Cost)> = by_material.iter().collect();
+    rows.sort_by_key(|(_, cost)| std::cmp::Reverse(cost.vertices));
+    println!(
+        "meshes: material, meshes, triangles, vertices, vertices an index names, distinct vertices"
+    );
+    for (_, cost) in &rows {
+        total.meshes += cost.meshes;
+        total.vertices += cost.vertices;
+        total.distinct += cost.distinct;
+        total.triangles += cost.triangles;
+        total.referenced += cost.referenced;
+    }
+    for (material, cost) in rows.iter().take(14) {
+        println!(
+            "  {material}: {} meshes, {} triangles, {} vertices, {} named, {} distinct",
+            cost.meshes, cost.triangles, cost.vertices, cost.referenced, cost.distinct
+        );
+    }
+    println!(
+        "  all {}: {} meshes, {} triangles, {} vertices, {} named, {} distinct ({:.0}%)",
+        by_material.len(),
+        total.meshes,
+        total.triangles,
+        total.vertices,
+        total.referenced,
+        total.distinct,
+        100. * total.distinct as f64 / total.vertices.max(1) as f64
+    );
+    let mut repeated: Vec<&(usize, usize, String, usize)> =
+        shapes.values().filter(|(times, ..)| *times > 1).collect();
+    repeated.sort_by_key(|(times, vertices, ..)| std::cmp::Reverse((times - 1) * vertices));
+    let saved: usize = repeated
+        .iter()
+        .map(|(times, vertices, ..)| (times - 1) * vertices)
+        .sum();
+    let texels: usize = repeated.iter().map(|shape| shape.3).sum();
+    let all: usize = atlases.values().sum();
+    println!(
+        "  {} shapes are drawn more than once ({} meshes); as instances they would hold {saved} fewer vertices, and with maps of their own space {:.1} M fewer atlas texels of {:.1} M",
+        repeated.len(),
+        repeated.iter().map(|(times, ..)| times).sum::<usize>(),
+        texels as f64 / 1e6,
+        all as f64 / 1e6
+    );
+    for (times, vertices, id, _) in repeated.iter().take(8) {
+        println!("    {times} x {vertices} vertices, like {id}");
     }
 }

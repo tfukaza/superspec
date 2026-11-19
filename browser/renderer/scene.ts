@@ -18,7 +18,7 @@ import { parseView, viewCamera } from "./view.ts";
 import { InspectionWalk } from "./walk.ts";
 import { ItemOverlays, type HandleChange, type OverlayItem } from "./item-overlays.ts";
 import { FoliageView, type FoliageProfile } from "./foliage.ts";
-import { STROKES, STROKE_BANDS, leafBrushTexture } from "./foliage-plants.ts";
+import { STROKES, STROKE_BANDS, foliageTexturesReady, leafBrushTexture } from "./foliage-plants.ts";
 import { STROKE_LAYER, StrokeEdges } from "./stroke-edges.ts";
 import { BLUR_LAYER, FoliageBlur } from "./foliage-blur.ts";
 
@@ -102,6 +102,11 @@ const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_gravity", "ms_
  * (whichever is ready first is then shown first).
  */
 const FIRST_LOOK_HEDGE_MS = 2000;
+/**
+ * Atlas texels beyond which a scene's maps are known to take longer than the hedge on any GPU (the procedural building,
+ * 77 million texels, bakes in about 8 s on a fast one), so its per-pixel looks start compiling at once.
+ */
+const FIRST_LOOK_HEAVY_TEXELS = 24_000_000;
 
 /** The geometry a scene's packet gave a mesh, whichever look the mesh shows (scene-bake.ts keeps it beside a baked look's). */
 function sourceGeometry(mesh: THREE.Mesh): THREE.BufferGeometry {
@@ -561,6 +566,8 @@ export class RustScene {
       }
       // Shaded materials are made and compiled while the scene before this one stays on screen, untouched.
       const look = await decorate?.(ordered);
+      // The plants' generated textures were made beside all this (foliage-plants.ts); the scene is not shown without them.
+      await foliageTexturesReady();
       // A scene of baked maps: its new materials are compiled the same way, as the meshes that will show them and
       // without blocking the page. Drawn uncompiled, the frame that first shows them waits for every program (measured
       // on the washroom: 1.5 s of one task for a first build, where this leaves the page responsive).
@@ -804,7 +811,9 @@ export class RustScene {
         // ones), and they are what a settled scene shows anyway; then the per-pixel looks compile behind them, for
         // edits. Those start compiling beside the bake only when the maps take long, so a light scene never has the
         // two sets of programs compete for the driver.
-        const hedge = new Promise<void>(done => setTimeout(done, FIRST_LOOK_HEDGE_MS)).then(compileShaders).then(() => "shader" as const);
+        // A scene whose maps are sure to take longer than the hedge does not wait it out: its atlases alone say so.
+        const texels = targets.reduce((sum, target) => sum + target.layout.width * target.layout.height, 0);
+        const hedge = new Promise<void>(done => setTimeout(done, texels > FIRST_LOOK_HEAVY_TEXELS ? 0 : FIRST_LOOK_HEDGE_MS)).then(compileShaders).then(() => "shader" as const);
         const first = await Promise.race([baked.ready.then(() => "baked" as const), hedge]);
         if (first === "shader") shaderReady = true;
         else {

@@ -52,17 +52,25 @@ pub struct ReceiverLayout {
     pub surface: Vec<f64>,
 }
 
-/// A scene project prepared for the field bakes of its meshes
-/// ([`Session::prepare_project_fields`]).
-pub struct ProjectFields {
+/// A scene project prepared for describing, laying out and field-baking
+/// ([`Session::prepare_project`]).
+pub struct PreparedProject {
     /// The project with its item models resolved.
-    project: Project,
-    scene: superspec_model::Scene,
-    /// The scene's triangles as contacts are found among them.
-    touching: ContactScene,
+    pub(super) project: Project,
+    /// What each item reports about itself, by model identity; `None` without item models.
+    pub(super) items: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The composed models.
+    pub model: superspec_model::composition::WorldModel,
+    /// The models' delivery view for the revision the project was prepared at.
+    pub scene: superspec_model::Scene,
     /// Object-to-world transforms of imported and placed receivers.
-    transforms: BTreeMap<String, [f64; 16]>,
+    pub(super) transforms: BTreeMap<String, [f64; 16]>,
+    /// The scene's triangles as contacts are found among them, made when first asked for.
+    pub(super) touching: std::cell::OnceCell<ContactScene>,
 }
+
+/// The name [`PreparedProject`] had while only field bakes used it.
+pub type ProjectFields = PreparedProject;
 
 /// One chart's entry of [`ReceiverLayout::surface`].
 fn chart_surface(atlas: &Atlas, chart: &super::receiver::Chart) -> [f64; 10] {
@@ -188,14 +196,28 @@ impl Session {
                 "Only version 2 material projects have receiver layouts.".into(),
             ));
         }
-        self.begin_authoring(revision, &project.entry)?;
-        // Item models bind their slots' meshes to materials (`Session::resolve_items`).
-        let resolved = self.resolve_items(project, assets, cancelled)?;
-        let project = resolved.as_ref().map_or(project, |items| &items.project);
-        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
-        let scene = model
-            .scene_cancellable(revision as u32, cancelled)
-            .map_err(&fail)?;
+        let prepared = self.prepare_project(project, revision, assets, cancelled)?;
+        self.layouts_prepared(&prepared, cancelled)
+    }
+
+    /// [`Session::project_layouts`] of a prepared project ([`Session::prepare_project`]).
+    pub fn layouts_prepared(
+        &mut self,
+        prepared: &PreparedProject,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectLayouts, Vec<Diagnostic>> {
+        let PreparedProject {
+            project,
+            scene,
+            transforms,
+            ..
+        } = prepared;
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
+        if project.schema_version != 2 || project.kind != "material" {
+            return Err(fail(
+                "Only version 2 material projects have receiver layouts.".into(),
+            ));
+        }
         let mut layouts = ProjectLayouts {
             gutter: GUTTER,
             record: LAYOUT_RECORD,
@@ -205,7 +227,7 @@ impl Session {
             let ids: BTreeSet<String> = assignment.meshes.iter().cloned().collect();
             // The atlas reads no source and no contacts: the request only carries the sizing inputs.
             let request = material_request(project, assignment, "", Vec::new());
-            for receiver in receivers(&scene, &ids, &transforms) {
+            for receiver in receivers(scene, &ids, transforms) {
                 if cancelled() {
                     return Err(fail("Project authoring cancelled.".into()));
                 }
@@ -252,60 +274,75 @@ impl Session {
         self.bake_prepared_fields(&prepared, mesh, names, revision, assets, cancelled)
     }
 
-    /// What every field bake of a scene project shares, whichever mesh it is for: the project
-    /// with its item models resolved and the composed scene. A host that asks for the fields of
-    /// several meshes prepares the project once and bakes each mesh from it
-    /// ([`Session::bake_prepared_fields`]) instead of placing every item and composing every
-    /// model again per mesh. It describes the project and the assets as they were when it was
+    /// What describing, laying out and field-baking a scene project share: the project with its
+    /// item models resolved (and what they report), the composed models and their scene. A host
+    /// that wants several of those for one project prepares it once
+    /// ([`Session::shade_prepared`], [`Session::layouts_prepared`],
+    /// [`Session::bake_prepared_fields`]) instead of placing every item and composing every
+    /// model again for each. It describes the project and the assets as they were when it was
     /// made.
+    pub fn prepare_project(
+        &mut self,
+        project: &Project,
+        revision: u64,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<PreparedProject, Vec<Diagnostic>> {
+        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
+        self.begin_authoring(revision, &project.entry)?;
+        // Item models bind their slots' meshes to materials (`Session::resolve_items`).
+        let (project, items) = match self.resolve_items(project, assets, cancelled)? {
+            Some(items) => (items.project, Some(items.metadata)),
+            None => (project.clone(), None),
+        };
+        let (model, transforms) = self.compose_models(&project, revision, assets, cancelled)?;
+        let scene = model
+            .scene_cancellable(revision as u32, cancelled)
+            .map_err(&fail)?;
+        Ok(PreparedProject {
+            project,
+            items,
+            model,
+            scene,
+            transforms,
+            touching: std::cell::OnceCell::new(),
+        })
+    }
+
+    /// [`Session::prepare_project`] for field bakes, which only version 2 material projects have.
     pub fn prepare_project_fields(
         &mut self,
         project: &Project,
         revision: u64,
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<ProjectFields, Vec<Diagnostic>> {
-        let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
+    ) -> Result<PreparedProject, Vec<Diagnostic>> {
         if project.schema_version != 2 || project.kind != "material" {
-            return Err(fail(
-                "Only version 2 material projects bake fields per mesh.".into(),
-            ));
+            return Err(vec![Diagnostic::message(
+                &project.entry,
+                "Only version 2 material projects bake fields per mesh.",
+            )]);
         }
-        self.begin_authoring(revision, &project.entry)?;
-        // Item models bind their slots' meshes to materials (`Session::resolve_items`).
-        let project = match self.resolve_items(project, assets, cancelled)? {
-            Some(items) => items.project,
-            None => project.clone(),
-        };
-        let (model, transforms) = self.compose_models(&project, revision, assets, cancelled)?;
-        let scene = model
-            .scene_cancellable(revision as u32, cancelled)
-            .map_err(&fail)?;
-        let touching = ContactScene::new(&scene);
-        Ok(ProjectFields {
-            project,
-            scene,
-            touching,
-            transforms,
-        })
+        self.prepare_project(project, revision, assets, cancelled)
     }
 
     /// [`Session::bake_project_fields`] for one mesh of a prepared project.
     pub fn bake_prepared_fields(
         &mut self,
-        prepared: &ProjectFields,
+        prepared: &PreparedProject,
         mesh: &str,
         names: &[String],
         revision: u64,
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<FieldBake, Vec<Diagnostic>> {
-        let ProjectFields {
+        let PreparedProject {
             project,
             scene,
-            touching,
             transforms,
+            ..
         } = prepared;
+        let touching = prepared.touching.get_or_init(|| ContactScene::new(scene));
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         let assignment = project
             .materials

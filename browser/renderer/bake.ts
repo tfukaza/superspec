@@ -43,6 +43,12 @@ function sceneMapMebibytes(): number {
  * its size (a 16 by 16 map with mips is 1.4 KiB of texels).
  */
 export const NODE_FLOOR_BYTES = 16 * 1024;
+/**
+ * `?livebits=8`: a scene bake's live argument textures hold bytes, not half floats (a quarter less of a metal's or a
+ * paint's maps). An experiment for measuring what that loses: arguments beyond 0 to 1 are cut off and the rest are
+ * rounded to 1/255, which shows (see docs/plans/item-building-performance.md), so it is not the default.
+ */
+const LIVE_BYTES = typeof location !== "undefined" && new URLSearchParams(location.search).get("livebits") === "8";
 /** Attachments of an atlas bake that only its normals pass reads. */
 const INTERMEDIATE_ATTACHMENTS: ReadonlySet<string> = new Set(["height", "offset"]);
 /** Bumped when the bake's output for the same inputs changes; part of every cache key. */
@@ -442,8 +448,14 @@ const nextTurn = (() => {
   channel.port1.onmessage = () => { waiting.shift()?.(); };
   return (callback: () => void): void => { waiting.push(callback); channel.port2.postMessage(0); };
 })();
-/** A band's draws are waited for at most this long before the next band is issued anyway. */
-const BAND_WAIT_MS = 250;
+/**
+ * A band's draws are waited for at most this long before the next band is issued anyway: a GPU busy with something
+ * else (the driver compiling the scene's programs) answers late whatever the band cost, and a band of the smallest
+ * size queued behind another is no burden.
+ */
+const BAND_WAIT_MS = 50;
+/** Bands that may be with the GPU, not yet seen done, while the next is issued. */
+const BAND_QUEUE = 3;
 /** The GPU is asked every turn of the browser for this long after a band, before it is asked by timer. */
 const BAND_SPIN_MS = 3;
 /** The time a band should take the GPU: bands are sized to it from the speed the GPU has shown for the program. */
@@ -1056,12 +1068,13 @@ export class GpuBaker {
    * How a bake draws a large node: in bands of rows, with the browser given a turn between them, so no single draw
    * keeps the GPU longer than its watchdog allows or the viewer's frames waiting.
    *
-   * `gpu` (the default) paces the bands by the GPU: the next band is issued when the GPU has executed the one before
-   * (a fence, polled each turn), so the GPU is never more than a band behind. A scene's bakes (atlases and layered
+   * `gpu` (the default) paces the bands by the GPU: each band has a fence, and the next is issued while no more than
+   * `BAND_QUEUE` are still with the GPU, so a GPU that keeps up is not waited for and a slow one is never far behind. A scene's bakes (atlases and layered
    * slots) also size their bands by it: how long a band took says how many texels of that program (`NodeOp.pace`) the
    * GPU draws in `BAND_TARGET_MS`. A program's bands start at `BAND_TEXELS` and take that many texels from then on
    * (up to `BAND_TEXELS_MAX`), so a GPU that is fast at it draws a whole atlas at once and a slow one keeps the small
-   * bands. The time measured includes the wait for the fence, so the speed is never overstated.
+   * bands. The time measured includes the wait for the fence, so the speed is never overstated; the best speed a
+   * program has shown is the one used, since a GPU kept by other work only makes a band look slower.
    *
    * `timer` is the pace before this: a zero timer between bands of `BAND_TEXELS`, which the browser stretches to 4 ms
    * in a loop whatever the GPU is doing (most of a large scene's bake time on a fast GPU). `?bakepace=timer` in the
@@ -1080,24 +1093,50 @@ export class GpuBaker {
     return rate === undefined ? BAND_TEXELS : Math.min(BAND_TEXELS_MAX, Math.max(BAND_TEXELS, Math.floor(rate * BAND_TARGET_MS)));
   }
 
+  /** Bands issued and not yet seen done, the oldest first: each with its fence, when it was issued and what it drew. */
+  private bandsOut: { sync: WebGLSync; started: number; issued: BandWork[] }[] = [];
+
+  /**
+   * After a band: the browser gets a turn, and the next band waits only while more than `BAND_QUEUE` bands are still
+   * with the GPU (each has a fence, asked about every turn). A GPU that keeps up is never waited for; one that does
+   * not is at most that many bands behind.
+   */
   private afterBand(issued: BandWork[]): Promise<void> {
     if (this.bandPacing === "timer") return yieldToBrowser();
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     const sync = typeof gl.fenceSync === "function" && !gl.isContextLost() ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0) : null;
     if (!sync) return yieldToBrowser();
     gl.flush();
+    this.bandsOut.push({ sync, started: performance.now(), issued });
+    /** Takes the bands the GPU has done off the list, noting how fast it drew them; gives up on one waited for too long. */
+    const settle = (): void => {
+      const now = performance.now(), gone = this.lost || gl.isContextLost();
+      this.bandsOut = this.bandsOut.filter(band => {
+        const waited = now - band.started;
+        const done = !gone && gl.clientWaitSync(band.sync, 0, 0) !== gl.TIMEOUT_EXPIRED;
+        if (!done && !gone && waited < BAND_WAIT_MS) return true;
+        gl.deleteSync(band.sync);
+        // What the band's operations drew in that time (each as if it had the GPU to itself, and as if nothing was
+        // ahead of it: never too fast). The best a program has shown stands: whatever else kept the GPU makes a band
+        // look slower, never faster. A wait given up says nothing.
+        if (done) {
+          for (const { op, texels } of band.issued) {
+            const key = op.pace ?? op.label, rate = texels / Math.max(waited, 0.05);
+            if (rate > (this.bandRates.get(key) ?? 0)) this.bandRates.set(key, rate);
+          }
+        }
+        return false;
+      });
+    };
     return new Promise(done => {
       const started = performance.now();
       const poll = (): void => {
-        const waited = performance.now() - started;
-        if (!this.lost && !gl.isContextLost() && waited < BAND_WAIT_MS && gl.clientWaitSync(sync, 0, 0) === gl.TIMEOUT_EXPIRED) {
+        settle();
+        if (this.bandsOut.length > BAND_QUEUE) {
           // Asked again every turn at first (a fast GPU answers within a few), then at a timer's pace, not in a spin.
-          if (waited < BAND_SPIN_MS) nextTurn(poll); else setTimeout(poll, 1);
+          if (performance.now() - started < BAND_SPIN_MS) nextTurn(poll); else setTimeout(poll, 1);
           return;
         }
-        gl.deleteSync(sync);
-        // What the band's operations drew in that time (each as if it had the GPU to itself: never too fast).
-        for (const { op, texels } of issued) this.bandRates.set(op.pace ?? op.label, texels / Math.max(waited, 0.05));
         done();
       };
       nextTurn(poll);
@@ -1121,7 +1160,7 @@ export class GpuBaker {
       spec.type = THREE.FloatType; spec.filter = "nearest"; spec.anisotropy = undefined;
       if (!layout.orient) spec.format = THREE.RedFormat;
     } else if (name === "offset") { spec.type = THREE.HalfFloatType; spec.filter = "nearest"; spec.anisotropy = undefined; }
-    else if (name !== "properties" && name !== "normal") spec.type = THREE.HalfFloatType;
+    else if (name !== "properties" && name !== "normal") spec.type = name.startsWith("live") && LIVE_BYTES ? THREE.UnsignedByteType : THREE.HalfFloatType;
     return spec;
   }
 

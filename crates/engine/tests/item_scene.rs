@@ -703,3 +703,85 @@ fn native_item_scene_packet_for_parity() {
         std::fs::write(directory.join("packet.bin"), packet).unwrap();
     }
 }
+
+/// A material, an item's slot and a single mesh can each be baked at a texel density of their
+/// own (a sign's lettering finer than the walls): the mesh's comes first, then its item slot's,
+/// then its material's, then the project's. Nothing else's atlas changes.
+#[test]
+fn a_material_a_slot_or_a_mesh_has_a_texel_density_of_its_own() {
+    let densities = |project: &Project| -> BTreeMap<String, (String, f64, usize)> {
+        Session::default()
+            .project_layouts(project, 1, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)))
+            .receivers
+            .into_iter()
+            .map(|layout| {
+                (
+                    layout.id,
+                    (
+                        layout.material,
+                        layout.density,
+                        layout.width * layout.height,
+                    ),
+                )
+            })
+            .collect()
+    };
+    let mut project = washroom();
+    project.resolution = 512;
+    project.texel_density = Some(16.);
+    let plain = densities(&project);
+    assert!(plain.len() > 2);
+    assert!(plain.values().all(|(_, density, _)| *density == 16.));
+
+    // By material: every receiver of `steel`, in both items, and no receiver of `concrete`.
+    project.texel_densities.insert("steel".into(), 64.);
+    let by_material = densities(&project);
+    for (id, (material, density, texels)) in &by_material {
+        let expected = if material == "steel" { 64. } else { 16. };
+        assert_eq!(*density, expected, "{id}");
+        // (A receiver too small to fill the smallest atlas keeps it.)
+        assert!(*texels >= plain[id].2, "{id}");
+        assert!(material == "steel" || *texels == plain[id].2, "{id}");
+    }
+    assert!(
+        by_material
+            .iter()
+            .any(|(id, (material, _, texels))| material == "steel" && *texels > plain[id].2)
+    );
+
+    // By item slot: the wall's frame alone (the pipe is steel too and keeps the material's).
+    project.models[0]
+        .slot_densities
+        .insert("frame".into(), 128.);
+    let by_slot = densities(&project);
+    let frames: Vec<&String> = by_slot
+        .iter()
+        .filter(|(_, (_, density, _))| *density == 128.)
+        .map(|(id, _)| id)
+        .collect();
+    assert!(!frames.is_empty() && frames.iter().all(|id| id.starts_with("wall/")));
+    for (id, (_, density, _)) in &by_slot {
+        if !frames.contains(&id) {
+            assert_eq!(*density, by_material[id].1, "{id}");
+        }
+    }
+
+    // By mesh: one of those frames, over its slot's density.
+    let one = frames[0].clone();
+    project.texel_densities.insert(one.clone(), 32.);
+    let by_mesh = densities(&project);
+    assert_eq!(by_mesh[&one].1, 32.);
+    for (id, (_, density, _)) in &by_mesh {
+        if *id != one {
+            assert_eq!(*density, by_slot[id].1, "{id}");
+        }
+    }
+
+    // The description of the project lays its receivers out the same way, and the project's
+    // text carries the densities.
+    let text = serde_json::to_string(&project).unwrap();
+    assert!(text.contains("\"texelDensities\"") && text.contains("\"slotDensities\""));
+    let read: Project = serde_json::from_str(&text).unwrap();
+    assert_eq!(densities(&read), by_mesh);
+}

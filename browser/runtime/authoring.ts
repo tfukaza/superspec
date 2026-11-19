@@ -11,6 +11,8 @@ export interface SourceEdge { start: number[]; end: number[] }
 export interface StudioModel {
   id: string; kind: "glb" | "aml" | "item"; name?: string; source?: string;
   entry?: string; parameters?: Record<string, ParameterValue>; transform?: number[][]; slots?: Record<string, string>;
+  /** `item`: texels per meter for the meshes of a slot of this item, where it is not its material's or the project's. */
+  slotDensities?: Record<string, number>;
 }
 /** A placed item as the engine reports it (`metadata.items[model id]`), in world meters. */
 export interface ItemReport {
@@ -66,6 +68,12 @@ export interface AuthoringProject {
   profile?: "preview" | "production";
   /** Texels per meter; receivers that reach it in a smaller texture than `resolution` get that texture. */
   texelDensity?: number;
+  /**
+   * Texels per meter where it is not `texelDensity` (`Project.texel_densities`): by material id, for every receiver of
+   * that material, or by mesh id, for that receiver alone. An item model states its slots' with `slotDensities`. A
+   * sign's lettering or a notice is so baked finer than the walls; `resolution` still bounds each receiver's texture.
+   */
+  texelDensities?: Record<string, number>;
   inspection: string;
   mapping: "uv" | "object" | "world";
   domain: [number, number];

@@ -3,6 +3,7 @@ import type { FoliageCanopy, FoliageLook } from "../model/packet.ts";
 import { attributeName } from "./batch.ts";
 import { leafBrush } from "./leaf-brush.ts";
 import { leafCardAtlas } from "./leaf-cards.ts";
+import type { FoliageTextureJob, FoliageTextureResult } from "./foliage-texture-worker.ts";
 import { followPaintedFinishing, programSun, programTime } from "./shade.ts";
 import { FAMILY_FUNCTIONS, FAMILY_UNIFORMS, fieldUniforms, programChunk, receiverUniforms, type FoliageProfile, type FoliageProgram } from "./foliage.ts";
 
@@ -58,34 +59,104 @@ const PLANT = (() => {
     selfShadow: number("selfshadow", 0.4), buried: number("buried", 0.4), glow: number("glow", 0),
   };
 })();
-let cardTextures: { cards: THREE.DataTexture; normals: THREE.DataTexture } | undefined;
-/** The leaf-card atlas the dabs draw (leaf-cards.ts) and its normals, made once. */
-export function leafCardTextures(): { cards: THREE.DataTexture; normals: THREE.DataTexture } {
-  if (cardTextures) return cardTextures;
-  const atlas = leafCardAtlas(4, 256, 1, PLANT.melt);
-  const texture = (data: Uint8Array) => {
-    const t = new THREE.DataTexture(data, atlas.width, atlas.height, THREE.RGBAFormat, THREE.UnsignedByteType);
-    t.magFilter = THREE.LinearFilter;
-    t.minFilter = THREE.LinearMipmapLinearFilter;
-    t.generateMipmaps = true;
-    t.needsUpdate = true;
-    return t;
+/**
+ * The generated textures are made off the page's thread (foliage-texture-worker.ts): a texture exists at once, empty,
+ * and takes its texels when they arrive, which `foliageTexturesReady` waits for. A scene with plants used to stand
+ * still for the second or two the leaf cards and the brush take; now that time passes beside the scene's other
+ * preparation. Without workers (and on a worker's failure) the texels are made here, as before.
+ */
+interface Making { settled: boolean; promise: Promise<void>; finish(buffers?: ArrayBuffer[]): void }
+const making = new Set<Making>();
+let textureWorker: Worker | null | undefined;
+let lastJob = 0;
+const awaited = new Map<number, Making>();
+
+/** Starts `job` and gives its buffers to `apply` when it is done; `here` makes them on this thread. */
+function make(job: Omit<FoliageTextureJob, "id">, here: () => ArrayBuffer[], apply: (buffers: ArrayBuffer[]) => void): Making {
+  let resolve = (): void => {};
+  const entry: Making = {
+    settled: false,
+    promise: new Promise<void>(done => { resolve = done; }),
+    finish(buffers) {
+      if (entry.settled) return;
+      entry.settled = true;
+      apply(buffers ?? here());
+      making.delete(entry);
+      resolve();
+    },
   };
-  cardTextures = { cards: texture(atlas.data), normals: texture(atlas.normals) };
+  making.add(entry);
+  if (textureWorker === undefined) {
+    textureWorker = null;
+    if (typeof Worker !== "undefined") {
+      try {
+        const worker = new Worker(new URL("./foliage-texture-worker.ts", import.meta.url), { type: "module" });
+        worker.onmessage = (event: MessageEvent<FoliageTextureResult>) => {
+          const waiting = awaited.get(event.data.id);
+          awaited.delete(event.data.id);
+          waiting?.finish("buffers" in event.data ? event.data.buffers : undefined);
+        };
+        // A worker that cannot run leaves every texture to this thread.
+        worker.onerror = () => { textureWorker = null; for (const waiting of [...awaited.values()]) waiting.finish(); awaited.clear(); };
+        textureWorker = worker;
+      } catch { textureWorker = null; }
+    }
+  }
+  if (!textureWorker) { entry.finish(); return entry; }
+  const id = ++lastJob;
+  awaited.set(id, entry);
+  textureWorker.postMessage({ id, ...job } as FoliageTextureJob);
+  return entry;
+}
+
+/** Resolves when every generated foliage texture asked for so far holds its texels. */
+export function foliageTexturesReady(): Promise<void> { return Promise.all([...making].map(entry => entry.promise)).then(() => undefined); }
+
+let cardTextures: { cards: THREE.DataTexture; normals: THREE.DataTexture; making: Making } | undefined;
+/**
+ * The leaf-card atlas the dabs draw (leaf-cards.ts) and its normals, made once. The textures are empty until their
+ * texels arrive (`foliageTexturesReady`); `now` makes them before returning, for a caller that reads or draws them at once.
+ */
+export function leafCardTextures(now = false): { cards: THREE.DataTexture; normals: THREE.DataTexture } {
+  if (!cardTextures) {
+    const grid = 4, size = 256, width = grid * size, height = 2 * grid * size;
+    const texture = () => {
+      const t = new THREE.DataTexture(new Uint8Array(width * height * 4), width, height, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.magFilter = THREE.LinearFilter;
+      t.minFilter = THREE.LinearMipmapLinearFilter;
+      t.generateMipmaps = true;
+      t.needsUpdate = true;
+      return t;
+    };
+    const cards = texture(), normals = texture();
+    const fill = (target: THREE.DataTexture, buffer: ArrayBuffer) => { (target.image as { data: Uint8Array }).data = new Uint8Array(buffer); target.needsUpdate = true; };
+    cardTextures = { cards, normals, making: make({ job: "cards", arguments: [grid, size, 1, PLANT.melt] },
+      () => (atlas => [atlas.data.buffer, atlas.normals.buffer] as ArrayBuffer[])(leafCardAtlas(grid, size, 1, PLANT.melt)),
+      ([data, shade]) => { fill(cards, data); fill(normals, shade); }) };
+  }
+  if (now) cardTextures.making.finish();
   return cardTextures;
 }
 
-export function leafBrushTexture(): THREE.DataTexture {
-  if (brushTexture) return brushTexture;
-  const { size, data } = leafBrush({ size: 512, lobes: BRUSH_LOBES });
-  const bytes = new Uint8Array(size * size);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = Math.round(data[i] * 255);
-  brushTexture = new THREE.DataTexture(bytes, size, size, THREE.RedFormat, THREE.UnsignedByteType);
-  brushTexture.wrapS = brushTexture.wrapT = THREE.RepeatWrapping;
-  brushTexture.magFilter = THREE.LinearFilter;
-  brushTexture.minFilter = THREE.LinearMipmapLinearFilter;
-  brushTexture.generateMipmaps = true;
-  brushTexture.needsUpdate = true;
+let brushMaking: Making | undefined;
+/** The leaf brush (leaf-brush.ts) as a tiling texture, made once and filled like the leaf cards (`leafCardTextures`). */
+export function leafBrushTexture(now = false): THREE.DataTexture {
+  if (!brushTexture) {
+    const size = 512, options = { size, lobes: BRUSH_LOBES };
+    const texture = brushTexture = new THREE.DataTexture(new Uint8Array(size * size), size, size, THREE.RedFormat, THREE.UnsignedByteType);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.needsUpdate = true;
+    brushMaking = make({ job: "brush", arguments: [options] }, () => [leafBrush(options).data.buffer as ArrayBuffer], ([buffer]) => {
+      const data = new Float32Array(buffer), bytes = new Uint8Array(size * size);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = Math.round(data[i] * 255);
+      (texture.image as { data: Uint8Array }).data = bytes;
+      texture.needsUpdate = true;
+    });
+  }
+  if (now) brushMaking?.finish();
   return brushTexture;
 }
 

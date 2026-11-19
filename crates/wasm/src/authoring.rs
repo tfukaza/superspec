@@ -18,7 +18,9 @@ pub struct Authoring {
     field_texels: Vec<Vec<f32>>,
     layout_records: Vec<f32>,
     /// The project prepared for field bakes (see [`Authoring::open_project_fields`]).
-    project_fields: Option<superspec_engine::authoring::ProjectFields>,
+    project_fields: Option<superspec_engine::authoring::PreparedProject>,
+    /// The project text read last, as read, and what a description of it prepared (see [`read_project`]).
+    read: Option<ReadProject>,
     staged: crate::staged::StagedExport,
     /// Whether the host answers [`host_cancelled`] (see [`Authoring::set_cancellable`]).
     cancellable: bool,
@@ -68,6 +70,35 @@ impl OcclusionStore {
     }
 }
 
+/// A project text and the project read from it. A request hands the same text to several calls
+/// (a description, then the layouts; the library images, then the field bakes): the text is read
+/// once, and what the description prepared of the project serves the layouts that follow it.
+/// Kept until the request's assets are cleared.
+struct ReadProject {
+    source: String,
+    project: std::rc::Rc<Project>,
+    /// The revision a description prepared the project at, and what it prepared.
+    prepared: Option<(u32, superspec_engine::authoring::PreparedProject)>,
+}
+
+/// The project of `source`, read unless `read` holds that very text.
+fn read_project<'a>(
+    read: &'a mut Option<ReadProject>,
+    source: &str,
+) -> Result<&'a mut ReadProject, Vec<Diagnostic>> {
+    if read.as_ref().is_none_or(|held| held.source != source) {
+        *read = None;
+        let project: Project = serde_json::from_str(source)
+            .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+        *read = Some(ReadProject {
+            source: source.to_owned(),
+            project: std::rc::Rc::new(project),
+            prepared: None,
+        });
+    }
+    Ok(read.as_mut().expect("just read"))
+}
+
 #[wasm_bindgen]
 extern "C" {
     /// The host's answer to "has the request this session is running been cancelled?", polled by
@@ -103,6 +134,7 @@ impl Authoring {
 
     pub fn clear_assets(&mut self) {
         self.assets.clear();
+        self.read = None;
     }
 
     pub fn library_assets(&mut self, source: &str) -> String {
@@ -130,6 +162,10 @@ impl Authoring {
         )
         .map_err(|message| JsValue::from_str(&message))?;
         self.assets.insert(name, Arc::from(bytes));
+        // What was prepared read the assets as they were.
+        if let Some(read) = &mut self.read {
+            read.prepared = None;
+        }
         Ok(())
     }
 
@@ -287,8 +323,7 @@ impl Authoring {
                     "Authoring project allowance exceeded.",
                 )]);
             }
-            let project: Project = serde_json::from_str(source)
-                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            let project = read_project(&mut self.read, source)?.project.clone();
             self.session.prepare_project_fields(
                 &project,
                 revision as u64,
@@ -365,8 +400,13 @@ impl Authoring {
                     "Authoring project allowance exceeded.",
                 )]);
             }
-            let project: Project = serde_json::from_str(source)
-                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
+            let read = read_project(&mut self.read, source)?;
+            let project = read.project.clone();
+            let cancelled = || cancelled_by_host(self.cancellable);
+            // What a description of this text at this revision prepared, when one came before.
+            if let Some((_, prepared)) = read.prepared.take().filter(|(at, _)| *at == revision) {
+                return self.session.layouts_prepared(&prepared, &cancelled);
+            }
             self.session.project_layouts(
                 &project,
                 revision as u64,
@@ -377,7 +417,7 @@ impl Authoring {
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
-                &|| cancelled_by_host(self.cancellable),
+                &cancelled,
             )
         })();
         match result {
@@ -574,7 +614,8 @@ impl Authoring {
         if source.len() > PROJECT_BYTES {
             return "[]".into();
         }
-        let Ok(project) = serde_json::from_str::<Project>(source) else {
+        let Ok(project) = read_project(&mut self.read, source).map(|read| (*read.project).clone())
+        else {
             return "[]".into();
         };
         let mut names = std::collections::BTreeSet::new();
@@ -707,26 +748,28 @@ impl Authoring {
                     "Authoring project allowance exceeded.",
                 )]);
             }
-            let project: Project = serde_json::from_str(source)
-                .map_err(|e| vec![Diagnostic::message("project", e.to_string())])?;
-            let output = self.session.shade_project(
-                &project,
-                revision as u64,
-                &|name| {
-                    self.assets
-                        .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
-                        .cloned()
-                        .ok_or_else(|| format!("Asset {name} was not supplied."))
-                },
-                &|| cancelled_by_host(self.cancellable),
-            )?;
-            let mut scene = output
-                .scene(revision)
+            let read = read_project(&mut self.read, source)?;
+            read.prepared = None;
+            let project = read.project.clone();
+            let assets = |name: &str| {
+                self.assets
+                    .get(name)
+                    .or_else(|| self.occlusion.planes.get(name))
+                    .cloned()
+                    .ok_or_else(|| format!("Asset {name} was not supplied."))
+            };
+            let cancelled = || cancelled_by_host(self.cancellable);
+            // The project is prepared once for this description and the layouts asked for after
+            // it ([`Self::layout_project`]); its scene is the one delivered.
+            let prepared =
+                self.session
+                    .prepare_project(&project, revision as u64, &assets, &cancelled)?;
+            let metadata = self.session.shade_prepared(&prepared, &cancelled)?;
+            let mut scene = prepared.scene.clone();
+            superspec_model::batches::add_project_text(&mut scene, source)
                 .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
-            add_batches(&mut scene, source)
-                .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
-            Ok((output.metadata, scene.packet()))
+            read.prepared = Some((revision, prepared));
+            Ok((metadata, scene.packet()))
         })();
         match result {
             Ok((metadata, packet)) => {

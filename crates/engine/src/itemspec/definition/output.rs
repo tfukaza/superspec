@@ -25,6 +25,69 @@ pub struct ItemMesh {
     pub material_slot: String,
 }
 
+impl ItemMesh {
+    /// Names every vertex once: vertices that are the same in every attribute (to the bit) become
+    /// one, the first of them, and the indices name it. Nothing a triangle's corner holds
+    /// changes, so nothing drawn or baked from the mesh does; a generator that emits each
+    /// triangle's or quad's corners anew (a pile of small boxes, a sheet of quads) holds a
+    /// third to a half fewer vertices after. Vertices no index names stay.
+    pub fn share_vertices(&mut self) {
+        let count = self.positions.len();
+        let whole = |length: usize| length == count;
+        if count < 2 || !whole(self.normals.len()) {
+            return;
+        }
+        let bits =
+            |values: &[f64], key: &mut Vec<u64>| key.extend(values.iter().map(|v| v.to_bits()));
+        let mut first: std::collections::HashMap<Vec<u64>, u32> =
+            std::collections::HashMap::with_capacity(count);
+        let mut kept: Vec<usize> = Vec::with_capacity(count);
+        let mut renamed: Vec<u32> = Vec::with_capacity(count);
+        for at in 0..count {
+            let mut key = Vec::with_capacity(16);
+            bits(&self.positions[at], &mut key);
+            bits(&self.normals[at], &mut key);
+            if whole(self.uvs.len()) {
+                bits(&self.uvs[at], &mut key);
+            }
+            if whole(self.colors.len()) {
+                bits(&self.colors[at], &mut key);
+            }
+            if whole(self.tangents.len()) {
+                bits(&self.tangents[at], &mut key);
+            }
+            for uvs in self.additional_uvs.values().filter(|uvs| whole(uvs.len())) {
+                bits(&uvs[at], &mut key);
+            }
+            let name = *first.entry(key).or_insert_with(|| {
+                kept.push(at);
+                kept.len() as u32 - 1
+            });
+            renamed.push(name);
+        }
+        if kept.len() == count {
+            return;
+        }
+        fn keep<T: Copy>(values: &mut Vec<T>, kept: &[usize], count: usize) {
+            if values.len() == count {
+                *values = kept.iter().map(|at| values[*at]).collect();
+            }
+        }
+        keep(&mut self.positions, &kept, count);
+        keep(&mut self.normals, &kept, count);
+        keep(&mut self.uvs, &kept, count);
+        keep(&mut self.colors, &kept, count);
+        keep(&mut self.tangents, &kept, count);
+        for uvs in self.additional_uvs.values_mut() {
+            keep(uvs, &kept, count);
+        }
+        for index in &mut self.indices {
+            if let Some(name) = renamed.get(*index as usize) {
+                *index = *name;
+            }
+        }
+    }
+}
 /// Preserves the tangent basis of a normal-mapped glTF primitive before delivery
 /// adapters change UV conventions. Authored tangents take precedence. Otherwise
 /// derive the basis from the original UVs, including mirrored chart handedness.

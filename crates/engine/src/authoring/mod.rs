@@ -7,7 +7,7 @@ mod project;
 pub(crate) mod receiver;
 pub mod recipe;
 pub(crate) use item::PlacedItemState;
-pub use layout::{LAYOUT_RECORD, ProjectFields, ProjectLayouts, ReceiverLayout};
+pub use layout::{LAYOUT_RECORD, PreparedProject, ProjectFields, ProjectLayouts, ReceiverLayout};
 pub use material::{FieldBake, PendingBake};
 pub use project::{
     Base, MAX_ASSIGNMENTS, MAX_MODELS, MaterialAssignment, ModelSource, Project, ProjectOutput,
@@ -122,6 +122,9 @@ pub struct Request {
     /// `resolution`; receivers that reach it in a smaller texture get the smaller texture.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texel_density: Option<f64>,
+    /// Texels per meter of single receivers, by receiver id, where it is not `texel_density`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub texel_densities: BTreeMap<String, f64>,
     /// Planes supplied for the program's external inputs (`external(name, fallback)`), by
     /// receiver id and then input name (see [`PlaneSource`]). The swatch a request without
     /// receivers bakes has the id `studio/swatch`. Names the program does not read are neither
@@ -217,6 +220,16 @@ impl From<String> for PlaneSource {
         Self::Asset(asset)
     }
 }
+impl Request {
+    /// The texels per meter a receiver of this request is baked at: its own
+    /// (`texel_densities`), else the request's.
+    pub(crate) fn density_of(&self, receiver: &str) -> Option<f64> {
+        self.texel_densities
+            .get(receiver)
+            .copied()
+            .or(self.texel_density)
+    }
+}
 impl Default for Request {
     fn default() -> Self {
         Self {
@@ -237,6 +250,7 @@ impl Default for Request {
             slot_overrides: BTreeMap::new(),
             profile: Profile::Preview,
             texel_density: None,
+            texel_densities: BTreeMap::new(),
             planes: BTreeMap::new(),
             materials: BTreeMap::new(),
             features: BTreeMap::new(),

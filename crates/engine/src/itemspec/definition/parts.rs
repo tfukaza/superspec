@@ -917,8 +917,13 @@ impl PreparedPart {
                     .0
                     .generate(&native.name, &native.parameters, cancelled)
                     .map_err(|e| format!("{}: {e}", native.name))?;
+                // A generator's meshes name each vertex once, however it emitted them.
+                let mut meshes = output.meshes;
+                for mesh in &mut meshes {
+                    mesh.share_vertices();
+                }
                 Ok(Built {
-                    meshes: self.adopt(output.meshes),
+                    meshes: self.adopt(meshes),
                     ..Built::default()
                 })
             }

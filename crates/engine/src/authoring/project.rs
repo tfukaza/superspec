@@ -68,6 +68,11 @@ pub struct ModelSource {
     /// material, as if the assignment listed it; a slot left out keeps a plain surface.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub slots: BTreeMap<String, String>,
+    /// `item`: texels per meter for the meshes of a slot of this item, where it is not the
+    /// density of the slot's material or the project's (`Project::texel_densities`, which this
+    /// fills per mesh; a density the project states for a mesh itself stays).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub slot_densities: BTreeMap<String, f64>,
 }
 
 /// A scene project with its item models resolved (`Session::resolve_items`).
@@ -125,6 +130,13 @@ pub struct Project {
     /// receivers then get smaller textures. Unset, every receiver fills `resolution`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texel_density: Option<f64>,
+    /// Texels per meter where it is not the project's: by material assignment id, for every
+    /// receiver of that material (an item's weathered slot is baked at its bound material's), or
+    /// by mesh id, for that receiver alone, which comes first. A sign's lettering or a notice can
+    /// so be baked finer than the walls. Like `texel_density`, a receiver that cannot reach its
+    /// density within `resolution` keeps the resolution at the density that fits.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub texel_densities: BTreeMap<String, f64>,
     /// Planes bound to the external inputs of the materials baked on each mesh, by mesh id and
     /// then input name (`Request::planes`): the layers over a base, per receiver.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -166,6 +178,7 @@ impl Default for Project {
             materials: vec![],
             profile: super::Profile::Preview,
             texel_density: None,
+            texel_densities: BTreeMap::new(),
             planes: BTreeMap::new(),
             plane_materials: BTreeMap::new(),
             features: BTreeMap::new(),
@@ -544,6 +557,12 @@ impl Session {
                                 {
                                     resolved.project.mappings.insert(id.clone(), mapping);
                                 }
+                                // And baked at its texel density, where it has one of its own.
+                                if let Some(density) =
+                                    resolved.project.texel_densities.get(material).copied()
+                                {
+                                    resolved.project.texel_densities.insert(id.clone(), density);
+                                }
                                 derived.id = id;
                                 derived.meshes.clear();
                                 derived
@@ -566,6 +585,15 @@ impl Session {
                     if !assignment.meshes.contains(&id) {
                         assignment.meshes.push(id);
                     }
+                }
+            }
+            for (slot, density) in &model.slot_densities {
+                for (mesh, _) in placed.slots.iter().filter(|(_, used)| *used == slot) {
+                    resolved
+                        .project
+                        .texel_densities
+                        .entry(format!("{prefix}{mesh}"))
+                        .or_insert(*density);
                 }
             }
             for (mesh, features) in placed.features {
@@ -735,6 +763,7 @@ pub(super) fn material_request(
         receivers,
         project.features.clone(),
         project.anchors.clone(),
+        project.texel_densities.clone(),
     )
 }
 
@@ -760,6 +789,12 @@ pub(super) fn receiver_request(
         .map(|(id, anchor)| (id.clone(), *anchor))
         .into_iter()
         .collect();
+    let densities = project
+        .texel_densities
+        .get_key_value(&receiver.id)
+        .map(|(id, density)| (id.clone(), *density))
+        .into_iter()
+        .collect();
     request_with(
         project,
         assignment,
@@ -767,6 +802,7 @@ pub(super) fn receiver_request(
         vec![receiver],
         features,
         anchors,
+        densities,
     )
 }
 
@@ -777,6 +813,7 @@ fn request_with(
     receivers: Vec<Receiver>,
     features: BTreeMap<String, Vec<crate::materialspec::program::NamedFeature>>,
     anchors: BTreeMap<String, super::Anchor>,
+    densities: BTreeMap<String, f64>,
 ) -> Request {
     // What the project binds to these receivers: their planes and named features.
     let of = |receiver: &Receiver| receiver.id.clone();
@@ -801,7 +838,13 @@ fn request_with(
         edges: project.edges.clone(),
         gravity: project.gravity,
         profile: project.profile,
-        texel_density: project.texel_density,
+        // The material's own density, where it has one; a receiver's own comes before it.
+        texel_density: project
+            .texel_densities
+            .get(&assignment.id)
+            .copied()
+            .or(project.texel_density),
+        texel_densities: densities,
         receivers,
         anchors,
         materials: if planes.is_empty() {
@@ -993,18 +1036,36 @@ impl Session {
                 "Only version 2 material projects have a shader preview.".into(),
             ));
         }
-        self.begin_authoring(revision, &project.entry)?;
-        // Item models bind their slots' meshes to materials and name their features.
-        let resolved = self.resolve_items(project, assets, cancelled)?;
-        let items = resolved.as_ref().map(|resolved| &resolved.metadata);
-        let project = resolved
-            .as_ref()
-            .map_or(project, |resolved| &resolved.project);
+        let prepared = self.prepare_project(project, revision, assets, cancelled)?;
+        let metadata = self.shade_prepared(&prepared, cancelled)?;
+        Ok(ProjectOutput {
+            model: prepared.model,
+            metadata,
+        })
+    }
+
+    /// [`Session::shade_project`]'s description of a prepared project
+    /// ([`Session::prepare_project`]); the composed models are the prepared project's.
+    pub fn shade_prepared(
+        &mut self,
+        prepared: &super::PreparedProject,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, Vec<Diagnostic>> {
+        let super::PreparedProject {
+            project,
+            items,
+            scene,
+            transforms,
+            touching,
+            ..
+        } = prepared;
+        let items = items.as_ref();
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
-        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
-        let scene = model
-            .scene_cancellable(revision as u32, cancelled)
-            .map_err(&fail)?;
+        if project.schema_version != 2 || project.kind != "material" {
+            return Err(fail(
+                "Only version 2 material projects have a shader preview.".into(),
+            ));
+        }
         let visible: BTreeSet<&str> = scene
             .manifest
             .meshes
@@ -1014,8 +1075,6 @@ impl Session {
             .collect();
         let mut materials = serde_json::Map::new();
         let mut meshes = serde_json::Map::new();
-        // Made for the first receiver whose material queries its features.
-        let touching = std::cell::OnceCell::new();
         for assignment in &project.materials {
             let source = project.modules.get(&assignment.entry).ok_or_else(|| {
                 fail(format!(
@@ -1107,7 +1166,7 @@ impl Session {
                     assignment.id
                 )));
             }
-            for mut receiver in receivers(&scene, &ids, &transforms) {
+            for mut receiver in receivers(scene, &ids, transforms) {
                 if cancelled() {
                     return Err(fail("Project authoring cancelled.".into()));
                 }
@@ -1121,8 +1180,8 @@ impl Session {
                 }
                 if wants_features || layer_queries.iter().any(|(derived, _, _)| *derived) {
                     receiver.contacts = touching
-                        .get_or_init(|| ContactScene::new(&scene))
-                        .contacts(&scene, &receiver);
+                        .get_or_init(|| ContactScene::new(scene))
+                        .contacts(scene, &receiver);
                 }
                 let named = project.features.get(&receiver.id).map(Vec::as_slice);
                 let features = if wants_features {
@@ -1168,7 +1227,7 @@ impl Session {
             metadata["items"] = serde_json::Value::Object(items.clone());
             metadata["bindings"] = bindings(project);
         }
-        Ok(ProjectOutput { model, metadata })
+        Ok(metadata)
     }
 }
 

@@ -2538,7 +2538,7 @@ fn layout_node(index: usize, receiver: &super::Receiver, request: &Request) -> N
         request.mapping,
         request.domain,
         request.gravity,
-        request.texel_density,
+        request.density_of(&receiver.id),
     ));
     // Named features are part of what a bake of the layout reads; a receiver without any keeps
     // the key it always had.

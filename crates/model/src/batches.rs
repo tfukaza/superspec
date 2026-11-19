@@ -786,6 +786,29 @@ pub fn of_project(document: &serde_json::Value) -> Result<Vec<ProjectBatch>, Str
     };
     let documents: Vec<BatchDocument> = serde_json::from_value(list.clone())
         .map_err(|error| format!("Invalid project batches: {error}"))?;
+    of_documents(documents)
+}
+
+/// [`of_project`] from a project document's text, read once: only the `batches` field is kept,
+/// so a host that holds the text need not also build the whole document as a value (a scene's
+/// batches are most of a large project's text).
+pub fn of_project_text(text: &str) -> Result<Vec<ProjectBatch>, String> {
+    fn stated<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<BatchDocument>>, D::Error> {
+        <Vec<BatchDocument> as Deserialize>::deserialize(deserializer).map(Some)
+    }
+    #[derive(Deserialize)]
+    struct Document {
+        #[serde(default, deserialize_with = "stated")]
+        batches: Option<Vec<BatchDocument>>,
+    }
+    let document: Document =
+        serde_json::from_str(text).map_err(|error| format!("Invalid project batches: {error}"))?;
+    document.batches.map_or_else(|| Ok(vec![]), of_documents)
+}
+
+fn of_documents(documents: Vec<BatchDocument>) -> Result<Vec<ProjectBatch>, String> {
     if documents.len() > MAX_BATCHES {
         return Err("Project batches exceed their allowance.".into());
     }
@@ -1047,6 +1070,11 @@ pub fn add_project(scene: &mut Scene, document: &serde_json::Value) -> Result<()
     add_project_batches(scene, &of_project(document)?)
 }
 
+/// [`add_project`] from the project document's text ([`of_project_text`]).
+pub fn add_project_text(scene: &mut Scene, text: &str) -> Result<(), String> {
+    add_project_batches(scene, &of_project_text(text)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1221,6 +1249,35 @@ mod tests {
         assert_eq!(scene.manifest.navigation_validation, "not-run");
         // Colliders name meshes; a batch states its own collision.
         assert!(scene.manifest.colliders.is_empty());
+    }
+
+    /// A project's text gives the batches its document gives, and is refused where it is.
+    #[test]
+    fn project_batches_read_from_text_are_the_documents() {
+        let document = json!({"kind": "material", "models": [{"id": "a", "nested": {"batches": 1}}], "batches": [{
+            "id": "bolts",
+            "mesh": {"positions": [0, 0, 0, 1, 0, 0, 0, 1, 0], "normals": [0, 0, 1, 0, 0, 1, 0, 0, 1], "indices": [0, 1, 2]},
+            "instances": [{"translation": [1, 2, 3], "value": [0.5, 0, 0, 1]}, {"translation": [4, 5, 6], "scale": [2, 2, 2], "value": [0.25, 0, 0, 1]}],
+        }], "seed": 7});
+        let (mut from_value, mut from_text) = (Scene::empty(1, "test"), Scene::empty(1, "test"));
+        add_project(&mut from_value, &document).unwrap();
+        add_project_text(&mut from_text, &document.to_string()).unwrap();
+        assert_eq!(from_text.manifest.batches.len(), 1);
+        assert_eq!(from_text.packet(), from_value.packet());
+        assert!(
+            of_project_text(r#"{"kind": "material"}"#)
+                .unwrap()
+                .is_empty()
+        );
+        for refused in [
+            json!({"batches": null}),
+            json!({"batches": [{"id": "b", "mesh": "m", "instances": [], "shear": 1}]}),
+            json!({"batches": [{"id": "b", "mesh": "m", "instances": [{"translation": [0, 0, 0], "value": [1, 0, 0, 1]}, {"translation": [1, 0, 0]}]}]}),
+        ] {
+            assert!(of_project(&refused).is_err(), "{refused}");
+            assert!(of_project_text(&refused.to_string()).is_err(), "{refused}");
+        }
+        assert!(of_project_text("not a document").is_err());
     }
 
     #[test]

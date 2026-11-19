@@ -14,6 +14,7 @@
  * Then draw calls, triangles and the frame's CPU and GPU time from two cameras.
  *
  * MODEL, LANE, RESOLUTION, TEXELS, BUILDING_PARAMETERS, BAKE_MEMORY and BROWSER_ARGS are as in item-facade-browser.mjs.
+ * DENSITIES and SLOT_DENSITIES (JSON) set texel densities by material or mesh, and by slot of the building.
  * QUERY adds page parameters (for example QUERY="bakekeep=all").
  */
 import { createServer } from "node:http";
@@ -32,6 +33,11 @@ const facade = project.models.find(model => model.id === (choice === "side" ? "f
 const overrides = process.env.BUILDING_PARAMETERS?.endsWith(".json") ? await readFile(resolve(process.env.BUILDING_PARAMETERS), "utf8") : process.env.BUILDING_PARAMETERS;
 Object.assign(facade.parameters, Object.fromEntries(Object.entries(JSON.parse(overrides ?? "{}")).filter(([key]) => !key.startsWith("/"))));
 if (project.resolution > 512) project.profile = "production";
+// DENSITIES (JSON, texels per meter by material or mesh id) and SLOT_DENSITIES (by slot of the building) bake those finer or coarser.
+// (Either as JSON or as `name=density,name=density`, which survives a shell's quoting.)
+const densitiesOf = text => text.trim().startsWith("{") ? JSON.parse(text) : Object.fromEntries(text.split(",").map(pair => pair.split("=")).map(([name, value]) => [name.trim(), Number(value)]));
+if (process.env.DENSITIES) project.texelDensities = densitiesOf(process.env.DENSITIES);
+if (process.env.SLOT_DENSITIES) facade.slotDensities = densitiesOf(process.env.SLOT_DENSITIES);
 const text = JSON.stringify(project);
 const edited = JSON.parse(text);
 Object.assign(edited.models.find(model => model.id === facade.id).parameters, JSON.parse(process.env.EDIT ?? JSON.stringify({ seed: (facade.parameters.seed ?? 0) + 1 })));
@@ -122,6 +128,30 @@ try {
   const profiler = process.env.PROFILE === "1" ? await page.context().newCDPSession(page) : null;
   if (profiler) { await profiler.send("Profiler.enable"); await profiler.send("Profiler.setSamplingInterval", { interval: 500 }); await profiler.send("Profiler.start"); }
   await open("cold", text);
+  // LIVE_RANGE=1 reads every live argument texture back and says what its channels hold: the least and the most, and the
+  // share of texels outside 0 to 1 (what a byte texture would cut off).
+  if (process.env.LIVE_RANGE === "1") {
+    report.liveRange = await page.evaluate(() => {
+      const scene = window.__scene, renderer = scene.renderer, gl = renderer.getContext();
+      const range = { textures: 0, texels: 0, least: [Infinity, Infinity, Infinity, Infinity], most: [-Infinity, -Infinity, -Infinity, -Infinity], outside: [0, 0, 0, 0] };
+      for (const node of scene.bakerInstance.graph.complete.values()) {
+        if (!node.texture.name.startsWith("gpu-atlas live") || !node.users) continue;
+        const { width, height } = node.target, texels = new Float32Array(width * height * 4);
+        renderer.setRenderTarget(node.target);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.FLOAT, texels);
+        range.textures++; range.texels += width * height;
+        for (let i = 0; i < texels.length; i++) {
+          const value = texels[i], channel = i & 3;
+          if (value < range.least[channel]) range.least[channel] = value;
+          if (value > range.most[channel]) range.most[channel] = value;
+          if (value < 0 || value > 1) range.outside[channel]++;
+        }
+      }
+      renderer.setRenderTarget(null);
+      return range;
+    });
+    console.log(`live arguments: ${JSON.stringify(report.liveRange)}`);
+  }
   if (profiler) {
     const { profile } = await profiler.send("Profiler.stop");
     await writeFile(resolve(out, "cold.cpuprofile"), JSON.stringify(profile));
