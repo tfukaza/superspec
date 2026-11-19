@@ -1,5 +1,7 @@
 {
   "roles": {
+    "pillar": {"slots": {"concrete": "washroom-concrete"}},
+    "wall": {"slots": {"concrete": "washroom-concrete"}},
     "building": {
       "slots": {
         "wall": "render-paint",
@@ -7,6 +9,7 @@
         "plinth": "render-paint",
         "trim": "render-paint",
         "concrete": "render-paint",
+        "suspended-concrete": "balcony-concrete",
         "frame": "frame-green",
         "tile": "facade-tile",
         "dado": "dado-tile",
@@ -96,6 +99,20 @@
     }
   },
   "materials": [
+    {
+      "id": "balcony-concrete",
+      "entry": "kowloon-concrete.material.ts",
+      "parameters": {"darknessA": 0.2, "darknessB": 0.22, "hueAmount": 0.12, "hueAngle": 40, "groundContact": false, "holes": false, "cutouts": false, "intactRoughness": 0.75, "chippedRoughness": 0.93},
+      "seed": 7,
+      "meshes": []
+    },
+    {
+      "id": "washroom-concrete",
+      "entry": "kowloon-concrete.material.ts",
+      "parameters": {"darknessA": 0.2, "darknessB": 0.22, "hueAmount": 0.12, "hueAngle": 40},
+      "seed": 7,
+      "meshes": []
+    },
     {
       "id": "galvanized",
       "entry": "item-steel.material.ts",

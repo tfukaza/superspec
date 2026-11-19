@@ -204,3 +204,33 @@ fn twelve_storey_infill_lot_fits_the_item_budget() {
     }
     assert!(scene.manifest.meshes.iter().any(|m| m.bounds[1][2] > 36.0));
 }
+#[test]
+fn concrete_members_keep_the_placement_and_all_six_weathering_surfaces() {
+    let aml = r#"<architecture version="1" id="block"><city>
+      <pillar id="pier" position="10 20 1" width="0.6" depth="0.8" height="3"/>
+      <wall id="screen" position="1 2 0" heading="90" width="4" depth="0.25" height="2"/>
+    </city></architecture>"#;
+    let scene = compile(aml, 1).unwrap();
+    for (id, bounds) in [
+        ("city/pier", [10., 20., 1., 10.6, 20.8, 4.]),
+        ("city/screen", [0.75, 2., 0., 1., 6., 2.]),
+    ] {
+        let mut meshes = scene.manifest.meshes.iter().filter(|m| m.object_id == id);
+        let member = meshes.next().unwrap();
+        assert!(meshes.next().is_none());
+        assert_eq!(member.index_count, 36);
+        for (value, expected) in member.bounds.iter().flatten().zip(bounds) {
+            assert!((value - expected).abs() < 1e-5, "{id}: {:?}", member.bounds);
+        }
+        let normals: std::collections::BTreeSet<_> = scene.normals
+            [3 * member.vertex_start..3 * (member.vertex_start + member.vertex_count)]
+            .chunks_exact(3)
+            .map(|n| [n[0].round() as i8, n[1].round() as i8, n[2].round() as i8])
+            .collect();
+        assert_eq!(normals.len(), 6);
+    }
+    assert!(scene.manifest.colliders.is_empty());
+    let bad = aml.replace("height=\"3\"", "height=\"-1\"");
+    let err = superspec_profiles::parse(&bad).unwrap_err();
+    assert_eq!((err.code, err.source.line), ("AML_CITY", 2));
+}

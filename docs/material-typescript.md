@@ -215,8 +215,8 @@ shader:
 | Operation | Effect |
 | --- | --- |
 | `modulateDiffuse` | Scales direct and indirect diffuse light by `mix(1, factor, mask)`; specular is untouched. |
-| `grazingFalloff` | A mask that is 0 where the view-facing cosine is `from` and 1 where it is `to`, times `mask`, raises specular F90 toward 1.65: the silhouette lift. |
-| `scaleSpecular` | Multiplies the specular color (after metalness blending) by `mix(1, factor, mask)`, capped at 1: the study's `1 + 0.45·rim` on polished rims. |
+| `grazingFalloff` | Ramps from zero at view cosine `from` to `mask` at `to`. On surfaces facing the sun and visible in its shadow map, this raises specular F90 toward 1.08. |
+| `scaleSpecular` | Scales blended specular color by the masked change from 1 to `factor`. Positive changes use 12% of the authored gain, weighted by sun facing and shadow visibility. Reductions apply at full strength. The resulting color is capped at 1. |
 | `lightFloor` | Adds linear radiance `(red, green, blue)` times `mask`; when `from` and `to` differ the mask also ramps with the view-facing cosine, as in the study's silhouette floor. An operation may appear more than once. |
 | `filterEnvironment` | Reflects nine environment taps spread `spread` radians around the reflection at `roughness`, keeping the mean of the quadrant with the lowest luminance variance (a directional Kuwahara filter). A spread of zero is the ordinary reflection. |
 | `bandLuminance` | Steps reflected luminance into bands `spacing` apart in square-root luminance, with transitions `softness` wide (as a fraction of a band), blended in by `mask`. Optional `brightSoftness` takes over for bands whose middle is between 0.60 and 0.95, and `liftRed`/`liftGreen`/`liftBlue` brighten bands below 0.42 (fading out by 0.87): the study's painted values. |

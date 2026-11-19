@@ -2545,6 +2545,29 @@ pub(super) fn poles(
     Ok(())
 }
 
+/// Keep all six faces in one material receiver. The concrete program measures the
+/// member's top, foot, and convex creases across the boundaries between faces.
+pub(super) fn concrete_member(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let width = a.bounded("width", 0.5, 0.05..=40.)?;
+    let depth = a.bounded("depth", 0.5, 0.05..=40.)?;
+    let height = a.bounded("height", 3., 0.05..=30.)?;
+    a.finish()?;
+    draw(cancelled, |mesh| {
+        on(mesh, room_pen("concrete-member", [0.; 3])?)?.cuboid(
+            "concrete",
+            [0.; 3],
+            [width, depth, height],
+            [1.; 3],
+            "",
+        )
+    })
+}
+
 /// A carriageway segment with its near corner at the wearing surface.
 pub(super) fn road(
     name: &str,

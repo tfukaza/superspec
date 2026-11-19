@@ -65,12 +65,13 @@ try {
   assert.deepEqual(await bindings(), { "yard/wall": "concrete-wall", "yard/slab": "concrete-slab", "steel/crate": "rusted-steel", "steel/post": "painted-steel" });
   assert.match(await activeRow(), /concrete-wall/);
   assert.equal(await page.locator("#module").inputValue(), "kowloon-concrete.material.ts");
-  // The steel materials' live lighting runs in the viewer's shaders; the concrete has none.
+  // Steel and concrete retain their respective live operations in the viewer.
   const live = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.liveOperations ?? "{}"));
   for (const mesh of ["steel/crate", "steel/post"]) {
-    assert.deepEqual(live[mesh], ["modulateDiffuse", "grazingFalloff", "scaleSpecular", "lightFloor", "lightFloor", "filterEnvironment", "bandLuminance"], `live operations on ${mesh}`);
+    assert.deepEqual(live[mesh], ["modulateDiffuse", "grazingFalloff", "scaleSpecular", "filterEnvironment", "bandLuminance"], `live operations on ${mesh}`);
   }
-  assert.equal(live["yard/wall"], undefined);
+  for (const mesh of ["yard/wall", "yard/slab"])
+    assert.deepEqual(live[mesh], ["grazingFalloff", "scaleSpecular"]);
   await waitForFrames(page);
   assert.equal(errors.length, 0, `shaders compile: ${errors.join("\n")}`);
   assert.ok(await page.getByRole("spinbutton", { name: "Chip amount", exact: true }).isVisible(), "the active concrete material's controls");

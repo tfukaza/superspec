@@ -56,6 +56,7 @@ type CityNode = {
     width?: number;
     floors?: number;
     depth?: number;
+    height?: number;
     seed?: number;
     model?: string;
     banner?: boolean;
@@ -87,7 +88,10 @@ function modelsOf(packet: ScenePacket) {
               seed, footprint: [[0, 0], [w, 0], [w, d], [0, d]],
             });
           }
-        } else if (a.width !== undefined) params.width = a.width;
+        } else {
+          for (const key of ["width", "depth", "height"] as const)
+            if (a[key] !== undefined) params[key] = a[key];
+        }
         for (const key of ["floors", "length", "banner"] as const)
           if (a[key] !== undefined) params[key] = a[key];
         models.push({
@@ -121,7 +125,7 @@ export class CityAppearance {
       const applied = await scene.apply(packet, current, false, decorate);
       if (applied) {
         scene.setBackdrop(city ? "#d2ccc4" : "#d5d7ce");
-        scene.setLighting(projectLighting(packet.manifest), packet.manifest.lighting);
+        scene.setLighting(projectLighting(packet.manifest), packet.manifest.lighting, city);
       }
       return applied;
     };

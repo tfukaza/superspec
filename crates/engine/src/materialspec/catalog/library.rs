@@ -541,7 +541,7 @@ pub fn renderer_operations() -> &'static [RendererOperation] {
         vec![
             op(
                 "grazingFalloff",
-                "Silhouette lift: a smooth mask from 0 where the view-facing cosine is `from` to 1 where it is `to`, gated by `mask`, raises specular F90 toward 1.65 at grazing angles.",
+                "Raises specular F90 toward 1.08 on directly sunlit surfaces. The grazing weight ramps from zero at view cosine `from` to `mask` at `to`.",
                 "grazingFalloff({ from: 0.2, to: 0.8 })",
                 "shading-normal",
                 vec![
@@ -645,7 +645,7 @@ pub fn renderer_operations() -> &'static [RendererOperation] {
             ),
             op(
                 "scaleSpecular",
-                "Scales the specular color by `mix(1, factor, mask)`, as the study brightens polished rims.",
+                "Scales blended specular color by a masked factor. Increases use 12% of the authored gain on directly sunlit surfaces. Reductions apply at full strength.",
                 "scaleSpecular({ factor: add(1, mul(0.45, rim)) })",
                 "lighting-composition",
                 vec![

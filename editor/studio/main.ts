@@ -383,7 +383,11 @@ class Studio {
     const bindings: Record<string, string> = {};
     for (const material of candidate.materials ?? []) for (const mesh of material.meshes) bindings[mesh] = material.id;
     // With items, the engine says which meshes their slots bind.
-    this.meshBindings = { ...bindings, ...(metadata?.bindings as Record<string, string> | undefined) };
+    const nextBindings = { ...bindings, ...(metadata?.bindings as Record<string, string> | undefined) };
+    const changed = Object.keys(this.meshBindings).length !== Object.keys(nextBindings).length ||
+      Object.entries(nextBindings).some(([mesh, id]) => this.meshBindings[mesh] !== id);
+    this.meshBindings = nextBindings;
+    if (changed) this.showScene();
     this.itemPanel?.show(this.items);
     this.overlays();
     const viewport = element("viewport");

@@ -110,6 +110,7 @@ function facadeMaterials() {
   return [
     // The reference shop house's cream render: the concrete's plaster coat, with patches lost to the concrete beneath.
     { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.3, chipRelief: 0.0012, darknessA: 0.6, darknessB: 0.45, blendContrast: 2.2, hueAmount: 0.04, hueAngle: 60, intactRoughness: 0.85 }, seed: 11, meshes: [] },
+    { id: "balcony-concrete", entry: concrete, parameters: { darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40, groundContact: false, holes: false, cutouts: false, intactRoughness: 0.75, chippedRoughness: 0.93 }, seed: 7, meshes: [] },
     // The fixtures are drawn with their paint as vertex tints (a frame's green, a cage's khaki, an awning's stripes), which
     // the picture keeps over their baked looks (`?bakedtints=on`): so their materials are pale, and add only what age
     // does to the paint: dullness, dirt and rust.

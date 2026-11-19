@@ -22,3 +22,19 @@ test("city buildings ship the ItemSpec demo's current surface programs and bindi
     assert.equal(readFileSync(recipe, "utf8").trim(), project.modules[demo.entry].trim(), id);
   }
 });
+
+test("concrete city members use the washroom wall receiver and elevated brackets retain their own finish", async () => {
+  const city = JSON.parse(readFileSync(new URL("street-materials.json", appearance), "utf8"));
+  const { materials } = await import("../studio/washroom/build.mjs");
+  const washroom = materials.find(material => material.id === "concrete-walls");
+  for (const role of ["pillar", "wall"]) {
+    const member = city.materials.find(material => material.id === city.roles[role].slots.concrete);
+    assert.equal(member.entry, washroom.entry);
+    assert.deepEqual(member.parameters, washroom.parameters);
+    assert.equal(member.seed, 7);
+  }
+  const balcony = city.materials.find(material => material.id === city.roles.building.slots["suspended-concrete"]);
+  assert.equal(balcony.entry, washroom.entry);
+  assert.equal(balcony.parameters.groundContact, false);
+  assert.equal(balcony.parameters.holes, false);
+});

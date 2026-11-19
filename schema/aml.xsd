@@ -1131,6 +1131,7 @@
     <xs:attribute name="length" type="xs:double"/><xs:attribute name="width" type="xs:double"/>
   </xs:extension></xs:complexContent></xs:complexType>
   <xs:element name="city"><xs:complexType><xs:choice minOccurs="0" maxOccurs="unbounded">
+    <xs:element name="pillar" type="cityConcreteMember"/><xs:element name="wall" type="cityConcreteMember"/>
     <xs:element name="road" type="cityStrip"/><xs:element name="avenue" type="cityStrip"/>
     <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlacement"/><xs:element name="shrub" type="cityPlacement"/>
     <xs:element name="lamp"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
@@ -1140,6 +1141,10 @@
       <xs:attribute name="floors" type="xs:positiveInteger"/>
     </xs:extension></xs:complexContent></xs:complexType></xs:element>
   </xs:choice></xs:complexType></xs:element>
+  <xs:complexType name="cityConcreteMember"><xs:complexContent><xs:extension base="cityPlacement">
+    <xs:attribute name="width" type="xs:double"/><xs:attribute name="depth" type="xs:double"/>
+    <xs:attribute name="height" type="xs:double"/>
+  </xs:extension></xs:complexContent></xs:complexType>
   <xs:element name="architecture">
     <xs:complexType>
       <xs:choice minOccurs="0" maxOccurs="unbounded">

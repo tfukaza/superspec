@@ -43,12 +43,14 @@ items!(
     "kowloon-ground-floor",
     "kowloon-lamp",
     "kowloon-parapet",
+    "kowloon-pillar",
     "kowloon-road",
     "kowloon-roof",
     "kowloon-shopfront",
     "kowloon-sidewalk",
     "kowloon-sign",
     "kowloon-tree",
+    "kowloon-wall",
     "kowloon-window"
 );
 
@@ -79,7 +81,7 @@ pub(crate) fn request(
     } else {
         std::collections::BTreeMap::new()
     };
-    for key in ["length", "width"] {
+    for key in ["length", "width", "depth", "height"] {
         if node.kind != "building"
             && let Some(value) = node.optional_number(key)
         {

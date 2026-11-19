@@ -1,0 +1,19 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-wall",
+  "parameters": {
+    "width": {"type": "number", "default": 4, "min": 0.05, "max": 40, "unit": "m"},
+    "depth": {"type": "number", "default": 0.28, "min": 0.05, "max": 40, "unit": "m"},
+    "height": {"type": "number", "default": 2.2, "min": 0.05, "max": 30, "unit": "m"}
+  },
+  "parts": [{
+    "id": "member",
+    "generator": {"kind": "native", "name": "kowloon/concrete-member", "parameters": {
+      "width": {"parameter": "width"}, "depth": {"parameter": "depth"}, "height": {"parameter": "height"}
+    }}
+  }],
+  "attachments": [
+    {"name": "base", "position": ["width / 2", "depth / 2", 0], "direction": [0, 0, -1]},
+    {"name": "head", "position": ["width / 2", "depth / 2", "height"], "direction": [0, 0, 1]}
+  ],
+  "collision": "none"
+}

@@ -3265,6 +3265,7 @@ impl Natives {
             ("kowloon/street-stock", street::street_stock),
             ("kowloon/pavement", street::pavement),
             ("kowloon/road", street::road),
+            ("kowloon/concrete-member", street::concrete_member),
             ("kowloon/street-tree", street::street_tree),
             ("kowloon/pavement-corner", street::pavement_corner),
             ("kowloon/pedestrian-avenue", street::pedestrian_avenue),

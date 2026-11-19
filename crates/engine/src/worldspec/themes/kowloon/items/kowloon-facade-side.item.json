@@ -232,7 +232,8 @@
         "parameters": {"width": {"expr": "balconyEnd - balconyFrom"}, "depth": {"parameter": "balconyDepth"}, "thickness": 0.27, "parapet": true, "parapet_height": 0.95,
                        "brackets": {"parameter": "balconyBrackets"}, "color": "#ffffff", "upstand": 0.465,
                        "rail": {"parameter": "balconyRail"}, "rail_color": {"parameter": "frame"}}},
-      "placement": {"position": ["(balconyFrom + balconyEnd) / 2", 0, {"derived": "base"}]}
+      "placement": {"position": ["(balconyFrom + balconyEnd) / 2", 0, {"derived": "base"}]},
+      "slots": {"concrete": "suspended-concrete", "wall": "wall", "metal": "metal"}
     },
     {
       "id": "balconyFan",
@@ -373,6 +374,11 @@
     {"name": "rust", "part": "drain-{k}", "repeat": {"name": "k", "count": "count(pipePlan)"}, "reach": "item", "within": 1,
      "points": [["cell(pipePlan,  k) - 0.045 - 0.035", -0.008, "base + 4.2 + 1.4 * random(seed,  k,  44)"], ["cell(pipePlan,  k) - 0.045 + 0.035", -0.008, "base + 4.2 + 1.4 * random(seed,  k,  44)"]], "zone": {"length": "(base + 4.2 + 1.4 * random(seed, k, 44)) - (base + 3.5 + 1.4 * random(seed, k, 44) - 0.5 * random(seed, k, 46))"}}
   ],
+  "layers": {
+    "suspended-concrete": [
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.35, "color": [0.29, 0.27, 0.24], "streakLength": 0.55}, "seed": 3, "follow": {"zone": "ledge"}}
+    ]
+  },
   "attachments": [
     {"name": "base-left", "position": [0, 0, 0], "direction": [0, -1, 0]},
     {"name": "base-right", "position": [{"parameter": "width"}, 0, 0], "direction": [0, -1, 0]},

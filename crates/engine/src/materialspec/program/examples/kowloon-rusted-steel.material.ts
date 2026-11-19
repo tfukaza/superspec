@@ -7,7 +7,7 @@ import {
   defineMaterial, param, vec2, vec3, add, sub, mul, div, mix, min, max, smoothstep, step,
   sqrt, dot, clamp, fract, floor, length, hash, valueNoise, variedColor, triplanarWeights, seed,
   creaseDistance, creaseNormal, world, normal, footprint, boundsMin, boundsMax,
-  modulateDiffuse, grazingFalloff, filterEnvironment, bandLuminance, scaleSpecular, lightFloor,
+  modulateDiffuse, grazingFalloff, filterEnvironment, bandLuminance, scaleSpecular,
 } from "@superspec/material/v1";
 
 // Substrate: the study's bare steel. Galvanized is (0.258, 0.305, 0.318), metalness 0.85,
@@ -19,6 +19,7 @@ const edgeRust = param.scalar({ default: 1, range: [0, 1], label: "Edge rust" })
 const surfaceRust = param.scalar({ default: 1, range: [0, 1], label: "Surface rust" });
 const rainRust = param.scalar({ default: 1, range: [0, 1], label: "Raindrop rust" });
 const polishedEdges = param.scalar({ default: 1, range: [0, 1], label: "Polished edges" });
+const edgeSpecular = param.scalar({ default: 0.16, range: [0, 1], label: "Exposed arris specular" });
 const creaseAngle = param.scalar({ default: 30, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
 const rustRepeat = param.scalar({ default: 2, range: [0.1, 20], label: "Oxide texture repeat per meter" });
 const rustRoughness = param.scalar({ default: 0.92, range: [0, 1], label: "Oxide roughness" });
@@ -83,12 +84,13 @@ const oxideColor = mix(oxideDark, oxideLight, tone);
 // Polished rims: an 8 mm band (narrower on thin parts) of exposed metal turns glossy and rounds.
 const roundWidth = min(0.008, mul(0.45, thinnest));
 const exposedMetal = mul(polishedEdges, sub(1, coverage));
-const polishedRim = mul(exposedMetal, sub(1, smoothstep(0, roundWidth, edgeDistance)));
+const rimBand = sub(1, smoothstep(0, roundWidth, edgeDistance));
+const polishedRim = mul(exposedMetal, rimBand);
+const minimumRim = mul(mul(edgeSpecular, metalness), rimBand);
 const rimRoughness = mix(roughness, 0.13, polishedRim);
 const rimMiddle = creaseNormal("convex", creaseAngle, add(roundWidth, footprint));
 
-// Live response: diffuse-only grain, the silhouette lift, brighter specular and a light floor on
-// polished rims and silhouettes (metal_lighting.glsl), and banded gloss on exposed metal.
+// Diffuse grain follows the exposed steel. The live light response uses the silhouette and the physical convex rim.
 const diffuseGrain = add(1, mul(sub(valueNoise(mul(world, 51), seed("diffuse")), 0.5), 0.04));
 const glossWeight = mul(bandedGloss, sub(1, coverage));
 const silhouetteMask = mul(silhouette, sub(1, coverage));
@@ -106,9 +108,7 @@ export default defineMaterial({
   live: [
     modulateDiffuse({ factor: diffuseGrain, mask: sub(1, coverage) }),
     grazingFalloff({ from: 0.3, to: 0.06, mask: silhouetteMask }),
-    scaleSpecular({ factor: add(1, mul(0.45, polishedRim)) }),
-    lightFloor({ red: 0.105, green: 0.111, blue: 0.12, mask: polishedRim }),
-    lightFloor({ red: 0.052, green: 0.057, blue: 0.065, mask: silhouetteMask, from: 0.3, to: 0.06 }),
+    scaleSpecular({ factor: add(1, max(minimumRim, mul(0.45, polishedRim))) }),
     filterEnvironment({ roughness: rimRoughness, spread: mul(0.22, glossWeight) }),
     // Painted values soften dark bands, sharpen bright ones and lift the shadows (metal_reflection.glsl).
     bandLuminance({

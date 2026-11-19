@@ -367,8 +367,6 @@ fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
             "modulateDiffuse",
             "grazingFalloff",
             "scaleSpecular",
-            "lightFloor",
-            "lightFloor",
             "filterEnvironment",
             "bandLuminance"
         ]
@@ -377,12 +375,10 @@ fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
     let argument = |op: usize, name: &str| material.live[op].arguments[name].clone();
     assert_eq!(argument(1, "from"), LiveArgument::Constant { value: 0.3 });
     assert_eq!(
-        argument(6, "spacing"),
+        argument(4, "spacing"),
         LiveArgument::Constant { value: 1. / 5.5 }
     );
-    // The study's light floor: fixed colors, the second ramped toward silhouettes.
-    assert_eq!(argument(3, "red"), LiveArgument::Constant { value: 0.105 });
-    assert_eq!(argument(4, "from"), LiveArgument::Constant { value: 0.3 });
+    assert_eq!(argument(1, "to"), LiveArgument::Constant { value: 0.06 });
     assert!(
         matches!(argument(2, "factor"), LiveArgument::Texture { .. }),
         "rims vary"
@@ -416,8 +412,6 @@ fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
             "modulateDiffuse",
             "grazingFalloff",
             "scaleSpecular",
-            "lightFloor",
-            "lightFloor",
             "filterEnvironment",
             "bandLuminance"
         ],

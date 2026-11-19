@@ -2576,7 +2576,7 @@ mod tests {
         }
         assert!(concrete.features && concrete.images.len() >= 2);
         let steel = examples("kowloon-rusted-steel.material.ts");
-        assert_eq!(steel.live.len(), 7);
+        assert_eq!(steel.live.len(), 5);
         assert!(steel.live.iter().all(|operation| {
             operation
                 .arguments

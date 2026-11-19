@@ -7,7 +7,7 @@ import {
   defineMaterial, param, vec2, vec3, add, sub, mul, div, mix, abs, max, min, floor, smoothstep,
   softThreshold, select, and, not, ge, lt, gt, length, pow, valueNoise, variedColor,
   sampleColor, seed, creaseDistance, creaseNormal, dot, world, object, normal, footprint,
-  boundsMin, boundsMax, neg,
+  boundsMin, boundsMax, neg, grazingFalloff, scaleSpecular,
 } from "@superspec/material/v1";
 import type { Scalar, Vec2, Vec3 } from "@superspec/material/v1";
 import {
@@ -31,6 +31,7 @@ const chipRelief = param.scalar({ default: 0.0035, range: [0, 0.006], unit: "m",
 const creaseWear = param.bool({ default: true, label: "Edge wear" });
 const edgeWidth = param.scalar({ default: 0.014, range: [0.002, 0.05], unit: "m", label: "Edge width" });
 const edgeAngle = param.scalar({ default: 35, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
+const edgeSpecular = param.scalar({ default: 0.18, range: [0, 1], label: "Exposed arris specular" });
 const cutouts = param.bool({ default: true, label: "Repair cutouts" });
 const holes = param.bool({ default: true, label: "Form-tie holes" });
 const grime = param.bool({ default: true, label: "Top grime" });
@@ -166,6 +167,7 @@ const edgeGroove = select(creaseWear, mul(shoulder(creaseNearest, mul(edgeWidth,
 const edgeDarkness = add(mul(0.16, edgeGroove), mul(0.2, edgeShoulder));
 const edgeHeight = mul(mul(-0.006, edgeShoulder), add(0.5, mul(0.5, edgeGrit)));
 const roundOver = select(creaseWear, sub(1, smoothstep(0, edgeWidth, creaseNearest)), 0);
+const arris = mul(edgeSpecular, mul(roundOver, sub(1, moss)));
 const creaseMiddle = creaseNormal("convex", edgeAngle, add(edgeWidth, footprint));
 // The adjacent face's normal: the receiver normal reflected across the crease's middle normal.
 const creaseAdjacent = sub(mul(creaseMiddle, mul(2, dot(creaseMiddle, normal))), normal);
@@ -195,6 +197,10 @@ export default defineMaterial({
     // weighted by distance to the crease, renormalized (concrete_normal.glsl).
     normalOffset: mul(creaseAdjacent, roundOver),
   },
+  live: [
+    grazingFalloff({ from: 0.3, to: 0.06, mask: arris }),
+    scaleSpecular({ factor: add(1, arris) }),
+  ],
 });
 
 function plasterDetail(p: Vec2): Scalar {

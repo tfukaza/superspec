@@ -26,6 +26,8 @@ pub static EXTENSION: Extension = Extension {
         tag("tree", "city"),
         tag("shrub", "city"),
         tag("lamp", "city"),
+        tag("pillar", "city"),
+        tag("wall", "city"),
     ],
     decode: read,
     checks: &[Check {
@@ -99,6 +101,14 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                     .filter(|v| *v <= 31)
                     .ok_or_else(invalid)? as f64,
             ),
+            "width" | "depth" | "height" if matches!(kind, "pillar" | "wall") => {
+                let metres = quantize(number(text)?);
+                let limit = if key == "height" { 30. } else { 40. };
+                if !(0.05..=limit).contains(&metres) {
+                    return Err(invalid());
+                }
+                Value::Number(metres)
+            }
             "width" | "depth" if kind == "building" => {
                 let metres = quantize(number(text)?);
                 if !(6.0..=14.0).contains(&metres) {

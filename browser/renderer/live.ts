@@ -14,12 +14,12 @@ export function liveTextures(operations: LiveOperation[] | undefined): string[] 
 /**
  * Executes live operations in a standard material's shader:
  * - modulateDiffuse scales direct and indirect diffuse light by mix(1, factor, mask);
- * - grazingFalloff raises specular F90 toward 1.65 by a mask from facing `from` (0) to `to` (1), times `mask`;
+ * - grazingFalloff raises specular F90 toward 1.08 on sunlit surfaces by a mask from facing `from` (0) to `to` (1), times `mask`;
  * - filterEnvironment reflects nine environment taps spread `spread` around the reflection at `roughness`,
  *   keeping the lowest-variance quadrant's mean;
  * - bandLuminance steps reflected luminance into bands `spacing` apart in square-root luminance, by `mask`,
  *   softening bright bands toward `brightSoftness` and lifting dark ones by `lift*`;
- * - scaleSpecular multiplies the blended specular color by mix(1, factor, mask), capped at 1;
+ * - scaleSpecular keeps authored reductions and gives increases a restrained, direct-sun response;
  * - lightFloor adds (red, green, blue) * mask, ramped by view facing from `from` to `to` when they differ.
  * Texture arguments are sampled on the material's base color UVs. Returns the executed operation identities.
  */
@@ -70,6 +70,21 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
     return (name: string, fallback: string) => named[name] ?? fallback;
   });
   const lighting: string[] = [], diffuse: string[] = [];
+  if (usable.some(op => op.id === "grazingFalloff" || op.id === "scaleSpecular")) {
+    lighting.push(`float msSunEdge = 0.0;
+#if defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
+  vec4 msCoord = vDirectionalShadowCoord[0];
+  vec3 msProjected = msCoord.xyz / msCoord.w;
+  float msFacing = dot(normal, directionalLights[0].direction);
+  if (receiveShadow && msFacing > 0.0 && all(greaterThanEqual(msProjected, vec3(0.0))) &&
+      all(lessThanEqual(msProjected, vec3(1.0))) && dot(directionalLights[0].color, vec3(1.0)) > 0.0) {
+    DirectionalLightShadow msShadow = directionalLightShadows[0];
+    float msVisible = getShadow(directionalShadowMap[0], msShadow.shadowMapSize, 1.0,
+      msShadow.shadowBias, msShadow.shadowRadius, msCoord);
+    msSunEdge = smoothstep(0.8, 1.0, msVisible) * smoothstep(0.0, 0.35, msFacing);
+  }
+#endif`);
+  }
   let filter: { roughness: string; spread: string } | undefined,
     band: { spacing: string; softness: string; mask: string; bright: string; lift: string } | undefined;
   usable.forEach((operation, index) => {
@@ -81,10 +96,12 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
       lighting.push(`{ float span = ${arg("to", "0.0")} - ${arg("from", "1.0")};
         float facing = abs(dot(normal, normalize(vViewPosition)));
         float t = clamp((facing - ${arg("from", "1.0")}) / (abs(span) < 1e-6 ? -1e-6 : span), 0.0, 1.0);
-        material.specularF90 = mix(material.specularF90, 1.65, t * t * (3.0 - 2.0 * t) * clamp(${arg("mask", "1.0")}, 0.0, 1.0)); }`);
+        material.specularF90 = mix(material.specularF90, 1.08, msSunEdge * t * t * (3.0 - 2.0 * t) * clamp(${arg("mask", "1.0")}, 0.0, 1.0)); }`);
     } else if (operation.id === "scaleSpecular") {
-      lighting.push(`material.specularColorBlended = min(vec3(1.0), material.specularColorBlended
-        * mix(1.0, max(${arg("factor", "1.0")}, 0.0), clamp(${arg("mask", "1.0")}, 0.0, 1.0)));`);
+      lighting.push(`{ float delta = max(${arg("factor", "1.0")}, 0.0) - 1.0;
+        float gain = min(delta, 0.0) + max(delta, 0.0) * msSunEdge * 0.12;
+        material.specularColorBlended = min(vec3(1.0), material.specularColorBlended
+          * (1.0 + gain * clamp(${arg("mask", "1.0")}, 0.0, 1.0))); }`);
     } else if (operation.id === "lightFloor") {
       lighting.push(`{ float start = ${arg("from", "0.0")}, span = ${arg("to", "0.0")} - start;
         float facing = abs(dot(normal, normalize(vViewPosition)));
