@@ -72,6 +72,8 @@ try {
     await shoot(`${look}-close`, around(sun[0] + 40, 9.5, 1.5), [cx, cy, top - 2.2 * s], 30);
     // From above with the sun behind, as the lane's avenue view looks down on its trees.
     await shoot(`${look}-above`, around(sun[0] + 12, 13, 10), [cx, cy, cz], 34);
+    // From beneath, as someone on the walkway looks up into it (eye height, a few meters off the trunk).
+    { const a = (sun[0] + 70) * Math.PI / 180, r = 5.5 * s; await shoot(`${look}-below`, [cx + Math.cos(a) * r, cy + Math.sin(a) * r, plant.base[2] + 1.6], [cx, cy, cz + 0.5], 50); }
     // FAR=1: from 60 m, as down a street, to see that leaves and limbs stay shapes.
     if (process.env.FAR === "1") await shoot(`${look}-far`, [cx + Math.cos((sun[0] + 28) * Math.PI / 180) * 60, cy + Math.sin((sun[0] + 28) * Math.PI / 180) * 60, cz + 6], [cx, cy, cz - 1], 14);
     for (let k = 0; k < Number(process.env.ORBIT ?? 0); k++) await shoot(`${look}-orbit-${k}`, around(sun[0] + 28 + 4 * k, 17, 4), [cx, cy, cz - 0.5 * s], 26);

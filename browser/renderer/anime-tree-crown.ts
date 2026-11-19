@@ -185,10 +185,13 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
   const tier = options.tier ?? 0, under = options.under ?? 0;
   if (tier > 0) for (const station of stations) {
     const cluster = clusters[station.cluster], d = station.position.clone().sub(cluster.centre);
-    let dome = cluster.radii.z * domeHeight(cluster, d.x / cluster.radii.x, d.y / cluster.radii.y), pull = 1 - 0.14 * tier;
+    let dome = cluster.radii.z * domeHeight(cluster, d.x / cluster.radii.x, d.y / cluster.radii.y), pull = 1 - 0.24 * tier;
     if (random() < under) { dome -= cluster.radii.z * (0.3 + 0.4 * random()); pull *= 0.85; }
     station.position.set(cluster.centre.x + d.x * pull, cluster.centre.y + d.y * pull, cluster.centre.z + d.z + (dome - d.z) * tier);
   }
+  // The clusters are as wide as their gathered leaves: lit and shaded by their own new extent, not darker inside for
+  // having drawn in.
+  if (tier > 0) for (const cluster of clusters) { cluster.radii.x *= 1 - 0.24 * tier; cluster.radii.y *= 1 - 0.24 * tier; }
   const crown = { stations, clusters, centre, radii, scale, tier };
   for (const station of stations) {
     const shade = crownShade(crown, clusters[station.cluster], station.position);
@@ -201,7 +204,9 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
  * The ramp the leaves are painted with, dark to light, as display colours (sampled from the anime tree concept: a deep
  * cool green in the shade through muted olives to a pale yellow-olive in the light), and a trunk's two browns.
  */
-export const ANIME_RAMP = ["#2b312b", "#343a30", "#3e4435", "#4a4e39", "#5c5d42", "#78764f", "#a19c6c"] as const;
+// The darkest four steps a fifth to a tenth darker and a little cooler than first sampled, so the shade reads deeper
+// against the unchanged mids and lights.
+export const ANIME_RAMP = ["#222824", "#2a302a", "#333a2f", "#404534", "#5c5d42", "#78764f", "#a19c6c"] as const;
 
 /** How the leaves are lit: see `ANIME_SHADE_GLSL`. */
 export const ANIME_LIGHT = {
@@ -214,7 +219,7 @@ export const ANIME_LIGHT = {
   /** Steps of the ramp. */
   bands: 12,
   /** The light stretched about its middle, and shifted. */
-  contrast: 1.35, offset: -0.05,
+  contrast: 1.35, offset: 0.0,
   /** Warm light through leaves on the crown's edge seen against the sun. */
   back: 0.16,
   /** The fewest pixels a leaf and a spray card are long, and the pixels a limb is thickened by on each side. */
