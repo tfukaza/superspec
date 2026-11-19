@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { DEFAULT_LIGHTING, LightingError, defaultLighting, hexFromLinear, lightingFromQuery, linearFromHex, paintedOf, parseLighting, projectLighting, statesAmbientOcclusion,
+import { DEFAULT_CONTOURS, DEFAULT_LIGHTING, LightingError, contoursOf, defaultLighting, formOf, hexFromLinear, lightingFromQuery, linearFromHex, paintedOf, parseLighting, projectLighting, statesAmbientOcclusion,
   storedLighting, sunAngles, sunDirection, sunOf, type Lighting } from "../../browser/renderer/lighting.ts";
 
 /** The fixtures the Rust record is checked against (`crates/model/src/lighting.rs`). */
@@ -24,6 +24,27 @@ test("painted finishing is a scene setting, held only when it differs from the d
   assert.deepEqual(paintedOf(toned), toned.painted);
   assert.throws(() => parseLighting({ version: 1, painted: { tint: 1 } }), (error: LightingError) => error.findings[0].field === "painted.tint");
   assert.throws(() => parseLighting({ version: 1, painted: { toneMapping: 1 } }), (error: LightingError) => error.findings[0].field === "painted.toneMapping");
+});
+
+test("form light and contours are off by default and held only when set, as the Rust record writes them", () => {
+  assert.deepEqual(formOf(DEFAULT_LIGHTING.lights[0].shadow), { form: 0, fill: 0 });
+  assert.equal(contoursOf(DEFAULT_LIGHTING).enabled, false);
+  assert.deepEqual(parseLighting({ version: 1, contours: { enabled: false }, lights: [{ shadow: { form: 0, formFill: 0 } }] }), DEFAULT_LIGHTING);
+  const drawn = parseLighting({ version: 1, contours: { enabled: true, width: 2.5 }, lights: [{ shadow: { form: 0.35 } }] });
+  assert.deepEqual(drawn.contours, { ...DEFAULT_CONTOURS, enabled: true, width: 2.5 });
+  assert.deepEqual(formOf(drawn.lights[0].shadow), { form: 0.35, fill: 0 });
+  assert.equal("formFill" in drawn.lights[0].shadow, false);
+  assert.deepEqual(parseLighting(storedLighting(drawn, false)), drawn);
+  // The default line is #3a2a20.
+  assert.equal(hexFromLinear(DEFAULT_CONTOURS.color), "3a2a20");
+  // Page parameters are session overrides of both, and an untouched record stays the default.
+  const query = (text: string): URLSearchParams => new URLSearchParams(text);
+  const session = lightingFromQuery(defaultLighting(), query("contours=on&contourwidth=3&shadowform=0.4"));
+  assert.deepEqual(session.contours, { ...DEFAULT_CONTOURS, enabled: true, width: 3 });
+  assert.equal(session.lights[0].shadow.form, 0.4);
+  assert.equal(lightingFromQuery(drawn, query("contours=off&shadowform=0")).contours?.enabled, false);
+  assert.equal(lightingFromQuery(drawn, query("")).lights[0].shadow.form, 0.35);
+  assert.doesNotThrow(() => parseLighting(session));
 });
 
 test("a partial record keeps the other defaults and is a copy", () => {

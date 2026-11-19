@@ -45,8 +45,8 @@ const ends = mul(span.z, sub(1, smoothstep(0.1, 0.5, toEnd)));
 const density = mul(mul(add(0.25, mul(0.95, cluster)), zoneWeight), add(1, mul(ends, 1.3)));
 const streaks = mul(mul(mul(sampleAlpha("superspec-material:grime-streaks.png", tile), mul(reached, ended)), strength), density);
 // A few long dark runs: sparse columns that reach twice as far and stay strong.
-const column = smoothstep(0.8, 0.9, valueNoise(vec2(add(mul(zone.x, 4.3), mul(zone.z, 71)), 2.5), seed("streak-long")));
-const longTile = vec2(add(mul(zone.x, 7), place), clamp(sub(1, div(zone.y, mul(reach, 2))), 0.03, 0.996));
+const column = smoothstep(0.8, 0.9, valueNoise(vec2(add(mul(zone.x, 2.2), mul(zone.z, 71)), 2.5), seed("streak-long")));
+const longTile = vec2(add(mul(zone.x, 2.5), place), clamp(sub(1, div(zone.y, mul(reach, 2))), 0.03, 0.996));
 const longRun = mul(mul(mul(column, sampleAlpha("superspec-material:grime-streaks.png", longTile)), sub(1, smoothstep(0.6, 1, div(zone.y, max(extent.y, 0.05))))), mul(strength, longRuns));
 const coverage = mul(extent.x, min(add(add(streaks, longRun), under), 1));
 

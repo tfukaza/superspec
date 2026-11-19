@@ -4,7 +4,8 @@ import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { SimplexNoise } from "three/examples/jsm/math/SimplexNoise.js";
-import type { AmbientOcclusionSettings } from "./lighting.ts";
+import { ContourPass, type ContourSource } from "./contours.ts";
+import type { AmbientOcclusionSettings, Contours } from "./lighting.ts";
 
 /** The lighting record's ambient occlusion values; whether the effect is on (`enabled`) is its host's decision. */
 type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "intensity" | "thickness">;
@@ -185,6 +186,9 @@ function fixedNoise(size = 64): THREE.DataTexture {
  * the canvas would. Materials therefore compile for this target, not for the canvas: anything that compiles a scene
  * material ahead of a frame must do it inside `compiling`.
  *
+ * The same composited frame carries the scene's contour lines (`setContours`), with the occlusion or, its passes left
+ * out, without it.
+ *
  * It draws only when `render` is called, so an on-demand viewer stays idle between frames. A relief normal in a
  * material does not affect the occlusion.
  */
@@ -207,7 +211,7 @@ export class AmbientOcclusion {
    * drawn, and drawn in the image as usual.
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly scene: THREE.Scene, camera: THREE.Camera,
-    parameters: AmbientOcclusionParameters, excluded: () => THREE.Object3D[] = () => []) {
+    parameters: AmbientOcclusionParameters | null, excluded: () => THREE.Object3D[] = () => [], contours: Contours | null = null) {
     const size = renderer.getSize(new THREE.Vector2());
     const target = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, target);
@@ -219,8 +223,11 @@ export class AmbientOcclusion {
     // and thickness are a fraction of the record's, so it only darkens creases and contact lines a few centimetres wide
     // and leaves no halo round a small prop.
     this.contact = new GTAOPass(scene, camera, size.x, size.y);
-    this.contactMask = this.prepare(this.contact, camera, excluded);    this.composer.addPass(this.pass);
+    this.contactMask = this.prepare(this.contact, camera, excluded);
+    this.composer.addPass(this.pass);
     this.composer.addPass(this.contact);
+    this.camera = camera;
+    this.setContours(contours);
     this.output = new ShaderPass(OUTPUT);
     this.composer.addPass(this.output);
     this.set(parameters);
@@ -367,8 +374,43 @@ void main() {
   private readonly backdrop = { r: 0, g: 0, b: 0 };
   private readonly clearColor = new THREE.Color();
 
-  /** Changes the look in place. */
-  set(parameters: AmbientOcclusionParameters): void {
+  /** Contour lines over the frame (`contours.ts`), after the occlusion and before the output pass; null draws none. */
+  setContours(contours: Contours | null): void {
+    if (!contours) { if (this.contours) this.contours.enabled = false; return; }
+    if (this.contours) { this.contours.set(contours); this.contours.enabled = true; return; }
+    this.contours = new ContourPass(this.camera, () => this.contourSource(), contours);
+    this.contours.setPixelRatio(this.pixelRatio);
+    // Before the output pass, wherever that is by now.
+    const output = this.composer.passes.indexOf(this.output);
+    if (output < 0) this.composer.addPass(this.contours);
+    else this.composer.insertPass(this.contours, output);
+  }
+
+  /**
+   * What the contour lines read: the first occlusion pass's depth, normals and foliage mask. With the occlusion off the
+   * pass does not draw them, so they are drawn here, the same way (foliage left out and masked, overlays hidden).
+   */
+  private contourSource(): ContourSource {
+    const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget;
+      _renderOverride(renderer: THREE.WebGLRenderer, material: THREE.Material, target: THREE.WebGLRenderTarget, color: number, alpha: number): void;
+      blendMaterial: THREE.ShaderMaterial };
+    if (!this.pass.enabled) {
+      internals._overrideVisibility();
+      internals._renderOverride(this.renderer, this.pass.normalMaterial, internals.normalRenderTarget, 0x7777ff, 1.0);
+      internals._restoreVisibility();
+    }
+    return { depth: internals.normalRenderTarget.depthTexture!, normal: internals.normalRenderTarget.texture, foliage: this.foliageMask.texture,
+      hasFoliage: internals.blendMaterial.uniforms.hasFoliage.value > 0 };
+  }
+
+  private contours?: ContourPass;
+  private readonly camera: THREE.Camera;
+  private pixelRatio = 1;
+
+  /** Changes the occlusion's look in place; null leaves the occlusion out of the frame (contour lines alone are then drawn). */
+  set(parameters: AmbientOcclusionParameters | null): void {
+    this.pass.enabled = this.contact.enabled = parameters !== null;
+    if (!parameters) return;
     // Lengths are scene meters (`screenSpaceRadius` off). Every sample within the radius raises the horizon in full
     // (no distance falloff): with the pass's default falloff only the nearest centimeters of a corner darken.
     this.pass.updateGtaoMaterial({ radius: parameters.radius, thickness: parameters.thickness, distanceExponent: 1, distanceFallOff: 0,
@@ -386,6 +428,8 @@ void main() {
   }
 
   setSize(width: number, height: number, pixelRatio: number): void {
+    this.pixelRatio = pixelRatio;
+    this.contours?.setPixelRatio(pixelRatio);
     this.composer.setPixelRatio(pixelRatio);
     this.composer.setSize(width, height);
   }
@@ -400,6 +444,7 @@ void main() {
   dispose(): void {
     this.pass.dispose();
     this.contact.dispose();
+    this.contours?.dispose();
     this.foliageMask.dispose();
     this.contactMask.dispose();
     this.composer.dispose();

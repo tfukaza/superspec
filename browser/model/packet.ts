@@ -66,6 +66,8 @@ export interface FoliageMass {
   softEdges: boolean;
   /** Length of the rim's sprays against the renderer's own. */
   sprayScale: number;
+  /** The leaf cards' size against the renderer's own (more of smaller cards), the share that are wide and flat, how much they differ in size, and the sparkles per denser card. */
+  cardScale: number; shapes: number; variation: number; sparkles: number;
   /** The colours' grade for the scene (`superspec_types::batch::FoliagePalette`; hues in degrees). */
   palette: { hue: number; saturation: number; value: number; shade: number; shadeHue: number; contrast: number; depth: number;
     /** Bands the light steps through (6: the ramp's own six), and the share of the range below the ramp's darkest colour. */
@@ -89,7 +91,7 @@ export function validFoliage(look: unknown): look is FoliageLook {
     && Array.isArray(canopy.highlight) && canopy.highlight.length === 3 && canopy.highlight.every(Number.isFinite))) return false;
   const mass = value?.mass;
   const points = (list: unknown, size: number) => Array.isArray(list) && list.every(point => Array.isArray(point) && point.length === size && point.every(Number.isFinite));
-  if (mass !== undefined && !(numbers(mass, ["radius", "cell", "level", "cardKeep", "form", "jitter", "leafScale", "sprayScale"]) && mass.radius > 0 && mass.cell > 0
+  if (mass !== undefined && !(numbers(mass, ["radius", "cell", "level", "cardKeep", "form", "jitter", "leafScale", "sprayScale", "cardScale", "shapes", "variation", "sparkles"]) && mass.radius > 0 && mass.cell > 0
     && numbers(mass.palette, ["hue", "saturation", "value", "shade", "shadeHue", "contrast", "depth", "bands", "deep"])
     && points(mass.sites, 4) && mass.sites.length > 0 && Array.isArray(mass.twigs) && mass.twigs.every(twig => points(twig, 3)))) return false;
   return typeof value === "object" && value !== null && ["grass", "bark", "leaves", "hull", "shadow"].includes(value.family) && typeof value.patch === "string" && value.patch.length > 0

@@ -789,6 +789,10 @@ fn groundcover(
         leaf_scale: 1.,
         soft_edges: false,
         spray_scale: 1.,
+        card_scale: 0.6,
+        shapes: 0.3,
+        variation: 0.8,
+        sparkles: 0.4,
         palette: GROUNDCOVER_PALETTE,
     });
     carrier
@@ -846,6 +850,13 @@ fn write_lane_plants() {
             limbs.length = [0.24, 0.12];
             limbs.angle = [44., 26.];
             limbs.start = limbs.start.max(0.38);
+            // Bold limbs: nothing drawn thinner than about 3 cm, as an illustration avoids hairlines.
+            limbs.tip = 0.5;
+        }
+        definition.trunk.radius *= 1.25;
+        if let Some(twigs) = definition.levels.get_mut(1) {
+            twigs.radius = 0.6;
+            twigs.tip = 0.6;
         }
         let look = superspec_types::batch::FoliageMass {
             level: 0.88,
@@ -856,6 +867,12 @@ fn write_lane_plants() {
             soft_edges: false,
             // Longer sprays of pointed leaves at the clusters' rims, so they read as leaves.
             spray_scale: 1.25,
+            // Smaller cards and more of them, of varied size and shape (a third wide and flat),
+            // with tiny bright leaves on the lit clumps.
+            card_scale: 0.7,
+            shapes: 0.35,
+            variation: 0.8,
+            sparkles: 0.5,
             ..Default::default()
         };
         (definition, look)
@@ -876,6 +893,10 @@ fn write_lane_plants() {
             jitter: 0.15,
             leaf_scale: 1.3,
             soft_edges: false,
+            card_scale: 0.6,
+            shapes: 0.3,
+            variation: 0.8,
+            sparkles: 0.4,
             ..Default::default()
         },
     );
@@ -926,6 +947,10 @@ fn write_lane_plants() {
             leaf_scale: mass.leaf_scale,
             soft_edges: mass.soft_edges,
             spray_scale: mass.spray_scale,
+            card_scale: mass.card_scale,
+            shapes: mass.shapes,
+            variation: mass.variation,
+            sparkles: mass.sparkles,
             jitter: mass.jitter,
             palette: LANE_PALETTE,
             ..painted_mass(&definition, &plant)

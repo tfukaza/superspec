@@ -2,7 +2,7 @@
 //! stock, pavements, cornices, conduits, balcony doors, rails and ladders. Conventions are
 //! those of the parent module.
 use super::{Arguments, draw, fixture, on, pen, room_pen, sign_settings};
-use crate::itemspec::definition::{ItemMesh, NativeOutput, Values};
+use crate::itemspec::definition::{Feature, ItemMesh, NativeOutput, Reach, Values};
 use crate::worldspec::themes::kowloon::{
     facade_plan,
     fixture::Fixture,
@@ -674,90 +674,49 @@ fn kerb_run(
 /// `bollardSpacing` (m, 0 for none, 0.6–10, 1.6) and `bollardColor` (#3d403b), `benches`
 /// (pairs, 0–40, 3), `benchFirst` (m along, where the median's first third starts, or a
 /// quarter of the length without a median) and `benchSpacing` (m, 0.5–80, 7), `bins` (a
-/// litter bin past the ends of each bench station, false) and `binColor` (#c2672e), `stagger`
+/// litter bin past the ends of each bench station, false) and `binColor` (#8c7f6c), `stagger`
 /// (courses breaking joint, true; false a grid), `color` (#8f8e8a), `seed` (stone shades).
+/// The timber and the bins are tinted near neutral, so the materials bound to them decide.
+///
+/// Features ([`pedestrian_avenue_features`]): `foot`, on the paving plane (z = 0, facing up),
+/// round the base of every bollard, litter bin and bench support and round the planter's outer
+/// foot, each a closed ring whose `width` is the piece's breadth, for wear and grime that
+/// gather where things stand.
 pub(super) fn pedestrian_avenue(
     name: &str,
     values: &Values,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<NativeOutput, String> {
-    let mut a = Arguments::new(name, values);
-    let length = a.bounded("length", 30., 2. ..=80.)?;
-    let width = a.bounded("width", 14., 2. ..=40.)?;
-    let height = a.bounded("height", 0.12, 0.05..=0.5)?;
-    let slab = a.bounded("slab", 0.9, 0.2..=3.)?;
-    let course = a.bounded("course", 0.6, 0.2..=3.)?;
-    let bands = a.integer("bands", 5, 0..=40)?;
-    // `stagger`: alternate courses break joint by half a slab (true); false lays the slabs in
-    // a grid, their joints running straight both ways.
-    let stagger = a.boolean("stagger", true)?;
-    let mouth = a.boolean("mouth", true)?;
-    let end = a.boolean("end", true)?;
-    let side = a.boolean("side", true)?;
-    let median_width = a.bounded("medianWidth", 2.4, 0. ..=10.)?;
-    let offset = a.number("medianOffset", width / 2.)?;
-    let median_start = a.number("medianStart", 3_f64.min(length / 4.))?;
-    let median_end = a.number("medianEnd", length - 3_f64.min(length / 4.))?;
-    let planter_kerb = a.bounded("planterKerb", 0.2, 0.08..=0.6)?;
-    let rise = a.bounded("planterRise", 0.3, 0.05..=1.)?;
-    let soil_depth = a.bounded("soilDepth", 0.14, 0.02..=1.)?;
-    let drains = a.boolean("drains", true)?;
-    let bollard_spacing = a.bounded("bollardSpacing", 1.6, 0. ..=10.)?;
-    // `bollardColor`: the bollards' paint (#3d403b) under a pale reflective band.
-    let bollard_color = a.color("bollardColor", "#3d403b")?;
-    let benches = a.integer("benches", 3, 0..=40)?;
-    let bench_spacing = a.bounded("benchSpacing", 7., 0.5..=80.)?;
-    let bench_first = a.number(
-        "benchFirst",
-        if median_width > 0. {
-            median_start + (median_end - median_start) / 3.
-        } else {
-            length / 4.
-        },
-    )?;
-    // `bins`: a litter bin past either end of each bench station, one on each side (false),
-    // painted `binColor` (#c2672e) under a steel lid.
-    let bins = a.boolean("bins", false)?;
-    let bin_color = a.color("binColor", "#c2672e")?;
-    let color = a.color("color", PAVING)?;
-    let mut rng = a.rng()?;
-    a.finish()?;
-    let median = median_width > 0.;
-    if median {
-        if median_width < 0.8 || median_width < 2. * planter_kerb + 0.2 {
-            return Err(format!(
-                "{name}: medianWidth must be 0 or at least 0.8 and leave room inside its planter kerbs."
-            ));
-        }
-        if offset - median_width / 2. < 0.3 || offset + median_width / 2. > width - 0.3 {
-            return Err(format!(
-                "{name}: the median ({median_width} m about {offset} m) must stand 0.3 m inside the avenue's {width} m."
-            ));
-        }
-        if median_start < 0.
-            || median_end > length
-            || median_end - median_start < 2. * planter_kerb + 0.4
-        {
-            return Err(format!(
-                "{name}: medianStart and medianEnd must lie in 0..length, at least {} m apart.",
-                2. * planter_kerb + 0.4
-            ));
-        }
-    }
-    if soil_depth >= rise {
-        return Err(format!("{name}: soilDepth must be less than planterRise."));
-    }
-    if bollard_spacing > 0. && bollard_spacing < 0.6 {
-        return Err(format!("{name}: bollardSpacing must be 0 or 0.6..10."));
-    }
-    let (kerb, joint) = (0.14, 0.006);
+    let (plan, mut rng) = Avenue::read(name, values)?;
+    let Avenue {
+        length,
+        width,
+        height,
+        slab,
+        course,
+        bands,
+        stagger,
+        mouth,
+        end,
+        side,
+        median,
+        median_start,
+        median_end,
+        planter_kerb,
+        rise,
+        soil_depth,
+        drains,
+        bollard_color,
+        bins,
+        bin_color,
+        color,
+        ..
+    } = plan;
+    let (kerb, joint) = (AVENUE_KERB, 0.006);
     // The paved field inside the kerbs, and the planter's outline (near side y_near, toward 0).
-    let (x0, x1) = (
-        if mouth { kerb } else { 0. },
-        length - if end { kerb } else { 0. },
-    );
+    let [x0, x1] = plan.field();
     let y0 = -width + if side { kerb } else { 0. };
-    let (y_near, y_far) = (-(offset - median_width / 2.), -(offset + median_width / 2.));
+    let [y_near, y_far] = plan.median_sides();
     let under_median = |l: f64, r: f64, low: f64, high: f64| {
         median && l >= median_start && r <= median_end && low >= y_far && high <= y_near
     };
@@ -875,69 +834,37 @@ pub(super) fn pedestrian_avenue(
             }
             // Backless benches: stone plinths and three timber slats, their backs to the
             // planter (or along the avenue's middle without one), a pair at each station.
-            let timber = srgb("#8a6a48");
-            let (near, far) = if median {
-                (y_near + 0.15, y_far - 0.15)
-            } else {
-                (-offset + 0.5, -offset - 0.5)
-            };
-            for i in 0..benches {
-                let at = bench_first + i as f64 * bench_spacing;
-                let (lo, hi) = if median {
-                    (median_start + 1., median_end - 1.)
-                } else {
-                    (x0 + 1., x1 - 1.)
-                };
-                if at < lo || at > hi {
-                    continue;
+            // The timber is weathered to a silver grey, near neutral, so its material decides.
+            let timber = srgb("#a39c90");
+            for seat in plan.bench_seats() {
+                let [at, y_from, y_to] = seat;
+                for [l, low, r, high] in Avenue::bench_legs(seat) {
+                    d.cuboid(
+                        "kerb",
+                        [l, low, -0.01],
+                        [r, high, 0.4],
+                        shade(color, rng.float(0.8, 0.95)),
+                        "d",
+                    )?;
                 }
-                for (y_from, y_to) in [(near, near + 0.42), (far - 0.42, far)] {
-                    for leg in [at - 0.75, at + 0.6] {
-                        d.cuboid(
-                            "kerb",
-                            [leg, y_from + 0.04, -0.01],
-                            [leg + 0.15, y_to - 0.04, 0.4],
-                            shade(color, rng.float(0.8, 0.95)),
-                            "d",
-                        )?;
-                    }
-                    let slat = (y_to - y_from - 0.03) / 3.;
-                    for s in 0..3 {
-                        let y = y_from + s as f64 * (slat + 0.015);
-                        d.cuboid(
-                            "timber",
-                            [at - 0.9, y, 0.4],
-                            [at + 0.9, y + slat, 0.445],
-                            shade(timber, rng.float(0.8, 1.05)),
-                            "",
-                        )?;
-                    }
+                let slat = (y_to - y_from - 0.03) / 3.;
+                for s in 0..3 {
+                    let y = y_from + s as f64 * (slat + 0.015);
+                    d.cuboid(
+                        "timber",
+                        [at - 0.9, y, 0.4],
+                        [at + 0.9, y + slat, 0.445],
+                        shade(timber, rng.float(0.88, 1.04)),
+                        "",
+                    )?;
                 }
             }
             // Bollards across the open ends, keeping vehicles out.
-            if bollard_spacing > 0. && width > 1.2 {
-                let count = ((width - 1.2) / bollard_spacing).floor() as usize + 1;
-                let first = -(width - (count - 1) as f64 * bollard_spacing) / 2.;
-                let steel = bollard_color;
-                for (open, x) in [(mouth, 0.45), (end, length - 0.45)] {
-                    if !open {
-                        continue;
-                    }
-                    for b in 0..count {
-                        let y = first - b as f64 * bollard_spacing;
-                        if median
-                            && x >= median_start
-                            && x <= median_end
-                            && y >= y_far
-                            && y <= y_near
-                        {
-                            continue;
-                        }
-                        d.drum("metal", [x, y, -0.01], 0.075, 0.8, steel, 12)?;
-                        d.drum("metal", [x, y, 0.62], 0.078, 0.06, srgb("#c9c2a8"), 12)?;
-                        d.drum("metal", [x, y, 0.79], 0.085, 0.03, shade(steel, 0.8), 12)?;
-                    }
-                }
+            let steel = bollard_color;
+            for [x, y] in plan.bollards() {
+                d.drum("metal", [x, y, -0.01], BOLLARD, 0.8, steel, 12)?;
+                d.drum("metal", [x, y, 0.62], 0.078, 0.06, srgb("#c9c2a8"), 12)?;
+                d.drum("metal", [x, y, 0.79], 0.085, 0.03, shade(steel, 0.8), 12)?;
             }
         }
         // Kerb stones where the avenue meets the road: across its start and end, along its far side.
@@ -962,32 +889,335 @@ pub(super) fn pedestrian_avenue(
             kerb_run(d, [x0, x1], kerb, height, stone, color, &mut rng)?;
         }
         if bins {
-            let (near, far) = if median {
-                (y_near + 0.4, y_far - 0.4)
-            } else {
-                (-offset + 0.75, -offset - 0.75)
-            };
-            let (lo, hi) = if median {
-                (median_start + 1., median_end - 1.)
-            } else {
-                (x0 + 1., x1 - 1.)
-            };
-            for i in 0..benches {
-                let at = bench_first + i as f64 * bench_spacing;
-                if at < lo || at > hi {
-                    continue;
-                }
-                for (x, y) in [(at - 1.35, near), (at + 1.35, far)] {
-                    if x < x0 + 0.4 || x > x1 - 0.4 {
-                        continue;
-                    }
-                    let d = &mut on(mesh, base.moved([x, y, 0.])?)?;
-                    litter_bin(d, bin_color)?;
-                }
+            for [x, y] in plan.bin_spots() {
+                let d = &mut on(mesh, base.moved([x, y, 0.])?)?;
+                litter_bin(d, bin_color)?;
             }
         }
         Ok(())
     })
+}
+
+/// The radius of an avenue bollard's shaft, and of a litter bin's foot.
+const BOLLARD: f64 = 0.075;
+const BIN_FOOT: f64 = 0.2;
+/// How deep the kerb stones on an avenue's road sides are.
+const AVENUE_KERB: f64 = 0.14;
+
+/// What `kowloon/pedestrian-avenue` lays out, read once for its meshes and for its features.
+struct Avenue {
+    length: f64,
+    width: f64,
+    height: f64,
+    slab: f64,
+    course: f64,
+    bands: usize,
+    stagger: bool,
+    mouth: bool,
+    end: bool,
+    side: bool,
+    median: bool,
+    median_width: f64,
+    offset: f64,
+    median_start: f64,
+    median_end: f64,
+    planter_kerb: f64,
+    rise: f64,
+    soil_depth: f64,
+    drains: bool,
+    bollard_spacing: f64,
+    bollard_color: V3,
+    benches: usize,
+    bench_spacing: f64,
+    bench_first: f64,
+    bins: bool,
+    bin_color: V3,
+    color: V3,
+}
+
+impl Avenue {
+    /// The avenue and the stream its stones are shaded from.
+    fn read(name: &str, values: &Values) -> Result<(Self, SeededRng), String> {
+        let mut a = Arguments::new(name, values);
+        let length = a.bounded("length", 30., 2. ..=80.)?;
+        let width = a.bounded("width", 14., 2. ..=40.)?;
+        let height = a.bounded("height", 0.12, 0.05..=0.5)?;
+        let slab = a.bounded("slab", 0.9, 0.2..=3.)?;
+        let course = a.bounded("course", 0.6, 0.2..=3.)?;
+        let bands = a.integer("bands", 5, 0..=40)?;
+        // `stagger`: alternate courses break joint by half a slab (true); false lays the slabs
+        // in a grid, their joints running straight both ways.
+        let stagger = a.boolean("stagger", true)?;
+        let mouth = a.boolean("mouth", true)?;
+        let end = a.boolean("end", true)?;
+        let side = a.boolean("side", true)?;
+        let median_width = a.bounded("medianWidth", 2.4, 0. ..=10.)?;
+        let offset = a.number("medianOffset", width / 2.)?;
+        let median_start = a.number("medianStart", 3_f64.min(length / 4.))?;
+        let median_end = a.number("medianEnd", length - 3_f64.min(length / 4.))?;
+        let planter_kerb = a.bounded("planterKerb", 0.2, 0.08..=0.6)?;
+        let rise = a.bounded("planterRise", 0.3, 0.05..=1.)?;
+        let soil_depth = a.bounded("soilDepth", 0.14, 0.02..=1.)?;
+        let drains = a.boolean("drains", true)?;
+        let bollard_spacing = a.bounded("bollardSpacing", 1.6, 0. ..=10.)?;
+        // `bollardColor`: the bollards' paint (#3d403b) under a pale reflective band.
+        let bollard_color = a.color("bollardColor", "#3d403b")?;
+        let benches = a.integer("benches", 3, 0..=40)?;
+        let bench_spacing = a.bounded("benchSpacing", 7., 0.5..=80.)?;
+        let bench_first = a.number(
+            "benchFirst",
+            if median_width > 0. {
+                median_start + (median_end - median_start) / 3.
+            } else {
+                length / 4.
+            },
+        )?;
+        // `bins`: a litter bin past either end of each bench station, one on each side (false),
+        // painted `binColor` (a muted grey-brown, #8c7f6c) under a steel lid.
+        let bins = a.boolean("bins", false)?;
+        let bin_color = a.color("binColor", "#8c7f6c")?;
+        let color = a.color("color", PAVING)?;
+        let rng = a.rng()?;
+        a.finish()?;
+        let median = median_width > 0.;
+        if median {
+            if median_width < 0.8 || median_width < 2. * planter_kerb + 0.2 {
+                return Err(format!(
+                    "{name}: medianWidth must be 0 or at least 0.8 and leave room inside its planter kerbs."
+                ));
+            }
+            if offset - median_width / 2. < 0.3 || offset + median_width / 2. > width - 0.3 {
+                return Err(format!(
+                    "{name}: the median ({median_width} m about {offset} m) must stand 0.3 m inside the avenue's {width} m."
+                ));
+            }
+            if median_start < 0.
+                || median_end > length
+                || median_end - median_start < 2. * planter_kerb + 0.4
+            {
+                return Err(format!(
+                    "{name}: medianStart and medianEnd must lie in 0..length, at least {} m apart.",
+                    2. * planter_kerb + 0.4
+                ));
+            }
+        }
+        if soil_depth >= rise {
+            return Err(format!("{name}: soilDepth must be less than planterRise."));
+        }
+        if bollard_spacing > 0. && bollard_spacing < 0.6 {
+            return Err(format!("{name}: bollardSpacing must be 0 or 0.6..10."));
+        }
+        Ok((
+            Self {
+                length,
+                width,
+                height,
+                slab,
+                course,
+                bands,
+                stagger,
+                mouth,
+                end,
+                side,
+                median,
+                median_width,
+                offset,
+                median_start,
+                median_end,
+                planter_kerb,
+                rise,
+                soil_depth,
+                drains,
+                bollard_spacing,
+                bollard_color,
+                benches,
+                bench_spacing,
+                bench_first,
+                bins,
+                bin_color,
+                color,
+            },
+            rng,
+        ))
+    }
+
+    /// Where the paved field starts and ends along x, inside the kerbs of its open ends.
+    fn field(&self) -> [f64; 2] {
+        [
+            if self.mouth { AVENUE_KERB } else { 0. },
+            self.length - if self.end { AVENUE_KERB } else { 0. },
+        ]
+    }
+
+    /// The planter's near and far sides (y; both the median's middle without one).
+    fn median_sides(&self) -> [f64; 2] {
+        [
+            -(self.offset - self.median_width / 2.),
+            -(self.offset + self.median_width / 2.),
+        ]
+    }
+
+    /// The planter's outline in plan, `[x0, y0, x1, y1]`, when there is a median.
+    fn planter(&self) -> Option<[f64; 4]> {
+        let [near, far] = self.median_sides();
+        self.median
+            .then_some([self.median_start, far, self.median_end, near])
+    }
+
+    /// The bench stations that keep clear of the planter's (or the field's) ends.
+    fn stations(&self) -> Vec<f64> {
+        let [x0, x1] = self.field();
+        let (lo, hi) = if self.median {
+            (self.median_start + 1., self.median_end - 1.)
+        } else {
+            (x0 + 1., x1 - 1.)
+        };
+        (0..self.benches)
+            .map(|i| self.bench_first + i as f64 * self.bench_spacing)
+            .filter(|at| *at >= lo && *at <= hi)
+            .collect()
+    }
+
+    /// Every bench, a pair a station with their backs to the planter (or along the avenue's
+    /// middle without one): `[station, y_from, y_to]`, the seat reaching 0.9 m either way.
+    fn bench_seats(&self) -> Vec<[f64; 3]> {
+        let [y_near, y_far] = self.median_sides();
+        let (near, far) = if self.median {
+            (y_near + 0.15, y_far - 0.15)
+        } else {
+            (-self.offset + 0.5, -self.offset - 0.5)
+        };
+        self.stations()
+            .into_iter()
+            .flat_map(|at| [[at, near, near + 0.42], [at, far - 0.42, far]])
+            .collect()
+    }
+
+    /// The footprints of a bench's two stone supports, `[x0, y0, x1, y1]`.
+    fn bench_legs([at, y_from, y_to]: [f64; 3]) -> [[f64; 4]; 2] {
+        [at - 0.75, at + 0.6].map(|leg| [leg, y_from + 0.04, leg + 0.15, y_to - 0.04])
+    }
+
+    /// Where the bollards stand: a row across each open end, leaving out any in the planter.
+    fn bollards(&self) -> Vec<[f64; 2]> {
+        if self.bollard_spacing <= 0. || self.width <= 1.2 {
+            return vec![];
+        }
+        let [y_near, y_far] = self.median_sides();
+        let count = ((self.width - 1.2) / self.bollard_spacing).floor() as usize + 1;
+        let first = -(self.width - (count - 1) as f64 * self.bollard_spacing) / 2.;
+        let mut spots = vec![];
+        for (open, x) in [(self.mouth, 0.45), (self.end, self.length - 0.45)] {
+            if !open {
+                continue;
+            }
+            for b in 0..count {
+                let y = first - b as f64 * self.bollard_spacing;
+                let planted = self.median
+                    && x >= self.median_start
+                    && x <= self.median_end
+                    && y >= y_far
+                    && y <= y_near;
+                if !planted {
+                    spots.push([x, y]);
+                }
+            }
+        }
+        spots
+    }
+
+    /// Where the litter bins stand: one past either end of each bench station, on either side.
+    fn bin_spots(&self) -> Vec<[f64; 2]> {
+        if !self.bins {
+            return vec![];
+        }
+        let [x0, x1] = self.field();
+        let [y_near, y_far] = self.median_sides();
+        let (near, far) = if self.median {
+            (y_near + 0.4, y_far - 0.4)
+        } else {
+            (-self.offset + 0.75, -self.offset - 0.75)
+        };
+        self.stations()
+            .into_iter()
+            .flat_map(|at| [[at - 1.35, near], [at + 1.35, far]])
+            .filter(|[x, _]| *x >= x0 + 0.4 && *x <= x1 - 0.4)
+            .collect()
+    }
+}
+
+/// A `foot` feature: a closed ring on the plane z = 0 of a fixture standing on it, facing up,
+/// `width` the breadth of what stands there. `reach` and `within` carry it to the receivers
+/// of other items (the paving a lamp stands on); a fixture's own paving needs neither.
+fn foot(points: Vec<V3>, width: f64, reach: Reach, within: f64) -> Feature {
+    Feature {
+        name: "foot".into(),
+        part: String::new(),
+        source: None,
+        face: "top".into(),
+        points,
+        closed: true,
+        normal: [0., 0., 1.],
+        width,
+        reach,
+        within,
+        zone: None,
+    }
+}
+
+/// A round foot of `radius` about (`x`, `y`) in `sides` chords, counterclockwise from above.
+fn round_foot([x, y]: [f64; 2], radius: f64, sides: usize) -> Feature {
+    let points = (0..sides)
+        .map(|k| {
+            let angle = k as f64 / sides as f64 * std::f64::consts::TAU;
+            [
+                x + radius * superspec_geometry::math::cos(angle),
+                y + radius * superspec_geometry::math::sin(angle),
+                0.,
+            ]
+        })
+        .collect();
+    foot(points, 2. * radius, Reach::Part, 0.)
+}
+
+/// A rectangular foot `[x0, y0, x1, y1]`, counterclockwise from above.
+fn square_foot([x0, y0, x1, y1]: [f64; 4], reach: Reach, within: f64) -> Feature {
+    foot(
+        vec![[x0, y0, 0.], [x1, y0, 0.], [x1, y1, 0.], [x0, y1, 0.]],
+        (x1 - x0).min(y1 - y0),
+        reach,
+        within,
+    )
+}
+
+/// What stands on `kowloon/pedestrian-avenue`'s paving (see [`pedestrian_avenue`]), from the
+/// positions it is drawn at. Parameters it refuses give none; drawing reports why.
+pub(super) fn pedestrian_avenue_features(name: &str, values: &Values) -> Vec<Feature> {
+    let Ok((plan, _)) = Avenue::read(name, values) else {
+        return vec![];
+    };
+    let mut features = vec![];
+    if let Some(outline) = plan.planter() {
+        let mut kerb = square_foot(outline, Reach::Part, 0.);
+        kerb.width = plan.planter_kerb;
+        features.push(kerb);
+    }
+    for seat in plan.bench_seats() {
+        for leg in Avenue::bench_legs(seat) {
+            features.push(square_foot(leg, Reach::Part, 0.));
+        }
+    }
+    features.extend(
+        plan.bollards()
+            .into_iter()
+            .map(|at| round_foot(at, BOLLARD, 12)),
+    );
+    features.extend(
+        plan.bin_spots()
+            .into_iter()
+            .map(|at| round_foot(at, BIN_FOOT, 16)),
+    );
+    features
 }
 
 /// A round litter bin standing on z = 0 at the frame's origin: a slightly flared body in
@@ -999,7 +1229,7 @@ fn litter_bin(d: &mut Fixture<'_, '_>, tint: V3) -> Result<(), String> {
         d,
         "metal",
         0.,
-        &[[0.2, -0.01], [0.22, 0.8]],
+        &[[BIN_FOOT, -0.01], [0.22, 0.8]],
         [0., TAU],
         16,
         false,
@@ -1374,6 +1604,20 @@ fn hand_cart(
     Ok(())
 }
 
+/// Half the side of a street lamp's square base plate.
+const LAMP_PLATE: f64 = 0.2;
+
+/// Where `kowloon/street-lamp` stands (see [`street_lamp`]): its base plate's outline, given
+/// to the receivers of the scene within half a meter (the paving under it).
+pub(super) fn street_lamp_features(_name: &str, _values: &Values) -> Vec<Feature> {
+    let plate = LAMP_PLATE;
+    vec![square_foot(
+        [-plate, -plate, plate, plate],
+        Reach::Scene,
+        0.5,
+    )]
+}
+
 /// `kowloon/street-lamp`: a street lamp on a tapered steel pole: a base plate under a cast
 /// collar, the pole with its number plate, and at its head either a swan-neck arm with a
 /// shallow luminaire (`arm`) or a four-sided lantern under a pyramid roof (`lantern`), and
@@ -1384,6 +1628,9 @@ fn hand_cart(
 /// `lantern`, `arm`), `height` (m to the pole's head, 2.5–14; 6 for an arm, 3.6 for a
 /// lantern), `reach` (m of the arm, 0.3–3, 1.3), `arms` (1–2, 1: two reach either way),
 /// `banner` (false), `color` (#3d4842), `light` (#f2ead2), `bannerColor` (#a3352c).
+///
+/// Features ([`street_lamp_features`]): `foot`, the base plate's outline on the plane it
+/// stands on (z = 0, facing up), which reaches the paving of whatever item lies under it.
 pub(super) fn street_lamp(
     name: &str,
     values: &Values,
@@ -1414,7 +1661,14 @@ pub(super) fn street_lamp(
             swept(d, slot, 0., profile, [0., TAU], 16, false, tint)
         };
         // The base plate with its four bolts, and the cast collar the pole rises from.
-        d.cuboid("metal", [-0.2, -0.2, 0.], [0.2, 0.2, 0.025], dark, "d")?;
+        let plate = LAMP_PLATE;
+        d.cuboid(
+            "metal",
+            [-plate, -plate, 0.],
+            [plate, plate, 0.025],
+            dark,
+            "d",
+        )?;
         for (x, y) in [(-0.15, -0.15), (0.15, -0.15), (0.15, 0.15), (-0.15, 0.15)] {
             d.drum("metal", [x, y, 0.025], 0.016, 0.03, shade(dark, 0.8), 6)?;
         }

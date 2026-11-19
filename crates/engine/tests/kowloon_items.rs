@@ -581,6 +581,100 @@ fn choices_and_dimensions_reach_the_fixture() {
         );
     }
     assert!(lids.iter().all(|p| p[2] <= 0.971));
+    // What stands on the paving reports its `foot` without drawing: a closed ring on the
+    // paving plane round every bollard, bin and bench support and round the planter, each
+    // point at the foot of a drawn piece.
+    let binned_values = values(&[
+        ("length", json!(24)),
+        ("width", json!(12)),
+        ("medianOffset", json!(5)),
+        ("medianWidth", json!(2)),
+        ("medianStart", json!(2)),
+        ("medianEnd", json!(22)),
+        ("benches", json!(2)),
+        ("benchFirst", json!(8)),
+        ("bins", json!(true)),
+    ]);
+    let feet = natives.features("kowloon/pedestrian-avenue", &binned_values);
+    // (2 stations of 2 benches on 2 supports, 4 bins, 7 bollards at either end, the planter).
+    assert_eq!(feet.len(), 8 + 4 + 14 + 1, "{} feet", feet.len());
+    let standing: Vec<[f64; 3]> = binned
+        .iter()
+        .filter(|m| m.material_slot == "metal" || m.material_slot == "kerb")
+        .flat_map(|m| m.positions.clone())
+        .filter(|p| p[2] < 0. && p[2] > -0.031)
+        .collect();
+    for foot in &feet {
+        assert_eq!(foot.name, "foot");
+        assert!(foot.closed && foot.points.len() >= 4 && foot.width > 0.1);
+        assert_eq!(foot.normal, [0., 0., 1.]);
+        for point in &foot.points {
+            assert_eq!(point[2], 0., "a foot lies on the paving plane");
+            assert!(
+                standing
+                    .iter()
+                    .any(|p| (p[0] - point[0]).hypot(p[1] - point[1]) < 0.045),
+                "a foot at {point:?} is at a drawn piece"
+            );
+        }
+    }
+    // The planter's ring is its outer outline; a bollard's is its shaft's girth.
+    assert!(feet.iter().any(|f| {
+        f.width == 0.2
+            && f.points == vec![[2., -6., 0.], [22., -6., 0.], [22., -4., 0.], [2., -4., 0.]]
+    }));
+    let wide = |width: f64| {
+        feet.iter()
+            .filter(|f| (f.width - width).abs() < 1e-9)
+            .count()
+    };
+    assert_eq!((wide(0.15), wide(0.4)), (14 + 8, 4));
+    // A street lamp reports its base plate's outline, for the paving of the item under it.
+    let plate = natives.features("kowloon/street-lamp", &Values::new());
+    assert_eq!(plate.len(), 1);
+    assert_eq!(plate[0].name, "foot");
+    assert_eq!(
+        plate[0].points,
+        vec![
+            [-0.2, -0.2, 0.],
+            [0.2, -0.2, 0.],
+            [0.2, 0.2, 0.],
+            [-0.2, 0.2, 0.]
+        ]
+    );
+    let lamp_foot: Vec<[f64; 3]> = generate(&natives, "kowloon/street-lamp", &Values::new())
+        .unwrap()
+        .iter()
+        .flat_map(|m| m.positions.clone())
+        .filter(|p| p[2] == 0.)
+        .collect();
+    for point in &plate[0].points {
+        assert!(lamp_foot.contains(point), "the plate's corner {point:?}");
+    }
+    // Nothing stands on a bare avenue, and a refused one reports nothing.
+    let bare = values(&[
+        ("medianWidth", json!(0)),
+        ("benches", json!(0)),
+        ("bollardSpacing", json!(0)),
+    ]);
+    assert!(
+        natives
+            .features("kowloon/pedestrian-avenue", &bare)
+            .is_empty()
+    );
+    assert!(
+        natives
+            .features(
+                "kowloon/pedestrian-avenue",
+                &values(&[("medianWidth", json!(0.5))])
+            )
+            .is_empty()
+    );
+    // The bench timber and the bins are tinted near neutral, so their materials decide.
+    let spread = |r: f64, g: f64, b: f64| (r.max(g).max(b) - r.min(g).min(b)) / r.max(g).max(b);
+    for m in binned.iter().filter(|m| m.material_slot == "timber") {
+        assert!(m.colors.iter().all(|c| spread(c[0], c[1], c[2]) < 0.3));
+    }
     // Unstaggered, the slabs lie in a grid: every slab top starts on one of the same column
     // lines, which staggered courses offset by half a slab; the bollards take their paint.
     let column_starts = |meshes: &[ItemMesh]| -> std::collections::BTreeSet<i64> {
@@ -1689,6 +1783,86 @@ fn a_party_neighbour_is_a_stained_wall_or_a_slice_of_a_building() {
             .is_err()
         );
     }
+    // An end that faces a street (`gable`) has columns of windows across its depth, barred
+    // ones in its ground storey and a soil stack up past its parapet; the other end and the
+    // front stay as they were, and every window still reports its sill.
+    let gabled = party(&[
+        ("kind", json!("stub")),
+        ("length", json!(7)),
+        ("own", json!(3)),
+        ("depth", json!(3.5)),
+        ("shops", json!(true)),
+        ("seed", json!(4)),
+        ("gable", json!("end")),
+    ]);
+    let end_points = |meshes: &[ItemMesh], slot: &str| -> Vec<[f64; 3]> {
+        slot_points(meshes, slot)
+            .into_iter()
+            .filter(|p| p[0] > 7.001)
+            .collect()
+    };
+    let (plain_panes, street_panes) = (end_points(&shops, "pane"), end_points(&gabled, "pane"));
+    assert!(
+        street_panes.len() > plain_panes.len(),
+        "{} panes on the street end against {}",
+        street_panes.len(),
+        plain_panes.len()
+    );
+    assert!(lowest(&street_panes, 2) < 3. && lowest(&plain_panes, 2) > 3.);
+    // (the stack stands off the end, from the ground to over the parapet).
+    let stack = end_points(&gabled, "metal");
+    assert!(
+        lowest(&stack, 2) < 0.1 && highest(&stack, 2) > highest(&slot_points(&gabled, "wall"), 2)
+    );
+    assert!(end_points(&shops, "metal").iter().all(|p| p[0] < 7.2));
+    let untouched = |meshes: &[ItemMesh]| -> Vec<u64> {
+        slot_points(meshes, "pane")
+            .iter()
+            .filter(|p| p[0] < 7.001)
+            .flat_map(|p| p.map(f64::to_bits))
+            .collect()
+    };
+    assert_eq!(untouched(&shops), untouched(&gabled));
+    let sills = |entries: &[(&str, Value)]| {
+        natives
+            .features("kowloon/party", &values(entries))
+            .into_iter()
+            .filter(|f| f.name == "sill" && f.face == "end")
+            .collect::<Vec<_>>()
+    };
+    let gable_entries = [
+        ("kind", json!("stub")),
+        ("length", json!(7)),
+        ("own", json!(3)),
+        ("depth", json!(3.5)),
+        ("shops", json!(true)),
+        ("seed", json!(4)),
+        ("gable", json!("end")),
+    ];
+    let reported = sills(&gable_entries);
+    assert!(reported.len() >= 3, "{} sills", reported.len());
+    for sill in &reported {
+        // Each lies on the end's plane, 6 cm under a drawn pane.
+        assert!(sill.points.iter().all(|p| (p[0] - 7.).abs() < 1e-9));
+        let (z, y) = (
+            sill.points[0][2],
+            (sill.points[0][1] + sill.points[1][1]) / 2.,
+        );
+        assert!(
+            street_panes
+                .iter()
+                .any(|p| (p[1] - y).abs() < 0.6 && p[2] > z && p[2] - z < 0.2),
+            "a sill at {y}, {z} is under a pane"
+        );
+    }
+    assert!(
+        generate(
+            &natives,
+            "kowloon/party",
+            &values(&[("kind", json!("stub")), ("gable", json!("front"))])
+        )
+        .is_err()
+    );
 }
 
 /// Every position of every mesh.

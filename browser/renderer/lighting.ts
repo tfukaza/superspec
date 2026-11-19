@@ -42,6 +42,22 @@ export interface LightShadow {
   /** Cosine of the angle to the light below which a face starts to count as shadowed. */
   wrap: number;
   noise: ShadowNoise;
+  /**
+   * Form light in shadow, 0 to 1 (experimental): the share of the light's own diffuse shading a surface keeps where
+   * something else shades it, so a prop standing in shadow still shows a lit and a dark side. It is shaded and tinted
+   * like the rest of the shadow. Absent is 0 (ormOf); a record holds it only when it is not 0.
+   */
+  form?: number;
+  /**
+   * A second, weaker form light for what the first leaves flat, 0 to 1 (experimental): the same shading from the light's
+   * direction mirrored about the vertical, on surfaces in shadow or turned from the light. Absent is 0.
+   */
+  formFill?: number;
+}
+
+/** A light's form light in shadow and its fill, 0 where the record holds none. */
+export function formOf(shadow: LightShadow): { form: number; fill: number } {
+  return { form: shadow.form ?? 0, fill: shadow.formFill ?? 0 };
 }
 
 export interface Light {
@@ -86,6 +102,42 @@ export interface Lighting {
    * Absent is the default (`DEFAULT_PAINTED`); a record holds it only when it differs, as the Rust record writes it.
    */
   painted?: PaintedFinishing;
+  /**
+   * Contour lines over the finished image, for the whole scene (never per material; experimental). Absent is the
+   * default (DEFAULT_CONTOURS, which is off); a record holds it only when it differs.
+   */
+  contours?: Contours;
+}
+
+/**
+ * Drawn contour lines: a dark line multiplied over the image along silhouettes (where depth steps) and creases (where
+ * the surface turns), found in screen space from what the camera sees. Features too small to draw get none.
+ */
+export interface Contours {
+  enabled: boolean;
+  /** How much of the line's color multiplies the image on a line, 0 to 1. */
+  strength: number;
+  /** Line weight on a silhouette, CSS pixels (the same apparent weight at any device pixel ratio); a crease is drawn a little thinner. */
+  width: number;
+  /** What the image is multiplied by on a full line, linear RGB. */
+  color: Rgb;
+  /** The step in depth between neighboring surfaces that draws a silhouette, meters. */
+  depth: number;
+  /** The angle between neighboring surfaces that draws a full crease, radians; the line starts at half of it. */
+  normal: number;
+  /** Meters one CSS pixel covers where lines have faded out; they start to fade at a quarter of it. */
+  fade: number;
+}
+
+/** Off; turned on, a fine dark warm brown (#3a2a20) line about two pixels wide. */
+export const DEFAULT_CONTOURS: Contours = {
+  enabled: false, strength: 0.7, width: 2, color: [0.04231141061442144, 0.023153366173251363, 0.014443843592229466],
+  depth: 0.04, normal: 0.7, fade: 0.08,
+};
+
+/** A record's contours, the default (off) where the record holds none. */
+export function contoursOf(lighting: Lighting): Contours {
+  return lighting.contours ?? DEFAULT_CONTOURS;
 }
 
 /** See `Lighting.painted`. */
@@ -156,7 +208,7 @@ export function sunOf(lighting: Lighting): Light | undefined {
  * the rest, so what a record leaves out follows the shipped look.
  */
 export type LightingInput = { version: 1 } & {
-  [Key in Exclude<keyof Lighting, "version" | "lights">]?: Lighting[Key] extends object ? Partial<Lighting[Key]> : Lighting[Key];
+  [Key in Exclude<keyof Lighting, "version" | "lights">]?: NonNullable<Lighting[Key]> extends object ? Partial<NonNullable<Lighting[Key]>> : Lighting[Key];
 } & { lights?: (Partial<Omit<Light, "shadow">> & { shadow?: Partial<Omit<LightShadow, "noise">> & { noise?: Partial<ShadowNoise> } })[] };
 
 /** A six-digit sRGB hex color (without `#`) as linear RGB, by the transfer function three.js uses for its colors. */
@@ -213,6 +265,9 @@ export function statesAmbientOcclusion(record: unknown): boolean {
  * - `shadowblur`, `shadowspread`, `shadowblurmax`, `shadowdark`, `shadowtint` and `shadowtint2` (sRGB hex),
  *   `shadowtintstrength`, `shadowwrap`, `shadownoisescale`, `shadowedge`, `shadownoise` and `shadowseed` replace single
  *   values of the shadow's look.
+ * - `shadowform` and `shadowformfill` replace the form light in shadow and its fill.
+ * - `contours=on` or `off` turns contour lines on or off; `contourstrength`, `contourwidth`, `contourcolor` (sRGB hex),
+ *   `contourdepth`, `contournormal` and `contourfade` replace their values.
  * - `ao=off` turns ambient occlusion off and `ao=on` turns it on, whatever the record and the renderer's own default
  *   say; `aoradius`, `aointensity` and `aothickness` replace its values.
  */
@@ -247,6 +302,9 @@ export function lightingFromQuery(record: Lighting, query: URLSearchParams): Lig
         seed: Math.floor(number("shadowseed", shadow.noise.seed, 0, 4294967295)),
       },
     };
+    const form = number("shadowform", shadow.form ?? 0, 0, 1), fill = number("shadowformfill", shadow.formFill ?? 0, 0, 1);
+    if (form) light.shadow.form = form;
+    if (fill) light.shadow.formFill = fill;
   }
   const occlusion = lighting.ambientOcclusion;
   if (query.get("ao") === "off") occlusion.enabled = false;
@@ -254,6 +312,18 @@ export function lightingFromQuery(record: Lighting, query: URLSearchParams): Lig
   occlusion.radius = number("aoradius", occlusion.radius, 0.01, 10);
   occlusion.intensity = number("aointensity", occlusion.intensity, 0, 4);
   occlusion.thickness = number("aothickness", occlusion.thickness, 0.01, 10);
+  const stated = { ...DEFAULT_CONTOURS, ...lighting.contours }, drawn = query.get("contours");
+  const contours: Contours = {
+    enabled: drawn === "on" ? true : drawn === "off" ? false : stated.enabled,
+    strength: number("contourstrength", stated.strength, 0, 1),
+    width: number("contourwidth", stated.width, 0.5, 8),
+    color: color("contourcolor", stated.color),
+    depth: number("contourdepth", stated.depth, 0.001, 10),
+    normal: number("contournormal", stated.normal, 0.01, Math.PI),
+    fade: number("contourfade", stated.fade, 0.001, 10),
+  };
+  if (JSON.stringify(contours) === JSON.stringify(DEFAULT_CONTOURS)) delete lighting.contours;
+  else lighting.contours = contours;
   return lighting;
 }
 
@@ -322,8 +392,9 @@ export function parseLighting(value: unknown): Lighting {
 
   const base = DEFAULT_LIGHTING, baseSun = base.lights[0];
   if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) throw new LightingError([{ field: "", message: "must be an object" }]);
-  const root = fields(value, "", ["version", "exposure", "toneMapping", "environment", "ambient", "ambientOcclusion", "lights", "painted"]);
+  const root = fields(value, "", ["version", "exposure", "toneMapping", "environment", "ambient", "ambientOcclusion", "lights", "painted", "contours"]);
   const paintedFields = fields(root.painted, "painted", ["toneMapping", "ambientOcclusion"]);
+  const contourFields = fields(root.contours, "contours", ["enabled", "strength", "width", "color", "depth", "normal", "fade"]);
   if (root.version === undefined) fail("version", "is required");
   else if (root.version !== 1) fail("version", "must be 1");
   const environment = fields(root.environment, "environment", ["source", "intensity", "rotation"]);
@@ -361,7 +432,7 @@ export function parseLighting(value: unknown): Lighting {
     const at = (name: string): string => `lights[${index}].${name}`;
     if (root.lights !== undefined && (typeof entry !== "object" || entry === null || Array.isArray(entry))) { fail(`lights[${index}]`, "must be an object"); return; }
     const light = fields(entry, `lights[${index}]`, ["id", "role", "kind", "direction", "color", "intensity", "castsShadow", "shadow"]);
-    const shadow = fields(light.shadow, at("shadow"), ["style", "softness", "spread", "maxSoftness", "darkness", "tint", "tintAlt", "tintStrength", "wrap", "noise"]);
+    const shadow = fields(light.shadow, at("shadow"), ["style", "softness", "spread", "maxSoftness", "darkness", "tint", "tintAlt", "tintStrength", "wrap", "noise", "form", "formFill"]);
     const noise = fields(shadow.noise, at("shadow.noise"), ["scale", "edge", "amount", "seed"]);
     const id = identity(light.id, at("id"), baseSun.id);
     if (lighting.lights.some(other => other.id === id)) fail(at("id"), "must be unique");
@@ -372,6 +443,7 @@ export function parseLighting(value: unknown): Lighting {
       if (typeof noise.seed === "number" && Number.isInteger(noise.seed) && noise.seed >= 0 && noise.seed <= 4294967295) seed = noise.seed;
       else fail(at("shadow.noise.seed"), "must be an integer between 0 and 4294967295");
     }
+    const form = number(shadow.form, at("shadow.form"), 0, 0, 1), formFill = number(shadow.formFill, at("shadow.formFill"), 0, 0, 1);
     lighting.lights.push({
       id,
       role: choice(light.role, at("role"), baseSun.role, ["sun"]),
@@ -396,6 +468,8 @@ export function parseLighting(value: unknown): Lighting {
           amount: number(noise.amount, at("shadow.noise.amount"), baseSun.shadow.noise.amount, 0, 1),
           seed,
         },
+        ...(form ? { form } : {}),
+        ...(formFill ? { formFill } : {}),
       },
     });
   });
@@ -404,6 +478,16 @@ export function parseLighting(value: unknown): Lighting {
     ambientOcclusion: boolean(paintedFields.ambientOcclusion, "painted.ambientOcclusion", DEFAULT_PAINTED.ambientOcclusion),
   };
   if (painted.toneMapping !== DEFAULT_PAINTED.toneMapping || painted.ambientOcclusion !== DEFAULT_PAINTED.ambientOcclusion) lighting.painted = painted;
+  const contours: Contours = {
+    enabled: boolean(contourFields.enabled, "contours.enabled", DEFAULT_CONTOURS.enabled),
+    strength: number(contourFields.strength, "contours.strength", DEFAULT_CONTOURS.strength, 0, 1),
+    width: number(contourFields.width, "contours.width", DEFAULT_CONTOURS.width, 0.5, 8),
+    color: color(contourFields.color, "contours.color", DEFAULT_CONTOURS.color),
+    depth: number(contourFields.depth, "contours.depth", DEFAULT_CONTOURS.depth, 0.001, 10),
+    normal: number(contourFields.normal, "contours.normal", DEFAULT_CONTOURS.normal, 0.01, Math.PI),
+    fade: number(contourFields.fade, "contours.fade", DEFAULT_CONTOURS.fade, 0.001, 10),
+  };
+  if (JSON.stringify(contours) !== JSON.stringify(DEFAULT_CONTOURS)) lighting.contours = contours;
   if (findings.length) throw new LightingError(findings);
   return lighting;
 }

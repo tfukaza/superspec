@@ -42,6 +42,50 @@ pub struct Lighting {
     /// exports that never set it keep their bytes.
     #[serde(default, skip_serializing_if = "Painted::is_default")]
     pub painted: Painted,
+    /// Contour lines over the finished image, for the whole scene (never per material;
+    /// experimental). Off by default, and written only when it differs from the default.
+    #[serde(default, skip_serializing_if = "Contours::is_default")]
+    pub contours: Contours,
+}
+
+/// Drawn contour lines: a dark line multiplied over the image along silhouettes (where depth
+/// steps) and creases (where the surface turns). Features too small to draw get none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct Contours {
+    pub enabled: bool,
+    /// How much of the line's color multiplies the image on a line, 0 to 1.
+    pub strength: f64,
+    /// Line weight on a silhouette, CSS pixels; a crease is drawn a little thinner.
+    pub width: f64,
+    /// What the image is multiplied by on a full line, linear RGB.
+    pub color: Rgb,
+    /// The step in depth between neighboring surfaces that draws a silhouette, meters.
+    pub depth: f64,
+    /// The angle between neighboring surfaces that draws a full crease, radians.
+    pub normal: f64,
+    /// Meters one CSS pixel covers where lines have faded out.
+    pub fade: f64,
+}
+
+impl Default for Contours {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strength: 0.7,
+            width: 2.0,
+            color: srgb("#3a2a20"),
+            depth: 0.04,
+            normal: 0.7,
+            fade: 0.08,
+        }
+    }
+}
+
+impl Contours {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// What the finishing steps of the image do to painted materials. Default: tone mapping and
@@ -172,6 +216,13 @@ pub struct Shadow {
     /// Cosine of the angle to the light below which a face starts to count as shadowed.
     pub wrap: f64,
     pub noise: ShadowNoise,
+    /// Form light in shadow, 0 to 1 (experimental): the share of the light's own diffuse shading
+    /// a surface keeps where something else shades it. Written only when it is not 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub form: f64,
+    /// A weaker form light from the light's direction mirrored about the vertical, 0 to 1.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub form_fill: f64,
 }
 
 /// Noise in the light's plane; a pure function of position there and `seed`.
@@ -191,6 +242,10 @@ fn one() -> f64 {
     1.0
 }
 
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
 fn default_lights() -> Vec<Light> {
     vec![Light::default()]
 }
@@ -207,6 +262,7 @@ impl Default for Lighting {
             ambient_occlusion: AmbientOcclusion::default(),
             lights: default_lights(),
             painted: Painted::default(),
+            contours: Contours::default(),
         }
     }
 }
@@ -272,6 +328,8 @@ impl Default for Shadow {
             tint_strength: 0.22,
             wrap: 0.3,
             noise: ShadowNoise::default(),
+            form: 0.0,
+            form_fill: 0.0,
         }
     }
 }
@@ -422,7 +480,21 @@ impl Lighting {
             check.range(&at("shadow.noise.scale"), shadow.noise.scale, 0.01, 100.0);
             check.range(&at("shadow.noise.edge"), shadow.noise.edge, 0.0, 1.0);
             check.range(&at("shadow.noise.amount"), shadow.noise.amount, 0.0, 1.0);
+            check.range(&at("shadow.form"), shadow.form, 0.0, 1.0);
+            check.range(&at("shadow.formFill"), shadow.form_fill, 0.0, 1.0);
         }
+        let contours = &self.contours;
+        check.range("contours.strength", contours.strength, 0.0, 1.0);
+        check.range("contours.width", contours.width, 0.5, 8.0);
+        check.color("contours.color", &contours.color);
+        check.range("contours.depth", contours.depth, 0.001, 10.0);
+        check.range(
+            "contours.normal",
+            contours.normal,
+            0.01,
+            std::f64::consts::PI,
+        );
+        check.range("contours.fade", contours.fade, 0.001, 10.0);
         check.0
     }
 
@@ -535,6 +607,26 @@ mod tests {
         let lighting = Lighting::default();
         assert!(!lighting.painted.tone_mapping && lighting.painted.ambient_occlusion);
         assert!(lighting.painted.is_default());
+    }
+
+    #[test]
+    fn form_light_and_contours_are_off_by_default_and_checked() {
+        let mut lighting = Lighting::default();
+        assert_eq!(lighting.lights[0].shadow.form, 0.0);
+        assert_eq!(lighting.lights[0].shadow.form_fill, 0.0);
+        assert!(!lighting.contours.enabled && lighting.contours.is_default());
+        lighting.lights[0].shadow.form = 1.5;
+        lighting.contours.width = 0.0;
+        lighting.contours.normal = 4.0;
+        let fields: Vec<String> = lighting
+            .validate()
+            .into_iter()
+            .map(|invalid| invalid.field)
+            .collect();
+        assert_eq!(
+            fields,
+            ["lights[0].shadow.form", "contours.width", "contours.normal"]
+        );
     }
 
     #[test]

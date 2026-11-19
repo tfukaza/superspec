@@ -9,7 +9,7 @@ use crate::worldspec::themes::kowloon::{
     household,
     noise::value_noise,
     palette::{mix, shade, srgb},
-    pen::PatchVertex,
+    pen::{PatchVertex, Pen},
     windows,
 };
 use superspec_geometry::V3;
@@ -148,7 +148,8 @@ fn window(
 /// `storey` (m, 2.4–6, 3), `storeys` (1–20, 4), `own` (0–20, 0), `color` (#b4a88f), `frame`
 /// (#4b5257), `door` (true), `stacks` (0–4, -1: one or two), `cables` (0–6, 2), `bars`
 /// (0–1, 0.3), `units` (0–1, 0.45), `depth` (a stub's, m, 0.8–12; 0: seeded), `shops` (a
-/// stub's front ground storey left blank for shopfronts stood before it, false), `seed`.
+/// stub's front ground storey left blank for shopfronts stood before it, false), `gable` (a
+/// stub's ends that face a street: `none` | `start` | `end` | `both`, `none`), `seed`.
 /// Drying racks and extract vents dress a seeded few upper windows.
 ///
 /// Features ([`features`]), in item axes with the faces' outward normals (`front` faces -y):
@@ -188,6 +189,8 @@ struct Party {
     depth: f64,
     /// Whether the front's ground storey is left blank for shopfronts.
     shops: bool,
+    /// Whether the start and the end face a street (see `gable`).
+    gable: [bool; 2],
     bays: usize,
     blank: Vec<bool>,
     units: Vec<bool>,
@@ -265,6 +268,20 @@ impl Party {
         // `shops`: the front's ground storey is left blank (no windows or back door in it) for
         // shopfronts a host stands before it (false).
         let shops = a.boolean("shops", false)?;
+        // `gable`: which of a stub's ends face a street (`none`, `start`, `end`, `both`): such
+        // an end has columns of windows across its depth (a few barred, blank or with a unit),
+        // small barred ones in its ground storey, a soil stack and extract vents.
+        let gable = match a.text("gable", "none")?.as_str() {
+            "none" => [false, false],
+            "start" => [true, false],
+            "end" => [false, true],
+            "both" => [true, true],
+            _ => {
+                return Err(format!(
+                    "{name}: gable must be one of none, start, end, both."
+                ));
+            }
+        };
         let key = a.seed()?;
         a.finish()?;
         let mut rng = SeededRng::from_text(&key);
@@ -287,6 +304,7 @@ impl Party {
             roof: 0.,
             depth: 0.,
             shops: false,
+            gable: [false; 2],
             bays: 0,
             blank: vec![],
             units: vec![],
@@ -319,6 +337,7 @@ impl Party {
             seeded_depth
         };
         plan.shops = shops;
+        plan.gable = gable;
         plan.bays = ((length - 0.8) / 2.3).floor().max(1.) as usize;
         let bays = plan.bays;
         // Which windows stand: most do; a few bays are blank.
@@ -405,20 +424,78 @@ impl Party {
                 });
             }
             let narrow = 0.7_f64.min(self.depth - 0.55);
-            if level > 0 && narrow >= 0.45 {
-                let middle = self.depth / 2.;
-                let span = [middle - narrow / 2., middle + narrow / 2., z0, z1];
-                for face in [Face::Start, Face::End] {
+            for (face, street) in [(Face::Start, self.gable[0]), (Face::End, self.gable[1])] {
+                if !street {
+                    if level > 0 && narrow >= 0.45 {
+                        let middle = self.depth / 2.;
+                        openings.push(Opening {
+                            face,
+                            span: [middle - narrow / 2., middle + narrow / 2., z0, z1],
+                            unit: false,
+                            barred: false,
+                        });
+                    }
+                    continue;
+                }
+                // An end on a street: a column of windows every 1.5 m or more across it, small
+                // barred ones in its ground storey, a few blank, barred or with a unit by seed.
+                let columns = self.gable_columns();
+                let pitch = self.depth / columns as f64;
+                let wide = if columns == 1 {
+                    narrow
+                } else if level == 0 {
+                    0.8
+                } else {
+                    1.15_f64.min(pitch - 0.6)
+                };
+                let mut rng =
+                    SeededRng::from_text(&format!("{}/gable/{}/{level}", self.lane, face as u8));
+                for column in 0..columns {
+                    let (blank, unit, barred) =
+                        (rng.chance(0.15), rng.chance(0.3), rng.chance(0.3));
+                    if blank || wide < 0.45 {
+                        continue;
+                    }
+                    let middle = (column as f64 + 0.5) * pitch;
                     openings.push(Opening {
                         face,
-                        span,
-                        unit: false,
-                        barred: false,
+                        span: [middle - wide / 2., middle + wide / 2., z0, z1],
+                        unit: level > 0 && unit && wide >= 0.75,
+                        barred: level == 0 || barred,
                     });
                 }
             }
         }
         openings
+    }
+
+    /// How many columns of windows an end on a street has across the stub's depth.
+    fn gable_columns(&self) -> usize {
+        ((self.depth - 0.3) / 1.5).floor().max(1.) as usize
+    }
+
+    /// The frame of an end's outer face: y = 0 on its plane and outward, x across it.
+    fn end_frame(&self, pen: &Pen, face: Face) -> Result<Pen, String> {
+        match face {
+            Face::Start => pen.facing([0.; 3], [0., 1., 0.], [-1., 0., 0.]),
+            _ => pen.facing([self.length, self.depth, 0.], [0., -1., 0.], [1., 0., 0.]),
+        }
+    }
+
+    /// Where `s` m from the wall plane lies along the x of an end's frame ([`Self::end_frame`]).
+    fn across(&self, face: Face, s: f64) -> f64 {
+        if face == Face::End { self.depth - s } else { s }
+    }
+
+    /// Where a soil stack stands on an end on a street (m across it from the wall plane):
+    /// between its columns of windows, or by its edge where one column leaves room.
+    fn gable_stack(&self) -> Option<f64> {
+        let columns = self.gable_columns();
+        if columns > 1 {
+            return Some(self.depth / columns as f64);
+        }
+        let narrow = 0.7_f64.min(self.depth - 0.55);
+        (self.depth / 2. - narrow / 2. >= 0.5).then_some(0.24)
     }
 }
 
@@ -622,41 +699,9 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
                         frame,
                         trim,
                     )?;
-                    let middle = (span[0] + span[1]) / 2.;
                     // The front face's own frame: y = 0 on its plane, outward.
                     let face = &mut on(&mut *d.mesh, d.pen.moved([0., depth, 0.])?)?;
-                    if opening.barred {
-                        // Welded bars over the sash, standing on the sill, as the window
-                        // item's: their rods 3.5 cm off the face, on the frame.
-                        let set = &mut on(&mut *face.mesh, face.pen.moved([0., -0.06, 0.])?)?;
-                        windows::security_bars_sized(
-                            set,
-                            [
-                                span[0] - 0.04,
-                                span[2],
-                                span[1] - span[0] + 0.08,
-                                span[3] - span[2] + 0.05,
-                            ],
-                            windows::Guard::Bars,
-                            srgb("#33363a"),
-                            None,
-                        )?;
-                    }
-                    if opening.unit {
-                        // A window unit on its bracket under the sill; its foot is the drip.
-                        aircon::air_conditioner_with(
-                            face,
-                            middle,
-                            span[2] - 0.62,
-                            0.3,
-                            &mut SeededRng::from_text(&format!("{}/unit/{index}", plan.lane)),
-                            None,
-                            aircon::Options {
-                                plates: true,
-                                louvred: false,
-                            },
-                        )?;
-                    }
+                    guard_and_unit(face, plan, index, opening, span)?;
                 }
                 Face::Start => window(
                     d,
@@ -675,9 +720,176 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
                     trim,
                 )?,
             }
+            if opening.face != Face::Front && (opening.barred || opening.unit) {
+                let (a, b) = (
+                    plan.across(opening.face, span[0]),
+                    plan.across(opening.face, span[1]),
+                );
+                let face = &mut on(&mut *d.mesh, plan.end_frame(&d.pen, opening.face)?)?;
+                let span = [a.min(b), a.max(b), span[2], span[3]];
+                guard_and_unit(face, plan, index, opening, span)?;
+            }
+        }
+        for (side, street) in [(Face::Start, plan.gable[0]), (Face::End, plan.gable[1])] {
+            if street {
+                gable_end(d, plan, side, &openings)?;
+            }
         }
         back_lane(d, plan, &openings)
     })
+}
+
+/// What guards and hangs under a window on a face's own frame (y = 0 on its plane, outward):
+/// welded bars over the sash, and a window unit on its bracket under the sill.
+fn guard_and_unit(
+    face: &mut Fixture<'_, '_>,
+    plan: &Party,
+    index: usize,
+    opening: &Opening,
+    span: [f64; 4],
+) -> Result<(), String> {
+    if opening.barred {
+        // Welded bars over the sash, standing on the sill, as the window item's: their rods
+        // 3.5 cm off the face, on the frame.
+        let set = &mut on(&mut *face.mesh, face.pen.moved([0., -0.06, 0.])?)?;
+        windows::security_bars_sized(
+            set,
+            [
+                span[0] - 0.04,
+                span[2],
+                span[1] - span[0] + 0.08,
+                span[3] - span[2] + 0.05,
+            ],
+            windows::Guard::Bars,
+            srgb("#33363a"),
+            None,
+        )?;
+    }
+    if opening.unit {
+        // A window unit on its bracket under the sill; its foot is the drip.
+        aircon::air_conditioner_with(
+            face,
+            (span[0] + span[1]) / 2.,
+            span[2] - 0.62,
+            0.3,
+            &mut SeededRng::from_text(&format!("{}/unit/{index}", plan.lane)),
+            None,
+            aircon::Options {
+                plates: true,
+                louvred: false,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+/// What an end on a street adds to its windows: a soil stack up past the parapet and
+/// extract vents beside a seeded few upper windows.
+fn gable_end(
+    d: &mut Fixture<'_, '_>,
+    plan: &Party,
+    side: Face,
+    openings: &[Opening],
+) -> Result<(), String> {
+    let face = &mut on(&mut *d.mesh, plan.end_frame(&d.pen, side)?)?;
+    let courses: Vec<f64> = plan.courses().collect();
+    let stack = plan.gable_stack().map(|s| plan.across(side, s));
+    if let Some(x) = stack {
+        soil_stack(face, x, plan.high, &courses)?;
+    }
+    let mut dress = SeededRng::from_text(&format!("{}/gable-dress/{}", plan.lane, side as u8));
+    for opening in openings {
+        if opening.face != side || opening.span[2] < plan.ground {
+            continue;
+        }
+        let vented = dress.chance(0.4);
+        let x = plan
+            .across(side, opening.span[0])
+            .max(plan.across(side, opening.span[1]))
+            + 0.26;
+        if vented && x + 0.25 < plan.depth && stack.is_none_or(|at| (x - at).abs() > 0.3) {
+            extract_vent(face, x, opening.span[3])?;
+        }
+    }
+    Ok(())
+}
+
+/// An extract vent beside a window whose head is at `head`: a louvred box in a frame,
+/// centred on `x` of a face's own frame.
+fn extract_vent(face: &mut Fixture<'_, '_>, x: f64, head: f64) -> Result<(), String> {
+    let grey = srgb("#8f8a7c");
+    let (z, half, tall) = (head - 0.3, 0.17, 0.22);
+    face.cuboid(
+        "metal",
+        [x - half, 0., z],
+        [x + half, 0.035, z + tall],
+        shade(grey, 1.1),
+        "b",
+    )?;
+    for slat in 1..5 {
+        let at = z + tall * slat as f64 / 5.;
+        face.cuboid(
+            "metal",
+            [x - half + 0.02, 0.035, at - 0.008],
+            [x + half - 0.02, 0.05, at + 0.008],
+            shade(grey, 0.7),
+            "b",
+        )?;
+    }
+    Ok(())
+}
+
+/// A soil stack at `x` of a face's own frame: up from the ground to a cowl above the parapet
+/// at `high`, socketed a storey apart, with a branch into the wall over every floor and clips
+/// between, clear of the string `courses`.
+fn soil_stack(
+    face: &mut Fixture<'_, '_>,
+    x: f64,
+    high: f64,
+    courses: &[f64],
+) -> Result<(), String> {
+    let clear = |z: f64| courses.iter().all(|c| (z - c).abs() > 0.14) && z < high - 0.2;
+    let stack = srgb("#77746c");
+    let (radius, out) = (0.055, 0.125);
+    let head = high + 0.75;
+    face.tube(
+        "metal",
+        &[[x, out, 0.03], [x, out, head]],
+        radius,
+        stack,
+        12,
+    )?;
+    face.tube(
+        "metal",
+        &[[x, out, head], [x, out, head + 0.09]],
+        radius * 1.4,
+        shade(stack, 0.85),
+        12,
+    )?;
+    for &c in courses {
+        face.tube(
+            "metal",
+            &[[x, out, c + 0.18], [x, out, c + 0.27]],
+            radius * 1.18,
+            shade(stack, 0.92),
+            12,
+        )?;
+        face.tube(
+            "metal",
+            &[[x, out, c + 0.42], [x, -0.02, c + 0.42]],
+            radius * 0.7,
+            stack,
+            10,
+        )?;
+    }
+    let mut z = 0.8;
+    while z < high {
+        if clear(z) {
+            hardware::pipe_clip(face, [x, out, z], radius, shade(stack, 0.72))?;
+        }
+        z += 1.4;
+    }
+    Ok(())
 }
 
 /// What a back lane adds to a stub's front: its back door under a hood, soil and vent stacks
@@ -710,24 +922,7 @@ fn back_lane(d: &mut Fixture<'_, '_>, plan: &Party, openings: &[Opening]) -> Res
         // An extract vent beside the window: a louvred box in a frame.
         let x = s1 + 0.26;
         if vented && x + 0.25 < length && (x - (length - plan.pipe)).abs() > 0.3 {
-            let (z, half, tall) = (z1 - 0.3, 0.17, 0.22);
-            face.cuboid(
-                "metal",
-                [x - half, 0., z],
-                [x + half, 0.035, z + tall],
-                shade(grey, 1.1),
-                "b",
-            )?;
-            for slat in 1..5 {
-                let at = z + tall * slat as f64 / 5.;
-                face.cuboid(
-                    "metal",
-                    [x - half + 0.02, 0.035, at - 0.008],
-                    [x + half - 0.02, 0.05, at + 0.008],
-                    shade(grey, 0.7),
-                    "b",
-                )?;
-            }
+            extract_vent(face, x, z1)?;
         }
     }
     // Clips keep clear of the string courses, which stand 6 cm out.
@@ -740,49 +935,8 @@ fn back_lane(d: &mut Fixture<'_, '_>, plan: &Party, openings: &[Opening]) -> Res
         }
         z += 1.5;
     }
-    let stack = srgb("#77746c");
-    let (radius, out) = (0.055, 0.125);
     for &x in &plan.stacks {
-        // Up from the lane to a cowl above the parapet, socketed a storey apart, with a
-        // branch into the wall over every floor and clips between.
-        let head = high + 0.75;
-        face.tube(
-            "metal",
-            &[[x, out, 0.03], [x, out, head]],
-            radius,
-            stack,
-            12,
-        )?;
-        face.tube(
-            "metal",
-            &[[x, out, head], [x, out, head + 0.09]],
-            radius * 1.4,
-            shade(stack, 0.85),
-            12,
-        )?;
-        for &c in &courses {
-            face.tube(
-                "metal",
-                &[[x, out, c + 0.18], [x, out, c + 0.27]],
-                radius * 1.18,
-                shade(stack, 0.92),
-                12,
-            )?;
-            face.tube(
-                "metal",
-                &[[x, out, c + 0.42], [x, -0.02, c + 0.42]],
-                radius * 0.7,
-                stack,
-                10,
-            )?;
-        }
-        let mut z = 0.8;
-        while z < high {
-            if clear(z) {
-                hardware::pipe_clip(face, [x, out, z], radius, shade(stack, 0.72))?;
-            }
-            z += 1.4;
-        }
+        soil_stack(face, x, high, &courses)?;
     }
     for &[x0, x1, z, sag] in &plan.cables {
         let points: Vec<V3> = (0..=16)

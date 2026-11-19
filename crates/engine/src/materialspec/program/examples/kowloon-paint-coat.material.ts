@@ -60,7 +60,7 @@ const peelField = mul(sheet, div(peelDepth, peelInset));
 const peelThreshold = sub(0.64, mul(peelShare, 0.3));
 const peeled = smoothstep(peelThreshold, add(peelThreshold, 0.008), peelField);
 // The lifted edge: a thin dark line just outside the bare patch.
-const lifted = mul(sub(1, peeled), smoothstep(sub(peelThreshold, 0.05), sub(peelThreshold, 0.008), peelField));
+const lifted = mul(sub(1, peeled), smoothstep(sub(peelThreshold, 0.1), sub(peelThreshold, 0.02), peelField));
 // Arrises: the coat thins to the render within a few centimetres of an exposed edge, in broken lengths.
 const arris = creaseDistance("exposed", 35, 0.06);
 const worn = mul(mul(arrisWear, sub(1, smoothstep(0.008, 0.035, arris))),

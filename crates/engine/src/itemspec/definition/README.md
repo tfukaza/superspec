@@ -244,7 +244,10 @@ the coordinates of its meshes, with surface normals, worked out from its paramet
 drawing, which a part's `zones` rules hang zones below as below a panel's (`kowloon/party`
 reports `top`, `base`, `eave`, `sill` and `drip` on each face of a neighbour's wall or stub;
 `kowloon/riser-duct` reports `fixture`, `fixing`, `rust` and `drip` on the wall plane, reaching
-the item's receivers within 1 m, where its brackets and connections are fixed).
+the item's receivers within 1 m, where its brackets and connections are fixed;
+`kowloon/pedestrian-avenue` reports a closed `foot` ring on its paving plane round every
+bollard, litter bin and bench support and round its planter, and `kowloon/street-lamp` its base
+plate's outline, which reaches the paving of the item under it, within 0.5 m).
 
 **Footprints.** A `points` control holds a plan polygon (3 to 64 `[x, y]` points,
 counterclockwise seen from above) and a `flags` control up to 64 booleans. A repeat axis with

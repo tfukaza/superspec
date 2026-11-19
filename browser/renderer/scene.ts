@@ -337,7 +337,7 @@ export class RustScene {
 
   /** States on the host what is drawn (`data-rendering`) and the record in effect with the session's overrides (`data-lighting`), for inspection and tests. */
   private stateLighting(): void {
-    this.host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.lights.styledShadows, ambientOcclusion: this.ambientOcclusion !== undefined,
+    this.host.dataset.rendering = JSON.stringify({ shadows: this.shadows, shadowStyle: this.lights.styledShadows, ambientOcclusion: this.lights.occluding, contours: this.lights.outlining,
       // Set where ambient occlusion nobody asked for is left off by this renderer's own default (software-occlusion.ts).
       ...(this.lights.occlusionDefault ? { ambientOcclusionDefault: this.lights.occlusionDefault } : {}) });
     this.host.dataset.lighting = JSON.stringify(this.lights.lighting);

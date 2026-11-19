@@ -2610,3 +2610,37 @@ fn a_plinth_is_planned_per_edge_and_on_the_corner() {
     assert!((plinth_top(&seeded, "side-1/") - 1.02).abs() < 0.02);
     assert!((plinth_top(&seeded, "cornerRound-0/") - 1.02).abs() < 0.02);
 }
+
+#[test]
+fn zz_probe_side_plinth() {
+    let plan = plan("reference-shop-house.json");
+    let overrides: Vec<(&str, serde_json::Value)> = plan
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let item = generate("kowloon-building.item.json", &overrides);
+    let transforms = item.geometry.world_transforms().unwrap();
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if !(mesh.id.starts_with("side-1/") || mesh.material_slot == "plinth") {
+                continue;
+            }
+            let mut low = [f64::MAX; 3];
+            let mut high = [f64::MIN; 3];
+            for p in &mesh.positions {
+                let q = matrix.point(*p);
+                for k in 0..3 {
+                    low[k] = low[k].min(q[k]);
+                    high[k] = high[k].max(q[k]);
+                }
+            }
+            if mesh.material_slot == "plinth" || (low[2] < 1.2 && high[0] - low[0] < 3.) {
+                println!(
+                    "PROBE {} [{}] y {:.3}..{:.3} x {:.3}..{:.3} z {:.3}..{:.3}",
+                    mesh.id, mesh.material_slot, low[1], high[1], low[0], high[0], low[2], high[2]
+                );
+            }
+        }
+    }
+}

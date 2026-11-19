@@ -77,6 +77,16 @@ export interface DensityCardOptions {
   /** With the family: the round cards' size against a spray's of the same kind, and the share of them kept. */
   roundSize?: number;
   roundKeep?: number;
+  /**
+   * Variety (all off by default, as the milestone's cards): `shapes`, the share of the denser cards that are not round
+   * but lie flat and wide (aspect 1.4 to 2.2, a small tilt, as a spray of leaves along a limb); `variation` (0 to 1),
+   * how much cards differ in size, with half of them mirrored; `sparkles`, tiny bright leaf cards per denser card
+   * toward the foliage's outside (`sparkleSize` meters), drawn only where the light is high, so lit clumps sparkle.
+   */
+  shapes?: number;
+  variation?: number;
+  sparkles?: number;
+  sparkleSize?: number;
   seed?: number;
   sun: THREE.Vector3;
   leafMap: { texture: THREE.Texture; tile: number; origin: THREE.Vector3; strength?: number; offset?: number };
@@ -109,7 +119,11 @@ function generator(seed: number): () => number {
 export function densityCards(field: DensityField, cards: THREE.Texture, options: DensityCardOptions): THREE.Mesh {
   const { level, floor = 0.1, spacing = 0.18, keep = 0.9, size = 0.55, inside = 1.12, seed = 3, facing = 0.5, sun, leafMap,
     branches, branchSize = 0.75, branchKeep = 0.9, twigs = [], roundSize = 0.7, roundKeep = 0.6, denseFacing = 1, roundFamily = true, denseDetail = 1,
-    tierField, shadeField, sprayScale = 0.75, tuck = 0.3, shadeMix = 0, shadeJitter = 0 } = options;
+    tierField, shadeField, sprayScale = 0.75, tuck = 0.3, shadeMix = 0, shadeJitter = 0, shapes = 0, variation = 0, sparkles = 0, sparkleSize = 0.14 } = options;
+  // The variety's own stream, so turning it on moves no card.
+  const extra = generator(seed * 57 + 5);
+  // Per card: its width and height against a round card's, and 1 for a sparkle.
+  const forms: number[] = [];
   // Its own stream, so the jitter never moves the cards.
   const jitter = generator(seed * 31 + 17);
   const shade = (q: THREE.Vector3, n: THREE.Vector3) => {
@@ -225,6 +239,20 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     axes.push(up.x, up.y, up.z);
     randoms.push(random());
     looks.push(sparse + 0.5 * (0.65 + 0.35 * depth));
+    if (!twig && shapes > 0 && extra() < shapes) { const aspect = 1.4 + 0.8 * extra(); forms.push(1.1 * Math.sqrt(aspect), 1 / Math.sqrt(aspect), 0); }
+    else forms.push(1, 1, 0);
+    // Sparkles: tiny cards a little out of the foliage from a denser card near its outside.
+    if (family && !twig && sparkles > 0 && depth < 0.8) for (let k = extra() < sparkles % 1 ? Math.ceil(sparkles) : Math.floor(sparkles); k > 0; k--) {
+      const q = p.clone().addScaledVector(n, 0.1 + 0.12 * extra()).add(new THREE.Vector3(extra() - 0.5, extra() - 0.5, extra() - 0.5).multiplyScalar(0.3));
+      kinds.push(6, sparkleSize * (0.8 + 0.5 * extra()));
+      centres.push(q.x, q.y, q.z);
+      normals.push(...normals.slice(-3));
+      planes.push(plane.x, plane.y, plane.z);
+      axes.push(up.x, up.y, up.z);
+      randoms.push(extra());
+      looks.push(0.5);
+      forms.push(1, 1, 1);
+    }
   }
   // A spray on the end of every leafy twig, rooted three quarters along it and growing on its way, so no twig ends
   // in a bare stub past the foliage.
@@ -253,6 +281,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     axes.push(up.x, up.y, up.z);
     randoms.push(random());
     looks.push(1 + 0.5 * 0.65);
+    forms.push(1, 1, 0);
   }
   const quad = new THREE.PlaneGeometry(1, 1);
   const instanced = new THREE.InstancedBufferGeometry();
@@ -268,6 +297,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
   instanced.setAttribute("aAxis", new THREE.InstancedBufferAttribute(new Float32Array(axes), 3));
   // A branch card's kind (0 small, 1 medium, 2 large) and its length in meters.
   instanced.setAttribute("aKind", new THREE.InstancedBufferAttribute(new Float32Array(kinds), 2));
+  instanced.setAttribute("aForm", new THREE.InstancedBufferAttribute(new Float32Array(forms), 3));
   instanced.instanceCount = randoms.length;
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -276,6 +306,7 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
       denseFacing: { value: branches ? denseFacing : facing }, denseDetail: { value: denseDetail },
       leafMap: { value: leafMap.texture }, mapTile: { value: leafMap.tile }, mapOrigin: { value: leafMap.origin.clone() },
       mapStrength: { value: leafMap.strength ?? 1 }, offset: { value: leafMap.offset ?? 0.1 }, highlight: { value: 1 },
+      variation: { value: variation },
     },
     vertexShader: /* glsl */`
 attribute vec3 aCentre;
@@ -285,7 +316,11 @@ attribute float aLook;
 attribute vec3 aPlane;
 attribute vec3 aAxis;
 attribute vec2 aKind;
+attribute vec3 aForm;
 varying float vKind;
+varying float vSpark;
+uniform float variation;
+uniform vec3 sun;
 uniform float size;
 uniform float facing;
 uniform float hybrid;
@@ -327,19 +362,25 @@ void main() {
   // Rolled at random only as far as it faces the camera: a world card's turn is in its own up. A branch card only
   // sways a little about its root.
   float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * f;
-  vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * position.xy;
-  float s = (hybrid > 0.5 && aKind.x > -0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7));
+  // A wide card lies about level, tilted a little, not rolled round.
+  if (!branch && aForm.x != aForm.y) roll = 0.6 * (fract(aRandom * 7.0) - 0.5);
+  vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * (position.xy * aForm.xy);
+  float s = (hybrid > 0.5 && aKind.x > -0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7)) * (1.0 + variation * 0.9 * (fract(aRandom * 57.1) - 0.5));
   vKind = aKind.x;
+  vSpark = aForm.z;
   // A branch card stands on its root (the bottom of the card, where its stem starts) on the twig; the others on their
   // middle.
   vec3 world = centre + (side * corner.x + up * (corner.y + (branch ? 0.47 : 0.0))) * s;
   vSideAxis = side;
   vUpAxis = up;
-  vUv = uv;
+  // Half the cards mirrored, with the variety on.
+  vUv = variation > 0.0 && fract(aRandom * 91.3) < 0.5 ? vec2(1.0 - uv.x, uv.y) : uv;
   vRandom = aRandom;
   vNormal = normalize(mat3(modelMatrix) * aNormal);
   vWorld = world;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+  // A sparkle away from the light is not drawn at all.
+  if (aForm.z > 0.5 && dot(vNormal, normalize(sun)) < 0.25) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
 }`,
     fragmentShader: /* glsl */`
 uniform sampler2D cards;
@@ -355,6 +396,7 @@ uniform sampler2D branches;
 uniform float hybrid;
 uniform float denseDetail;
 varying float vKind;
+varying float vSpark;
 varying float vFacing;
 varying vec2 vUv;
 varying float vRandom;
@@ -396,6 +438,8 @@ void main() {
     float light = msLeafLight(n, sun, offset) + msMacro(vWorld, sun);
     vec3 paint = msLeafBandAA(light, fwidth(light)) * (0.78 + 0.3 * tone);
     gl_FragColor = vec4(msLeafPaint(paint, light, tone, highlight), 1.0);
+    // A sparkle: only in high light, a warm green a step above the top band.
+    if (vSpark > 0.5) { if (light < 0.66) discard; gl_FragColor = vec4(vec3(0.42, 0.62, 0.16) * (0.85 + 0.3 * tone), 1.0); }
     #include <colorspace_fragment>
     return;
   }

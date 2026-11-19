@@ -225,6 +225,16 @@ pub struct FoliageMass {
     /// Length of the sprays (the branchlet cards of pointed leaves at the foliage's rim) as a
     /// multiple of the renderer's own, 0.25 to 4.
     pub spray_scale: f64,
+    /// Size of the leaf cards as a multiple of the renderer's own, 0.25 to 4; a renderer draws
+    /// more of smaller cards, so the foliage stays as full.
+    pub card_scale: f64,
+    /// Share of the denser cards that are wide and flat rather than round, 0 to 1.
+    pub shapes: f64,
+    /// How much cards differ in size, half of them mirrored, 0 to 1.
+    pub variation: f64,
+    /// Tiny bright leaf cards per denser card near the foliage's outside, 0 to 4, drawn only
+    /// where the light is high.
+    pub sparkles: f64,
     /// How the painted colours are graded for the scene the plant stands in (the default keeps
     /// the milestone's own).
     pub palette: FoliagePalette,
@@ -243,6 +253,10 @@ impl Default for FoliageMass {
             leaf_scale: 1.,
             soft_edges: false,
             spray_scale: 1.,
+            card_scale: 1.,
+            shapes: 0.,
+            variation: 0.,
+            sparkles: 0.,
             palette: FoliagePalette::default(),
         }
     }
@@ -557,6 +571,10 @@ impl Foliage {
             within(mass.jitter, 0., 1., "mass jitter")?;
             within(mass.leaf_scale, 0.25, 4., "mass leafScale")?;
             within(mass.spray_scale, 0.25, 4., "mass sprayScale")?;
+            within(mass.card_scale, 0.25, 4., "mass cardScale")?;
+            within(mass.shapes, 0., 1., "mass shapes")?;
+            within(mass.variation, 0., 1., "mass variation")?;
+            within(mass.sparkles, 0., 4., "mass sparkles")?;
             within(mass.palette.hue, -180., 180., "mass palette hue")?;
             within(mass.palette.saturation, 0., 2., "mass palette saturation")?;
             within(mass.palette.value, 0., 2., "mass palette value")?;

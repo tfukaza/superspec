@@ -13,6 +13,10 @@ import type { LightShadow, Rgb } from "./lighting.ts";
  * shadow. Faces turned away from the light are unlit without being in the shadow map; a soft facing term joins them
  * to the cast shadows, so both read as one shade.
  *
+ * Form light (`form`, experimental, off at 0): inside a cast shadow a share of the light's own diffuse shading is kept,
+ * so a prop standing in shadow shows a lit and a dark side; `formFill` adds a weaker one from the mirrored direction.
+ * Both are tinted and darkened like the shadow they are in, and compiled in only while one of them is above 0. Painted materials shade themselves and take neither.
+ *
  * The gradient is contact-hardening. three.js binds the shadow map as a comparison sampler, which cannot return a
  * depth, so the distance to the occluder is estimated by comparing against a few depths nearer the light and
  * integrating how much of a search disk is still occluded at each (the mean occluder distance, without a raw depth
@@ -44,6 +48,9 @@ uniform vec3 msShadowColor;
 uniform vec3 msShadowColorAlt;
 uniform float msShadowWrap;
 uniform float msShadowSeed;
+uniform float msShadowForm;
+uniform float msShadowFormFill;
+uniform vec3 msShadowUp;
 // The styled shadow term of the pixel: 1 lit, 0 in full shadow (cast or facing away). Later code may read it as a mask.
 float msShadowTerm = 1.0;
 // What the shaded color is multiplied by in full shadow, with the interior noise applied.
@@ -138,10 +145,31 @@ const STYLED = /* glsl */`
 		#if defined( MS_SHADOW_STYLE )
 		if ( directLight.visible ) {
 			float msCast = receiveShadow ? msStyledShadow( directionalShadowMap[ i ], directionalLightShadow.shadowMapSize, directionalLightShadow.shadowIntensity, directionalLightShadow.shadowBias, vDirectionalShadowCoord[ i ] ) : 1.0;
+			#if defined( MS_SHADOW_FORM ) && ! defined( MS_PAINTED )
+			vec3 msSunColor = directLight.color;
+			#endif
 			directLight.color *= msCast;
 			// Faces turned away from the light join the cast shadows, over a soft band instead of at the terminator.
 			msShadowTerm = min( msShadowTerm, msCast * smoothstep( 0.0, msShadowWrap, dot( geometryNormal, directLight.direction ) ) );
 			msShadowInterior( vDirectionalShadowCoord[ i ] );
+			#if defined( MS_SHADOW_FORM ) && ! defined( MS_PAINTED )
+			// Form light: where something else shades the surface, a share of the light's diffuse shading is kept, so a
+			// side turned to the light stays brighter than one turned away. It comes from the light's compass direction,
+			// level with the ground: the ground, a roof or an awning's top gets none and keeps its cast shadow in full,
+			// while the sides of what stands on it are told apart. It is added before the shadow's shade multiplies the
+			// color (FINAL), so it is darkened and tinted like the rest of the shadow.
+			vec3 msUp = normalize( ( viewMatrix * vec4( msShadowUp, 0.0 ) ).xyz );
+			vec3 msLevel = directLight.direction - dot( directLight.direction, msUp ) * msUp;
+			// A light nearly overhead has no compass direction, and gives no form light.
+			float msAcross = length( msLevel );
+			msLevel *= smoothstep( 0.05, 0.25, msAcross ) / max( msAcross, 1e-4 );
+			float msToward = dot( geometryNormal, msLevel );
+			vec3 msFormLight = msSunColor * BRDF_Lambert( material.diffuseColor );
+			reflectedLight.directDiffuse += ( msShadowForm * ( 1.0 - msCast ) * saturate( msToward ) ) * msFormLight;
+			// Its fill, from the opposite side, on what is in shadow or turned from the light: the far sides are graded too.
+			float msShaded = 1.0 - msCast * smoothstep( 0.0, msShadowWrap, dot( geometryNormal, directLight.direction ) );
+			reflectedLight.directDiffuse += ( msShadowFormFill * msShaded * saturate( - msToward ) ) * msFormLight;
+			#endif
 		}
 		#else
 		${PLAIN}
@@ -185,7 +213,7 @@ const styles = new WeakMap<THREE.Material, ShadowStyle>();
 
 /** Appended to a material's program cache key by every patch that sets its own key (live.ts, shade.ts). */
 export function shadowStyleKey(material: THREE.Material): string {
-  return styles.get(material)?.enabled ? "|shadow-style" : "";
+  return styles.get(material)?.key ?? "";
 }
 
 /** What the shaded color is multiplied by in full shadow: the tint at full brightness, desaturated by `1 - strength`, then darkened. */
@@ -198,6 +226,11 @@ function shade(target: THREE.Color, tint: Rgb, shadow: LightShadow): THREE.Color
 export class ShadowStyle {
   /** Whether patched materials draw the styled shadow (the record's `illustration`) or three.js's plain one. */
   private styled = true;
+  /**
+   * Whether the form light is compiled in (`form` or `formFill` above 0). It is left out of the program otherwise, so
+   * a scene without it draws exactly the pixels it drew before the form light existed.
+   */
+  private formed = false;
   /** Every material patched so far, to recompile them when the style is turned on or off. */
   private readonly materials = new Set<WeakRef<THREE.Material>>();
 
@@ -208,6 +241,8 @@ export class ShadowStyle {
     msShadowNoiseScale: { value: 1 }, msShadowEdgeNoise: { value: 0 }, msShadowNoiseAmount: { value: 0 },
     msShadowColor: { value: new THREE.Color() }, msShadowColorAlt: { value: new THREE.Color() },
     msShadowWrap: { value: 0.3 }, msShadowSeed: { value: 0 },
+    // Form light in shadow and its fill (0 is none), and the world's up axis the fill is mirrored about.
+    msShadowForm: { value: 0 }, msShadowFormFill: { value: 0 }, msShadowUp: { value: new THREE.Vector3(0, 0, 1) },
   };
 
   constructor(shadow: LightShadow) {
@@ -215,10 +250,12 @@ export class ShadowStyle {
   }
 
   get enabled(): boolean { return this.styled; }
+  /** What a patched material's program depends on: whether the style is drawn, and whether with form light. */
+  get key(): string { return this.styled ? (this.formed ? "|shadow-style|form" : "|shadow-style") : ""; }
 
   /**
    * Changes the look in place. Values are uniforms, so they cost nothing; only a change between `plain` and
-   * `illustration` recompiles the patched materials' programs.
+   * `illustration`, or turning the form light on or off, recompiles the patched materials' programs.
    */
   set(shadow: LightShadow): void {
     const uniforms = this.uniforms;
@@ -232,9 +269,12 @@ export class ShadowStyle {
     shade(uniforms.msShadowColorAlt.value as THREE.Color, shadow.tintAlt, shadow);
     uniforms.msShadowWrap.value = Math.max(shadow.wrap, 1e-3);
     uniforms.msShadowSeed.value = Math.floor(shadow.noise.seed);
-    const styled = shadow.style === "illustration";
-    if (styled === this.styled) return;
+    uniforms.msShadowForm.value = shadow.form ?? 0;
+    uniforms.msShadowFormFill.value = shadow.formFill ?? 0;
+    const styled = shadow.style === "illustration", formed = (shadow.form ?? 0) > 0 || (shadow.formFill ?? 0) > 0;
+    if (styled === this.styled && formed === this.formed) return;
     this.styled = styled;
+    this.formed = formed;
     for (const reference of this.materials) {
       const material = reference.deref();
       if (material) material.needsUpdate = true;
@@ -268,12 +308,12 @@ export class ShadowStyle {
         .every(chunk => shader.fragmentShader.includes(chunk)) || !shader.fragmentShader.includes("totalEmissiveRadiance")) return;
       Object.assign(shader.uniforms, uniforms);
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <shadowmap_pars_fragment>", `#include <shadowmap_pars_fragment>\n${DECLARATIONS}`)
+        .replace("#include <shadowmap_pars_fragment>", `#include <shadowmap_pars_fragment>\n${this.formed ? "#define MS_SHADOW_FORM\n" : ""}${DECLARATIONS}`)
         .replace("#include <lights_fragment_begin>", lights.replace(PLAIN, STYLED))
         .replace("#include <opaque_fragment>", FINAL);
     };
     const key = material.customProgramCacheKey;
-    material.customProgramCacheKey = () => `${key.call(material)}${this.styled ? "|shadow-style" : ""}`;
+    material.customProgramCacheKey = () => `${key.call(material)}${this.key}`;
     material.needsUpdate = true;
   }
 }

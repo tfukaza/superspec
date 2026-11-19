@@ -35,12 +35,12 @@ const faced = mul(mix(glaze, spare, odd), tone);
 const faded = mix(faced, add(mul(faced, 0.6), vec3(0.19, 0.19, 0.17)), mul(fade, clouds));
 
 // Dirt: out of the joints onto the faces, in patches, and washed down in streaks.
-const beside = sub(1, smoothstep(0.002, mul(tileSize, 0.24), grid.sideDistance));
-const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(9, 0.8)), seed("tile-streaks")));
+const beside = sub(1, smoothstep(0.002, min(mul(tileSize, 0.24), 0.018), grid.sideDistance));
+const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(4.5, 0.8)), seed("tile-streaks")));
 const patches = smoothstep(0.5, 0.8, valueNoise(add(mul(surface, 2.3), vec2(4.1, 9.7)), seed("tile-patches")));
 // Plus a broad soot band under the panel's top, where the sill above drips.
 const headSoot = mul(sub(1, smoothstep(0.05, 0.35, max(sub(boundsMax.z, world.z), 0))), add(0.4, mul(0.6, streaks)));
-const film = mul(grime, min(add(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.12)), mul(streaks, 0.12)), mul(headSoot, 0.5)), 0.85));
+const film = mul(grime, min(add(add(add(mul(beside, add(0.1, mul(0.25, streaks))), mul(patches, 0.12)), mul(streaks, 0.12)), mul(headSoot, 0.2)), 0.85));
 
 // Runs down the vertical joints from the panel's top (surface x runs along the wall, y up it).
 const joint = floor(add(div(surface.x, tileSize), 0.5));
@@ -61,6 +61,6 @@ export default defineMaterial({
     layer({ id: "runs", mask: min(mul(runs, 1.3), 0.95), baseColor: vec3(0.045, 0.038, 0.028), roughness: 0.9 }),
     layer({ id: "chips", mask: tiles.chip, baseColor: vec3(0.42, 0.39, 0.33), roughness: 0.8, height: { add: -0.0012 } }),
     layer({ id: "bedding", mask: tiles.substrate, baseColor: vec3(0.3, 0.285, 0.25), roughness: 0.95 }),
-    layer({ id: "joints", mask: tiles.joint, baseColor: mix(vec3(0.16, 0.15, 0.13), vec3(0.03, 0.028, 0.024), grime), roughness: 0.95, height: { add: -0.0025 } }),
+    layer({ id: "joints", mask: tiles.joint, baseColor: mix(vec3(0.16, 0.15, 0.13), vec3(0.115, 0.106, 0.09), grime), roughness: 0.95, height: { add: -0.0025 } }),
   ],
 });

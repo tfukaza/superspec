@@ -42,7 +42,7 @@ mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "6";
+const VERSION: &str = "7";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -3072,6 +3072,8 @@ impl NativeGenerators for Natives {
         match name {
             "kowloon/party" => party::features(name, parameters),
             "kowloon/riser-duct" => riser_duct_features(name, parameters),
+            "kowloon/pedestrian-avenue" => street::pedestrian_avenue_features(name, parameters),
+            "kowloon/street-lamp" => street::street_lamp_features(name, parameters),
             _ => vec![],
         }
     }

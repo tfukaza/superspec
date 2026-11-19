@@ -70,11 +70,11 @@
   ],
   "layers": {
     "frame": [
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.6, "color": [0.22, 0.2, 0.16], "streakLength": 0.5, "period": 1.1, "variety": 0.6, "lip": 1, "lipDepth": 0.045}, "seed": 21, "follow": {"zone": "runoff-head"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.6, "color": [0.22, 0.2, 0.16], "streakLength": 0.5, "period": 2.2, "variety": 0.6, "lip": 1, "lipDepth": 0.045}, "seed": 21, "follow": {"zone": "runoff-head"}},
       {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 1, "streakLength": 0.12, "period": 0.6, "film": 0.9, "filmDepth": 0.06, "color": [0.8, 0.78, 0.72]}, "seed": 22, "follow": {"zone": "runoff-head"}}
     ],
     "glass": [
-      {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 0.6, "streakLength": 0.8, "period": 1.1, "film": 0.35, "filmDepth": 0.1, "foot": 0.7, "opaque": 0.85, "color": [0.6, 0.58, 0.53]}, "seed": 23, "follow": {"zone": "runoff-glass"}}
+      {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 0.6, "streakLength": 0.8, "period": 2.4, "film": 0.35, "filmDepth": 0.1, "foot": 0.7, "opaque": 0.85, "color": [0.6, 0.58, 0.53]}, "seed": 23, "follow": {"zone": "runoff-glass"}}
     ]
   }
 }

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { AmbientOcclusion } from "./ambient-occlusion.ts";
-import { DEFAULT_LIGHTING, defaultLighting, lightingFromQuery, paintedOf, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
+import { DEFAULT_LIGHTING, contoursOf, defaultLighting, lightingFromQuery, paintedOf, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
 import { ShadowStyle } from "./shadow-style.ts";
 import { programSun, setPaintedFinishing } from "./shade.ts";
 import { softwareOcclusionDefault } from "./software-occlusion.ts";
@@ -41,8 +41,13 @@ export class SceneLighting {
   readonly sun = new THREE.DirectionalLight();
   /** The sun's shadow look. Every scene material is patched with it; it draws only while `styledShadows`. */
   readonly shadowStyle = new ShadowStyle(DEFAULT_LIGHTING.lights[0].shadow);
-  /** Ambient occlusion while it is on and the renderer can composite; frames then go through it. */
+  /**
+   * The composited frame, while ambient occlusion or contour lines are on and the renderer can composite; frames then
+   * go through it. `occluding` and `outlining` say which of the two it draws.
+   */
   ambientOcclusion?: AmbientOcclusion;
+  occluding = false;
+  outlining = false;
   /** Why ambient occlusion the record leaves to its default is not drawn here (`software-occlusion.ts`), or null. */
   occlusionDefault: string | null = null;
   /** The record in effect: the scene's, with the session's overrides. */
@@ -79,6 +84,7 @@ export class SceneLighting {
       // The shadow map keeps the roll it has in the record's frame (its rows along the domain's +Y), so the style's
       // noise, which lives in the map's plane, lies in the world as it does in a Z-up view.
       this.sun.shadow.camera.up.set(0, 0, -1);
+      (this.shadowStyle.uniforms.msShadowUp.value as THREE.Vector3).set(0, 1, 0);
     } else this.frame = scene;
     this.frame.add(this.ambient, this.sun, this.sun.target);
     this.set(defaultLighting());
@@ -139,12 +145,19 @@ export class SceneLighting {
       occlusion.enabled = false;
       this.report(`ambientOcclusion is ${this.occlusionDefault}.`, "info");
     }
-    const unavailable = occlusion.enabled ? AmbientOcclusion.unavailable(renderer) : null;
-    if (unavailable) this.report(`ambientOcclusion is not drawn: ${unavailable}.`);
-    if (occlusion.enabled && !unavailable) {
-      if (this.ambientOcclusion) this.ambientOcclusion.set(occlusion);
-      else {
-        this.ambientOcclusion = new AmbientOcclusion(renderer, scene, this.camera, occlusion, this.excluded);
+    // Contour lines are a pass over the same composited frame, with or without the occlusion.
+    const contours = contoursOf(lighting);
+    const unavailable = occlusion.enabled || contours.enabled ? AmbientOcclusion.unavailable(renderer) : null;
+    if (unavailable && occlusion.enabled) this.report(`ambientOcclusion is not drawn: ${unavailable}.`);
+    if (unavailable && contours.enabled) this.report(`contours are not drawn: ${unavailable}.`);
+    this.occluding = occlusion.enabled && !unavailable;
+    this.outlining = contours.enabled && !unavailable;
+    if (this.occluding || this.outlining) {
+      if (this.ambientOcclusion) {
+        this.ambientOcclusion.set(this.occluding ? occlusion : null);
+        this.ambientOcclusion.setContours(this.outlining ? contours : null);
+      } else {
+        this.ambientOcclusion = new AmbientOcclusion(renderer, scene, this.camera, this.occluding ? occlusion : null, this.excluded, this.outlining ? contours : null);
         const size = renderer.getSize(new THREE.Vector2());
         this.ambientOcclusion.setSize(size.x, size.y, renderer.getPixelRatio());
       }
@@ -156,7 +169,7 @@ export class SceneLighting {
     // over the finished image here, so it cannot leave painted pixels out.
     const painted = paintedOf(lighting);
     setPaintedFinishing(painted);
-    if (!painted.ambientOcclusion && this.ambientOcclusion) this.report("painted.ambientOcclusion is false, but ambient occlusion is a pass over the whole image in this viewer and also darkens painted materials.");
+    if (!painted.ambientOcclusion && this.occluding) this.report("painted.ambientOcclusion is false, but ambient occlusion is a pass over the whole image in this viewer and also darkens painted materials.");
   }
 
   /** The session's exposure, which replaces the record's until the page is left. */
@@ -190,7 +203,7 @@ export class SceneLighting {
     this.renderer.shadowMap.needsUpdate = true;
   }
 
-  /** Draws one frame: through the ambient occlusion when it is on, else straight to the canvas. */
+  /** Draws one frame: through the composited frame (ambient occlusion, contour lines) when one is on, else straight to the canvas. */
   render(): void {
     if (this.ambientOcclusion) this.ambientOcclusion.render();
     else this.renderer.render(this.scene, this.camera);

@@ -35,5 +35,10 @@
   { "name": "wrap above one", "record": { "version": 1, "lights": [{ "shadow": { "wrap": 1.5 } }] }, "field": "lights[0].shadow.wrap" },
   { "name": "noise scale zero", "record": { "version": 1, "lights": [{ "shadow": { "noise": { "scale": 0 } } }] }, "field": "lights[0].shadow.noise.scale" },
   { "name": "noise edge above limit", "record": { "version": 1, "lights": [{ "shadow": { "noise": { "edge": 1.5 } } }] }, "field": "lights[0].shadow.noise.edge" },
-  { "name": "noise amount above one", "record": { "version": 1, "lights": [{ "shadow": { "noise": { "amount": 1.5 } } }] }, "field": "lights[0].shadow.noise.amount" }
+  { "name": "noise amount above one", "record": { "version": 1, "lights": [{ "shadow": { "noise": { "amount": 1.5 } } }] }, "field": "lights[0].shadow.noise.amount" },
+  { "name": "form light above one", "record": { "version": 1, "lights": [{ "shadow": { "form": 1.5 } }] }, "field": "lights[0].shadow.form" },
+  { "name": "form fill negative", "record": { "version": 1, "lights": [{ "shadow": { "formFill": -0.1 } }] }, "field": "lights[0].shadow.formFill" },
+  { "name": "contour width zero", "record": { "version": 1, "contours": { "width": 0 } }, "field": "contours.width" },
+  { "name": "contour color above one", "record": { "version": 1, "contours": { "color": [2, 0, 0] } }, "field": "contours.color" },
+  { "name": "contour field unknown", "record": { "version": 1, "contours": { "glow": 1 } }, "structural": true }
 ]

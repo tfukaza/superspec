@@ -36,12 +36,12 @@ const isCracked = step(sub(1, cracked), hash(grid.cell, seed("flag-cracked")));
 const lean = sub(hash(grid.cell, seed("flag-lean")), 0.5);
 const wobble = mul(sub(valueNoise(mul(at, 14), seed("flag-wobble")), 0.5), 0.05);
 const line = abs(add(add(sub(grid.local.y, mul(flag.y, add(0.35, mul(0.3, hash(grid.cell, seed("flag-crack-at")))))), mul(sub(grid.local.x, mul(flag.x, 0.5)), lean)), wobble));
-const flagCrack = mul(isCracked, sub(1, smoothstep(0.0015, add(0.004, pixel), line)));
+const flagCrack = mul(isCracked, sub(1, smoothstep(0.006, add(0.012, pixel), line)));
 // Fractures that run on across flags where the ground has settled: the level lines of a slow noise, in the weaker
 // areas only, so they wander, branch off and stop.
 const settling = add(valueNoise(add(mul(at, 1.1), vec2(4.4, 9.1)), seed("settle")), mul(sub(valueNoise(mul(at, 7), seed("settle-fine")), 0.5), 0.05));
 const weak = smoothstep(0.52, 0.7, valueNoise(add(mul(at, 0.6), vec2(2.9, 0.4)), seed("settle-where")));
-const fracture = mul(mul(fractures, weak), sub(1, smoothstep(0.003, add(0.007, mul(pixel, 1.1)), abs(sub(settling, 0.5)))));
+const fracture = mul(mul(fractures, weak), sub(1, smoothstep(0.008, add(0.016, mul(pixel, 1.1)), abs(sub(settling, 0.5)))));
 const crack = max(flagCrack, fracture);
 
 // The street's marks.

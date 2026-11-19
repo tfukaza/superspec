@@ -123,9 +123,9 @@ function facadeMaterials() {
     // The back of a closed bay's recess (behind a gate or shutter): grimy dark plaster, untinted.
     { id: "recess-plaster", entry: steel, parameters: { ...plain, substrate: [0.2, 0.185, 0.16], metalness: 0, roughness: 0.95, edgeRust: 0, surfaceRust: 0.1, rainRust: 0.25 }, seed: 5, meshes: [] },
     // The spandrels' small grey-green tiles, dirty in the joints.
-    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.065, glaze: [0.2, 0.25, 0.2], spare: [0.26, 0.29, 0.24], replaced: 0.015, missing: 0.03, variation: 0.14, fade: 0.45, grime: 1, jointRuns: 0.45, runReach: 1.4 }, seed: 7, meshes: [] },
+    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.016, glaze: [0.2, 0.25, 0.2], spare: [0.26, 0.29, 0.24], replaced: 0.015, missing: 0.03, variation: 0.14, fade: 0.45, grime: 0.8, jointRuns: 0.45, runReach: 1.4 }, seed: 7, meshes: [] },
     // A shop front's tiled dado: greener and glossier than the spandrels' sage, a few tiles lost from its foot up.
-    { id: "dado-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.065, glaze: [0.1, 0.19, 0.13], spare: [0.16, 0.24, 0.17], replaced: 0.012, missing: 0.06, variation: 0.12, grime: 0.8 }, seed: 11, meshes: [] },
+    { id: "dado-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.016, glaze: [0.1, 0.19, 0.13], spare: [0.16, 0.24, 0.17], replaced: 0.012, missing: 0.06, variation: 0.12, grime: 0.8 }, seed: 11, meshes: [] },
     // Fixtures: printed air conditioner casings, painted steel gone dull and rusty, and thin galvanized sheet.
     { id: "aircon-casing", entry: "kowloon-aircon.material.ts", parameters: { yellowing: 0.25 }, seed: 7, meshes: [] },
     // The plastered walls and floor inside an open shop (tinted): pale, matt and a little grimy.
@@ -133,7 +133,7 @@ function facadeMaterials() {
     { id: "poster-print", entry: "kowloon-poster-print.material.ts", parameters: {}, seed: 7, meshes: [] },
     // Signs: the painted ground, worn and stained, and its lettering with paint lost from the strokes (both tinted).
     { id: "sign-board", entry: "kowloon-sign-board.material.ts", parameters: { flaking: 0.8, fading: 0.65, grime: 0.75, rust: 0.7 }, seed: 7, meshes: [] },
-    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.04, fading: 0.3 }, seed: 7, meshes: [] },
+    { id: "sign-lettering", entry: "kowloon-sign-lettering.material.ts", parameters: { wear: 0.2, fading: 0.3 }, seed: 7, meshes: [] },
     // Lit tubes in the shops, and a shop's concrete floor: grey, lightly soiled, never dark.
     { id: "tube-light", entry: "kowloon-tube-light.material.ts", parameters: {}, seed: 7, meshes: [] },
     // A lit upper room's walls and ceiling (tinted): a soft warm glow under its own tube, far dimmer than the tube.
@@ -150,7 +150,7 @@ function facadeMaterials() {
     // (cool and pale under their brown tint); and the avenue's slabs, a mid grey that is damp in patches.
     { id: "street-metal", entry: steel, parameters: { ...plain, substrate: [0.62, 0.62, 0.6], metalness: 0.2, roughness: 0.75, edgeRust: 0.85, surfaceRust: 0.4, rainRust: 0.85 }, seed: 17, meshes: [] },
     { id: "lamp-lens", entry: "kowloon-tube-light.material.ts", parameters: { tint: [1, 0.82, 0.55], glow: 0.35, aged: 0.2, dust: 0.6 }, seed: 7, meshes: [] },
-    { id: "weathered-timber", entry: "wood.material.ts", parameters: { light: [0.55, 0.68, 0.85], dark: [0.2, 0.24, 0.3] }, seed: 7, meshes: [] },
+    { id: "weathered-timber", entry: "wood.material.ts", parameters: { light: [0.42, 0.6, 0.92], dark: [0.2, 0.28, 0.42] }, seed: 7, meshes: [] },
     { id: "avenue-paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.66, 0.66, 0.65], variation: 0.08, grime: 1, spots: 0.5, wet: 0.5 }, seed: 21, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.92, surfaceRust: 0.38, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
@@ -159,7 +159,7 @@ function facadeMaterials() {
     { id: "canvas", entry: "kowloon-canvas.material.ts", parameters: { clothA: [0.86, 0.85, 0.82], clothB: [0.86, 0.85, 0.82], striped: 0, bleaching: 0, soil: 0.4, wallRuns: 1 }, seed: 7, meshes: [] },
     // The street: flagged pavement and its kerb (their stones shaded by tints), and the asphalt beyond.
     // (The pavement item lays its own stones, so the recipe's flags are made too large to show: one stone a receiver.)
-    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.36, 0.365, 0.37], variation: 0.06, grime: 1, wet: 0.75 }, seed: 7, meshes: [] },
+    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.62, 0.62, 0.61], variation: 0.06, grime: 1, wet: 0.6 }, seed: 7, meshes: [] },
     { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
     { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.1, wearing: 0.12, stains: 0.12 }, seed: 7, meshes: [] },
     { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
@@ -182,8 +182,9 @@ export function pedestrianAvenue({ origin, along, across, length, width, height,
       planterKerb: median.kerb, planterRise: median.rise, soilDepth: median.soil,
       // Large square slabs laid in a grid with straight joints both ways, no darker bands; black bollards close the ends.
       slab: 0.75, course: 0.75, stagger: false, bands: 0, bollardSpacing: 1.3, bollardColor: "#1d1e1c",
-      // A pair of benches against the planter beside each shrub, with a litter bin past their ends.
-      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, binColor: "#6f8468", seed: 7 } } }] };
+      // A pair of benches against the planter beside each shrub, with a litter bin past their ends (a greyed green:
+      // the tint multiplies the metal bound to it, so a near-neutral one leaves that material to decide).
+      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, binColor: "#7d8778", seed: 7 } } }] };
   const transform = [[along[0], along[1], 0], [-across[0], -across[1], 0], [0, 0, 1], origin];
   const far = Math.max(...[0, length].flatMap(s => [0, width].map(t => origin[1] + along[1] * s + across[1] * t)));
   return { definition, transform, far };
@@ -208,7 +209,7 @@ export function avenueLamps({ origin, along, across, width, lamps }) {
   }
   // Rust and chipped paint rise from each post's foot (a short line through its base, which the wear layer follows).
   const features = parts.map(part => ({ name: "foot", part: part.id, points: [[-0.05, 0, 0.02], [0.05, 0, 0.02]] }));
-  const layers = { metal: [{ entry: "kowloon-foot-wear.material.ts", parameters: { reach: 0.5, strength: 0.85, chips: 0.25 }, seed: 33, follow: { foot: "foot" } }] };
+  const layers = { metal: [{ entry: "kowloon-foot-wear.material.ts", parameters: { reach: 0.6, strength: 0.95, chips: 0.3, color: [0.2, 0.13, 0.08] }, seed: 33, follow: { foot: "foot" } }] };
   return { format: "itemspec", version: 2, id: "avenue-lamps", parts, features, layers };
 }
 
@@ -276,7 +277,8 @@ export function avenueFrontage(record, party) {
     parts.push({ id: `storeys-${i}`, ...(party?.zones?.length ? { zones: party.zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: {
       // (`top` over its parapet: nothing stands behind the row, and its back faces away from every picture).
       kind: "stub", length: unit, own: storeys, ground: 3.35, storey: 3, top: 80, depth: frontage.depth, shops: true, door: false, stacks: 0,
-      cables: 1, bars: 0.15, units: 0.4, color: paint, seed } },
+      // (The first unit's end faces the front street: windows across it, a soil stack and vents, not a blank wall.)
+      cables: 1, bars: 0.15, units: 0.4, color: paint, seed, ...(i === 0 ? { gable: "end" } : {}) } },
       placement: { position: [...at(s1, width + frontage.setback + frontage.depth), origin[2]], along: far } });
     s0 = s1;
     if (i + 1 < weights.length) piers.push(+s1.toFixed(3));
@@ -289,6 +291,11 @@ export function avenueFrontage(record, party) {
       mount: k % 2 ? "hung" : "blade", height: 3.2, reach: 1.15, seed: frontage.seed * 10 + k } },
       placement: { position: [...at(s, width + frontage.setback), origin[2] + 3.75], along: far } });
   }
+  // And one on the first unit's end, by its corner, over the front street (a fixture's front faces its -Y: toward the
+  // avenue's start, against `along`).
+  parts.push({ id: "sign-end", generator: { kind: "item", entry: "kowloon-sign.item.json", parameters: {
+    mount: "blade", height: 3.2, reach: 1.05, seed: frontage.seed * 10 + 9 } },
+    placement: { position: [...at(frontage.from, width + frontage.setback + 0.22), origin[2] + 3.75], along: [record.along[1], -record.along[0]] } });
   return { definition: { format: "itemspec", version: 2, id: "avenue-frontage", parts }, piers };
 }
 
@@ -459,7 +466,10 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
       const buildingItem = JSON.parse(building.definitions["kowloon-building.item.json"]);
       const party = buildingItem.parts.find(part => part.id === "party");
       const zones = (party?.zones ?? []).map(({ u0, length, ...zone }) => ({ ...zone, length: typeof length === "number" ? length : 3 }));
-      const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#b0a590" } }, ...(buildingItem.layers?.wall ? { layers: { wall: buildingItem.layers.wall } } : {}), parts: [
+      // (Their streaks half again as strong as the building's: plain walls with little else on them.)
+      const neighbourLayers = (buildingItem.layers?.wall ?? []).map(layer => layer.entry === "kowloon-grime-streaks.material.ts"
+        ? { ...layer, parameters: { ...layer.parameters, strength: +(layer.parameters.strength * 1.7).toFixed(2), longRuns: 1.4 } } : layer);
+      const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#aaa391" } }, ...(neighbourLayers.length ? { layers: { wall: neighbourLayers } } : {}), parts: [
         // Three storeys, so the narrow street is closed on both sides past the building's back while the building's
         // fourth storey and roof still stand above it.
         { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 3, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
@@ -511,10 +521,11 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     const mutedShade = withFacade ? { shadeTint: [0.24, 0.31, 0.4] } : {};
     materials.push(...lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0"),
       parameters: { ...material.parameters, ...mutedShade, ...(material.id === "painted-lawn" ? mutedLawn : {}) } })),
-      // The bark a grey-brown with a near-neutral shade, not the washroom's warm brown under a blue shade (which reads
-      // mauve beside the plaster).
+      // Beside the building the bark is the avenue's own recipe (street-bark.material.ts): a warm grey-brown painted in
+      // flat steps with bold strokes, not the washroom's streaked brown under a blue shade (mauve beside the plaster).
       ...treeMaterials.map(material => ({ ...material, seed: 7, ...(withFacade && material.id === "painted-bark"
-        ? { parameters: { light: [0.13, 0.11, 0.085], dark: [0.05, 0.042, 0.032], shadeTint: [0.56, 0.58, 0.64] } } : {}) })));
+        ? { entry: "street-bark.material.ts", parameters: {} } : {}) })));
+    if (withFacade) modules["street-bark.material.ts"] = readFileSync(resolve(here, "street-bark.material.ts"), "utf8");
     batchList = [...(batchList ?? []), ...lane.batches];
   }
   const project = {

@@ -161,6 +161,28 @@ mod tests {
     }
 
     #[test]
+    fn form_light_and_contours_are_written_only_when_set() {
+        let json = serde_json::to_value(Lighting::default()).unwrap();
+        assert!(json.get("contours").is_none(), "{json}");
+        assert!(json["lights"][0]["shadow"].get("form").is_none(), "{json}");
+        let read = from_json(
+            r#"{"version":1,"contours":{"enabled":true,"width":2.5},"lights":[{"shadow":{"form":0.35}}]}"#,
+        )
+        .unwrap();
+        assert!(read.contours.enabled && read.contours.width == 2.5 && read.contours.depth == 0.04);
+        assert_eq!(read.lights[0].shadow.form, 0.35);
+        let written = serde_json::to_value(&read).unwrap();
+        assert_eq!(written["contours"]["strength"], 0.7);
+        assert_eq!(written["lights"][0]["shadow"]["form"], 0.35);
+        assert!(written["lights"][0]["shadow"].get("formFill").is_none());
+        assert_eq!(
+            from_json(r#"{"version":1,"contours":{"width":9}}"#).unwrap_err()[0].field,
+            "contours.width"
+        );
+        assert!(from_json(r#"{"version":1,"contours":{"glow":1}}"#).is_err());
+    }
+
+    #[test]
     fn a_scene_without_a_record_delivers_no_lighting_key() {
         let mut scene = Scene::empty(1, "test");
         let manifest = serde_json::to_value(&scene.manifest).unwrap();

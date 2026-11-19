@@ -277,7 +277,8 @@ leaves the seeded result as it was):
   plain stained wall 8 cm proud of it and a little past its ends, seeded somewhat taller or shorter than
   the parapet, under a coping (its roof rail goes too). `stub` keeps the side behind a slice of the
   adjoining building 1.1 to 1.9 m deep: storeys of its own (`partyStoreyPlans`, 0 for a seeded few about
-  the building's), rows of windows (some with units), string courses, a drain and a parapet. A party
+  the building's), rows of windows (some with units), string courses, a drain and a parapet; an end
+that faces a street (`gable`) has columns of windows across its depth, a soil stack and vents. A party
   edge has no seeded back door or cables. Either is a few hundred faces.
 - **Details.** `conduitColor` paints every conduit; `plaquePlans`' seventh column names a plate's
   lettering face (the small warehouse's number is `heavy`: thin strokes vanish from across the street);
@@ -405,11 +406,15 @@ is a whole street: a 7.3 m carriageway running out of the pictures both ways, a 
 closes the avenue's near side as a neighbour's frontage; the far side is closed by a row of six
 neighbours (`frontage` in `avenue.json`): `kowloon-ground-floor` shopfronts (shutters, gates,
 doors, awnings) under `kowloon/party` stubs of three to five storeys (`depth` fixed, `shops`
-leaving their front's ground storey blank) set 0.35 m behind them. Blade and hung
+leaving their front's ground storey blank) set 0.35 m behind them; the first one's end faces the
+front street (`gable: "end"`: windows across it, barred ones in its ground storey, a soil stack,
+vents, and a blade sign by its corner). Blade and hung
 `kowloon-sign`s project over both walkways between the trees, and the walkways carry pots by
 the shop piers, crates and cartons, parked bicycles and loaded hand carts (`kowloon/street-cart`).
 Pavements and the avenue are tinted a near-neutral mid grey (#8f8e8a), so the `paving` material
-decides their colour. The scene is near the preview's bake allowance (4 GiB at `bakememory`
+decides their colour; the benches' timber (a silver grey) and the bins are near neutral too. The
+avenue and the lamps report a `foot` ring on the paving plane round what stands on it (bollards,
+bins, bench supports, the planter, a lamp's base plate) for wear and grime layers to follow. The scene is near the preview's bake allowance (4 GiB at `bakememory`
 4096): the neighbours and the street furniture bake coarser than the building. `tests/item-facade-browser.mjs` (`MODEL=building`,
 `BUILDING_PARAMETERS`, `RESOLUTION`, default 1024, and `TEXELS`, default 256 per meter) pictures
 it in the built studio. The earlier low concrete detail came from baking at 256 pixels per

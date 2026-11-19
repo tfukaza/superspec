@@ -136,6 +136,15 @@ try {
       ambient: { sky: [1, 0.98, 0.95], ground: [0.42, 0.4, 0.35], intensity: 1.15 },
       ambientOcclusion: { enabled: true, radius: 0.55, intensity: 0.8, thickness: 0.3 },
     };
+    // >>> ILLUSTRATION EXPERIMENTS: two switchable settings of the same global record (docs/plans/lighting-settings.md,
+    // "Illustration experiments"), both off in the shipped look and on here.
+    // FORM=<0 to 1> is the sun's form light in shadow (`shadow.form`, default 0.35; 0 is off) and FORM_FILL its fill
+    // (`shadow.formFill`, default 0); CONTOURS=0 leaves the contour lines out (`contours`, default on).
+    const form = Number(process.env.FORM ?? 0.35), formFill = Number(process.env.FORM_FILL ?? 0);
+    if (form > 0) softSun.shadow.form = form;
+    if (formFill > 0) softSun.shadow.formFill = formFill;
+    if (process.env.CONTOURS !== "0") softScene.contours = { enabled: true };
+    // <<< ILLUSTRATION EXPERIMENTS
     const lit = await page.evaluate(({ sun, soft, extra, keep, scene }) => {
       const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
       const before = JSON.stringify(light);
@@ -203,6 +212,9 @@ try {
       // rising from the planter, the crowns over the walkway and their shadows on the paving and the side face.
       street: { position: [front + 2.5, y1 + 0.15, 1.7], target: [front - 21, y1 + 3.05, 4.2], sun: [135, 54] },
       // The side face and its shop fronts from across the avenue's mouth, with the avenue's sun: the crowns' dappled shadows on them.
+      // Across the avenue from the building's first floor toward the far side: the neighbours' shopfronts and upper
+      // storeys, unit by unit.
+      "far-side": { position: [front - 7, y1 + 0.6, 5.2], target: [front - 17, y1 + 8.5, 4.4], fov: 62, sun: [135, 54] },
       "side-face": { position: [front + 4, y1 + 6.5, 3.2], target: [x0 + 3, y1 - 1.6, 2.6], sun: [135, 54] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },

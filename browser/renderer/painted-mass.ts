@@ -77,13 +77,15 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
   const sun = programSun.value.clone();
   const leaf = leafCardTextures(true);
   // The painted leaves' size: the leaf map's repeat, the fuzz's cards and the density cards scale together.
-  const leafScale = mass.leafScale ?? 1, tile = s.tile * leafScale;
+  const leafScale = mass.leafScale ?? 1, tile = s.tile * leafScale, cardScale = mass.cardScale ?? 1;
   const leafMap = { texture: leafNormalTexture(s.brush), tile, origin: centre, strength: s.strength, offset: s.offset };
   const surface = new THREE.Mesh(smoothGeometry(geometry), leafNormalMaterial(sun, tile, s.strength, 0.35, true, centre, s.brush, s.offset));
   surface.name = "painted/surface";
-  const fuzz = contourFuzz(geometry, leaf.cards, { ...s.fuzz, size: s.fuzz.size * leafScale, sun, normals: leaf.normals, leafMap });
+  const fuzz = contourFuzz(geometry, leaf.cards, { ...s.fuzz, size: s.fuzz.size * leafScale * cardScale, density: s.fuzz.density / cardScale, sun, normals: leaf.normals, leafMap });
   fuzz.name = "painted/fuzz";
-  const cards = densityCards(field, leaf.cards, { ...s.cards, size: s.cards.size * leafScale, branchSize: s.cards.branchSize * leafScale, sprayScale: s.cards.sprayScale * (mass.sprayScale ?? 1), level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
+  const cards = densityCards(field, leaf.cards, { ...s.cards, size: s.cards.size * leafScale * cardScale, branchSize: s.cards.branchSize * leafScale * cardScale,
+    // Smaller cards, more of them: the candidates' spacing shrinks so their cover (count times area) holds.
+    spacing: s.cards.spacing * Math.pow(cardScale, 2 / 3), shapes: mass.shapes ?? 0, variation: mass.variation ?? 0, sparkles: mass.sparkles ?? 0, sprayScale: s.cards.sprayScale * (mass.sprayScale ?? 1), level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
     roundFamily: true, shadeField, shadeMix: form, shadeJitter: jitter,
     tierField: densityField(sites, mass.radius * s.tierSpread, mass.cell), leafMap });
   cards.name = "painted/cards";
