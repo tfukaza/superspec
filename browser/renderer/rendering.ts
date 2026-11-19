@@ -102,7 +102,7 @@ export class SceneLighting {
    * `stated` is the record as its project or file states it, before defaults were filled in (see `parseLighting`):
    * what it leaves out, a renderer may default by its own policy.
    */
-  set(record: Lighting, stated?: unknown): void {
+  set(record: Lighting, stated?: unknown, city = false): void {
     const lighting = this.resolved = lightingFromQuery(record, this.query);
     const { renderer, scene } = this;
     renderer.toneMapping = TONE_MAPPING[lighting.toneMapping];
@@ -148,16 +148,18 @@ export class SceneLighting {
     // Contours and edge blur can use the composited frame independently of occlusion.
     const contours = contoursOf(lighting);
     const edgeBlur = this.query.get("edgeblur") === "on";
+    const edgeMode = this.query.get("edgeboost");
+    const litEdges = casting && (edgeMode === "on" || (city && edgeMode !== "off"));
     const threshold = Number(this.query.get("edgethreshold") ?? NaN);
     const edgeThreshold = Number.isFinite(threshold) ? Math.min(0.9, Math.max(0.01, threshold)) : 0.12;
-    const unavailable = occlusion.enabled || contours.enabled || edgeBlur ? AmbientOcclusion.unavailable(renderer) : null;
+    const unavailable = occlusion.enabled || contours.enabled || edgeBlur || litEdges ? AmbientOcclusion.unavailable(renderer) : null;
     if (unavailable && occlusion.enabled) this.report(`ambientOcclusion is not drawn: ${unavailable}.`);
     if (unavailable && contours.enabled) this.report(`contours are not drawn: ${unavailable}.`);
     if (unavailable && edgeBlur) this.report(`edge blur is not drawn: ${unavailable}.`);
     this.occluding = occlusion.enabled && !unavailable;
     this.outlining = contours.enabled && !unavailable;
     this.edgeBlurring = edgeBlur && !unavailable;
-    if (this.occluding || this.outlining || this.edgeBlurring) {
+    if (this.occluding || this.outlining || this.edgeBlurring || (litEdges && !unavailable)) {
       if (this.ambientOcclusion) {
         this.ambientOcclusion.set(this.occluding ? occlusion : null);
         this.ambientOcclusion.setContours(this.outlining ? contours : null);
@@ -167,6 +169,7 @@ export class SceneLighting {
         const size = renderer.getSize(new THREE.Vector2());
         this.ambientOcclusion.setSize(size.x, size.y, renderer.getPixelRatio());
       }
+      this.ambientOcclusion.setLitEdges(litEdges && !unavailable ? this.sun : null);
     } else {
       this.ambientOcclusion?.dispose();
       this.ambientOcclusion = undefined;

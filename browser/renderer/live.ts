@@ -171,6 +171,7 @@ ${band ? `  {
   material.customProgramCacheKey = () => `materialSpec-live:${JSON.stringify(layout)}${shadowStyleKey(material)}`;
   // A viewer that swaps the textures behind an argument (a GPU preview) updates these in place, with no recompile.
   material.userData.liveUniforms = uniforms;
+  material.userData.liveDescriptors = usable;
   material.userData.liveTextureSlots = slots;
   material.needsUpdate = true;
   return usable.map(operation => operation.id);

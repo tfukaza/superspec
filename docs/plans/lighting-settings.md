@@ -485,6 +485,10 @@ The shipped lighting record leaves form light and contour lines off. The facade 
 script supports `FORM=<0 to 1>` and `FORM_FILL=<0 to 1>`. Contours are an opt-in
 comparison with `CONTOURS=1`. Captures use screen-space edge blur by default.
 Set `QUERY="edgeblur=off"` to disable it or set `edgethreshold` to tune the sensitivity.
+WorldSpec city previews also brighten the sunlit side of geometric edges within one device
+pixel. `edgeboost=on|off` overrides this per view, including in ItemSpec and Material Studio.
+The effect uses geometric normals and depth for edge ownership and compares each receiver
+with the sun's shadow depth. Its default resets when another AML scene is opened.
 Form light belongs to the light record and contours belong to the scene record. Like
 `painted`, each is written only when it differs from its default.
 

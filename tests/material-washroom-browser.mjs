@@ -67,7 +67,8 @@ try {
     assert.equal(await state(), "ready", `${await page.locator("#status").textContent()}\n${findings}`);
   };
   // The painted check reads the viewer's scene (`gpuprobe`) and counts exact paint colors, so ambient occlusion is off.
-  const query = [process.env.QUERY, ...(painted ? ["gpuprobe", "ao=off"] : [])].filter(Boolean).join("&");
+  const query = [process.env.QUERY, ...(painted ? ["gpuprobe", "ao=off"] : []),
+    ...(process.env.CHECK_LIT_EDGES === "1" ? ["gpuprobe", "edgeboost=on"] : [])].filter(Boolean).join("&");
   if (painted) process.env.QUERY = query;
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html${query ? `?${query}` : ""}`);
   await ready();
@@ -302,6 +303,31 @@ try {
     console.log(`Frame budget (time-driven mode): ${await page.evaluate(() => document.querySelector("#viewport").dataset.frameBudget)}`);
   }
   if (process.env.SCREENSHOT) await writeFile(process.env.SCREENSHOT, await page.locator("#viewport").screenshot());
+  if (process.env.CHECK_LIT_EDGES === "1") {
+    const difference = await page.evaluate(() => {
+      const s = window.__scene, effect = s.lights.ambientOcclusion.litEdges;
+      const gl = s.renderer.getContext();
+      function capture(enabled) {
+        effect.enabled = enabled; s.draw();
+        const bytes = new Uint8Array(gl.drawingBufferWidth * gl.drawingBufferHeight * 4);
+        gl.readPixels(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+        return bytes;
+      }
+      const off = capture(false), on = capture(true);
+      let brighter = 0, darker = 0, peak = 0;
+      for (let i = 0; i < on.length; i += 4) {
+        const r = on[i] - off[i], g = on[i + 1] - off[i + 1], b = on[i + 2] - off[i + 2];
+        if (Math.max(r, g, b) > 0) brighter++;
+        if (Math.min(r, g, b) < 0) darker++;
+        peak = Math.max(peak, r, g, b);
+      }
+      return { brighter, darker, peak, pixels: on.length / 4, directSun: effect.uniforms.usable.value };
+    });
+    assert(difference.directSun && difference.brighter > 0 && difference.brighter < 0.03 * difference.pixels, JSON.stringify(difference));
+    assert.equal(difference.darker, 0, JSON.stringify(difference));
+    assert(difference.peak < 32, JSON.stringify(difference));
+    console.log("Washroom geometric edge highlights:", difference);
+  }
   // Frame time while a value is dragged (with QUERY containing gpuprobe): a scalar parameter of DRAG (default the
   // concrete walls) changes before every frame, as a slider does, so its meshes show their per-pixel look and no bake
   // starts. `form` says which form of the per-pixel programs was drawn (`looped` until they settle on `inline`). The
