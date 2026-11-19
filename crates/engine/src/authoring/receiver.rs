@@ -148,6 +148,7 @@ impl Atlas {
     /// The atlas a bake of `request` gives `receiver`: the request's resolution, mapping, domain,
     /// gravity, profile allowance and texel density, so every consumer sizes it by one rule.
     pub fn for_request(receiver: Receiver, request: &super::Request) -> Result<Self, String> {
+        let density = request.density_of(&receiver.id);
         let named = request.features.get(&receiver.id).cloned();
         let anchor = request.anchors.get(&receiver.id).copied();
         Self::build(
@@ -157,7 +158,7 @@ impl Atlas {
             request.domain,
             request.gravity,
             request.profile.max_resolution(),
-            request.texel_density,
+            density,
             anchor.filter(|_| request.mapping == Mapping::Anchored),
             true,
         )?

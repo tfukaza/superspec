@@ -91,6 +91,10 @@ export function parseProject(text: string, kind: StudioProject["kind"]): StudioP
   return admit(value, assets);
 }
 
+/** A texel density the engine admits, and a record of them by name. */
+const density = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 100000;
+const densities = (value: unknown): boolean => !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(density);
+
 /** The project document's fields and shape, before its companions are read. */
 function checkDocument(value: SerializedProject, kind: StudioProject["kind"]): void {
   if (![1, 2].includes(value.schemaVersion) || value.kind !== kind || typeof value.entry !== "string"
@@ -99,7 +103,8 @@ function checkDocument(value: SerializedProject, kind: StudioProject["kind"]): v
     || !Object.hasOwn(value.modules, value.entry) || !value.parameters || typeof value.parameters !== "object"
     || !Number.isInteger(value.seed) || !Number.isInteger(value.resolution) || value.resolution < 16
     || (value.profile !== undefined && !["preview", "production"].includes(value.profile))
-    || (value.texelDensity !== undefined && !(Number.isFinite(value.texelDensity) && value.texelDensity >= 1 && value.texelDensity <= 100000))
+    || (value.texelDensity !== undefined && !density(value.texelDensity))
+    || (value.texelDensities !== undefined && !densities(value.texelDensities))
     || !["uv", "object", "world"].includes(value.mapping) || typeof value.inspection !== "string"
     || !Array.isArray(value.domain) || value.domain.length !== 2 || !value.domain.every(n => Number.isFinite(n) && n > 0)
     || !value.base || !["swatch", "aml", "glb"].includes(value.base.kind)
@@ -148,6 +153,7 @@ function parseScene(value: SerializedProject, assets: Record<string, Uint8Array>
       if (typeof model.source !== "string" && !(typeof model.entry === "string" && Object.hasOwn(value.modules, model.entry))) throw new Error(`Model ${model.id} is missing its item definition.`);
       if ((model.parameters !== undefined && (typeof model.parameters !== "object" || Array.isArray(model.parameters)))
         || (model.slots !== undefined && (typeof model.slots !== "object" || !Object.values(model.slots).every(material => typeof material === "string")))
+        || (model.slotDensities !== undefined && !densities(model.slotDensities))
         || (model.transform !== undefined && !(Array.isArray(model.transform) && model.transform.length === 4
           && model.transform.every(column => Array.isArray(column) && column.length === 3 && column.every(Number.isFinite))))) throw new Error(`Invalid item model ${model.id}.`);
     }

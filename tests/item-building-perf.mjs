@@ -14,6 +14,7 @@
  * Then draw calls, triangles and the frame's CPU and GPU time from two cameras.
  *
  * MODEL, LANE, RESOLUTION, TEXELS, BUILDING_PARAMETERS, BAKE_MEMORY and BROWSER_ARGS are as in item-facade-browser.mjs.
+ * DENSITIES and SLOT_DENSITIES (JSON) set texel densities by material or mesh, and by slot of the building.
  * QUERY adds page parameters (for example QUERY="bakekeep=all").
  */
 import { createServer } from "node:http";
@@ -32,6 +33,11 @@ const facade = project.models.find(model => model.id === (choice === "side" ? "f
 const overrides = process.env.BUILDING_PARAMETERS?.endsWith(".json") ? await readFile(resolve(process.env.BUILDING_PARAMETERS), "utf8") : process.env.BUILDING_PARAMETERS;
 Object.assign(facade.parameters, Object.fromEntries(Object.entries(JSON.parse(overrides ?? "{}")).filter(([key]) => !key.startsWith("/"))));
 if (project.resolution > 512) project.profile = "production";
+// DENSITIES (JSON, texels per meter by material or mesh id) and SLOT_DENSITIES (by slot of the building) bake those finer or coarser.
+// (Either as JSON or as `name=density,name=density`, which survives a shell's quoting.)
+const densitiesOf = text => text.trim().startsWith("{") ? JSON.parse(text) : Object.fromEntries(text.split(",").map(pair => pair.split("=")).map(([name, value]) => [name.trim(), Number(value)]));
+if (process.env.DENSITIES) project.texelDensities = densitiesOf(process.env.DENSITIES);
+if (process.env.SLOT_DENSITIES) facade.slotDensities = densitiesOf(process.env.SLOT_DENSITIES);
 const text = JSON.stringify(project);
 const edited = JSON.parse(text);
 Object.assign(edited.models.find(model => model.id === facade.id).parameters, JSON.parse(process.env.EDIT ?? JSON.stringify({ seed: (facade.parameters.seed ?? 0) + 1 })));
