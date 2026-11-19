@@ -401,14 +401,14 @@ const LANE_PALETTE: superspec_types::batch::FoliagePalette =
         hue: -26.,
         saturation: 0.66,
         value: 0.8,
-        shade: 0.7,
+        shade: 0.6,
         shade_hue: -34.,
         contrast: 1.2,
         depth: 2.0,
         // More, finer steps than the milestone's six, so lit and shaded sides step gradually,
         // and a deep end for the crown's occluded inside.
         bands: 14.,
-        deep: 0.18,
+        deep: 0.26,
     };
 
 /// A plant's painted mass (roadmap milestone `painted-trees-milestone`), in the plant's own space
@@ -713,7 +713,7 @@ fn groundcover(
             } else {
                 across[0] + (across[1] - across[0]) * row as f64 / (rows - 1) as f64
             } + 0.2 * spacing * jitter(2);
-            let mut definition = scaled(shrub.clone(), 0.4 + 0.15 * (jitter(3) + 0.5));
+            let mut definition = scaled(shrub.clone(), 0.3 + 0.1 * (jitter(3) + 0.5));
             definition.seed = shrub.seed + k;
             let plant = tree::generate(&definition, &|| false).unwrap();
             let mass = painted_mass(&definition, &plant);
@@ -786,7 +786,9 @@ fn groundcover(
         card_keep: 0.9,
         form: 0.9,
         jitter: 0.1,
-        leaf_scale: 1.3,
+        leaf_scale: 1.,
+        soft_edges: false,
+        spray_scale: 1.,
         palette: GROUNDCOVER_PALETTE,
         look: String::new(),
     });
@@ -818,8 +820,10 @@ fn write_lane_plants() {
     }))
     .unwrap();
     // The painted trees of the milestone (`painted-mass/milestone-birch.png`): the birch, scaled to a
-    // avenue tree reaching the building's third storey (9 to 10 m), its crown kept to 2.5 m
-    // about the trunk and above the walkway (from about 3 m up), so it fits a narrow avenue.
+    // avenue tree reaching the building's third storey (about 9 m) with an upright street-tree
+    // habit for a narrow avenue (trunk line 4.1 m from either side): shorter, steeper limbs and
+    // leaves kept within 1.7 m of the trunk (the painted crown, with its cards, about 2.4 m),
+    // from 3.2 m up, so awnings, lamps and walkways are clear.
     // Full, as the milestone's (core cut near 0.85, over half the cards kept): gaps come from
     // between its clusters, not from thinning; each cluster lit as its own rounded mass (lit
     // top, dark beneath), with little per-card scatter, and leaves painted larger, as the
@@ -835,9 +839,14 @@ fn write_lane_plants() {
         );
         if let Some(tree::Envelope::Ellipsoid { center, radii }) = &mut definition.envelope {
             let top = center[2] + radii[2];
-            let foot = 2.9_f64.min(top - 3.);
+            let foot = 3.2_f64.min(top - 3.);
             *center = [0., 0., 0.5 * (top + foot)];
-            *radii = [radii[0].min(2.5), radii[1].min(2.5), 0.5 * (top - foot)];
+            *radii = [radii[0].min(1.7), radii[1].min(1.7), 0.5 * (top - foot)];
+        }
+        if let Some(limbs) = definition.levels.first_mut() {
+            limbs.length = [0.24, 0.12];
+            limbs.angle = [44., 26.];
+            limbs.start = limbs.start.max(0.38);
         }
         let look = superspec_types::batch::FoliageMass {
             level: 0.88,
@@ -845,6 +854,9 @@ fn write_lane_plants() {
             form: 0.9,
             jitter: 0.1,
             leaf_scale: 1.5,
+            soft_edges: false,
+            // Longer sprays of pointed leaves at the clusters' rims, so they read as leaves.
+            spray_scale: 1.25,
             ..Default::default()
         };
         (definition, look)
@@ -863,6 +875,8 @@ fn write_lane_plants() {
         superspec_types::batch::FoliageMass {
             form: 0.8,
             jitter: 0.15,
+            leaf_scale: 1.3,
+            soft_edges: false,
             ..Default::default()
         },
     );
@@ -890,9 +904,10 @@ fn write_lane_plants() {
             .collect()
     };
     let middle = avenue["median"]["offset"].as_f64().unwrap();
-    // LANE_TREE=street: the spreading street tree (`street.tree.json`: a clear bole forking into
-    // a few rising limbs under a wide crown) in the birch's stead, each station its own seed and
-    // size; LANE_LOOK names the look that draws every tree's mass (`FoliageMass::look`).
+    // LANE_TREE=street: the street tree (`street.tree.json`: a clear bole forking into rising
+    // limbs under a full crown) in the birch's stead, each station its own seed and size, its
+    // twigs kept within 2.2 m of the trunk and above 3.2 m as the birch's are (the avenue is
+    // narrow); LANE_LOOK names the look that draws every tree's mass (`FoliageMass::look`).
     let street = |station: usize| {
         let mut definition = scaled(
             tree::parse(
@@ -900,9 +915,20 @@ fn write_lane_plants() {
                 include_str!("../src/treespec/fixtures/street.tree.json"),
             )
             .unwrap(),
-            [1.0, 0.9, 1.06][station % 3],
+            [1.0, 0.92, 1.05][station % 3],
         );
         definition.seed += 7 * station as u64;
+        if let Some(tree::Envelope::Ellipsoid { center, radii }) = &mut definition.envelope {
+            let top = center[2] + radii[2];
+            let foot = 3.2_f64.min(top - 3.);
+            *center = [0., 0., 0.5 * (top + foot)];
+            *radii = [radii[0].min(2.2), radii[1].min(2.2), 0.5 * (top - foot)];
+        }
+        // Steeper, shorter limbs for the narrower crown, so they fork up through it.
+        if let Some(limbs) = definition.levels.first_mut() {
+            limbs.length = [0.44, 0.3];
+            limbs.angle = [46., 20.];
+        }
         (definition, superspec_types::batch::FoliageMass::default())
     };
     let tree_look = std::env::var("LANE_LOOK").unwrap_or_default();
@@ -911,7 +937,7 @@ fn write_lane_plants() {
         let (definition, mut mass) = if std::env::var("LANE_TREE").as_deref() == Ok("street") {
             street(i)
         } else {
-            birch([1.2, 1.1][i % 2])
+            birch([1.08, 1.0][i % 2])
         };
         mass.look = tree_look.clone();
         row.push(((definition, mass), avenue_point(&avenue, along, middle)));
@@ -930,6 +956,8 @@ fn write_lane_plants() {
             card_keep: mass.card_keep,
             form: mass.form,
             leaf_scale: mass.leaf_scale,
+            soft_edges: mass.soft_edges,
+            spray_scale: mass.spray_scale,
             jitter: mass.jitter,
             look: mass.look.clone(),
             palette: LANE_PALETTE,

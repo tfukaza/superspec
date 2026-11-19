@@ -37,10 +37,10 @@ export function animeTree(mass: FoliageMass, placement: THREE.Matrix4, look: Ani
   const leaf = Math.sqrt(mass.leafScale ?? 1);
   let parts: THREE.Mesh[];
   if (look === "leaves") {
-    parts = [animeLeaves(analyseCrown(mass, placement, { spacing: 0.24, fill: 1, tier: 0.7, under: 0.3 }), uniforms, { length: 0.23 * leaf, whorl: 6 })];
+    parts = [animeLeaves(analyseCrown(mass, placement, { spacing: 0.24, fill: 2, tier: 0.65, under: 0.3 }), uniforms, { length: 0.19 * leaf, width: 0.36, whorl: 6 })];
   } else if (look === "sprays") {
     const crown = analyseCrown(mass, placement, { spacing: 0.3, fill: 1, tier: 0.7, under: 0.3 });
-    parts = [animeSprays(stationCards(crown, 0.56 * leaf), uniforms)];
+    parts = [animeSprays(stationCards(crown, 0.5 * leaf), uniforms)];
   } else if (look === "shells") {
     const crown = analyseCrown(mass, placement, { spacing: 0.42 });
     parts = [animeShells(crown, uniforms, 1.5 * leaf), animeSprays(shellCards(crown, 22, 0.5 * leaf), uniforms)];

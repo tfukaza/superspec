@@ -145,6 +145,13 @@ function facadeMaterials() {
     // more toward the foot of each section, and only a little at the seams (the washroom's item steel paints a full band
     // at every joint, which on a duct reads as a brown ring).
     { id: "duct-galvanized", entry: steel, parameters: { substrate: [0.46, 0.47, 0.46], metalness: 0.6, roughness: 0.5, edgeRust: 0.35, surfaceRust: 0.45, rainRust: 0.75 }, seed: 13, meshes: [] },
+    // Street furniture: painted cast iron and steel left out for decades (tinted: a post's dark green, a bin's faded colour),
+    // duller and rustier than the fixtures on the walls; a lamp's lens, warm and dim by day; bench slats gone grey-brown
+    // (cool and pale under their brown tint); and the avenue's slabs, a mid grey that is damp in patches.
+    { id: "street-metal", entry: steel, parameters: { ...plain, substrate: [0.62, 0.62, 0.6], metalness: 0.2, roughness: 0.75, edgeRust: 0.85, surfaceRust: 0.4, rainRust: 0.85 }, seed: 17, meshes: [] },
+    { id: "lamp-lens", entry: "kowloon-tube-light.material.ts", parameters: { tint: [1, 0.82, 0.55], glow: 0.35, aged: 0.2, dust: 0.6 }, seed: 7, meshes: [] },
+    { id: "weathered-timber", entry: "wood.material.ts", parameters: { light: [0.55, 0.68, 0.85], dark: [0.2, 0.24, 0.3] }, seed: 7, meshes: [] },
+    { id: "avenue-paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.66, 0.66, 0.65], variation: 0.08, grime: 1, spots: 0.5, wet: 0.5 }, seed: 21, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.92, surfaceRust: 0.38, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
     { id: "aged-metal", entry: steel, parameters: { ...plain, substrate: [0.72, 0.72, 0.7], metalness: 0.35, roughness: 0.6, edgeRust: 0.9, surfaceRust: 0.4, rainRust: 0.9 }, seed: 5, meshes: [] },
@@ -176,7 +183,7 @@ export function pedestrianAvenue({ origin, along, across, length, width, height,
       // Large square slabs laid in a grid with straight joints both ways, no darker bands; black bollards close the ends.
       slab: 0.75, course: 0.75, stagger: false, bands: 0, bollardSpacing: 1.3, bollardColor: "#1d1e1c",
       // A pair of benches against the planter beside each shrub, with a litter bin past their ends.
-      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, seed: 7 } } }] };
+      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, binColor: "#6f8468", seed: 7 } } }] };
   const transform = [[along[0], along[1], 0], [-across[0], -across[1], 0], [0, 0, 1], origin];
   const far = Math.max(...[0, length].flatMap(s => [0, width].map(t => origin[1] + along[1] * s + across[1] * t)));
   return { definition, transform, far };
@@ -199,7 +206,10 @@ export function avenueLamps({ origin, along, across, width, lamps }) {
         placement: { position: [...at, origin[2]], along: [-across[1] * inward, across[0] * inward] } });
     }
   }
-  return { format: "itemspec", version: 2, id: "avenue-lamps", parts };
+  // Rust and chipped paint rise from each post's foot (a short line through its base, which the wear layer follows).
+  const features = parts.map(part => ({ name: "foot", part: part.id, points: [[-0.05, 0, 0.02], [0.05, 0, 0.02]] }));
+  const layers = { metal: [{ entry: "kowloon-foot-wear.material.ts", parameters: { reach: 0.5, strength: 0.85, chips: 0.25 }, seed: 33, follow: { foot: "foot" } }] };
+  return { format: "itemspec", version: 2, id: "avenue-lamps", parts, features, layers };
 }
 
 /** A small seeded stream (mulberry32) for the scene's own choices: numbers in [0, 1). */
@@ -247,7 +257,8 @@ export function avenueFrontage(record, party) {
   const total = weights.reduce((a, b) => a + b, 0), span = frontage.to - frontage.from;
   const paints = ["#b9ad96", "#a8a294", "#c4b9a2", "#9fa39a", "#b5a48a", "#c2b49a"];
   const shops = ["shutter", "gate", "shop", "shutter", "door", "gate", "service"];
-  const awnings = ["awning", "tarp", "awning", "none", "striped", "awning"];
+  // Fixed canvas awnings 0.85 m deep only: a tarp's poles and a striped canvas reach out to the lamps' row.
+  const awnings = ["awning", "none", "awning", "awning", "none"];
   const parts = [], piers = [];
   let s0 = frontage.from;
   for (const [i, weight] of weights.entries()) {
@@ -257,11 +268,14 @@ export function avenueFrontage(record, party) {
     const count = Math.max(1, Math.floor((unit - 0.7) / 2.1));
     const pick = list => Array.from({ length: count }, () => list[Math.floor(random() * list.length)]);
     // The item's x runs from the unit's far end (s1) back toward the avenue's start.
+    // (The shop storeys share one paint, `shopPaint`: their paint coat is a layer of the render's material, and every
+    // paint is another layer of it, which may compose at most 8.)
     parts.push({ id: `shops-${i}`, generator: { kind: "item", entry: "kowloon-ground-floor.item.json", parameters: {
-      width: unit, height: 3.35, seed, paint, shopWidth: 2.1, shopPlan: pick(shops), awningPlan: pick(awnings), awningLower: 0.2, meters: true } },
+      width: unit, height: 3.35, seed, paint: frontage.shopPaint, shopWidth: 2.1, shopPlan: pick(shops), awningPlan: pick(awnings), awningLower: 0.2, meters: true } },
       placement: { position: [...at(s1, width), origin[2]], along: far } });
     parts.push({ id: `storeys-${i}`, ...(party?.zones?.length ? { zones: party.zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: {
-      kind: "stub", length: unit, own: storeys, ground: 3.35, storey: 3, top: 2, depth: frontage.depth, shops: true, door: false, stacks: 0,
+      // (`top` over its parapet: nothing stands behind the row, and its back faces away from every picture).
+      kind: "stub", length: unit, own: storeys, ground: 3.35, storey: 3, top: 80, depth: frontage.depth, shops: true, door: false, stacks: 0,
       cables: 1, bars: 0.15, units: 0.4, color: paint, seed } },
       placement: { position: [...at(s1, width + frontage.setback + frontage.depth), origin[2]], along: far } });
     s0 = s1;
@@ -345,7 +359,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
   for (const model of models) {
     definitions[`items/${model.definition.id}.item.json`] = JSON.stringify(model.definition, null, 2) + "\n";
   }
-  Object.assign(modules, definitions);
+  // (Without the room its items are not placed: their definitions stay out of the project, which holds at most 64 modules.)
+  if (room) Object.assign(modules, definitions);
   const assets = { ...decalImages() };
   for (const name of ["textures/concrete-plain.png", "textures/concrete-fine-sand.png"]) assets[name] = readFileSync(resolve(examples, name));
   const materials = buildMaterials({ weathering });
@@ -397,15 +412,15 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     const { definition: avenueItem, transform: avenueAt, far } = pedestrianAvenue(avenue);
     modules["items/pedestrian-avenue.item.json"] = JSON.stringify(avenueItem, null, 2) + "\n";
     scene.push({ id: "avenue", kind: "item", entry: "items/pedestrian-avenue.item.json", parameters: {}, transform: avenueAt,
-      slots: withFacade ? { paving: "paving", kerb: "kerb", soil: "room-dark", metal: "aged-metal", timber: "bench-wood" }
+      slots: withFacade ? { paving: "avenue-paving", kerb: "kerb", soil: "room-dark", metal: "street-metal", timber: "weathered-timber" }
         : { paving: "concrete-slab", kerb: "concrete-slab", soil: "concrete-slab", metal: "flat-steel", timber: "bench-wood" },
       // Its slabs, kerbs and soil are shaded per vertex: a coarse bake of the large paving keeps the allowance for the building.
       slotDensities: { paving: 48, kerb: 96, soil: 24, metal: 96, timber: 128 } });
     // Street lamps in two rows along the avenue (`lamps` of `avenue.json`).
     modules["items/avenue-lamps.item.json"] = JSON.stringify(avenueLamps(avenue), null, 2) + "\n";
     scene.push({ id: "lamps", kind: "item", entry: "items/avenue-lamps.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
-      slots: withFacade ? { metal: "aged-metal", lamp: "tube-light", banner: "canvas" } : { metal: "flat-steel", lamp: "flat-steel", banner: "bench-wood" },
-      slotDensities: { metal: 128, lamp: 96, banner: 160 } });
+      slots: withFacade ? { metal: "street-metal", lamp: "lamp-lens", banner: "canvas" } : { metal: "flat-steel", lamp: "flat-steel", banner: "bench-wood" },
+      slotDensities: { metal: 64, lamp: 64, banner: 96 } });
     // The road: thin slabs with a rounded rim, so an open edge does not read as a thick floating block. Without the room
     // the front street is a whole street: its carriageway runs far out both ways along the building's front, 7.3 m from
     // the near kerb (the avenue's start) to a far kerb and a 4 m pavement of its own; with the room it stops short of
@@ -445,27 +460,48 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
       const party = buildingItem.parts.find(part => part.id === "party");
       const zones = (party?.zones ?? []).map(({ u0, length, ...zone }) => ({ ...zone, length: typeof length === "number" ? length : 3 }));
       const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#b0a590" } }, ...(buildingItem.layers?.wall ? { layers: { wall: buildingItem.layers.wall } } : {}), parts: [
-        // Four storeys, so the narrow street is closed on both sides past the building's back.
-        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 4, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
+        // Three storeys, so the narrow street is closed on both sides past the building's back while the building's
+        // fourth storey and roof still stand above it.
+        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 3, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
         // Below that, a stained party wall (2 to 3.3 m by seed, under a coping) along its back, facing away from the avenue.
         { id: "back", generator: { kind: "native", name: "kowloon/party", parameters: { kind: "wall", length, top: 2.4, seed: 41 } },
           placement: { position: [length, 0, 0], along: [-1, 0] } }] };
       modules["items/avenue-neighbour.item.json"] = JSON.stringify(neighbour, null, 2) + "\n";
       scene.push({ id: "neighbour", kind: "item", entry: "items/avenue-neighbour.item.json", parameters: {},
         transform: [[-1, 0, 0], [0, -1, 0], [0, 0, 1], [wall - 7 - 1.49, avenue.origin[1] - 0.01 - depth, 0]], slots: building.slots,
-        slotDensities: { wall: 64, trim: 64 } });
-      // The far side closed by a row of neighbours with shops at street level (`frontage` of `avenue.json`), and what
-      // stands about on the walkways; both painted and weathered as the neighbour is.
+        // Coarser than the building: its four storeys of windows, units and drying racks stay within the bake's allowance.
+        slotDensities: { wall: 40, trim: 40, frame: 40, pane: 24, metal: 40, paint: 40, sheet: 32, aircon: 40, "balcony-cloth": 32 } });
+      // The far side closed by a row of neighbours with shops at street level (`frontage` of `avenue.json`), painted and
+      // weathered as the neighbour is, and what stands about on the walkways.
+      // (The shopfronts' ground storeys weather by their own layers: a slot composes at most 8 over its base, so they are
+      // an item of their own, without the neighbour's.)
       const own = { parameters: neighbour.parameters, ...(neighbour.layers ? { layers: neighbour.layers } : {}) };
       const { definition: frontage, piers } = avenueFrontage(avenue, { zones });
-      modules["items/avenue-frontage.item.json"] = JSON.stringify({ ...frontage, ...own }, null, 2) + "\n";
-      scene.push({ id: "frontage", kind: "item", entry: "items/avenue-frontage.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
-        slots: building.slots, slotDensities: { wall: 64, trim: 64, lettering: 400, posters: 320 } });
+      const shopParts = frontage.parts.filter(part => part.id.startsWith("shops-"));
+      // The units are painted three ways, turn about: a paint is a layer of its item's wall material, so each paint is
+      // an item of its own (upper storeys and shop storeys apart), not a further layer of one.
+      const unitPaints = ["#b9ad96", "#a2a297", "#c0ae8e"];
+      const unitOf = part => Number(part.id.match(/^(?:shops|storeys)-(\d+)$/)?.[1] ?? 0) % unitPaints.length;
+      const painted = paint => ({ paint: { ...neighbour.parameters.paint, default: paint } });
+      const groups = unitPaints.flatMap((paint, group) => [
+        [`frontage${group ? `-${group}` : ""}`, { ...frontage, id: `avenue-frontage-${group}`, parts: frontage.parts.filter(part => !shopParts.includes(part) && unitOf(part) === group),
+          ...own, parameters: painted(paint) }],
+        [`frontage-shops${group ? `-${group}` : ""}`, { ...frontage, id: `avenue-frontage-shops-${group}`,
+          parts: shopParts.filter(part => unitOf(part) === group).map(part => ({ ...part, generator: { ...part.generator, parameters: { ...part.generator.parameters, paint } } })),
+          parameters: painted(paint) }]]);
+      for (const [id, definition] of groups) {
+        modules[`items/avenue-${id}.item.json`] = JSON.stringify(definition, null, 2) + "\n";
+        // Baked coarser than the building: secondary, and a long row of receivers within the preview's allowance.
+        scene.push({ id, kind: "item", entry: `items/avenue-${id}.item.json`, parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
+          slots: building.slots, slotDensities: { wall: 32, trim: 32, metal: 32, frame: 32, pane: 24, paint: 32, sheet: 32, aircon: 32,
+            "balcony-cloth": 32, recess: 24, plinth: 32, dado: 32, lettering: 160, posters: 120, board: 96, tarp: 48, rust: 32, "shop-timber": 32,
+            side: 32, glass: 32, opening: 32 } });
+      }
       const along = x => +(avenue.origin[0] - x).toFixed(3);
       const clutter = avenueClutter(avenue, { from: along(wall - 7 - 1.49), to: along(wall - 7 - 1.49 - length), sign: 3.6 }, piers);
       modules["items/avenue-clutter.item.json"] = JSON.stringify(clutter, null, 2) + "\n";
       scene.push({ id: "clutter", kind: "item", entry: "items/avenue-clutter.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
-        slots: building.slots, slotDensities: { lettering: 400, posters: 320 } });
+        slots: building.slots, slotDensities: { metal: 40, "balcony-plants": 32, lettering: 160, posters: 120, board: 96, rust: 32 } });
     }
     // The median is planted with groundcover (`lane-groundcover`, a painted mass), not grass: under it the lawn recipe is
     // the planting's dark soil and leaf litter (a deep olive-brown), so what shows between the mounds reads as shade, not

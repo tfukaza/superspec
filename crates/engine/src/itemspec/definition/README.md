@@ -242,7 +242,9 @@ with `ITEM_NATIVE`. `prepare` keeps its old signature; `prepare_in` takes the en
 A generator may also report features (`NativeGenerators::features`, none by default): edges in
 the coordinates of its meshes, with surface normals, worked out from its parameters without
 drawing, which a part's `zones` rules hang zones below as below a panel's (`kowloon/party`
-reports `top`, `base`, `eave`, `sill` and `drip` on each face of a neighbour's wall or stub).
+reports `top`, `base`, `eave`, `sill` and `drip` on each face of a neighbour's wall or stub;
+`kowloon/riser-duct` reports `fixture`, `fixing`, `rust` and `drip` on the wall plane, reaching
+the item's receivers within 1 m, where its brackets and connections are fixed).
 
 **Footprints.** A `points` control holds a plan polygon (3 to 64 `[x, y]` points,
 counterclockwise seen from above) and a `flags` control up to 64 booleans. A repeat axis with
@@ -358,8 +360,8 @@ baked at the first density stated of: its mesh id in the project's `texelDensiti
 `texelDensity`. The density is part of the receiver's layout, so every bake of it is keyed by it.
 
 Composed examples are in `worldspec/themes/kowloon/items/`: small items (`kowloon-window`,
-`kowloon-aircon`, `kowloon-shopfront`, `kowloon-parapet`, `kowloon-duct-run`, `kowloon-duct-riser`,
-`kowloon-roof`), storeys made of them (`kowloon-floor`, `kowloon-ground-floor`), a building side
+`kowloon-aircon`, `kowloon-shopfront`, `kowloon-parapet`, `kowloon-duct-run`, `kowloon-duct-riser`
+and the strap or hanger bracket both stand on, `kowloon-duct-bracket`, `kowloon-roof`), storeys made of them (`kowloon-floor`, `kowloon-ground-floor`), a building side
 that stacks storeys and adds its services (`kowloon-facade-side`), and `kowloon-building`, which
 places a side along every edge of its footprint, shops on street edges, back doors and pipes on
 the rest, and a cut corner with a sign between two streets (`cornerStyle` `chamfer`, or `round`:

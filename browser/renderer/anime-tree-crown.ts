@@ -190,20 +190,20 @@ export function analyseCrown(mass: FoliageMass, placement: THREE.Matrix4, option
  * The ramp the leaves are painted with, dark to light, as display colours (sampled from the anime tree concept: a deep
  * cool green in the shade through muted olives to a pale yellow-olive in the light), and a trunk's two browns.
  */
-export const ANIME_RAMP = ["#252b27", "#2f362e", "#3a4033", "#484c38", "#5b5c41", "#77754f", "#9c9869"] as const;
+export const ANIME_RAMP = ["#2b312b", "#343a30", "#3e4435", "#4a4e39", "#5c5d42", "#78764f", "#a19c6c"] as const;
 
 /** How the leaves are lit: see `ANIME_SHADE_GLSL`. */
 export const ANIME_LIGHT = {
   /** Share of the light that comes from straight above whatever the sun (top-lit clusters). */
   top: 0.38,
   /** How far full occlusion darkens, and how far being seen from beneath does. */
-  occlusion: 0.55, underside: 0.35,
+  occlusion: 0.5, underside: 0.35,
   /** A whole leaf's random shift of light: what makes single leaves read. */
   jitter: 0.2,
   /** Steps of the ramp. */
   bands: 12,
   /** The light stretched about its middle, and shifted. */
-  contrast: 1.5, offset: 0.0,
+  contrast: 1.3, offset: 0.03,
   /** Warm light through leaves on the crown's edge seen against the sun. */
   back: 0.16,
 } as const;
@@ -374,7 +374,7 @@ export function sprayAtlas(cell = 256): THREE.DataTexture {
     leaves.sort((p, q) => p.order - q.order);
     leaves.forEach((leaf, k) => {
       // Later leaves lie on top and are lighter; every leaf has its own id.
-      const depth = leaves.length > 1 ? k / (leaves.length - 1) : 1, id = between(0.04, 1), width = leaf.length * between(0.3, 0.38);
+      const depth = leaves.length > 1 ? k / (leaves.length - 1) : 1, id = between(0.04, 1), width = leaf.length * between(0.25, 0.32);
       lay(id, () => stampLeaf(context, leaf.x, leaf.y, leaf.angle, leaf.length, width, 0.62 + 0.38 * depth, id));
     });
   }

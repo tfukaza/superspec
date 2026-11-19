@@ -16,6 +16,6 @@
   "shrubs": { "first": 8, "spacing": 7, "count": 3 },
   "/lamps": "kowloon/street-lamp posts in two rows, `offsets` across (one row just past the building's pavement kerb, one clear of the far shopfronts' awnings), at `count` stations from `first`, `spacing` apart; each arm reaches `reach` toward the avenue's middle. build.mjs places them; the tree batches do not read them.",
   "lamps": { "first": 8, "spacing": 7, "count": 4, "offsets": [1.9, 7.0], "height": 6, "reach": 0.9 },
-  "/frontage": "The neighbours closing the far side, from `from` to `to` along: `units` buildings of seeded widths, each a ground storey of shopfronts (kowloon-ground-floor) under `storeys` (fewest, most) storeys in all of a kowloon/party stub `depth` deep set `setback` behind the shopfronts. build.mjs places them; the tree batches do not read them.",
-  "frontage": { "from": 1.45, "to": 34, "units": 6, "storeys": [3, 5], "depth": 3.5, "setback": 0.35, "seed": 51 }
+  "/frontage": "The neighbours closing the far side, from `from` to `to` along: `units` buildings of seeded widths, each a ground storey of shopfronts (kowloon-ground-floor) under `storeys` (fewest, most) storeys in all of a kowloon/party stub `depth` deep set `setback` behind the shopfronts; the shop storeys share the paint `shopPaint` (the reference building's, as each paint is another layer of the render's material). build.mjs places them; the tree batches do not read them.",
+  "frontage": { "from": 1.45, "to": 34, "units": 6, "storeys": [3, 5], "depth": 3.5, "setback": 0.35, "shopPaint": "#bcb09a", "seed": 51 }
 }

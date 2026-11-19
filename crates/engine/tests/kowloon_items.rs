@@ -1912,3 +1912,90 @@ fn roof_kit_lamps_and_caged_units_take_their_options() {
         }
     }
 }
+
+#[test]
+fn the_riser_duct_can_stand_close_on_bolted_brackets_and_reports_its_wall_fixings() {
+    use superspec_engine::itemspec::definition::Reach;
+    let natives = Natives::new();
+    let far_values = values(&[("height", json!(9))]);
+    let close_values = values(&[("height", json!(9)), ("standoff", json!(0.06))]);
+    let far = generate(&natives, "kowloon/riser-duct", &far_values).unwrap();
+    let close = generate(&natives, "kowloon/riser-duct", &close_values).unwrap();
+    check("kowloon/riser-duct standing close", &close);
+    for bad in [0.02, 0.5] {
+        let error = generate(
+            &natives,
+            "kowloon/riser-duct",
+            &values(&[("height", json!(9)), ("standoff", json!(bad))]),
+        )
+        .unwrap_err();
+        assert!(error.contains("standoff"), "{error}");
+    }
+    // The steel, not the runoff stains it draws on the wall.
+    let points = |meshes: &[ItemMesh]| -> Vec<[f64; 3]> {
+        meshes
+            .iter()
+            .filter(|m| m.material_slot.starts_with("vent-"))
+            .flat_map(|m| m.positions.clone())
+            .collect()
+    };
+    let out = |meshes: &[ItemMesh]| points(meshes).iter().map(|p| p[1]).fold(0., f64::min);
+    // Toward -Y: the default body stands 0.32 m off in a cradle reaching past a metre; close,
+    // its 0.62 m deep body stands 6 cm off and the hatch handle, 7 cm proud of it, is the
+    // furthest out.
+    assert!(out(&far) < -1.0, "{}", out(&far));
+    assert!(
+        (out(&close) + 0.06 + 0.62 + 0.0875).abs() < 0.005,
+        "{}",
+        out(&close)
+    );
+    // Behind the body's middle only its edge rings stand proud of its back, 3 cm into the 6 cm
+    // gap to the wall.
+    let (lo, hi) = (1.05, 9. - 0.72);
+    let behind: Vec<f64> = points(&close)
+        .iter()
+        .filter(|p| p[0].abs() < 0.38 && p[2] > lo + 0.05 && p[2] < hi - 0.05)
+        .map(|p| p[1])
+        .collect();
+    assert!(behind.iter().all(|y| *y <= -0.03 + 1e-9), "{behind:?}");
+    assert!(
+        points(&close)
+            .iter()
+            .any(|p| (p[1] + 0.06).abs() < 1e-9 && (p[2] - lo).abs() < 1e-9 && p[0].abs() < 0.4)
+    );
+    // Both report the wall features the duct items do, on the wall plane, for receivers within
+    // 1 m: a pair of brackets at most every 1.4 m, evenly within each third of the body between
+    // its edge rings (7.23 m: two levels a third).
+    for (parameters, levels) in [(&far_values, 2), (&close_values, 6)] {
+        let features = natives.features("kowloon/riser-duct", parameters);
+        let count = |name: &str| features.iter().filter(|f| f.name == name).count();
+        assert_eq!(count("fixture"), 1);
+        assert_eq!(count("fixing"), 2 * levels + 4);
+        assert_eq!(count("rust"), 2 * levels + 2);
+        assert_eq!(count("drip"), 2);
+        assert!(features.iter().all(|f| {
+            f.reach == Reach::Item
+                && f.within == 1.
+                && f.points.iter().all(|p| p[1] == 0.)
+                && (f.zone.is_some() == (f.name == "rust" || f.name == "drip"))
+        }));
+    }
+    // Every close fixing lies across steel the duct bolts to the wall there: a plate's face.
+    let all = points(&close);
+    for fixing in natives
+        .features("kowloon/riser-duct", &close_values)
+        .iter()
+        .filter(|f| f.name == "fixing")
+    {
+        let [a, b] = [fixing.points[0], fixing.points[1]];
+        assert!(
+            all.iter().any(|p| {
+                p[0] >= a[0].min(b[0]) - 1e-9
+                    && p[0] <= a[0].max(b[0]) + 1e-9
+                    && (p[2] - a[2]).abs() <= 0.1 + 1e-9
+                    && (-0.017..=-0.013).contains(&p[1])
+            }),
+            "no plate under {a:?}–{b:?}"
+        );
+    }
+}

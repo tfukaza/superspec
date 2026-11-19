@@ -26,7 +26,7 @@ const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("gener
 // of baked maps on screen.
 const { project } = buildProject(Number(process.env.RESOLUTION ?? 2048), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
-// The whole building is GPU-baked within BAKE_MEMORY MiB (default 4096; with its weathering layers it takes about 2.2 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
+// The whole building is GPU-baked within BAKE_MEMORY MiB (default 6144: the building with its avenue, far frontage and street furniture takes about 4 GiB; with its weathering layers it takes about 2.2 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
 // per-pixel look, which shows a layered slot's base alone (no paint or grime).
 // Only the building, the road and the avenue (with its median's grass and plants) are drawn; ROOM=1 brings back the
 // washroom items.
@@ -58,7 +58,7 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
   page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 4096}${
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 6144}${
     // TREE_LOOK=<leaves|sprays|shells|impostors>: every tree's and shrub's mass drawn in that illustrated look (anime-tree.ts).
     process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
@@ -198,9 +198,14 @@ try {
       // face and the street corner: the median's planting, the benches and the paving. Its own sun (`sun`: azimuth and
       // elevation, degrees) comes from behind the camera on the avenue's side, so the crowns' lit clumps face it and their
       // dappled shadows fall on the building's side face and shop fronts; every other view keeps the shared sun.
-      // Raised about four storeys over the far walkway near the avenue's end and looking along the median toward the
-      // building's street corner, the building on the right and the neighbours' shopfronts closing the left.
-      avenue: { position: [x0 - 19, y1 + 5.6, 12.5], target: [front - 1.5, y1 - 0.5, 3.2], sun: [135, 40] },
+      // Raised over the roofs past the avenue's far end and looking down along the median toward the building's street
+      // corner, the building and its neighbour on the right and the neighbours' shopfronts closing the left.
+      avenue: { position: [x0 - 21, y1 + 5.6, 16.5], target: [front - 2, y1 - 0.5, 2], sun: [135, 54] },
+      // At eye height on the avenue's near walkway, from its mouth along the median, with the avenue's sun: the trunks
+      // rising from the planter, the crowns over the walkway and their shadows on the paving and the side face.
+      street: { position: [front + 2.5, y1 + 0.15, 1.7], target: [front - 21, y1 + 3.05, 4.2], sun: [135, 54] },
+      // The side face and its shop fronts from across the avenue's mouth, with the avenue's sun: the crowns' dappled shadows on them.
+      "side-face": { position: [front + 4, y1 + 6.5, 3.2], target: [x0 + 3, y1 - 1.6, 2.6], sun: [135, 54] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
       // Details, without the plants: the corner's foot and the pavement, the balcony and what hangs under it, the signs
