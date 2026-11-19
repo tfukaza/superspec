@@ -51,7 +51,10 @@ fn strips_and_tree_rows_follow_the_aml_and_keep_the_physical_base() {
                 .is_empty()
         );
     }
-    assert!(scene.manifest.lighting.is_some());
+    let lighting = scene.manifest.lighting.as_ref().unwrap();
+    assert!(!lighting.contours.enabled);
+    assert!(lighting.ambient_occlusion.enabled);
+    assert!(lighting.lights.iter().any(|light| light.casts_shadow));
     assert!(scene.manifest.batches.iter().any(|b| {
         b.object_id == "city/walk"
             && b.foliage
