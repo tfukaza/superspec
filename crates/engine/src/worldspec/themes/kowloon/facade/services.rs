@@ -287,9 +287,81 @@ pub(crate) fn draw_duct(
     bottom: f64,
     top: f64,
 ) -> Result<(), String> {
+    draw_standing_duct(d, x, bottom, top, None)
+}
+
+/// Where a riser duct drawn by `draw_standing_duct` is fixed to the wall, as `[u0, v0, u1, v1]`
+/// rectangles on the wall plane (`u` across the fixture, `v` up).
+pub(crate) struct DuctFixings {
+    /// Each bracket's wall plate, two per level.
+    pub brackets: Vec<[f64; 4]>,
+    /// The lower and the upper wall connection: its plate when the duct stands close, else
+    /// the opening the duct enters the wall through.
+    pub connections: [[f64; 4]; 2],
+}
+
+/// The bracket arms of a close-standing duct, either side of its centre.
+const CLOSE_ARM: f64 = 0.445;
+
+/// The fixings of the riser duct between `bottom` and `top`; `standoff` as `draw_standing_duct`.
+pub(crate) fn duct_fixings(x: f64, bottom: f64, top: f64, standoff: Option<f64>) -> DuctFixings {
+    let mut brackets = vec![];
+    match standoff {
+        None => {
+            for z in [bottom + 1.25, top - 1.30] {
+                for side in [-0.53, 0.53] {
+                    brackets.push([x + side - 0.0325, z - 0.11, x + side + 0.0325, z + 0.1]);
+                }
+            }
+            DuctFixings {
+                brackets,
+                connections: [
+                    [x - 0.39, bottom, x + 0.39, bottom + 0.78],
+                    [x - 0.39, top - 0.62, x + 0.39, top],
+                ],
+            }
+        }
+        Some(_) => {
+            // Levels every 1.4 m at most, evenly within each third of the body, so none meets
+            // the edge rings at its ends and thirds.
+            let (lo, hi) = (bottom + 1.05, top - 0.72);
+            let third = (hi - lo) / 3.;
+            let per = (third / 1.4 - 1e-9).ceil().max(1.) as usize;
+            for level in 0..3 * per {
+                let (section, at) = (level / per, (level % per) as f64 + 0.5);
+                let z = lo + third * (section as f64 + at / per as f64);
+                for side in [-CLOSE_ARM, CLOSE_ARM] {
+                    brackets.push([x + side - 0.05, z - 0.1, x + side + 0.05, z + 0.1]);
+                }
+            }
+            DuctFixings {
+                brackets,
+                connections: [
+                    [x - 0.47, bottom - 0.06, x + 0.47, bottom + 0.84],
+                    [x - 0.47, top - 0.68, x + 0.47, top + 0.06],
+                ],
+            }
+        }
+    }
+}
+
+/// The industrial riser duct: its offset connections enter the wall at `bottom` and `top`.
+/// Without `standoff` its body stands 0.32 m off the wall in a cradle of diagonal brackets;
+/// with it, the body's back stands `standoff` m off (0.04–0.32) on angle-iron brackets every
+/// 1.4 m at most, bolted to wall plates, and its connections pass through bolted wall plates.
+pub(crate) fn draw_standing_duct(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    bottom: f64,
+    top: f64,
+    standoff: Option<f64>,
+) -> Result<(), String> {
     let steel = "vent-metal";
     let lo = bottom + 1.05;
     let hi = top - 0.72;
+    // Everything off the wall moves in by the same amount; the default moves by nothing.
+    let shift = standoff.map_or(0., |gap| 0.32 - gap);
+    let out = |y: f64| if y > 0.01 { y - shift } else { y };
     for profile in [
         vec![
             [0.005, bottom],
@@ -311,6 +383,7 @@ pub(crate) fn draw_duct(
             [0.005, top - 0.62],
         ],
     ] {
+        let profile: Vec<[f64; 2]> = profile.into_iter().map(|[y, z]| [out(y), z]).collect();
         let side_profile = superspec_geometry::profile::triangulate(
             vec![profile.iter().map(|[y, z]| [*y, *z, 0.]).collect()],
             &[],
@@ -345,8 +418,8 @@ pub(crate) fn draw_duct(
     }
     d.cuboid(
         steel,
-        [x - 0.39, 0.32, lo],
-        [x + 0.39, 0.94, hi],
+        [x - 0.39, out(0.32), lo],
+        [x + 0.39, out(0.94), hi],
         [1.; 3],
         "ud",
     )?;
@@ -354,49 +427,54 @@ pub(crate) fn draw_duct(
         let z = lo + (hi - lo) * section as f64 / 3.;
         d.cuboid(
             "vent-edge",
-            [x - 0.42, 0.29, z - 0.018],
-            [x + 0.42, 0.97, z + 0.018],
+            [x - 0.42, out(0.29), z - 0.018],
+            [x + 0.42, out(0.97), z + 0.018],
             [0.7; 3],
             "ud",
         )?;
     }
-    for z in [bottom + 1.25, top - 1.30] {
-        for side in [-0.53, 0.53] {
+    let hatch = (lo + hi) / 2. - 0.3;
+    let fixings = duct_fixings(x, bottom, top, standoff);
+    if standoff.is_some() {
+        draw_close_fixings(d, &fixings, x, out(0.94), hatch)?;
+    } else {
+        for z in [bottom + 1.25, top - 1.30] {
+            for side in [-0.53, 0.53] {
+                d.bar(
+                    steel,
+                    [x + side, 0.02, z - 0.11],
+                    [x + side, 0.83, z],
+                    0.05,
+                    [0.48; 3],
+                )?;
+                d.bar(
+                    steel,
+                    [x + side, 0.02, z - 0.11],
+                    [x + side, 0.02, z + 0.1],
+                    0.065,
+                    [0.48; 3],
+                )?;
+            }
             d.bar(
                 steel,
-                [x + side, 0.02, z - 0.11],
-                [x + side, 0.83, z],
+                [x - 0.55, 0.83, z],
+                [x + 0.55, 0.83, z],
                 0.05,
                 [0.48; 3],
             )?;
-            d.bar(
-                steel,
-                [x + side, 0.02, z - 0.11],
-                [x + side, 0.02, z + 0.1],
-                0.065,
-                [0.48; 3],
-            )?;
         }
-        d.bar(
-            steel,
-            [x - 0.55, 0.83, z],
-            [x + 0.55, 0.83, z],
-            0.05,
-            [0.48; 3],
-        )?;
     }
-    let hatch = (lo + hi) / 2. - 0.3;
     d.cuboid(
         steel,
-        [x - 0.27, 0.94, hatch],
-        [x + 0.27, 0.98, hatch + 0.6],
+        [x - 0.27, out(0.94), hatch],
+        [x + 0.27, out(0.98), hatch + 0.6],
         [0.8; 3],
         "b",
     )?;
     d.bar(
         "vent-edge",
-        [x + 0.16, 1.01, hatch + 0.2],
-        [x + 0.16, 1.01, hatch + 0.4],
+        [x + 0.16, out(1.01), hatch + 0.2],
+        [x + 0.16, out(1.01), hatch + 0.4],
         0.035,
         [0.7; 3],
     )?;
@@ -417,6 +495,26 @@ pub(crate) fn draw_duct(
             },
         )?;
     }
+    if standoff.is_some() {
+        for [u0, v0, u1, _] in &fixings.brackets {
+            let (center, z) = ((u0 + u1) / 2., v0 + 0.02);
+            runoff(
+                d.mesh,
+                &d.pen,
+                [center - 0.12, z - 0.8, center + 0.12, z],
+                RunoffSettings {
+                    seed: &format!("{}/bracket/{center}/{z}", d.pen.part),
+                    coarseness: 0.35,
+                    spread: 0.7,
+                    density: 0.1,
+                    strength: 0.7,
+                    tint: [0.36, 0.19, 0.075],
+                    variation: 0.8,
+                },
+            )?;
+        }
+        return Ok(());
+    }
     for z in [bottom + 1.25, top - 1.30] {
         for side in [-0.53, 0.53] {
             let center = x + side;
@@ -434,6 +532,63 @@ pub(crate) fn draw_duct(
                     variation: 0.8,
                 },
             )?;
+        }
+    }
+    Ok(())
+}
+
+/// The angle-iron brackets of a close-standing duct whose front stands `front` m off the wall:
+/// an arm from each bolted wall plate out past the front, joined across the front except where
+/// that would cross the access hatch (from `hatch` up 0.6 m), and the bolted wall plates its
+/// connections pass through.
+fn draw_close_fixings(
+    d: &mut Fixture<'_, '_>,
+    fixings: &DuctFixings,
+    x: f64,
+    front: f64,
+    hatch: f64,
+) -> Result<(), String> {
+    let steel = "vent-metal";
+    let arm = front + 0.05;
+    fn bolt(d: &mut Fixture<'_, '_>, u: f64, v: f64, face: f64) -> Result<(), String> {
+        d.cuboid(
+            "vent-edge",
+            [u - 0.013, face, v - 0.013],
+            [u + 0.013, face + 0.014, v + 0.013],
+            [0.62; 3],
+            "",
+        )
+    }
+    for [u0, v0, u1, v1] in &fixings.brackets {
+        let (u, z) = ((u0 + u1) / 2., (v0 + v1) / 2.);
+        d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.014, *v1], [0.45; 3], "")?;
+        d.bar(steel, [u, 0.014, z], [u, arm, z], 0.05, [0.48; 3])?;
+        bolt(d, u, v0 + 0.03, 0.014)?;
+        bolt(d, u, v1 - 0.03, 0.014)?;
+    }
+    for level in fixings.brackets.chunks(2) {
+        let z = (level[0][1] + level[0][3]) / 2.;
+        if z > hatch - 0.05 && z < hatch + 0.65 {
+            continue;
+        }
+        let reach = CLOSE_ARM + 0.025;
+        d.bar(
+            steel,
+            [x - reach, arm, z],
+            [x + reach, arm, z],
+            0.05,
+            [0.48; 3],
+        )?;
+    }
+    for [u0, v0, u1, v1] in &fixings.connections {
+        d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.016, *v1], [0.45; 3], "")?;
+        for (u, v) in [
+            (u0 + 0.04, v0 + 0.04),
+            (u1 - 0.04, v0 + 0.04),
+            (u0 + 0.04, v1 - 0.04),
+            (u1 - 0.04, v1 - 0.04),
+        ] {
+            bolt(d, u, v, 0.016)?;
         }
     }
     Ok(())

@@ -152,6 +152,230 @@ fn the_riser_spans_its_height_with_a_branch_per_floor() {
     }
 }
 
+/// The bounds, in item coordinates, of the meshes whose ids `wanted` accepts.
+fn bounds_of(item: &GeneratedItem, wanted: impl Fn(&str) -> bool) -> [[f64; 3]; 2] {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if !wanted(&mesh.id) {
+                continue;
+            }
+            for p in &mesh.positions {
+                let p = matrix.point(*p);
+                for axis in 0..3 {
+                    bounds[0][axis] = bounds[0][axis].min(p[axis]);
+                    bounds[1][axis] = bounds[1][axis].max(p[axis]);
+                }
+            }
+        }
+    }
+    assert!(
+        bounds[0][0].is_finite(),
+        "no meshes matched among {:?}",
+        item.geometry
+            .meshes
+            .iter()
+            .map(|m| &m.id)
+            .collect::<Vec<_>>()
+    );
+    bounds
+}
+
+/// Whether a mesh is part `name` of the `k`th bracket sub-item.
+fn piece(id: &str, k: usize, name: &str) -> bool {
+    id.starts_with(&format!("bracket-{k}/")) && id.contains(&format!("/{name}/"))
+}
+
+/// Authored features of one name whose part starts with `prefix`.
+fn features_of<'a>(item: &'a GeneratedItem, name: &str, prefix: &str) -> Vec<&'a item::Feature> {
+    item.geometry
+        .features
+        .iter()
+        .filter(|f| f.name == name && f.part.starts_with(prefix))
+        .collect()
+}
+
+#[test]
+fn the_riser_stands_close_on_strapped_brackets_between_its_seams() {
+    let (height, base, story): (f64, f64, f64) = (15., 0.9, 3.);
+    let riser = generate(
+        "kowloon-duct-riser.item.json",
+        &[("floors", json!(5)), ("height", json!(height))],
+    );
+    // The body's back stands 6 cm in front of the wall (y 0; the item's front is toward -y).
+    let body = bounds_of(&riser, |id| id.starts_with("riser/body"));
+    assert!((body[1][1] + 0.06).abs() < 1e-6, "{body:?}");
+    // One bracket midway between each pair of seams, which are at most 1.3 m apart from 0.6 m
+    // above the foot to 0.6 m below the top (15 - 0.35 m).
+    let span = height - 0.35 - base - 1.2;
+    let count = (span / 1.3 - 1e-9).ceil() as usize;
+    assert_eq!(parts(&riser, "bracket-").len(), count);
+    let mut levels = vec![];
+    for k in 0..count {
+        let plate = bounds_of(&riser, |id| piece(id, k, "plate"));
+        let strap = bounds_of(&riser, |id| piece(id, k, "strap"));
+        // A plate flat on the wall, wider than the duct, and a strap round the duct's sides and
+        // front whose feet are bolted to it.
+        assert!(
+            plate[1][1].abs() < 1e-9 && plate[0][1] > -0.01,
+            "{k}: {plate:?}"
+        );
+        assert!(plate[0][0] < body[0][0] - 0.1 && plate[1][0] > body[1][0] + 0.1);
+        assert!(
+            strap[0][1] < body[0][1] && strap[0][0] < body[0][0] && strap[1][0] > body[1][0],
+            "{k}: {strap:?} round {body:?}"
+        );
+        assert!(strap[1][1] > -0.02, "{k}: the strap's feet reach the plate");
+        levels.push((plate[0][2] + plate[1][2]) / 2.);
+    }
+    // Spaced about 1.3 m, moved clear of each storey's branch collar and string course.
+    for pair in levels.windows(2) {
+        assert!((0.85..=1.55).contains(&(pair[1] - pair[0])), "{levels:?}");
+    }
+    for j in 0..5 {
+        let branch = (j + 1) as f64 * story - 0.45;
+        assert!(
+            levels.iter().all(|z| (z - branch).abs() > 0.19),
+            "{levels:?}"
+        );
+        let collar = bounds_of(&riser, |id| id.starts_with(&format!("branch-{j}/fitting")));
+        assert!(
+            collar[1][1] > -0.001 && collar[0][1] > -0.02,
+            "{j}: {collar:?}"
+        );
+    }
+    // The wall's materials find a fixing across each bracket plate and branch collar, with rust
+    // below the bracket feet and a drip below each collar, all on the wall plane.
+    let fixings = features_of(&riser, "fixing", "bracket-");
+    assert_eq!(fixings.len(), count);
+    for (fixing, z) in fixings.iter().zip(&levels) {
+        assert!(
+            fixing
+                .points
+                .iter()
+                .all(|p| p[1] == 0. && (p[2] - z).abs() < 1e-9),
+            "{:?} at {z}",
+            fixing.points
+        );
+    }
+    assert_eq!(features_of(&riser, "rust", "bracket-").len(), 2 * count);
+    assert!(
+        features_of(&riser, "rust", "bracket-")
+            .iter()
+            .all(|f| f.zone.is_some() && f.points[0][2] < levels.iter().cloned().fold(0., f64::max))
+    );
+    for name in ["fixing", "rust", "drip"] {
+        assert_eq!(features_of(&riser, name, "riser").len(), 5, "{name}");
+    }
+    assert!(
+        riser
+            .geometry
+            .features
+            .iter()
+            .filter(|f| f.within > 0.)
+            .all(|f| f.points.iter().all(|p| p[1] == 0.) && f.within == 1.)
+    );
+}
+
+#[test]
+fn the_run_hangs_close_under_the_parapet_with_collared_drops() {
+    // 5 m to the left (direction -1): seams from 0.5 m in, at most 1.4 m apart.
+    let run = generate("kowloon-duct-run.item.json", &[]);
+    let body = bounds_of(&run, |id| id.starts_with("run/body"));
+    assert!((body[1][1] + 0.06).abs() < 1e-6, "{body:?}");
+    let pitch = 4. / 3.;
+    assert_eq!(parts(&run, "bracket-").len(), 3);
+    for k in 0..3 {
+        let x = -(0.5 + pitch * (k as f64 + 0.5));
+        let plate = bounds_of(&run, |id| piece(id, k, "plate"));
+        let hanger = bounds_of(&run, |id| piece(id, k, "hanger"));
+        // Its plate is on the wall below the run, and the hanger cradles it from below without
+        // rising above it (the parapet's ledge is just over it).
+        assert!(
+            plate[1][1].abs() < 1e-9 && plate[0][2] < body[0][2] - 0.1,
+            "{plate:?}"
+        );
+        assert!(((plate[0][0] + plate[1][0]) / 2. - x).abs() < 1e-9);
+        assert!(
+            hanger[0][2] < body[0][2]
+                && hanger[1][2] < body[1][2] + 0.01
+                && hanger[0][1] < body[0][1],
+            "{k}: {hanger:?} under {body:?}"
+        );
+    }
+    // Drops into the wall every second bracket interval (about the 2.1 m bay), each through a
+    // collar bolted to the wall, a quarter interval from the seams and brackets.
+    assert_eq!(parts(&run, "branch-"), ["branch-0", "branch-2"]);
+    for j in [0, 2] {
+        let collar = bounds_of(&run, |id| id.starts_with(&format!("branch-{j}/fitting")));
+        assert!(
+            collar[1][1] > -0.001 && collar[0][1] > -0.02,
+            "{j}: {collar:?}"
+        );
+        let x = -(0.5 + pitch * (j as f64 + 0.25));
+        assert!(((collar[0][0] + collar[1][0]) / 2. - x).abs() < 1e-9);
+    }
+    // Rust runs down from below each hanger's foot, and down the wall from each collar.
+    let rust = features_of(&run, "rust", "bracket-");
+    assert_eq!(rust.len(), 3);
+    for f in &rust {
+        let zone = f.zone.as_ref().expect("a rust zone");
+        assert!(
+            f.points.iter().all(|p| p[1] == 0. && p[2] < body[0][2]),
+            "{:?}",
+            f.points
+        );
+        assert!((zone.down[2] + 1.).abs() < 1e-9, "{:?}", zone.down);
+    }
+    assert_eq!(features_of(&run, "fixing", "bracket-").len(), 3);
+    assert_eq!(features_of(&run, "fixing", "run").len(), 2);
+    assert_eq!(features_of(&run, "rust", "run").len(), 2);
+    assert_eq!(features_of(&run, "drip", "run").len(), 1);
+}
+
+#[test]
+fn a_sides_ducts_stand_close_and_report_their_wall_fixings() {
+    for (bands, gap) in [(false, 0.06), (true, 0.13)] {
+        let side = generate(
+            "kowloon-facade-side.item.json",
+            &[
+                ("bands", json!(bands)),
+                ("ductRun", json!(true)),
+                ("ducts", json!(6)),
+            ],
+        );
+        // The riser and run stand in one plane, clear of the string courses when there are any.
+        for part in ["riser", "run"] {
+            let body = bounds_of(&side, |id| {
+                id.starts_with(&format!("{part}/")) && id.ends_with(&format!("{part}/body"))
+            });
+            assert!((body[1][1] + gap).abs() < 1e-6, "{part}: {body:?}");
+        }
+        // The run is under the roof's edge (the side's height, 3.35 + 3 × 3 m), clear of it.
+        let run = bounds_of(&side, |id| id.starts_with("run/"));
+        assert!(
+            run[1][2] < 12.35 - 0.05 && run[0][2] > 12.35 - 0.6,
+            "{run:?}"
+        );
+        // The industrial ducts stand on brackets too, and give the wall their fixings, rust and
+        // drips on its plane.
+        assert!(!parts(&side, "duct-").is_empty());
+        for name in ["fixture", "fixing", "rust", "drip"] {
+            let found = features_of(&side, name, "duct-");
+            assert!(!found.is_empty(), "{name}");
+            assert!(
+                found
+                    .iter()
+                    .all(|f| f.points.iter().all(|p| p[1].abs() < 1e-9))
+            );
+        }
+        let duct = bounds_of(&side, |id| id.starts_with("duct-0/"));
+        assert!(duct[0][1] > -(gap + 0.62 + 0.1), "{duct:?}");
+    }
+}
+
 #[test]
 fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
     let floor = generate("kowloon-floor.item.json", &[]);

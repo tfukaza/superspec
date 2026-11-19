@@ -83,7 +83,7 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
   surface.name = "painted/surface";
   const fuzz = contourFuzz(geometry, leaf.cards, { ...s.fuzz, size: s.fuzz.size * leafScale, sun, normals: leaf.normals, leafMap });
   fuzz.name = "painted/fuzz";
-  const cards = densityCards(field, leaf.cards, { ...s.cards, size: s.cards.size * leafScale, branchSize: s.cards.branchSize * leafScale, level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
+  const cards = densityCards(field, leaf.cards, { ...s.cards, size: s.cards.size * leafScale, branchSize: s.cards.branchSize * leafScale, sprayScale: s.cards.sprayScale * (mass.sprayScale ?? 1), level: mass.level, keep: mass.cardKeep, sun, twigs, branches: branchCardTexture(),
     roundFamily: true, shadeField, shadeMix: form, shadeJitter: jitter,
     tierField: densityField(sites, mass.radius * s.tierSpread, mass.cell), leafMap });
   cards.name = "painted/cards";
@@ -105,10 +105,25 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
     followPaintedFinishing(material);
     uniforms.msGrade = grade;
     uniforms.msGradeShade = shade;
+    // Soft edges (`FoliageMass.softEdges`): a card's cutout becomes its coverage, sharpened to about a pixel and blended
+    // over what is behind (the core and the scene are drawn first; the cards still write depth, so a card behind a rim
+    // drawn later is hidden there: a pixel of rim then shows what was behind both). The shadow pass keeps the hard cutout.
+    const soft = !!mass.softEdges && part !== surface;
+    if (soft) {
+      material.transparent = true;
+      material.depthWrite = true;
+      material.blending = THREE.CustomBlending;
+      material.blendSrc = THREE.SrcAlphaFactor; material.blendDst = THREE.OneMinusSrcAlphaFactor;
+      material.blendSrcAlpha = THREE.OneFactor; material.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    }
     material.onBeforeCompile = shader => {
-      shader.fragmentShader = GRADE_GLSL + shader.fragmentShader.replaceAll("#include <colorspace_fragment>",
-        "gl_FragColor.rgb = msGradeColour(gl_FragColor.rgb);\n#include <colorspace_fragment>");
+      let fragment = shader.fragmentShader;
+      if (soft) fragment = "float msCoverage = 1.0;\n" + fragment.replace(/if \((\w+)\.a < 0\.5\) discard;/g,
+        "msCoverage = clamp(($1.a - 0.5) / max(fwidth($1.a), 1e-4) + 0.5, 0.0, 1.0); if (msCoverage < 0.02) discard;");
+      shader.fragmentShader = GRADE_GLSL + fragment.replaceAll("#include <colorspace_fragment>",
+        `gl_FragColor.rgb = msGradeColour(gl_FragColor.rgb);${soft ? " gl_FragColor.a = msCoverage;" : ""}\n#include <colorspace_fragment>`);
     };
+    material.customProgramCacheKey = () => `painted-mass:${soft}`;
     // The scene's sun, shared, so the bands follow the lighting.
     uniforms.sun = programSun;
     if (uniforms.highlight) uniforms.highlight.value = s.highlight;

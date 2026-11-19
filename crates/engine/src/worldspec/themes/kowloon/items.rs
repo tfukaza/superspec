@@ -650,18 +650,86 @@ fn roof_outlet(
 /// `kowloon/riser-duct`: the industrial sheet-steel riser duct with its offset flanges,
 /// brackets and access hatch, in the `vent-metal` and `vent-edge` slots. Anchor:
 /// bottom-centre on the wall plane; the duct is 0.78 m wide and stands about 1 m out.
-/// Parameters: `height` (m from the lower to the upper wall connection, 3–20, 4.8).
+/// Parameters: `height` (m from the lower to the upper wall connection, 3–20, 4.8) and
+/// `standoff` (m from the wall to the body's back, 0.04–0.32; absent, the body stands 0.32 m
+/// off in its diagonal cradle; given, it stands on angle-iron brackets every 1.4 m at most,
+/// bolted to wall plates, and its connections pass through bolted wall plates).
 fn riser_duct(
     name: &str,
     values: &Values,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<NativeOutput, String> {
+    let (height, standoff) = riser_duct_options(name, values)?;
+    draw(cancelled, |mesh| {
+        super::facade::services::draw_standing_duct(
+            &mut fixture(mesh, "riser-duct")?,
+            0.,
+            0.,
+            height,
+            standoff,
+        )
+    })
+}
+
+fn riser_duct_options(name: &str, values: &Values) -> Result<(f64, Option<f64>), String> {
     let mut a = Arguments::new(name, values);
     let height = a.bounded("height", 4.8, 3. ..=20.)?;
+    let standoff = a.optional_number("standoff")?;
+    if standoff.is_some_and(|gap| !(0.04..=0.32).contains(&gap)) {
+        return Err(format!("{name}: standoff must lie in 0.04..0.32."));
+    }
     a.finish()?;
-    draw(cancelled, |mesh| {
-        super::facade::services::draw_duct(&mut fixture(mesh, "riser-duct")?, 0., 0., height)
-    })
+    Ok((height, standoff))
+}
+
+/// What `kowloon/riser-duct` leaves on its wall, on the wall plane (`y` 0) for the wall's
+/// materials within 1 m: `fixture` up its middle, `fixing` across each bracket plate and each
+/// wall connection, and `rust` and `drip` zones below them.
+fn riser_duct_features(name: &str, values: &Values) -> Vec<Feature> {
+    use crate::itemspec::definition::Reach;
+    use crate::materialspec::program::{ZONE_DEPTH, Zone, zone_id};
+    let Ok((height, standoff)) = riser_duct_options(name, values) else {
+        return vec![];
+    };
+    let fixings = super::facade::services::duct_fixings(0., 0., height, standoff);
+    let mut features = vec![];
+    let mut edge = |name: &str, [u0, v0]: [f64; 2], [u1, v1]: [f64; 2], zone: Option<f64>| {
+        features.push(Feature {
+            name: name.into(),
+            part: String::new(),
+            source: None,
+            face: "front".into(),
+            points: vec![[u0, 0., v0], [u1, 0., v1]],
+            closed: false,
+            normal: [0., -1., 0.],
+            width: 0.,
+            reach: Reach::Item,
+            within: 1.,
+            zone: zone.map(|length| Zone {
+                down: [0., 0., -1.],
+                length,
+                depth: ZONE_DEPTH,
+                u0: 0.,
+                id: zone_id(&[0f64.to_bits()]),
+                scale: 1.,
+                stops: vec![],
+                holes: vec![],
+            }),
+        });
+    };
+    edge("fixture", [0., 0.], [0., height], None);
+    for [u0, v0, u1, v1] in fixings.brackets {
+        let (u, v) = ((u0 + u1) / 2., (v0 + v1) / 2.);
+        edge("fixing", [u0, v], [u1, v], None);
+        edge("rust", [u - 0.03, v0], [u + 0.03, v0], Some(0.55));
+    }
+    for [u0, v0, u1, v1] in fixings.connections {
+        edge("fixing", [u0, v0], [u1, v0], None);
+        edge("fixing", [u0, v1], [u1, v1], None);
+        edge("rust", [-0.25, v0], [0.25, v0], Some(0.7));
+        edge("drip", [u0, v0], [u1, v0], Some(1.));
+    }
+    features
 }
 
 /// Unweathered pipe options shared by the pipe generators.
@@ -3003,6 +3071,7 @@ impl NativeGenerators for Natives {
     fn features(&self, name: &str, parameters: &Values) -> Vec<Feature> {
         match name {
             "kowloon/party" => party::features(name, parameters),
+            "kowloon/riser-duct" => riser_duct_features(name, parameters),
             _ => vec![],
         }
     }

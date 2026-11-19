@@ -45,7 +45,7 @@ generator documents its anchor and parameters; `tests/kowloon_items.rs` checks e
 | Ground floor | `entrance`, `ground-bay` (shutter, gate, door, shop, service) |
 | Roof | `water-tank`, `stair-hut`, `aerial`, `rooftop-shack`, `rooftop` (a whole roof's equipment) |
 | Signs | `sign`, `blade-sign`, `hung-sign` |
-| Street and facade details | `shop-room`, `street-stock`, `pavement`, `pedestrian-avenue`, `street-lamp`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
+| Street and facade details | `shop-room`, `street-stock`, `pavement`, `pedestrian-avenue`, `street-lamp`, `street-cart`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
 | Shop interiors | `grocer-prop`, `shelving`, `counter`, `crate`, `bottle-crate`, `counter-scale`, `price-card`, `pendant-lamp`, `ceiling-fan`, `tube-light`, `wall-clock`, `calendar`, `hanging-scale`, `stool` |
 
 Not ported, because they need whole-facade or room planning state rather than parameters:
@@ -69,7 +69,7 @@ larger ones.
 | `kowloon-floor` | one storey: a wall panel with a row of openings (each kept by `windowChance`), windows, AC units, vents, racks, plants, a band; grime under its top, sills and drips | panel, `kowloon-window`, `kowloon-aircon`, natives |
 | `kowloon-ground-floor` | the street storey: openings and shopfronts, a fascia; ground stain and moss | panel, `kowloon-shopfront` |
 | `kowloon-parapet` | parapet, coping, roof outlet; top grime | panel, box, `kowloon/roof-outlet` |
-| `kowloon-duct-riser`, `kowloon-duct-run` | a riser over the floors with branches and an elbow; a run under the parapet with a tee per bay | routes, boxes |
+| `kowloon-duct-riser`, `kowloon-duct-run`, `kowloon-duct-bracket` | a riser over the floors with collared branches and an elbow, 6 cm off the wall on a strap bracket about every 1.3 m; a run under the roof's edge on hangers with a collared drop about every bay | routes, boxes, `kowloon-duct-bracket` |
 | `kowloon-roof` | roof slab and the Kowloon rooftop's equipment | box, `kowloon/rooftop` |
 | `kowloon-facade-side` | a side: ground storey (shops, or a floor), upper floors, parapet, downpipe, riser, duct run, industrial ducts, back door, extra pipes | the items above |
 | `kowloon-building` | a building from any footprint polygon: a side along every edge, cut corners with signs between streets, a prism roof cut to the footprint, the rooftop | `kowloon-facade-side`, prism, natives |
@@ -388,19 +388,29 @@ The building's look is recipes and layers that any item can use; none is tied to
 `tests/studio/washroom-items/build.mjs` places the side (`FACADE=1`) or the building
 (`FACADE=building`) across the lane beyond the washroom's low wall. With `LANE=1` (written by
 `treespec_batches::write_lane_plants`) it paves the front street's road and lays a pedestrian
-avenue along the building's right side (edge 1): `kowloon/pedestrian-avenue`, 14 m from the wall
-line and 32 m long, courses of large slabs with darker bands, kerbs where it meets the road,
-bollards across its ends, and a raised median planter 2.4 m wide with slot drains and benches
-beside it. The washroom lawn's painted grass fills the median, and birches stand in a row down
-it, 7 m apart, with a shrub between each two. `tests/studio/washroom-items/avenue.json` is the
-one source of the avenue's line, median and stations, read by both `build.mjs` and
-`write_lane_plants`. The avenue's top is 4.5 cm below the building's pavement, which stands over
-it with its kerb stones as an edging. Litter bins stand past the benches' ends, and two rows of
-`kowloon/street-lamp` posts (swan-neck arms reaching toward the median, banners on the row by
-the building; `lamps` in `avenue.json`) line its outer edges. Without the washroom the front
-street is a whole street: a 7.3 m carriageway running out of the pictures both ways, a far kerb
-and a 4 m `kowloon/pavement` across it. Past the building's back a two-storey `kowloon/party`
-stub closes the avenue's near side as a neighbour's frontage. `tests/item-facade-browser.mjs` (`MODEL=building`,
+avenue along the building's right side (edge 1): `kowloon/pedestrian-avenue`, a narrow street
+8.2 m from the wall line to the far shopfronts and 32 m long, large square slabs laid in a grid
+(`stagger: false`) with dark joints, kerbs where it meets the road, black bollards across its
+ends (`bollardColor`), and a raised median planter 1.7 m wide (kerb wall 0.35 m) with slot
+drains and backless benches beside it, a 3.25 m walkway either side. The median is planted with
+groundcover, trees stand in a row down it, 7 m apart, with a shrub between each two.
+`tests/studio/washroom-items/avenue.json` is the one source of the avenue's line, median and
+stations, read by both `build.mjs` and `write_lane_plants`. The avenue's top is 4.5 cm below the
+building's pavement, which stands over it with its kerb stones as an edging. Litter bins stand
+past the benches' ends, and two rows of `kowloon/street-lamp` posts (short arms toward the
+median, banners on the row by the building; `lamps` in `avenue.json`) stand just past the
+building's kerb and clear of the far shopfronts' awnings. Without the washroom the front street
+is a whole street: a 7.3 m carriageway running out of the pictures both ways, a far kerb and a
+4 m `kowloon/pavement` across it. Past the building's back a three-storey `kowloon/party` stub
+closes the avenue's near side as a neighbour's frontage; the far side is closed by a row of six
+neighbours (`frontage` in `avenue.json`): `kowloon-ground-floor` shopfronts (shutters, gates,
+doors, awnings) under `kowloon/party` stubs of three to five storeys (`depth` fixed, `shops`
+leaving their front's ground storey blank) set 0.35 m behind them. Blade and hung
+`kowloon-sign`s project over both walkways between the trees, and the walkways carry pots by
+the shop piers, crates and cartons, parked bicycles and loaded hand carts (`kowloon/street-cart`).
+Pavements and the avenue are tinted a near-neutral mid grey (#8f8e8a), so the `paving` material
+decides their colour. The scene is near the preview's bake allowance (4 GiB at `bakememory`
+4096): the neighbours and the street furniture bake coarser than the building. `tests/item-facade-browser.mjs` (`MODEL=building`,
 `BUILDING_PARAMETERS`, `RESOLUTION`, default 1024, and `TEXELS`, default 256 per meter) pictures
 it in the built studio. The earlier low concrete detail came from baking at 256 pixels per
 receiver, about 21 per meter on a 12 m wall.

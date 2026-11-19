@@ -219,6 +219,12 @@ pub struct FoliageMass {
     /// Size of the painted leaves (the leaf map, the outline's fuzz and the cards) as a multiple
     /// of the renderer's own, 0.25 to 4: larger for a plant seen from far.
     pub leaf_scale: f64,
+    /// Whether the leaf cards' cut-out edges are blended over a pixel instead of cut hard, so
+    /// leaf shapes at a cluster's rim stay smooth from far (off: the milestone's hard edge).
+    pub soft_edges: bool,
+    /// Length of the sprays (the branchlet cards of pointed leaves at the foliage's rim) as a
+    /// multiple of the renderer's own, 0.25 to 4.
+    pub spray_scale: f64,
     /// How the painted colours are graded for the scene the plant stands in (the default keeps
     /// the milestone's own).
     pub palette: FoliagePalette,
@@ -235,6 +241,8 @@ impl Default for FoliageMass {
             form: 0.55,
             jitter: 0.45,
             leaf_scale: 1.,
+            soft_edges: false,
+            spray_scale: 1.,
             palette: FoliagePalette::default(),
         }
     }
@@ -548,6 +556,7 @@ impl Foliage {
             within(mass.form, 0., 1., "mass form")?;
             within(mass.jitter, 0., 1., "mass jitter")?;
             within(mass.leaf_scale, 0.25, 4., "mass leafScale")?;
+            within(mass.spray_scale, 0.25, 4., "mass sprayScale")?;
             within(mass.palette.hue, -180., 180., "mass palette hue")?;
             within(mass.palette.saturation, 0., 2., "mass palette saturation")?;
             within(mass.palette.value, 0., 2., "mass palette value")?;

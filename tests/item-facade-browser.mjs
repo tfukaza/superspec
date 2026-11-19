@@ -196,9 +196,9 @@ try {
       // face and the street corner: the median's planting, the benches and the paving. Its own sun (`sun`: azimuth and
       // elevation, degrees) comes from behind the camera on the avenue's side, so the crowns' lit clumps face it and their
       // dappled shadows fall on the building's side face and shop fronts; every other view keeps the shared sun.
-      // Raised about four storeys over the far walkway near the avenue's end and looking along the median toward the
-      // building's street corner, the building on the right and the neighbours' shopfronts closing the left.
-      avenue: { position: [x0 - 19, y1 + 5.6, 12.5], target: [front - 1.5, y1 - 0.5, 3.2], sun: [135, 40] },
+      // Raised over the roofs past the avenue's far end and looking down along the median toward the building's street
+      // corner, the building and its neighbour on the right and the neighbours' shopfronts closing the left.
+      avenue: { position: [x0 - 21, y1 + 5.6, 16.5], target: [front - 2, y1 - 0.5, 2], sun: [135, 40] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
       // Details, without the plants: the corner's foot and the pavement, the balcony and what hangs under it, the signs
