@@ -551,10 +551,11 @@ fn draw_close_fixings(
     let steel = "vent-metal";
     let arm = front + 0.05;
     fn bolt(d: &mut Fixture<'_, '_>, u: f64, v: f64, face: f64) -> Result<(), String> {
+        // Drawn heavy: a bolt head that reads from the street.
         d.cuboid(
             "vent-edge",
-            [u - 0.013, face, v - 0.013],
-            [u + 0.013, face + 0.014, v + 0.013],
+            [u - 0.022, face, v - 0.022],
+            [u + 0.022, face + 0.022, v + 0.022],
             [0.62; 3],
             "",
         )

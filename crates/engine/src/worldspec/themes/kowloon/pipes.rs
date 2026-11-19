@@ -19,6 +19,9 @@ pub struct Options {
 }
 pub struct PipeSystem {
     options: Options,
+    /// How heavy the fittings are drawn: 1 is the plumber's own size, 2 the weight of a
+    /// drawing (broader straps and sockets, a thicker wall plate, larger bolts).
+    weight: f64,
 }
 #[derive(Clone, Copy)]
 struct Ring {
@@ -71,13 +74,29 @@ impl PipeSystem {
         {
             return Err("Pipe weathering requires normalized factors and bounded density.".into());
         }
-        Ok(Self { options })
+        Ok(Self {
+            options,
+            weight: 1.,
+        })
+    }
+    /// The same pipes with fittings of `weight` (1–3; see the field).
+    pub fn weighted(mut self, weight: f64) -> Result<Self, String> {
+        if !weight.is_finite() || !(1. ..=3.).contains(&weight) {
+            return Err("Pipe fitting weight must lie in 1..3.".into());
+        }
+        self.weight = weight;
+        Ok(self)
+    }
+    /// `plain` at weight 1 and `plain + more` at weight 2.
+    fn heavier(&self, plain: f64, more: f64) -> f64 {
+        plain + more * (self.weight - 1.)
     }
     fn socket_length(&self) -> f64 {
         self.options.radius * 1.4
     }
     fn strap_length(&self) -> f64 {
-        (self.options.radius * 0.65).max(0.024)
+        let plain = (self.options.radius * 0.65).max(0.024);
+        self.heavier(plain, plain * 0.7)
     }
 
     pub fn straight(
@@ -189,7 +208,10 @@ impl PipeSystem {
             drawing,
             center,
             unit(axis)?,
-            self.options.radius * 1.23,
+            self.heavier(
+                self.options.radius * 1.23,
+                self.options.radius * 0.12 + 0.004,
+            ),
             self.socket_length(),
         )
     }
@@ -213,31 +235,46 @@ impl PipeSystem {
             return Err("Pipe mount axis must run parallel to its wall.".into());
         }
         let across = unit(cross(tangent, out))?;
-        self.sleeve(drawing, center, tangent, r * 1.12, self.strap_length())?;
+        self.sleeve(
+            drawing,
+            center,
+            tangent,
+            self.heavier(r * 1.12, r * 0.1 + 0.005),
+            self.strap_length(),
+        )?;
+        // The wall plate's thickness: its middle plane stands half of it off the wall.
+        let thick = self.heavier(0.012, 0.01);
+        let stem = (r * 0.45).max(0.018);
         self.member(
             drawing,
-            add(wall, scale(out, 0.006)),
+            add(wall, scale(out, thick / 2.)),
             add(center, scale(out, -r * 0.9)),
             across,
-            r * 0.6,
-            (r * 0.45).max(0.018),
+            self.heavier(r * 0.6, r * 0.2 + 0.012),
+            self.heavier(stem, stem * 0.7),
         )?;
-        let plate = add(wall, scale(out, 0.006));
+        let plate = add(wall, scale(out, thick / 2.));
+        let reach = self.heavier(r * 1.9, r * 0.3 + 0.03);
+        let broad = (r * 0.9).max(0.045);
         self.member(
             drawing,
-            add(plate, scale(across, -r * 1.9)),
-            add(plate, scale(across, r * 1.9)),
+            add(plate, scale(across, -reach)),
+            add(plate, scale(across, reach)),
             tangent,
-            (r * 0.9).max(0.045),
-            0.012,
+            self.heavier(broad, broad * 0.5),
+            thick,
         )?;
+        let bolt = (r * 0.14).max(0.006);
         for sign in [-1., 1.] {
             fasteners::bolt(
                 drawing,
                 "metal",
-                add(add(wall, scale(out, 0.012)), scale(across, sign * r * 1.5)),
+                add(
+                    add(wall, scale(out, thick)),
+                    scale(across, sign * self.heavier(r * 1.5, r * 0.3 + 0.018)),
+                ),
                 out,
-                (r * 0.14).max(0.006),
+                self.heavier(bolt, bolt * 0.6 + 0.004),
                 self.options.color,
                 self.options.weathering.as_ref(),
             )?;

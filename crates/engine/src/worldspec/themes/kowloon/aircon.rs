@@ -308,8 +308,9 @@ fn brackets(
     drop: f64,
     tint: V3,
     weathering: Option<&Settings>,
-    plates: bool,
+    Options { plates, weight, .. }: Options,
 ) -> Result<(), String> {
+    let heavy = |plain: f64, bold: f64| weighed(weight, plain, bold);
     let fall = drop.min(0.32);
     let pen = if let Some(s) = weathering {
         drawing.pen.with_weathering(
@@ -336,9 +337,12 @@ fn brackets(
         steel::angle(
             &mut d,
             steel,
-            [[x - 0.018, 0.008, z - 0.04], [x - 0.018, depth, z - 0.04]],
+            [
+                [x - heavy(0.018, 0.025), 0.008, z - heavy(0.04, 0.055)],
+                [x - heavy(0.018, 0.025), depth, z - heavy(0.04, 0.055)],
+            ],
             [[1., 0., 0.], [0., 0., 1.]],
-            [0.035, 0.004],
+            [heavy(0.035, 0.05), heavy(0.004, 0.011)],
         )?;
         if plates {
             // A bolted wall plate where the arm meets the wall, and bolts through the arm's
@@ -351,7 +355,7 @@ fn brackets(
                     across: [1., 0., 0.],
                     up: [0., 0., 1.],
                     out: [0., 1., 0.],
-                    size: [0.09, 0.13],
+                    size: [heavy(0.09, 0.13), heavy(0.13, 0.17)],
                     bolts: 4,
                 },
             )?;
@@ -361,7 +365,7 @@ fn brackets(
                     steel,
                     [x + 0.002, depth * share, z - 0.035],
                     [0., 0., 1.],
-                    0.007,
+                    heavy(0.007, 0.012),
                 )?;
             }
         }
@@ -373,7 +377,7 @@ fn brackets(
             steel,
             [[x, depth - 0.05, z - 0.04], [x, 0.014, z - fall + 0.035]],
             [1., 0., 0.],
-            [0.026, 0.018],
+            [heavy(0.026, 0.042), heavy(0.018, 0.03)],
         )?;
         steel::fixing_plate(
             &mut d,
@@ -383,7 +387,7 @@ fn brackets(
                 across: [1., 0., 0.],
                 up: [0., 0., 1.],
                 out: [0., 1., 0.],
-                size: [0.07, fall],
+                size: [heavy(0.07, 0.1), fall],
                 bolts: 4,
             },
         )?;
@@ -489,12 +493,28 @@ fn body(rng: &mut SeededRng) -> V3 {
     srgb(rng.pick(&["#e0ddd2", "#cfc8b4", "#b8bcc0", "#d8d0bc"]))
 }
 /// What a caller adds to a unit beyond the seeded one; the default adds nothing.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// Bolted wall plates under the bracket arms and bolts through the arms.
     pub plates: bool,
     /// The outward face always shows the louvred grille (the seed's model picks it otherwise).
     pub louvred: bool,
+    /// How heavy the supports, lines and guard wires are drawn: 1 is their own size, 2 the
+    /// weight of a drawing (1–3).
+    pub weight: f64,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            plates: false,
+            louvred: false,
+            weight: 1.,
+        }
+    }
+}
+/// `plain` at weight 1 and `bold` at weight 2.
+fn weighed(weight: f64, plain: f64, bold: f64) -> f64 {
+    plain + (bold - plain) * (weight - 1.)
 }
 /// Window-mounted unit. Returned facade footprint is also the source of its wall stain.
 pub fn air_conditioner(
@@ -581,28 +601,31 @@ pub fn air_conditioner_with(
         body,
     )?;
     let wire = shade(body, 0.65);
-    let grille_y = depth - recess + 0.003;
+    // The guard's wires: heavier ones stand further apart.
+    let heavy = |plain: f64, bold: f64| weighed(options.weight, plain, bold);
+    let (gauge, pitch) = (heavy(0.0018, 0.005), heavy(0.055, 0.1));
+    let grille_y = depth - recess + heavy(0.003, 0.006);
     let mut u = x0 + 0.055;
     while u < x1 - 0.045 {
         d.tube(
             "metal",
             &[[u, grille_y, z + 0.05], [u, grille_y, z + h - 0.05]],
-            0.0018,
+            gauge,
             wire,
             5,
         )?;
-        u += 0.055;
+        u += pitch;
     }
     let mut v = z + 0.065;
     while v < z + h - 0.05 {
         d.tube(
             "metal",
             &[[x0 + 0.05, grille_y, v], [x1 - 0.05, grille_y, v]],
-            0.0018,
+            gauge,
             wire,
             5,
         )?;
-        v += 0.055;
+        v += pitch;
     }
     let screws = Steel {
         slot: "metal",
@@ -646,7 +669,7 @@ pub fn air_conditioner_with(
         drop,
         steel,
         weathering,
-        options.plates,
+        options,
     )?;
     let hose = x + rng.float(-0.2, 0.2);
     let extent = rng.float(0.3, 0.7).min(drop) - 0.005;
@@ -658,7 +681,7 @@ pub fn air_conditioner_with(
                 [hose, depth - 0.06, z - 0.12],
                 [hose + 0.03, depth - 0.1, z - extent],
             ],
-            0.011,
+            heavy(0.011, 0.018),
             srgb("#3a3a38"),
             5,
         )?;
@@ -838,16 +861,18 @@ fn line_set(
     from: V3,
     rise: f64,
     rng: &mut SeededRng,
+    weight: f64,
 ) -> Result<(), String> {
     let [x, y, z] = from;
     let out = x + 0.07;
     let insulation = srgb("#d8d6cc");
     let hose = srgb("#3a3a38");
+    let (lagged, drain) = (weighed(weight, 0.016, 0.024), weighed(weight, 0.011, 0.017));
     if rise < 0.3 {
         d.tube(
             "paint",
             &[[x, y, z], [out, y, z], [out, 0.01, z + 0.04]],
-            0.016,
+            lagged,
             insulation,
             6,
         )?;
@@ -858,7 +883,7 @@ fn line_set(
                 [out + 0.03, y, z - 0.05],
                 [out + 0.03, 0.01, z],
             ],
-            0.011,
+            drain,
             hose,
             5,
         );
@@ -866,14 +891,14 @@ fn line_set(
     d.tube(
         "paint",
         &[[x, y, z], [out, y, z], [out, 0.04, z + 0.05]],
-        0.016,
+        lagged,
         insulation,
         6,
     )?;
     d.tube(
         "paint",
         &[[x, y, z - 0.05], [out, y, z - 0.05], [out, 0.04, z]],
-        0.011,
+        drain,
         hose,
         5,
     )?;
@@ -1086,10 +1111,16 @@ pub fn condenser_with(
         0.32,
         steel,
         weathering,
-        options.plates,
+        options,
     )?;
     let rise = rng.float(0.5, 1.3).min(height - 0.2);
-    line_set(d, [right + 0.035, (y0 + y1) / 2., z + 0.14], rise, rng)?;
+    line_set(
+        d,
+        [right + 0.035, (y0 + y1) / 2., z + 0.14],
+        rise,
+        rng,
+        options.weight,
+    )?;
     if wear > 0 && height >= h + 0.14 && rng.chance(0.3) {
         rain_cover(d, [left, right], y1, z + h, rng)?;
     }

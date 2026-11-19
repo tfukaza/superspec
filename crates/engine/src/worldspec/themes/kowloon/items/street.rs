@@ -20,6 +20,66 @@ use superspec_types::rng::SeededRng;
 /// The stone tint pavements and avenues are shaded from: a near-neutral mid grey, so the
 /// paving material bound over them decides their colour and the tints only vary it.
 const PAVING: &str = "#8f8e8a";
+/// The joint between paving and kerb stones, and how far a paving stone's top edge is
+/// chamfered into it: together a dark band wide enough to read as a drawn line from across
+/// a street.
+const JOINT: f64 = 0.02;
+const BEVEL: f64 = 0.012;
+/// How dark a stone's chamfer and sides are, of its own tint.
+const JOINT_SHADE: f64 = 0.42;
+
+/// A paving stone over `[x0, y0, x1, y1]` (the joint already taken off), its top at `top`
+/// and its foot in the bed at z = -0.04: the top face in `tint`, and a chamfer round it over
+/// upright sides, both dark.
+fn paving_stone(
+    d: &mut Fixture<'_, '_>,
+    [x0, y0, x1, y1]: [f64; 4],
+    top: f64,
+    tint: V3,
+) -> Result<(), String> {
+    let b = BEVEL.min((x1 - x0) / 4.).min((y1 - y0) / 4.);
+    let dark = shade(tint, JOINT_SHADE);
+    let outer = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let inner = [
+        [x0 + b, y0 + b],
+        [x1 - b, y0 + b],
+        [x1 - b, y1 - b],
+        [x0 + b, y1 - b],
+    ];
+    d.face(
+        "paving",
+        &inner.map(|[x, y]| [x, y, top]),
+        [0., 0., 1.],
+        tint,
+    )?;
+    let outward = [[0., -1.], [1., 0.], [0., 1.], [-1., 0.]];
+    for k in 0..4 {
+        let (n, [ox, oy]) = ((k + 1) % 4, outward[k]);
+        d.face(
+            "paving",
+            &[
+                [outer[k][0], outer[k][1], top - b],
+                [outer[n][0], outer[n][1], top - b],
+                [inner[n][0], inner[n][1], top],
+                [inner[k][0], inner[k][1], top],
+            ],
+            [ox, oy, 1.],
+            dark,
+        )?;
+        d.face(
+            "paving",
+            &[
+                [outer[k][0], outer[k][1], -0.04],
+                [outer[n][0], outer[n][1], -0.04],
+                [outer[n][0], outer[n][1], top - b],
+                [outer[k][0], outer[k][1], top - b],
+            ],
+            [ox, oy, 0.],
+            dark,
+        )?;
+    }
+    Ok(())
+}
 
 /// `kowloon/shop-room`: an open shop behind its shopfront opening: floor, ceiling and walls,
 /// the raised shutter's head box and threshold, and the trade's furniture and stock (shelf
@@ -359,7 +419,7 @@ pub(super) fn pavement(
         let pitch = (x1 - x0) / columns as f64;
         let rows = ((depth - kerb) / stone).round().max(1.) as usize;
         let row = (depth - kerb) / rows as f64;
-        let joint = 0.006;
+        let joint = JOINT;
         for r in 0..rows {
             // Alternate rows break joint by half a stone.
             let offset = if r % 2 == 1 { pitch / 2. } else { 0. };
@@ -372,17 +432,20 @@ pub(super) fn pavement(
                     (left + pitch).min(x1)
                 };
                 let sink = rng.float(0., 0.006);
-                d.cuboid(
-                    "paving",
-                    [
-                        left + joint / 2.,
-                        -((r + 1) as f64) * row + joint / 2.,
-                        -0.04,
-                    ],
-                    [right - joint / 2., -(r as f64) * row - joint / 2., -sink],
-                    shade(color, rng.float(0.7, 1.08)),
-                    "d",
-                )?;
+                let tint = shade(color, rng.float(0.7, 1.08));
+                if right - left >= 3. * joint {
+                    paving_stone(
+                        d,
+                        [
+                            left + joint / 2.,
+                            -((r + 1) as f64) * row + joint / 2.,
+                            right - joint / 2.,
+                            -(r as f64) * row - joint / 2.,
+                        ],
+                        -sink,
+                        tint,
+                    )?;
+                }
                 left = right;
                 c += 1;
             }
@@ -427,13 +490,13 @@ pub(super) fn pavement(
                 shade(iron, 0.7),
                 "d",
             )?;
-            for bar in 0..6 {
-                let x = at - 0.3 + bar as f64 * 0.11;
+            for bar in 0..4 {
+                let x = at - 0.31 + bar as f64 * 0.173;
                 d.cuboid(
                     "metal",
                     [x, y - 0.25, 0.006],
-                    [x + 0.06, y + 0.25, 0.013],
-                    iron,
+                    [x + 0.1, y + 0.25, 0.022],
+                    shade(iron, 1.2),
                     "d",
                 )?;
             }
@@ -442,14 +505,15 @@ pub(super) fn pavement(
             let iron = srgb("#343632");
             let at = length - 0.75;
             let (y0, y1) = (-depth + kerb + 0.08, -depth + kerb + 0.6);
+            // A cover of four heavy bars in its frame.
             d.cuboid("metal", [at, y0, 0.001], [at + 0.4, y1, 0.008], iron, "d")?;
-            for bar in 0..7 {
-                let y = y0 + 0.05 + bar as f64 * 0.066;
+            for bar in 0..4 {
+                let y = y0 + 0.045 + bar as f64 * 0.123;
                 d.cuboid(
                     "metal",
-                    [at + 0.015, y, 0.008],
-                    [at + 0.385, y + 0.026, 0.02],
-                    shade(iron, 1.25),
+                    [at + 0.03, y, 0.008],
+                    [at + 0.37, y + 0.062, 0.024],
+                    shade(iron, 1.3),
                     "d",
                 )?;
             }
@@ -474,14 +538,31 @@ fn swept(
     caps: bool,
     tint: V3,
 ) -> Result<(), String> {
+    swept_tinted(d, slot, radius, profile, angles, pieces, caps, &[tint])
+}
+
+/// [`swept`] with a tint for each edge of the profile in turn (the list repeating); the caps
+/// take the first.
+#[allow(clippy::too_many_arguments)]
+fn swept_tinted(
+    d: &mut Fixture<'_, '_>,
+    slot: &str,
+    radius: f64,
+    profile: &[[f64; 2]],
+    angles: [f64; 2],
+    pieces: usize,
+    caps: bool,
+    tints: &[V3],
+) -> Result<(), String> {
     use superspec_geometry::math::{cos, hypot, sin};
     let repeat = d.repeat(slot);
     let at = |[reach, z]: [f64; 2], angle: f64| -> V3 {
         [reach * sin(angle), radius - reach * cos(angle), z]
     };
     let step = |k: usize| angles[0] + (angles[1] - angles[0]) * k as f64 / pieces as f64;
-    for edge in profile.windows(2) {
+    for (index, edge) in profile.windows(2).enumerate() {
         let (p, q) = (edge[0], edge[1]);
+        let tint = tints[index % tints.len()];
         let size = hypot(q[0] - p[0], q[1] - p[1]);
         let across = [(q[1] - p[1]) / size, (p[0] - q[0]) / size];
         let normal =
@@ -508,7 +589,7 @@ fn swept(
                 slot,
                 &points,
                 [cos(angle) * facing, sin(angle) * facing, 0.],
-                &Tint::Color(tint),
+                &Tint::Color(tints[0]),
                 repeat,
                 None,
                 None,
@@ -542,7 +623,7 @@ pub(super) fn pavement_corner(
     let color = a.color("color", PAVING)?;
     let mut rng = a.rng()?;
     a.finish()?;
-    let (kerb, joint) = (0.14, 0.006);
+    let (kerb, joint) = (0.14, JOINT);
     // How many chords a span of the turn takes, so every arc is as round as the whole.
     let chords = |span: f64| ((span / turn * segments as f64).ceil() as usize).max(1);
     draw(cancelled, |mesh| {
@@ -570,15 +651,24 @@ pub(super) fn pavement_corner(
                 let sink = rng.float(0., 0.006);
                 let tint = shade(color, rng.float(0.7, 1.08));
                 let (low, high) = (inner + joint / 2., outer - joint / 2.);
-                swept(
+                // Chamfered into the joints along its rings, as the straight stones are.
+                let (b, dark) = (BEVEL.min((high - low) / 4.), shade(tint, JOINT_SHADE));
+                swept_tinted(
                     d,
                     "paving",
                     radius,
-                    &[[high, -0.04], [high, -sink], [low, -sink], [low, -0.04]],
+                    &[
+                        [high, -0.04],
+                        [high, -sink - b],
+                        [high - b, -sink],
+                        [low + b, -sink],
+                        [low, -sink - b],
+                        [low, -0.04],
+                    ],
                     [c as f64 * span + gap, (c + 1) as f64 * span - gap],
                     chords(span),
                     true,
-                    tint,
+                    &[dark, dark, tint, dark, dark],
                 )?;
             }
         }
@@ -624,7 +714,7 @@ fn kerb_run(
     color: V3,
     rng: &mut SeededRng,
 ) -> Result<(), String> {
-    let joint = 0.006;
+    let joint = JOINT;
     let stones = ((span[1] - span[0]) / stone).round().max(1.) as usize;
     let long = (span[1] - span[0]) / stones as f64;
     let (inner, top) = (kerb - joint / 2., -0.012);
@@ -712,7 +802,7 @@ pub(super) fn pedestrian_avenue(
         color,
         ..
     } = plan;
-    let (kerb, joint) = (AVENUE_KERB, 0.006);
+    let (kerb, joint) = (AVENUE_KERB, JOINT);
     // The paved field inside the kerbs, and the planter's outline (near side y_near, toward 0).
     let [x0, x1] = plan.field();
     let y0 = -width + if side { kerb } else { 0. };
@@ -762,12 +852,16 @@ pub(super) fn pedestrian_avenue(
                     } else {
                         shade(color, rng.float(0.74, 1.06))
                     };
-                    d.cuboid(
-                        "paving",
-                        [l + joint / 2., low + joint / 2., -0.04],
-                        [rr - joint / 2., high - joint / 2., -sink],
+                    paving_stone(
+                        d,
+                        [
+                            l + joint / 2.,
+                            low + joint / 2.,
+                            rr - joint / 2.,
+                            high - joint / 2.,
+                        ],
+                        -sink,
                         tint,
-                        "d",
                     )?;
                 }
             }
@@ -808,31 +902,34 @@ pub(super) fn pedestrian_avenue(
                     "lrbfd",
                 )?;
                 if drains {
-                    // A slot drain 0.16 m wide, 0.8 m out from either kerb, under iron bars.
+                    // A slot drain 0.2 m wide, 0.8 m out from either kerb, under heavy iron
+                    // bars 9 cm wide, one every 0.25 m at most.
                     let iron = srgb("#343632");
-                    let bars = ((median_end - median_start - 0.1) / 0.12).floor() as usize;
+                    let run = median_end - median_start;
+                    let bars = (run / 0.25).ceil().max(1.) as usize;
+                    let pitch = run / bars as f64;
                     for centre in [y_near + 0.8, y_far - 0.8] {
                         d.cuboid(
                             "metal",
-                            [median_start, centre - 0.08, -0.004],
-                            [median_end, centre + 0.08, 0.003],
-                            shade(iron, 0.7),
+                            [median_start, centre - 0.1, -0.004],
+                            [median_end, centre + 0.1, 0.003],
+                            shade(iron, 0.5),
                             "d",
                         )?;
                         for bar in 0..bars {
-                            let x = median_start + 0.05 + bar as f64 * 0.12;
+                            let x = median_start + (bar as f64 + 0.5) * pitch;
                             d.cuboid(
                                 "metal",
-                                [x, centre - 0.065, 0.003],
-                                [x + 0.035, centre + 0.065, 0.009],
-                                shade(iron, 1.25),
+                                [x - 0.045, centre - 0.085, 0.003],
+                                [x + 0.045, centre + 0.085, 0.016],
+                                shade(iron, 1.7),
                                 "d",
                             )?;
                         }
                     }
                 }
             }
-            // Backless benches: stone plinths and three timber slats, their backs to the
+            // Backless benches: stone plinths and two heavy timber slats, their backs to the
             // planter (or along the avenue's middle without one), a pair at each station.
             // The timber is weathered to a silver grey, near neutral, so its material decides.
             let timber = srgb("#a39c90");
@@ -847,13 +944,13 @@ pub(super) fn pedestrian_avenue(
                         "d",
                     )?;
                 }
-                let slat = (y_to - y_from - 0.03) / 3.;
-                for s in 0..3 {
-                    let y = y_from + s as f64 * (slat + 0.015);
+                let slat = (y_to - y_from - 0.04) / 2.;
+                for s in 0..2 {
+                    let y = y_from + s as f64 * (slat + 0.04);
                     d.cuboid(
                         "timber",
                         [at - 0.9, y, 0.4],
-                        [at + 0.9, y + slat, 0.445],
+                        [at + 0.9, y + slat, 0.475],
                         shade(timber, rng.float(0.88, 1.04)),
                         "",
                     )?;
@@ -862,9 +959,24 @@ pub(super) fn pedestrian_avenue(
             // Bollards across the open ends, keeping vehicles out.
             let steel = bollard_color;
             for [x, y] in plan.bollards() {
+                // A stout shaft under a broad pale band and a heavy cap.
                 d.drum("metal", [x, y, -0.01], BOLLARD, 0.8, steel, 12)?;
-                d.drum("metal", [x, y, 0.62], 0.078, 0.06, srgb("#c9c2a8"), 12)?;
-                d.drum("metal", [x, y, 0.79], 0.085, 0.03, shade(steel, 0.8), 12)?;
+                d.drum(
+                    "metal",
+                    [x, y, 0.54],
+                    BOLLARD + 0.008,
+                    0.14,
+                    srgb("#c9c2a8"),
+                    12,
+                )?;
+                d.drum(
+                    "metal",
+                    [x, y, 0.76],
+                    BOLLARD + 0.016,
+                    0.07,
+                    shade(steel, 0.8),
+                    12,
+                )?;
             }
         }
         // Kerb stones where the avenue meets the road: across its start and end, along its far side.
@@ -899,7 +1011,7 @@ pub(super) fn pedestrian_avenue(
 }
 
 /// The radius of an avenue bollard's shaft, and of a litter bin's foot.
-const BOLLARD: f64 = 0.075;
+const BOLLARD: f64 = 0.09;
 const BIN_FOOT: f64 = 0.2;
 /// How deep the kerb stones on an avenue's road sides are.
 const AVENUE_KERB: f64 = 0.14;
@@ -1325,45 +1437,46 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
     let radius = 0.33;
     let (rear, front) = ([-0.52, 0., radius], [0.53, 0., radius]);
     for axle in [rear, front] {
-        // The tyre and rim as closed rings, eight spokes a side from the hub's flanges.
-        let mut ring = arc(axle, radius - 0.018, [0., TAU], 28);
+        // A fat tyre on its rim as closed rings, and six stout spokes from a heavy hub: drawn
+        // as a wheel is drawn, not as it is built.
+        let mut ring = arc(axle, radius - 0.03, [0., TAU], 24);
         ring.pop();
         let first = ring[0];
         ring.push(first);
-        d.tube("metal", &ring, 0.019, tyre, 6)?;
-        let mut rim = arc(axle, radius - 0.045, [0., TAU], 28);
+        d.tube("metal", &ring, 0.03, tyre, 6)?;
+        let mut rim = arc(axle, radius - 0.068, [0., TAU], 24);
         rim.pop();
         let first = rim[0];
         rim.push(first);
-        d.tube("metal", &rim, 0.01, steel, 5)?;
+        d.tube("metal", &rim, 0.016, steel, 5)?;
         d.tube(
             "metal",
             &[[axle[0], -0.05, axle[2]], [axle[0], 0.05, axle[2]]],
-            0.022,
+            0.04,
             steel,
             8,
         )?;
-        for k in 0..16 {
-            let angle = k as f64 * TAU / 16. + rng.float(0., 0.05);
-            let side = if k % 2 == 0 { -0.035 } else { 0.035 };
-            let r = radius - 0.05;
+        let turn = rng.float(0., TAU / 6.);
+        for k in 0..6 {
+            let angle = k as f64 * TAU / 6. + turn;
+            let r = radius - 0.07;
             d.tube(
                 "metal",
                 &[
-                    [axle[0], side, axle[2]],
+                    [axle[0], 0., axle[2]],
                     [axle[0] + r * cos(angle), 0., axle[2] + r * sin(angle)],
                 ],
-                0.0025,
+                0.011,
                 steel,
-                3,
+                4,
             )?;
         }
         // A mudguard over the top of the wheel.
-        let mut guard = arc(axle, radius + 0.03, [0.15 * PI, 0.95 * PI], 12);
+        let mut guard = arc(axle, radius + 0.035, [0.15 * PI, 0.95 * PI], 12);
         if axle[0] > 0. {
-            guard = arc(axle, radius + 0.03, [0.05 * PI, 0.85 * PI], 12);
+            guard = arc(axle, radius + 0.035, [0.05 * PI, 0.85 * PI], 12);
         }
-        d.tube("metal", &guard, 0.024, shade(paint, 0.9), 6)?;
+        d.tube("metal", &guard, 0.03, shade(paint, 0.9), 6)?;
     }
     let bracket = [-0.06, 0., 0.29];
     let seat = [-0.21, 0., 0.84];
@@ -1371,36 +1484,36 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
     let tube =
         |d: &mut Fixture<'_, '_>, a: V3, b: V3, r: f64| d.tube("metal", &[a, b], r, paint, 8);
     // Seat tube, down tube, top tube and the head tube.
-    tube(d, bracket, seat, 0.017)?;
-    tube(d, bracket, head.1, 0.019)?;
-    tube(d, [-0.19, 0., 0.79], [0.395, 0., 0.83], 0.016)?;
-    tube(d, head.1, head.0, 0.021)?;
+    tube(d, bracket, seat, 0.026)?;
+    tube(d, bracket, head.1, 0.03)?;
+    tube(d, [-0.19, 0., 0.79], [0.395, 0., 0.83], 0.026)?;
+    tube(d, head.1, head.0, 0.032)?;
     // Stays to the rear axle and the fork's blades to the front, either side of the wheels.
-    for y in [-0.045, 0.045] {
+    for y in [-0.06, 0.06] {
         tube(
             d,
             [bracket[0], y * 0.6, bracket[2]],
             [rear[0], y, rear[2]],
-            0.01,
+            0.017,
         )?;
-        tube(d, [-0.2, y * 0.6, 0.77], [rear[0], y, rear[2]], 0.009)?;
+        tube(d, [-0.2, y * 0.6, 0.77], [rear[0], y, rear[2]], 0.016)?;
         tube(
             d,
             [head.1[0], y * 0.6, head.1[2]],
             [front[0], y, front[2]],
-            0.012,
+            0.019,
         )?;
     }
     // Seat post and saddle; stem and swept-back bars with grips.
-    d.tube("metal", &[seat, [-0.225, 0., 0.93]], 0.012, steel, 8)?;
+    d.tube("metal", &[seat, [-0.225, 0., 0.93]], 0.02, steel, 8)?;
     d.cuboid(
         "stock",
-        [-0.33, -0.075, 0.93],
-        [-0.12, 0.075, 0.985],
+        [-0.34, -0.085, 0.93],
+        [-0.11, 0.085, 1.],
         black,
         "",
     )?;
-    d.tube("metal", &[head.0, [0.38, 0., 0.99]], 0.013, steel, 8)?;
+    d.tube("metal", &[head.0, [0.38, 0., 0.99]], 0.021, steel, 8)?;
     let bars = [
         [0.27, -0.29, 1.0],
         [0.33, -0.22, 1.0],
@@ -1409,7 +1522,7 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
         [0.33, 0.22, 1.0],
         [0.27, 0.29, 1.0],
     ];
-    d.tube("metal", &bars, 0.011, steel, 6)?;
+    d.tube("metal", &bars, 0.018, steel, 6)?;
     for (a, b) in [(bars[0], bars[1]), (bars[5], bars[4])] {
         d.tube(
             "stock",
@@ -1417,7 +1530,7 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
                 a,
                 [a[0] + (b[0] - a[0]) * 0.6, a[1] + (b[1] - a[1]) * 0.6, a[2]],
             ],
-            0.016,
+            0.026,
             black,
             6,
         )?;
@@ -1446,14 +1559,14 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
         d.tube(
             "metal",
             &[[bracket[0], side, bracket[2]], end],
-            0.01,
+            0.016,
             steel,
             6,
         )?;
         d.cuboid(
             "metal",
-            [end[0] - 0.05, end[1].min(side * 2.6), end[2] - 0.012],
-            [end[0] + 0.05, end[1].max(side * 2.6), end[2] + 0.012],
+            [end[0] - 0.055, end[1].min(side * 2.6), end[2] - 0.018],
+            [end[0] + 0.055, end[1].max(side * 2.6), end[2] + 0.018],
             black,
             "",
         )?;
@@ -1465,7 +1578,7 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
                 [bracket[0], 0.06, z],
                 [rear[0], 0.06, rear[2] + (z - bracket[2]) * 0.45],
             ],
-            0.005,
+            0.012,
             srgb("#3a3631"),
             4,
         )?;
@@ -1473,16 +1586,16 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
     // A rear rack over the wheel on stays, and a kickstand.
     d.cuboid(
         "metal",
-        [-0.78, -0.09, 0.74],
-        [-0.3, 0.09, 0.755],
+        [-0.78, -0.1, 0.735],
+        [-0.3, 0.1, 0.765],
         shade(paint, 0.85),
         "",
     )?;
-    for y in [-0.08, 0.08] {
+    for y in [-0.09, 0.09] {
         d.tube(
             "metal",
-            &[[-0.72, y, 0.74], [rear[0], y * 0.6, rear[2]]],
-            0.007,
+            &[[-0.72, y, 0.74], [rear[0], y * 0.7, rear[2]]],
+            0.014,
             steel,
             4,
         )?;
@@ -1490,26 +1603,26 @@ fn bicycle(d: &mut Fixture<'_, '_>, paint: V3, rng: &mut SeededRng) -> Result<()
     d.tube(
         "metal",
         &[[-0.3, 0.05, 0.3], [-0.38, 0.17, 0.005]],
-        0.009,
+        0.016,
         steel,
         5,
     )?;
     if rng.chance(0.6) {
-        // A wire basket on the front, its contents a dark mass.
+        // A basket on the front in boards, its contents a dark mass.
         let (x0, x1) = (0.48, 0.8);
-        d.cuboid("metal", [x0, -0.15, 0.78], [x1, 0.15, 0.8], steel, "")?;
+        d.cuboid("metal", [x0, -0.16, 0.775], [x1, 0.16, 0.8], steel, "")?;
         for (lo, hi) in [
-            ([x0, -0.15, 0.8], [x1, -0.14, 1.0]),
-            ([x0, 0.14, 0.8], [x1, 0.15, 1.0]),
-            ([x0, -0.14, 0.8], [x0 + 0.01, 0.14, 1.0]),
-            ([x1 - 0.01, -0.14, 0.8], [x1, 0.14, 1.0]),
+            ([x0, -0.16, 0.8], [x1, -0.135, 1.0]),
+            ([x0, 0.135, 0.8], [x1, 0.16, 1.0]),
+            ([x0, -0.135, 0.8], [x0 + 0.025, 0.135, 1.0]),
+            ([x1 - 0.025, -0.135, 0.8], [x1, 0.135, 1.0]),
         ] {
             d.cuboid("metal", lo, hi, steel, "")?;
         }
         if rng.chance(0.6) {
             d.cuboid(
                 "stock",
-                [x0 + 0.02, -0.12, 0.8],
+                [x0 + 0.03, -0.12, 0.8],
                 [x1 - 0.03, 0.12, 0.92],
                 shade(srgb(rng.pick(&["#b6a27a", "#6d7a5a", "#c9c1b0"])), 0.9),
                 "d",
@@ -1530,7 +1643,7 @@ fn hand_cart(
     let (half_x, half_y, deck) = (0.46, 0.29, 0.17);
     d.cuboid(
         "metal",
-        [-half_x, -half_y, deck - 0.03],
+        [-half_x, -half_y, deck - 0.05],
         [half_x, half_y, deck],
         paint,
         "",
@@ -1541,7 +1654,7 @@ fn hand_cart(
             d.cuboid(
                 "metal",
                 [x - 0.03, y - 0.03, 0.1],
-                [x + 0.03, y + 0.03, deck - 0.03],
+                [x + 0.03, y + 0.03, deck - 0.05],
                 steel,
                 "",
             )?;
@@ -1565,7 +1678,7 @@ fn hand_cart(
             [bar - 0.05, half_y - 0.03, top],
             [bar, half_y - 0.03, deck],
         ],
-        0.014,
+        0.024,
         steel,
         8,
     )?;
@@ -1687,7 +1800,7 @@ pub(super) fn street_lamp(
             color,
         )?;
         // The pole tapers from the collar to its head.
-        let (foot, head) = (0.08, 0.05);
+        let (foot, head) = (0.085, 0.06);
         round(d, "metal", &[[foot, 0.7], [head, height]], color)?;
         // A number plate at eye height on the pole's back.
         let plate = foot + (head - foot) * (2.32 - 0.7) / (height - 0.7);
@@ -1702,8 +1815,8 @@ pub(super) fn street_lamp(
             // Two brackets toward +X and a banner hung between them.
             let (low, high) = (height - 2.6, height - 0.6);
             for z in [low, high] {
-                d.tube("metal", &[[0., 0., z], [0.72, 0., z]], 0.016, dark, 6)?;
-                d.drum("metal", [0.72, 0., z - 0.02], 0.022, 0.04, dark, 6)?;
+                d.tube("metal", &[[0., 0., z], [0.72, 0., z]], 0.026, dark, 6)?;
+                d.drum("metal", [0.72, 0., z - 0.035], 0.04, 0.07, dark, 8)?;
             }
             d.pen.sheet(
                 d.mesh,
@@ -1775,7 +1888,7 @@ pub(super) fn street_lamp(
                 d.tube(
                     "metal",
                     &[at(0.16, height + 0.14), at(0.24, height + 0.62)],
-                    0.012,
+                    0.02,
                     dark,
                     5,
                 )?;
@@ -1814,27 +1927,27 @@ pub(super) fn street_lamp(
                 [0., y, z]
             };
             let path: Vec<V3> = (0..=12).map(|k| curve(k as f64 / 12.)).collect();
-            d.tube("metal", &path, 0.032, color, 10)?;
+            d.tube("metal", &path, 0.042, color, 10)?;
             let mid = curve(0.55);
             d.tube(
                 "metal",
                 &[[0., 0., height - 0.9], [0., mid[1] * 0.85, mid[2] - 0.06]],
-                0.014,
+                0.026,
                 color,
                 6,
             )?;
-            // A scroll under the brace: a small ring.
+            // A scroll under the brace: a heavy ring.
             let ring: Vec<V3> = (0..=12)
                 .map(|k| {
                     let angle = k as f64 / 12. * TAU;
                     [
                         0.,
-                        side * (0.14 + 0.08 * superspec_geometry::math::cos(angle)),
-                        height - 0.55 + 0.08 * superspec_geometry::math::sin(angle),
+                        side * (0.17 + 0.1 * superspec_geometry::math::cos(angle)),
+                        height - 0.55 + 0.1 * superspec_geometry::math::sin(angle),
                     ]
                 })
                 .collect();
-            d.tube("metal", &ring, 0.01, color, 5)?;
+            d.tube("metal", &ring, 0.022, color, 6)?;
             // The luminaire: a housing that runs on past the arm's end, its diffuser below.
             let end = curve(1.);
             let (y0, y1) = if side < 0. {
@@ -2004,7 +2117,7 @@ pub(super) fn cornice(
 /// `kowloon/conduit`: a surface electrical conduit clipped to the wall: up `rise`, along
 /// `run`, then up `rise2`, with a junction box at each bend and at its foot. Anchor: the foot
 /// of the first rise on the wall plane. Parameters: `rise` (m, 0–40, 2.8), `run` (m along X,
-/// negative runs left, 2.7), `rise2` (m, 0–40, 0), `radius` (m, 0.005–0.05, 0.012), `color`
+/// negative runs left, 2.7), `rise2` (m, 0–40, 0), `radius` (m, 0.005–0.05, 0.019), `color`
 /// (#4d5048), `boxes` (true), `endBox` (m; the width of a pale lidded junction box at the
 /// conduit's far end, 0–1, 0: none).
 pub(super) fn conduit(
@@ -2016,10 +2129,13 @@ pub(super) fn conduit(
     let rise = a.bounded("rise", 2.8, 0. ..=40.)?;
     let run = a.bounded("run", 2.7, -40. ..=40.)?;
     let rise2 = a.bounded("rise2", 0., 0. ..=40.)?;
-    let radius = a.bounded("radius", 0.012, 0.005..=0.05)?;
+    let radius = a.bounded("radius", 0.019, 0.005..=0.05)?;
     let color = a.color("color", "#4d5048")?;
     let boxes = a.boolean("boxes", true)?;
     let end_box = a.bounded("endBox", 0., 0. ..=1.)?;
+    // `weight`: how heavy the clips, sockets and boxes are drawn (1 their own size, 2 the
+    // weight of a drawing; 1–3, 2).
+    let weight = a.bounded("weight", 2., 1. ..=3.)?;
     a.finish()?;
     let y = radius + 0.028;
     let mut points: Vec<V3> = vec![[0., y, 0.]];
@@ -2038,13 +2154,19 @@ pub(super) fn conduit(
         sides: 10,
         variant: "electrical".into(),
         weathering: None,
-    })?;
+    })?
+    .weighted(weight)?;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "conduit")?;
         system.run(d, &points, Some(0.))?;
         if boxes {
+            // A box grows with its conduit and with the weight, and so does its lid.
+            let (grown, lid) = (
+                (radius / 0.012).max(1.) * (0.75 + 0.25 * weight),
+                0.006 + 0.008 * (weight - 1.),
+            );
             for (index, p) in points.iter().enumerate().take(points.len() - 1) {
-                let half = if index == 0 { 0.05 } else { 0.042 };
+                let half = if index == 0 { 0.05 } else { 0.042 } * grown.min(1.6);
                 d.cuboid(
                     "metal",
                     [p[0] - half, 0., p[2] - half * 1.25],
@@ -2055,7 +2177,7 @@ pub(super) fn conduit(
                 d.cuboid(
                     "metal",
                     [p[0] - half * 0.8, y + radius + 0.012, p[2] - half],
-                    [p[0] + half * 0.8, y + radius + 0.018, p[2] + half],
+                    [p[0] + half * 0.8, y + radius + 0.012 + lid, p[2] + half],
                     shade(color, 0.9),
                     "b",
                 )?;
@@ -2176,8 +2298,8 @@ pub(super) fn balcony_door(
 /// `kowloon/fan-divider`: a quarter fan of flat steel bars between two balconies, standing
 /// square to the wall: bars radiate from a hinge at the wall's foot to a solid curved rim.
 /// Anchor: the hinge, on the wall plane; the fan reaches `reach` out and `height` up.
-/// Parameters: `reach` (m, 0.3–3, 1), `height` (m, 0.3–3, 1.6), `bars` (3–40, 14), `color`
-/// (#3f554b).
+/// Parameters: `reach` (m, 0.3–3, 1), `height` (m, 0.3–3, 1.6), `bars` (3–40, 9: few heavy
+/// bars, 3 cm thick under a 5 cm rim, read as drawn lines from the street), `color` (#3f554b).
 pub(super) fn fan_divider(
     name: &str,
     values: &Values,
@@ -2186,7 +2308,7 @@ pub(super) fn fan_divider(
     let mut a = Arguments::new(name, values);
     let reach = a.bounded("reach", 1., 0.3..=3.)?;
     let height = a.bounded("height", 1.6, 0.3..=3.)?;
-    let bars = a.integer("bars", 14, 3..=40)?;
+    let bars = a.integer("bars", 9, 3..=40)?;
     let color = a.color("color", "#3f554b")?;
     a.finish()?;
     draw(cancelled, |mesh| {
@@ -2201,14 +2323,14 @@ pub(super) fn fan_divider(
         let quarter = std::f64::consts::FRAC_PI_2;
         for i in 0..bars {
             let angle = quarter * i as f64 / (bars - 1) as f64;
-            d.tube("metal", &[at(angle, 0.05), at(angle, 1.)], 0.011, color, 6)?;
+            d.tube("metal", &[at(angle, 0.05), at(angle, 1.)], 0.015, color, 6)?;
         }
         let rim: Vec<V3> = (0..=20).map(|i| at(quarter * i as f64 / 20., 1.)).collect();
-        d.tube("metal", &rim, 0.022, color, 8)?;
+        d.tube("metal", &rim, 0.026, color, 8)?;
         let inner: Vec<V3> = (0..=10)
             .map(|i| at(quarter * i as f64 / 10., 0.55))
             .collect();
-        d.tube("metal", &inner, 0.012, color, 6)?;
+        d.tube("metal", &inner, 0.017, color, 6)?;
         d.cuboid(
             "metal",
             [-0.03, 0., 0.],
@@ -2221,8 +2343,8 @@ pub(super) fn fan_divider(
 
 /// `kowloon/rail`: a tubular steel guard rail on posts with base plates. Anchor: the foot of
 /// its first post; it runs along +X. Parameters: `length` (m, 0.3–100, 4), `height` (m,
-/// 0.2–2, 0.55), `rails` (1–4, 2), `spacing` (m between posts at most, 0.4–4, 1.3), `color`
-/// (#3f554b).
+/// 0.2–2, 0.55), `rails` (1–4, 2), `spacing` (m between posts at most, 0.4–4, 1.6), `color`
+/// (#3f554b). Its posts are 5 cm and its rails 4.5 cm thick: a drawn line against the sky.
 pub(super) fn rail(
     name: &str,
     values: &Values,
@@ -2232,7 +2354,7 @@ pub(super) fn rail(
     let length = a.bounded("length", 4., 0.3..=100.)?;
     let height = a.bounded("height", 0.55, 0.2..=2.)?;
     let rails = a.integer("rails", 2, 1..=4)?;
-    let spacing = a.bounded("spacing", 1.3, 0.4..=4.)?;
+    let spacing = a.bounded("spacing", 1.6, 0.4..=4.)?;
     let color = a.color("color", "#3f554b")?;
     a.finish()?;
     draw(cancelled, |mesh| {
@@ -2240,7 +2362,7 @@ pub(super) fn rail(
         let posts = (length / spacing).ceil().max(1.) as usize;
         for i in 0..=posts {
             let x = length * i as f64 / posts as f64;
-            d.tube("metal", &[[x, 0., 0.], [x, 0., height]], 0.019, color, 8)?;
+            d.tube("metal", &[[x, 0., 0.], [x, 0., height]], 0.025, color, 8)?;
             d.cuboid(
                 "metal",
                 [x - 0.045, -0.045, 0.],
@@ -2251,7 +2373,7 @@ pub(super) fn rail(
         }
         for k in 0..rails {
             let z = height * (1. - k as f64 / rails as f64);
-            d.tube("metal", &[[0., 0., z], [length, 0., z]], 0.016, color, 8)?;
+            d.tube("metal", &[[0., 0., z], [length, 0., z]], 0.0225, color, 8)?;
         }
         Ok(())
     })
@@ -2260,8 +2382,9 @@ pub(super) fn rail(
 /// `kowloon/ladder`: a steel cat ladder fixed to a wall, its stiles turning over the top onto
 /// the roof behind. Anchor: the wall plane below the ladder's centre, at its foot; it stands
 /// 0.16 m in front of the wall. Parameters: `height` (m, 0.6–20, 2.2), `width` (m, 0.25–1,
-/// 0.37), `color` (#3f554b) and `grab` (m, 0–1.5, 0): grab rails, the stiles carried this far
+/// 0.42), `color` (#3f554b) and `grab` (m, 0–1.5, 0): grab rails, the stiles carried this far
 /// above the top and bent over in a hoop down onto the roof behind (0: they turn straight over).
+/// Its stiles are 5.4 cm and its rungs 4 cm thick, 0.34 m apart: heavier than a real ladder's.
 pub(super) fn ladder(
     name: &str,
     values: &Values,
@@ -2269,7 +2392,7 @@ pub(super) fn ladder(
 ) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let height = a.bounded("height", 2.2, 0.6..=20.)?;
-    let width = a.bounded("width", 0.37, 0.25..=1.)?;
+    let width = a.bounded("width", 0.42, 0.25..=1.)?;
     let color = a.color("color", "#3f554b")?;
     let grab = a.bounded("grab", 0., 0. ..=1.5)?;
     if grab > 0. && grab < 0.3 {
@@ -2294,11 +2417,11 @@ pub(super) fn ladder(
                     ]
                 }));
                 path.push([x, y - 2. * radius, height + 0.02]);
-                d.tube("metal", &path, 0.022, color, 10)?;
+                d.tube("metal", &path, 0.027, color, 10)?;
                 d.tube(
                     "metal",
                     &[[x, y, height - 0.08], [x, 0., height - 0.08]],
-                    0.012,
+                    0.017,
                     color,
                     6,
                 )?;
@@ -2310,23 +2433,23 @@ pub(super) fn ladder(
                         [x, y, height - 0.1],
                         [x, -0.12, height + 0.02],
                     ],
-                    0.022,
+                    0.027,
                     color,
                     10,
                 )?;
             }
             for z in [0.5, height - 0.5] {
-                d.tube("metal", &[[x, y, z], [x, 0., z]], 0.012, color, 6)?;
+                d.tube("metal", &[[x, y, z], [x, 0., z]], 0.017, color, 6)?;
             }
         }
-        let rungs = ((height - 0.4) / 0.3) as usize;
+        let rungs = ((height - 0.4) / 0.34) as usize;
         for i in 0..=rungs {
-            let z = 0.28 + i as f64 * 0.3;
+            let z = 0.28 + i as f64 * 0.34;
             if z < height - 0.08 {
                 d.tube(
                     "metal",
                     &[[-width / 2., y, z], [width / 2., y, z]],
-                    0.015,
+                    0.02,
                     color,
                     8,
                 )?;
@@ -2389,14 +2512,14 @@ pub(super) fn poles(
         d.tube(
             "metal",
             &[[x, depth - 0.04, top], [x, depth - 0.04, ground]],
-            0.019,
+            0.03,
             steel,
             8,
         )?;
         d.cuboid(
             "metal",
-            [x - 0.06, depth - 0.1, ground],
-            [x + 0.06, depth + 0.02, ground + 0.012],
+            [x - 0.08, depth - 0.12, ground],
+            [x + 0.08, depth + 0.04, ground + 0.03],
             shade(steel, 0.8),
             "d",
         )?;

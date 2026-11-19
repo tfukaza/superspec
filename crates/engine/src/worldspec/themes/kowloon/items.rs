@@ -42,9 +42,12 @@ mod party;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "7";
+const VERSION: &str = "10";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
+/// The default `weight` of a fixture's small hardware (clips, straps, brackets, bolts, lines):
+/// 1 draws it at its own size, a hairline from across the street; 2 is the weight of a drawing.
+const BOLD: f64 = 2.;
 
 /// Reads one generator's parameters with defaults, refusing unknown names.
 pub struct Arguments<'a> {
@@ -319,7 +322,9 @@ pub struct Natives {
 /// models. Anchor: bottom-centre of the casing on the wall plane; brackets and drain hang
 /// below z = 0. Parameters: `drop` (m of room below the casing for its supports and drain,
 /// 0.7), `plates` (bolted wall plates under the bracket arms and bolts through them, false),
-/// `louvred` (the outward face always the louvred grille, false), `seed`.
+/// `louvred` (the outward face always the louvred grille, false), `weight` (how heavy the
+/// bracket arms, plates, bolts, drain hose and guard wires are drawn: 1 their own size, 2
+/// the weight of a drawing; 1–3, 2), `seed`.
 fn aircon(
     name: &str,
     values: &Values,
@@ -330,6 +335,7 @@ fn aircon(
     let options = super::aircon::Options {
         plates: arguments.boolean("plates", false)?,
         louvred: arguments.boolean("louvred", false)?,
+        weight: arguments.bounded("weight", BOLD, 1. ..=3.)?,
     };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
@@ -349,7 +355,8 @@ fn aircon(
 
 /// `kowloon/condenser`: a split-system condenser on wall brackets. Anchor: bottom-centre
 /// on the wall plane. Parameters: `width` (m, 0.95), `height` (m, 0.6), `plates` (bolted
-/// wall plates under the bracket arms and bolts through them, false), `seed`.
+/// wall plates under the bracket arms and bolts through them, false), `weight` (as
+/// `kowloon/aircon`; it also sizes the line set at the unit's side), `seed`.
 fn condenser(
     name: &str,
     values: &Values,
@@ -361,6 +368,7 @@ fn condenser(
     let options = super::aircon::Options {
         plates: arguments.boolean("plates", false)?,
         louvred: false,
+        weight: arguments.bounded("weight", BOLD, 1. ..=3.)?,
     };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
@@ -478,6 +486,16 @@ fn window(
             }
             depth => Some(depth),
         },
+        // Drawn bolder than the facades' own windows, to read from across the street:
+        // `frameWidth` (m of perimeter frame, 0.03–0.15, 0.06), `mullion` (m, 0.02–0.12,
+        // 0.046), `glazingBar` (m, 0.012–0.08, 0.034) and `handle` (m, the radius of a lever
+        // handle's rod, 0.003–0.03, 0.011).
+        weight: Some(windows::Weight {
+            frame: a.bounded("frameWidth", 0.06, 0.03..=0.15)?,
+            mullion: a.bounded("mullion", 0.046, 0.02..=0.12)?,
+            bar: a.bounded("glazingBar", 0.034, 0.012..=0.08)?,
+            handle: a.bounded("handle", 0.011, 0.003..=0.03)?,
+        }),
     };
     let glowing = look.lit && (glow.is_some() || options.room.is_some());
     let key = a.seed()?;
@@ -540,7 +558,10 @@ fn window(
 /// `kowloon/security-bars`: a welded security grille over an opening. Anchor: bottom-centre
 /// of the guarded opening on the wall plane. Parameters: `pattern` (`bars` | `grid` |
 /// `diamond`, `bars`), `width` (m, 1.2), `height` (m, 1.4), `color` (#2a2c2e), `share` (the
-/// part of the height it covers, from the top: 0.5 guards the upper half; 0.1–1, 1).
+/// part of the height it covers, from the top: 0.5 guards the upper half; 0.1–1, 1). Few
+/// heavy bars, to read from across the street: `bar` (m, infill bars, 0.004–0.1, 0.026),
+/// `border` (m, 0.004–0.1, 0.036) and `spacing` (how many times the facades' own 0.13 m
+/// (bars), 0.2 m (grid) or 0.24 m (diamond) the bars stand apart, 0.5–4, 1.6).
 fn security_bars(
     name: &str,
     values: &Values,
@@ -552,9 +573,16 @@ fn security_bars(
     let height = a.number("height", 1.4)?;
     let color = a.color("color", "#2a2c2e")?;
     let share = a.bounded("share", 1., 0.1..=1.)?;
+    let bar = a.bounded("bar", 0.026, 0.004..=0.1)?;
+    let gauge = windows::Gauge {
+        bar,
+        rail: (bar + 0.002).min(0.1),
+        border: a.bounded("border", 0.036, 0.004..=0.1)?,
+        spacing: a.bounded("spacing", 1.6, 0.5..=4.)?,
+    };
     a.finish()?;
     draw(cancelled, |mesh| {
-        windows::security_bars_sized(
+        windows::security_bars_gauged(
             &mut fixture(mesh, "security-bars")?,
             if share < 1. {
                 [-width / 2., height * (1. - share), width, height * share]
@@ -564,6 +592,7 @@ fn security_bars(
             pattern,
             color,
             None,
+            gauge,
         )
     })
 }
@@ -742,7 +771,9 @@ fn pipe_options(a: &mut Arguments<'_>) -> Result<(f64, f64, pipes::PipeSystem), 
         sides: a.integer("sides", 16, 8..=64)?,
         variant: "pipe-standard".into(),
         weathering: None,
-    })?;
+    })?
+    // `weight`: how heavy the straps, sockets and their bolts are drawn (1–3, 2).
+    .weighted(a.bounded("weight", BOLD, 1. ..=3.)?)?;
     Ok((radius, standoff, system))
 }
 
@@ -750,7 +781,8 @@ fn pipe_options(a: &mut Arguments<'_>) -> Result<(f64, f64, pipes::PipeSystem), 
 /// Anchor: the foot of the pipe, at x = 0 on the wall plane; the pipe axis stands
 /// `radius + standoff` in front of the wall. Parameters: `height` (m, 3), `radius` (m,
 /// 0.05), `standoff` (m of gap to the wall, 0.03), `color` (#3a3c3a), `sides` (8–64, 16),
-/// `straps` (wall straps every 1.5 m, true).
+/// `straps` (wall straps every 1.5 m, true; `clips` replace them), `weight` (how heavy the
+/// straps, sockets and bolts are drawn: 1 their own size, 2 the weight of a drawing; 1–3, 2).
 fn downpipe(
     name: &str,
     values: &Values,
@@ -769,8 +801,14 @@ fn downpipe(
     let y = radius + standoff;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "downpipe")?;
-        system.run(d, &[[0., y, height], [0., y, 0.]], straps.then_some(0.))?;
-        if clips >= 0.2 && height > 0.6 {
+        let clipped = clips >= 0.2 && height > 0.6;
+        // Clips hold the pipe in place of straps: both together crowd it.
+        system.run(
+            d,
+            &[[0., y, height], [0., y, 0.]],
+            (straps && !clipped).then_some(0.),
+        )?;
+        if clipped {
             let count = ((height - 0.5) / clips).floor() as usize;
             for k in 0..=count {
                 hardware::pipe_clip(
@@ -792,8 +830,8 @@ fn downpipe(
             )?;
             d.cuboid(
                 "paint",
-                [-half - 0.012, 0., height + radius * 4.],
-                [half + 0.012, deep + 0.012, height + radius * 4. + 0.02],
+                [-half - 0.02, 0., height + radius * 4.],
+                [half + 0.02, deep + 0.02, height + radius * 4. + 0.035],
                 color,
                 "b",
             )?;
@@ -806,7 +844,7 @@ fn downpipe(
 /// wall through a socketed elbow. Anchor: the foot of the rise, at x = 0 on the wall plane.
 /// Parameters: `rise` (m, 1.5), `run` (m along X after the elbow, negative runs left, 1),
 /// `radius` (m, 0.05), `standoff` (m, 0.03), `color` (#3a3c3a), `sides` (8–64, 16),
-/// `straps` (true).
+/// `straps` (true), `weight` (as `kowloon/downpipe`).
 fn pipe_elbow(
     name: &str,
     values: &Values,
@@ -1017,18 +1055,19 @@ fn steel_rail(
             d.tube(
                 "metal",
                 &[[start, -0.035, z], [end, -0.035, z]],
-                0.023,
+                0.028,
                 steel,
                 10,
             )?;
         }
-        let posts = (length / 1.4).ceil() as usize;
+        // Few heavy posts and rails: they read as drawn lines from across the street.
+        let posts = (length / 1.8).ceil() as usize;
         for j in 0..=posts {
             let x = start + (end - start) * j as f64 / posts as f64;
             d.tube(
                 "metal",
-                &[[x, -0.035, upstand - 0.02], [x, -0.035, 1.11]],
-                0.026,
+                &[[x, -0.035, upstand - 0.02], [x, -0.035, 1.115]],
+                0.033,
                 steel,
                 10,
             )?;
@@ -1046,8 +1085,11 @@ fn steel_rail(
 /// right, false: top to bottom), `reach` (m of outrigger, 0.8), `angle` (degrees, 0), `age`
 /// (0–1, 0.7), `anchor` (m along the board from its left edge to where the outriggers meet the
 /// wall, 0), `end` (m along it where they end; default the board's far edge, or its far end at
-/// an angle), `seed` (weathering). A `horizontal` board flat to the wall hangs level from one
-/// pole with two stays; every fixing is a bolted plate.
+/// an angle), `seed` (weathering). The board stands between its two outriggers, one under its
+/// foot and one over its head, each braced from the wall on the side away from the board, so
+/// no steel crosses a lettered face. A `horizontal` board flat to the wall hangs level from one
+/// pole with two stays; every fixing is a bolted plate. The steel is heavy (6 cm outriggers,
+/// 2 cm tie rods) and the artwork stands centimeters off the face: see `SIGN_ART`.
 fn board_sign(
     name: &str,
     values: &Values,
@@ -1076,6 +1118,17 @@ fn board_sign(
     let panels = a.integer("panels", 0, 0..=24)?;
     let panel_colors = [a.color("panel", "#d2a23a")?, a.color("panel2", "#d2a23a")?];
     let ties = a.boolean("ties", true)?;
+    // `face`: the lettering face (`kai`, `hei`, `song`, `brush`, `heavy`, `round`, `slim`), or
+    // `auto` (the default): `kai`, and the bolder `hei` where the glyphs are under half a
+    // meter, whose brushed strokes would be hairlines from across the street (`heavy` closes
+    // up on dense characters at that size).
+    const FACES: [&str; 8] = [
+        "auto", "kai", "hei", "song", "brush", "heavy", "round", "slim",
+    ];
+    let face = a.text("face", "auto")?;
+    if !FACES.contains(&face.as_str()) {
+        return Err(format!("{name}: face must be one of {}.", FACES.join(", ")));
+    }
     let key = a.seed()?;
     a.finish()?;
     let scheme = scheme.unwrap_or_else(|| if red { "red" } else { "ivory" }.to_owned());
@@ -1103,19 +1156,30 @@ fn board_sign(
     } else {
         text
     };
+    let face: Face = if face == "auto" {
+        if sign_em(width, height, &text, !horizontal) < 0.5 {
+            Face::Hei
+        } else {
+            Face::Kai
+        }
+    } else {
+        serde_json::from_value(Value::String(face)).map_err(|e| format!("{name}: face: {e}"))?
+    };
     let hardware = panel::Hardware {
         slot: "metal".into(),
         tint: srgb("#504d3d"),
         weathering: None,
     };
     let settings = sign_settings(&key);
+    // The frame's face stands this far off the board's (see `SIGN_ART`).
+    let proud = 0.009 * SIGN_ART.lift.min(3.5);
     draw(cancelled, |mesh| {
         let root = pen("sign")?;
         let (sin, cos) = angle.sin_cos();
         // The board's own frame: its face along the direction `angle` off the wall, its body
         // standing `reach` out from the wall.
         let pen = root.facing([0., reach, 0.], [cos, sin, 0.], [-sin, cos, 0.])?;
-        panel::draw(
+        panel::draw_art(
             &mut on(mesh, pen.clone())?,
             &panel::Design {
                 width,
@@ -1131,7 +1195,7 @@ fn board_sign(
                 } else {
                     vec![panel::Block {
                         text: text.clone(),
-                        face: Face::Kai,
+                        face,
                         direction: if horizontal {
                             Direction::Ltr
                         } else {
@@ -1148,10 +1212,11 @@ fn board_sign(
             panel::Sides::Both,
             &hardware,
             &settings,
+            SIGN_ART,
         )?;
         if panels > 0 {
             // Enamelled squares riveted to both faces, evenly spaced along the board.
-            let face = &mut on(mesh, pen)?;
+            let face = &mut on(mesh, pen.clone())?;
             let long = if horizontal { width } else { height };
             let across = if horizontal { height } else { width };
             let pitch = (long - 0.16) / panels as f64;
@@ -1166,8 +1231,8 @@ fn board_sign(
                 };
                 face.cuboid(
                     "paint",
-                    [x - side / 2., -0.051, z - side / 2.],
-                    [x + side / 2., 0.006, z + side / 2.],
+                    [x - side / 2., -0.045 - proud * 0.7, z - side / 2.],
+                    [x + side / 2., proud * 0.7, z + side / 2.],
                     color,
                     "",
                 )?;
@@ -1183,17 +1248,19 @@ fn board_sign(
             d.tube(
                 "metal",
                 &[[anchor, 0.012, top], [anchor, y, top], far],
-                0.024,
+                0.028,
                 hardware.tint,
                 10,
             )?;
             hardware::wall_plate(d, [anchor, top], 0.07, 0.07, hardware.tint)?;
+            // The straps grip the board's top edge over its frame, above the lettering.
+            let grip = 0.0225 + proud + 0.006;
             for share in [0.1, 0.9] {
                 let x = width * share;
                 d.cuboid(
                     "metal",
-                    [x - 0.014, y - 0.03, height - 0.07],
-                    [x + 0.014, y + 0.03, top + 0.03],
+                    [x - 0.022, y - grip, height - 0.05],
+                    [x + 0.022, y + grip, top + 0.034],
                     hardware.tint,
                     "",
                 )?;
@@ -1207,76 +1274,112 @@ fn board_sign(
                     d.tube(
                         "metal",
                         &[[fixing[0], 0.012, fixing[1]], far],
-                        0.006,
+                        SIGN_TIE,
                         hardware.tint,
                         6,
                     )?;
-                    hardware::wall_plate(d, fixing, 0.04, 0.04, hardware.tint)?;
+                    hardware::wall_plate(d, fixing, 0.05, 0.05, hardware.tint)?;
                 }
             }
             return Ok(());
         }
+        // The board stands between two outriggers, one under its foot and one over its head,
+        // in the middle of its depth: no steel crosses either lettered face. Each is braced
+        // from the wall on the side away from the board, and clips grip the board's edges.
+        let rail = 0.03;
+        let rails = [(-rail, -1.), (height + rail, 1.)];
+        // The middle of the board's depth, behind its face line.
+        let middle = [0.0225 * sin, -0.0225 * cos];
+        let (knee, end) = if angle != 0. {
+            (
+                [anchor + middle[0], reach + middle[1]],
+                [width * cos + middle[0], reach + width * sin + middle[1]],
+            )
+        } else {
+            ([anchor, reach - 0.0225], [end_at, reach - 0.0225])
+        };
         // A bolted fixing plate where each outrigger meets the wall.
-        for z in [0.12, height - 0.12] {
-            hardware::wall_plate(d, [anchor, z], 0.06, 0.08, hardware.tint)?;
+        for (z, _) in rails {
+            hardware::wall_plate(d, [anchor, z], 0.07, 0.09, hardware.tint)?;
         }
         if ties {
-            let far = if angle != 0. {
-                [width * cos, reach + width * sin, height - 0.12]
-            } else {
-                [end_at, reach, height - 0.12]
-            };
             let fixing = [
                 anchor,
                 0.012,
-                height + 0.35 + 0.25 * (far[0] - anchor).abs().min(2.),
+                height + 0.35 + 0.25 * (end[0] - anchor).abs().min(2.),
             ];
-            d.tube("metal", &[fixing, far], 0.006, hardware.tint, 6)?;
-            hardware::wall_plate(d, [fixing[0], fixing[2]], 0.04, 0.04, hardware.tint)?;
+            d.tube(
+                "metal",
+                &[fixing, [end[0], end[1], height + rail]],
+                SIGN_TIE,
+                hardware.tint,
+                6,
+            )?;
+            hardware::wall_plate(d, [fixing[0], fixing[2]], 0.05, 0.05, hardware.tint)?;
         }
-        for z in [0.12, height - 0.12] {
-            if angle != 0. {
-                let end = [width * cos, reach + width * sin, z];
-                d.tube(
-                    "metal",
-                    &[[anchor, 0.02, z], [anchor, reach, z], end],
-                    0.027,
-                    hardware.tint,
-                    10,
-                )?;
-                d.tube(
-                    "metal",
-                    &[[anchor + 0.5, 0.02, z + 0.25], end],
-                    0.018,
-                    hardware.tint,
-                    8,
-                )?;
-                continue;
-            }
+        for (z, away) in rails {
             d.tube(
                 "metal",
-                &[[anchor, 0.02, z], [anchor, reach, z], [end_at, reach, z]],
-                0.023,
+                &[
+                    [anchor, 0.02, z],
+                    [knee[0], knee[1], z],
+                    [end[0], end[1], z],
+                ],
+                rail,
                 hardware.tint,
-                8,
+                10,
             )?;
-            let brace = if horizontal {
-                anchor
-            } else if anchor > width / 2. {
-                width - 0.05
+            let (from, to) = if angle != 0. {
+                ([anchor + 0.5, 0.02, z + away * 0.25], end)
             } else {
-                0.05
+                let brace = if anchor > width / 2. {
+                    width - 0.05
+                } else {
+                    0.05
+                };
+                ([anchor, 0.02, z + away * 0.3], [brace, reach - 0.0225])
             };
-            d.tube(
-                "metal",
-                &[[anchor, 0.02, z + 0.3], [brace, reach, z]],
-                0.018,
-                hardware.tint,
-                8,
-            )?;
+            d.tube("metal", &[from, [to[0], to[1], z]], 0.021, hardware.tint, 8)?;
+        }
+        // Clips over the frame at the board's foot and head, in the board's own frame.
+        let grip = proud + 0.006;
+        let face = &mut on(mesh, pen)?;
+        for share in [0.14, 0.86] {
+            let x = width * share;
+            for (z0, z1) in [(-rail, 0.05), (height - 0.05, height + rail)] {
+                face.cuboid(
+                    "metal",
+                    [x - 0.022, -0.045 - grip, z0],
+                    [x + 0.022, grip, z1],
+                    hardware.tint,
+                    "",
+                )?;
+            }
         }
         Ok(())
     })
+}
+
+/// How the item signs draw their artwork: the frame, border and lettering stand some
+/// centimeters off the face (5 mm apart is one depth to a renderer 60 m away, and the board
+/// showed through its lettering in diagonal bands), in a border line twice as wide with half
+/// as many rust runs, each twice as wide.
+const SIGN_ART: signs::panel::Art = signs::panel::Art { lift: 6., line: 2. };
+/// The radius of a sign's tie rods and stays in meters.
+const SIGN_TIE: f64 = 0.011;
+
+/// About how tall a sheet sign's glyphs are in meters: `text` set down (or along) a
+/// `width` by `height` board inside its frame and border.
+fn sign_em(width: f64, height: f64, text: &str, down: bool) -> f64 {
+    let glyphs = text.chars().filter(|c| !c.is_whitespace()).count().max(1);
+    let least = width.min(height);
+    let inset = 0.028 + (0.035 * least).max(0.012) + 0.03 * least + 0.012;
+    let (along, across) = if down {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    ((along - 2. * inset) / glyphs as f64).min(across - 2. * inset)
 }
 
 /// `kowloon/anti-climb`: a semicircular steel climbing barrier bolted to the wall.
@@ -1292,13 +1395,19 @@ fn anti_climb(
     let color = a.color("color", "#e6e2d6")?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        balconies::anti_climb(
+        // Seven heavy spokes under a heavy rim, where the facades' fan has eleven fine ones.
+        balconies::anti_climb_of(
             &mut fixture(mesh, "anti-climb")?,
             0.,
             radius + 0.04,
             radius,
             color,
             &weathering(name, 0.),
+            balconies::Fan {
+                rim: 0.018,
+                spoke: 0.012,
+                spokes: 7,
+            },
         )
     })
 }
@@ -1365,9 +1474,11 @@ fn plants(
 /// plan fixes instead of the seed: `contents` (`auto` | `plants` | `washing` | `storage`
 /// (stacked cartons) | `mixed` | `empty` | `aircon` (an old window unit standing in it),
 /// `auto`), `roof` (`auto` | `none` | `sheet`, `auto`) and `roofColor` (of a `sheet` roof,
-/// #7f9a6c). The welding: `bar` (m, infill bar thickness, 0.004–0.05, 0.012), `rail` (m,
-/// frame rail thickness, 0.008–0.08, 0.028), `spacing` (m between infill bars, 0.04–0.5,
-/// 0.11) and `rust` (the most rust the seed mixes into the paint, 0–1, 0.35); `louvred`
+/// #7f9a6c). The welding, of few heavy bars that read from across the street (the facades'
+/// own cages are of 12 mm bars 0.11 m apart): `bar` (m, infill bar thickness, 0.004–0.05,
+/// 0.024), `rail` (m, frame rail thickness, 0.008–0.08, 0.036), `spacing` (m between infill
+/// bars, which share each side evenly, 0.04–0.5, 0.19; the floor's runners and the wall stays
+/// are of the bars' weight) and `rust` (the most rust the seed mixes into the paint, 0–1, 0.35); `louvred`
 /// (false) turns an `aircon` unit's louvred grille out whatever its model.
 fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
@@ -1408,12 +1519,13 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
             _ => return Err(format!("{name}: roof must be one of auto, none, sheet.")),
         },
         roof_color: Some(roof_color),
-        bar: a.optional_number("bar")?,
-        rail: a.optional_number("rail")?,
-        spacing: a.optional_number("spacing")?,
+        bar: Some(a.number("bar", 0.024)?),
+        rail: Some(a.number("rail", 0.036)?),
+        spacing: Some(a.number("spacing", 0.19)?),
         rust: a.optional_number("rust")?,
         middle: None,
         middle_gap: None,
+        bold: true,
     };
     let louvred = a.boolean("louvred", false)?;
     let mut rng = a.rng()?;
@@ -1460,6 +1572,7 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
                 super::aircon::Options {
                     plates: false,
                     louvred,
+                    weight: BOLD,
                 },
             )?;
         }
@@ -1582,7 +1695,9 @@ fn back_door(
 /// `kowloon/drying-rack`: bamboo poles on two wall arms, hung with seeded washing.
 /// Anchor: the centre of the arms' wall fixings, at the arm height; the washing hangs below
 /// z = 0. Parameters: `width` (m between the arms, 1.5), `depth` (m of arm reach, 0.6),
-/// `textured` (true), `seed`.
+/// `textured` (true), `weight` (how heavy the arms, poles and pegs are drawn: 1 their own
+/// size, with three poles on a deep rack; 2 the weight of a drawing, with two; 1–3, 2),
+/// `seed`.
 fn drying_rack(
     name: &str,
     values: &Values,
@@ -1592,10 +1707,11 @@ fn drying_rack(
     let width = a.number("width", 1.5)?;
     let depth = a.number("depth", 0.6)?;
     let textured = a.boolean("textured", true)?;
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::drying_rack(
+        household::drying_rack_with(
             &mut fixture(mesh, "drying-rack")?,
             [-width / 2., width / 2.],
             0.,
@@ -1603,13 +1719,15 @@ fn drying_rack(
             &mut rng,
             None,
             textured,
+            weight,
         )
     })
 }
 
 /// `kowloon/drying-pole`: a socketed bamboo pole projecting from the wall, carrying
 /// seeded hangers. Anchor: the wall socket. Parameters: `length` (m, 0.35–20, 1.6),
-/// `textured` (true), `seed`.
+/// `textured` (true), `weight` (of the pole, its socket and the hangers, as
+/// `kowloon/drying-rack`), `seed`.
 fn drying_pole(
     name: &str,
     values: &Values,
@@ -1618,10 +1736,11 @@ fn drying_pole(
     let mut a = Arguments::new(name, values);
     let length = a.number("length", 1.6)?;
     let textured = a.boolean("textured", true)?;
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::drying_pole(
+        household::drying_pole_with(
             &mut fixture(mesh, "drying-pole")?,
             0.,
             0.,
@@ -1629,13 +1748,15 @@ fn drying_pole(
             &mut rng,
             None,
             textured,
+            weight,
         )
     })
 }
 
 /// `kowloon/drying-lines`: three roof drying lines between T-posts, hung with seeded
 /// washing (roof frame). Anchor: the centre between the two post feet, on z = 0.
-/// Parameters: `length` (m between the posts, 0.3–20, 3.5), `textured` (true), `seed`.
+/// Parameters: `length` (m between the posts, 0.3–20, 3.5), `textured` (true), `weight` (of
+/// the posts, lines and pegs, as `kowloon/drying-rack`), `seed`.
 fn drying_lines(
     name: &str,
     values: &Values,
@@ -1644,16 +1765,18 @@ fn drying_lines(
     let mut a = Arguments::new(name, values);
     let length = a.number("length", 3.5)?;
     let textured = a.boolean("textured", true)?;
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::drying_lines(
+        household::drying_lines_with(
             &mut on(mesh, room_pen("drying-lines", [0.; 3])?)?,
             [-length / 2., length / 2.],
             0.,
             &mut rng,
             None,
             textured,
+            weight,
         )
     })
 }
@@ -1771,20 +1894,24 @@ fn wall_lamp(
     if round != "bulkhead" && round != "round" {
         return Err(format!("{name}: style must be one of bulkhead, round."));
     }
+    // `guard`: m of wire the cage is bent of (0.004–0.04, 0.018: a heavy guard of two bars or
+    // a ring and two hoops, where the facades' lamps have 8–14 mm wire).
+    let guard = a.bounded("guard", 0.018, 0.004..=0.04)?;
     a.finish()?;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "wall-lamp")?;
         if round == "round" {
-            household::round_wall_lamp(d, 0., 0., &weathering(name, 0.))
+            household::guarded_round_wall_lamp(d, 0., 0., &weathering(name, 0.), Some(guard))
         } else {
-            household::wall_lamp(d, 0., 0., &weathering(name, 0.))
+            household::guarded_wall_lamp(d, 0., 0., &weathering(name, 0.), Some(guard))
         }
     })
 }
 
 /// `kowloon/meter-bank`: a row of electricity meters with their rising conduits.
 /// Anchor: bottom-centre of the row on the wall plane. Parameters: `count` (1–16, 4),
-/// `seed` (housing shade).
+/// `weight` (how heavy the conduits and their clips are drawn: 1 their own size, 2 the
+/// weight of a drawing; 1–3, 2), `seed` (housing shade).
 fn meter_bank(
     name: &str,
     values: &Values,
@@ -1792,17 +1919,19 @@ fn meter_bank(
 ) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let count = a.integer("count", 4, 1..=16)?;
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     let x = -(count as f64 * 0.3 - 0.06) / 2.;
     draw(cancelled, |mesh| {
-        household::meter_bank(
+        household::meter_bank_with(
             &mut fixture(mesh, "meter-bank")?,
             x,
             0.,
             count,
             &mut rng,
             &weathering(name, 0.),
+            weight,
         )
     })
 }
@@ -1810,7 +1939,8 @@ fn meter_bank(
 /// `kowloon/roller-shutter`: a corrugated roller shutter with guides and head box.
 /// Anchor: bottom-centre of the opening on the wall plane. Parameters: `width` (m, 1.2),
 /// `height` (m to the head, 2.2), `raised` (m the curtain is rolled up from the floor, 0),
-/// `color` (#8f969a).
+/// `color` (#8f969a), `slat` (m from one slat's crest to the next, 0.04–0.5, 0.15: few deep
+/// slats, which read from across a street).
 fn roller_shutter(
     name: &str,
     values: &Values,
@@ -1821,16 +1951,26 @@ fn roller_shutter(
     let height = a.number("height", 2.2)?;
     let raised = a.number("raised", 0.)?;
     let color = a.color("color", "#8f969a")?;
+    let slats = shutter_slats(&mut a)?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        shutters::roller_shutter(
+        shutters::slatted_roller_shutter(
             &pen("roller-shutter")?,
             mesh,
             [-width / 2., width / 2., raised, height],
             color,
             &weathering(name, 0.),
+            [0.22, 0.],
+            slats,
         )
     })
+}
+
+/// Reads `slat`, the pitch of a shutter's slats, and gives it with the rise that suits it.
+fn shutter_slats(a: &mut Arguments<'_>) -> Result<[f64; 2], String> {
+    let [bold, rise] = shutters::BOLD_SLATS;
+    let pitch = a.bounded("slat", bold, 0.04..=0.5)?;
+    Ok([pitch, (rise * pitch / bold).clamp(0.005, 0.04)])
 }
 
 /// `kowloon/entrance`: a tenement entrance (single, double, glazed or steel door with its
@@ -1973,13 +2113,21 @@ fn ground_bay(
         gate: Some(a.color("gate", "#647a6b")?),
         gate_bars: None,
         gate_backing: None,
+        gate_lattice: None,
+        shutter_slats: None,
     };
     let bars = a.bounded("gateBars", 1., 0.5..=3.)?;
     let backing = a.bounded("gateBacking", 0., 0. ..=2.)?;
+    // `gateSpacing`: m between the lattice's uprights (0.08–0.45, 0.22). An item's gate is a
+    // few bold bars (uprights 2.6 cm wide, links 1.8 cm, before `gateBars`), which read from
+    // across a street. `slat`: m between a shutter's slats (0.04–0.5, 0.15).
+    let spacing = a.bounded("gateSpacing", 0.22, 0.08..=0.45)?;
     let plan = ground::Plan {
         gate_bars: (bars != 1.).then_some(bars),
         gate_backing: (backing > 0.)
             .then(|| plan.gate.unwrap_or_default().map(|v| (v * backing).min(1.))),
+        gate_lattice: Some([0.026, 0.018, spacing]),
+        shutter_slats: Some(shutter_slats(&mut a)?),
         ..plan
     };
     let key = a.seed()?;
@@ -2146,6 +2294,14 @@ fn aerial(
         stays: a.integer("stays", 0, 0..=4)?,
         spread: a.bounded("spread", 0.8, 0.2..=5.)?,
         bearing: a.bounded("bearing", 0., -360. ..=360.)?.to_radians(),
+        // Drawn heavy, to read against the sky from the street: `mast` (m, 0.004–0.1, 0.05),
+        // `boom` (0.034), `element` (0.026; an array has `elements`, 2–9, 4) and `stay` (0.02),
+        // where the facades' aerials have a 30 mm mast, 12 mm elements in fives and 6 mm stays.
+        mast: a.bounded("mast", 0.05, 0.004..=0.1)?,
+        boom: a.bounded("boom", 0.034, 0.004..=0.1)?,
+        element: a.bounded("element", 0.026, 0.004..=0.1)?,
+        elements: a.integer("elements", 4, 2..=9)?,
+        stay: a.bounded("stay", 0.02, 0.004..=0.1)?,
     };
     a.finish()?;
     let kit = kit(&key, 1, 0.)?;
@@ -2270,19 +2426,22 @@ fn washing(
     };
     let offset = a.number("offset", 0.3)?;
     let textured = a.boolean("textured", true)?;
+    // `weight`: how heavy the line or pole and the pegs are drawn (1 their own size, 2 the
+    // weight of a drawing; 1–3, 2).
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     let span = [-length / 2., length / 2.];
     draw(cancelled, |mesh| {
         let d = &mut on(mesh, pen("washing")?.moved([0., offset, 0.])?)?;
-        laundry::washing(d, span, 0., &mut rng, &options, textured)?;
+        laundry::washing_with(d, span, 0., &mut rng, &options, textured, weight)?;
         d.tube(
             "paint",
             &[[span[0], 0., 0.], [span[1], 0., 0.]],
             if support == laundry::Support::Line {
-                0.006
+                0.006 + 0.005 * (weight - 1.)
             } else {
-                0.016
+                0.016 + 0.006 * (weight - 1.)
             },
             [0.4; 3],
             8,
@@ -2312,15 +2471,17 @@ fn hangers(
     };
     let offset = a.number("offset", 0.5)?;
     let textured = a.boolean("textured", true)?;
+    // `weight`: how heavy the rail and the hangers' bars and hooks are drawn (1–3, 2).
+    let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
         let d = &mut on(mesh, pen("hangers")?.moved([0., offset, 0.])?)?;
-        laundry::hangers(d, &row, &mut rng, textured)?;
+        laundry::hangers_with(d, &row, &mut rng, textured, weight)?;
         d.tube(
             "paint",
             &[[row.span[0], 0., 0.], [row.span[1], 0., row.slope * length]],
-            0.016,
+            0.016 + 0.006 * (weight - 1.),
             [0.4; 3],
             8,
         )
@@ -2372,11 +2533,17 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         .optional_text("text")?
         .filter(|text| !(invent && text.is_empty()));
     let subtitle = a.optional_text("subtitle")?;
-    let face = a.choice(
-        "face",
-        "kai",
-        &["hei", "song", "kai", "brush", "heavy", "round", "slim"],
-    )?;
+    // `auto`: `kai`, and the bolder `hei` where the main block's glyphs are under half a meter.
+    let face = a.text("face", "kai")?;
+    if ![
+        "auto", "hei", "song", "kai", "brush", "heavy", "round", "slim",
+    ]
+    .contains(&face.as_str())
+    {
+        return Err(format!(
+            "{name}: face must be one of auto, hei, song, kai, brush, heavy, round, slim."
+        ));
+    }
     let direction = a.choice("direction", "rtl", &["ltr", "rtl", "ttb"])?;
     let stack = a.choice("stack", "down", &["down", "across"])?;
     let ink = a.color("ink", "#f0dca0")?;
@@ -2389,6 +2556,16 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     let business = signs::copy::invent(&mut rng, &Default::default())?;
     let mut blocks = vec![];
     let main = text.unwrap_or(business.name);
+    let face: Face = if face == "auto" {
+        let down = direction == signs::lettering::Direction::Ttb;
+        if sign_em(width, height, &main, down) < 0.5 {
+            Face::Hei
+        } else {
+            Face::Kai
+        }
+    } else {
+        serde_json::from_value(Value::String(face)).map_err(|e| format!("{name}: face: {e}"))?
+    };
     if !main.is_empty() {
         blocks.push(panel::Block {
             text: main,
@@ -2425,7 +2602,7 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     };
     let settings = sign_settings(&key);
     draw(cancelled, |mesh| {
-        panel::draw(
+        panel::draw_art(
             // As Kowloon's flat signs place them: the panel's face is its local y = 0 and
             // its body lies behind it, so the frame stands proud of the wall.
             &mut on(mesh, pen("sign")?.moved([-width / 2., 0.01 + depth, 0.])?)?,
@@ -2437,6 +2614,7 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
                 weathering: None,
             },
             &settings,
+            SIGN_ART,
         )
     })
 }
@@ -2481,7 +2659,7 @@ fn projecting(
         detail: 1,
         wash: None,
     };
-    let projected = make(
+    let mut projected = make(
         &site,
         room,
         &business,
@@ -2489,6 +2667,9 @@ fn projecting(
         &mut SeededRng::from_text(&key),
     )?
     .ok_or_else(|| format!("{name}: no sign fits a {ceiling} m pier with {reach} m reach."))?;
+    // Bold artwork on rods and flat bars twice as heavy, to read from across the street.
+    projected.proposal.art = SIGN_ART;
+    projected.proposal.gauge = 2.;
     draw(cancelled, |mesh| {
         projected.proposal.draw(mesh, &|_| 1., &settings)
     })

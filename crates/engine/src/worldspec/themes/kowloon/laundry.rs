@@ -54,6 +54,19 @@ pub fn washing(
     options: &WashingOptions,
     textured: bool,
 ) -> Result<(), String> {
+    washing_with(drawing, span, z, rng, options, textured, 1.)
+}
+/// [`washing`] with pegs, hanger bars and hooks of `weight`: 1 is their own size, 2 the
+/// weight of a drawing (1–3).
+pub fn washing_with(
+    drawing: &mut Fixture<'_, '_>,
+    span: [f64; 2],
+    z: f64,
+    rng: &mut SeededRng,
+    options: &WashingOptions,
+    textured: bool,
+    weight: f64,
+) -> Result<(), String> {
     if !row_valid(span, z)
         || !room_valid(Room {
             width: span[1] - span[0],
@@ -80,13 +93,14 @@ pub fn washing(
             break;
         };
         if rng.chance(options.fill) {
-            hang(
+            hang_with(
                 drawing,
                 &g,
                 [x, 0., z],
                 [x + g.width(), 0., z],
                 rng.float(-0.005, 0.005),
                 textured,
+                weight,
             )?;
         }
         x += g.width() + rng.float(0.03, 0.16);
@@ -105,6 +119,16 @@ pub fn hangers(
     row: &HangerRow,
     rng: &mut SeededRng,
     textured: bool,
+) -> Result<(), String> {
+    hangers_with(drawing, row, rng, textured, 1.)
+}
+/// [`hangers`] with fittings of `weight` (as [`washing_with`]).
+pub fn hangers_with(
+    drawing: &mut Fixture<'_, '_>,
+    row: &HangerRow,
+    rng: &mut SeededRng,
+    textured: bool,
+    weight: f64,
 ) -> Result<(), String> {
     if !row_valid(row.span, row.z)
         || !room_valid(Room {
@@ -130,13 +154,14 @@ pub fn hangers(
         {
             let half = g.width() / 2.;
             let height = row.z + row.slope * x;
-            hang(
+            hang_with(
                 drawing,
                 &g,
                 [x, -half, height],
                 [x, half, height],
                 rng.float(-0.01, 0.01),
                 textured,
+                weight,
             )?;
         }
         x += rng.float(0.13, 0.3);
@@ -274,6 +299,22 @@ pub fn hang(
     lean: f64,
     textured: bool,
 ) -> Result<(), String> {
+    hang_with(drawing, garment, left, right, lean, textured, 1.)
+}
+/// [`hang`] with fittings of `weight` (as [`washing_with`]); a meshed garment has none.
+pub fn hang_with(
+    drawing: &mut Fixture<'_, '_>,
+    garment: &Garment,
+    left: V3,
+    right: V3,
+    lean: f64,
+    textured: bool,
+    weight: f64,
+) -> Result<(), String> {
+    if !weight.is_finite() || !(1. ..=3.).contains(&weight) {
+        return Err("Laundry fitting weight must lie in 1..3.".into());
+    }
+    let heavy = |plain: f64, bold: f64| plain + (bold - plain) * (weight - 1.);
     if left
         .iter()
         .chain(right.iter())
@@ -365,23 +406,28 @@ pub fn hang(
                 "paint",
                 place(x, 0.045, 0.),
                 place(x, -0.03, 0.),
-                0.013,
+                heavy(0.013, 0.024),
                 g.fitting_tint,
             )?,
             Fitting::Bar([x0, x1, y]) => drawing.tube(
                 "paint",
                 &[place(x0, y, 0.), place(x1, y, 0.)],
-                0.005,
+                heavy(0.005, 0.011),
                 g.fitting_tint,
                 4,
             )?,
             Fitting::Hook(y) => {
                 let mut points = vec![place(0., y, 0.)];
+                let loop_radius = heavy(0.019, 0.03);
                 for step in 0..=6 {
                     let angle = PI / 2. - step as f64 / 6. * PI * 1.25;
-                    points.push(place(0.019 * cos(angle), 0.019 * sin(angle), 0.));
+                    points.push(place(
+                        loop_radius * cos(angle),
+                        loop_radius * sin(angle),
+                        0.,
+                    ));
                 }
-                drawing.tube("paint", &points, 0.003, g.fitting_tint, 4)?;
+                drawing.tube("paint", &points, heavy(0.003, 0.008), g.fitting_tint, 4)?;
             }
         }
     }

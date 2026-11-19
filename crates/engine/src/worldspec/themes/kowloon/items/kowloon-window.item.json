@@ -24,7 +24,12 @@
     "louvre": {"type": "choice", "default": "none", "choices": ["none", "left", "right"]},
     "handles": {"type": "boolean", "default": true},
     "glow": {"type": "color", "default": "#ffe7ad"},
-    "room": {"type": "number", "default": 2.6, "min": 0, "max": 6, "unit": "m"}
+    "room": {"type": "number", "default": 2.6, "min": 0, "max": 6, "unit": "m"},
+    "frameWidth": {"type": "number", "default": 0.06, "min": 0.03, "max": 0.15, "unit": "m"},
+    "mullion": {"type": "number", "default": 0.046, "min": 0.02, "max": 0.12, "unit": "m"},
+    "glazingBar": {"type": "number", "default": 0.034, "min": 0.012, "max": 0.08, "unit": "m"},
+    "barsBar": {"type": "number", "default": 0.026, "min": 0.004, "max": 0.1, "unit": "m"},
+    "barsSpacing": {"type": "number", "default": 1.6, "min": 0.5, "max": 4}
   },
   "parts": [
     {
@@ -36,45 +41,47 @@
                        "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}, "storage": {"parameter": "storage"},
                        "openChance": {"parameter": "openChance"}, "lightWidth": {"parameter": "lightWidth"}, "midRail": {"parameter": "midRail"},
                        "louvre": {"parameter": "louvre"}, "handles": {"parameter": "handles"}, "glow": {"parameter": "glow"},
-                       "room": {"expr": "select(lit * (room >= 0.5), room, 0)"}}},
+                       "room": {"expr": "select(lit * (room >= 0.5), room, 0)"},
+                       "frameWidth": {"parameter": "frameWidth"}, "mullion": {"parameter": "mullion"}, "glazingBar": {"parameter": "glazingBar"}}},
       "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "interior-lit": "interior-lit", "tube-light": "tube-light", "room-lit": "room-lit", "metal": "metal", "concrete": "concrete", "stock": "stock", "timber": "timber", "shop-timber": "shop-timber"}
     },
     {
       "id": "bars",
       "when": "bars",
       "generator": {"kind": "native", "name": "kowloon/security-bars",
-        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}, "share": {"parameter": "barsShare"}}},
+        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}, "share": {"parameter": "barsShare"},
+                       "bar": {"parameter": "barsBar"}, "spacing": {"parameter": "barsSpacing"}}},
       "placement": {"position": [0, -0.06, -0.04]}
     }
   ],
   "features": [
     {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06},
-    {"name": "head", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+    {"name": "head", "part": "window", "width": "select(kind == 2, max(0.065, frameWidth), frameWidth)",
      "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}]]},
-    {"name": "jamb", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+    {"name": "jamb", "part": "window", "width": "select(kind == 2, max(0.065, frameWidth), frameWidth)",
      "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["-width / 2", "select(recess > 0, -0.035, -0.07)", 0]]},
-    {"name": "jamb", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+    {"name": "jamb", "part": "window", "width": "select(kind == 2, max(0.065, frameWidth), frameWidth)",
      "points": [["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", 0]]},
     {"name": "glass", "part": "window", "closed": true, "when": "glazing * (storage <= 0) * (1 - lit)",
-     "points": [["select(kind == 2, 0.065, 0.045) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, 0.065, 0.045)"],
-                ["width / 2 - select(kind == 2, 0.065, 0.045)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, 0.065, 0.045)"],
-                ["width / 2 - select(kind == 2, 0.065, 0.045)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"],
-                ["select(kind == 2, 0.065, 0.045) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"]]},
-    {"name": "runoff-head", "part": "window", "width": "select(kind == 2, 0.065, 0.045)",
+     "points": [["select(kind == 2, max(0.065, frameWidth), frameWidth) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, max(0.065, frameWidth), frameWidth)"],
+                ["width / 2 - select(kind == 2, max(0.065, frameWidth), frameWidth)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "select(kind == 2, max(0.065, frameWidth), frameWidth)"],
+                ["width / 2 - select(kind == 2, max(0.065, frameWidth), frameWidth)", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, max(0.065, frameWidth), frameWidth)"],
+                ["select(kind == 2, max(0.065, frameWidth), frameWidth) - width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, max(0.065, frameWidth), frameWidth)"]]},
+    {"name": "runoff-head", "part": "window", "width": "select(kind == 2, max(0.065, frameWidth), frameWidth)",
      "points": [["-width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}], ["width / 2", "select(recess > 0, -0.035, -0.07)", {"parameter": "height"}]],
      "zone": {"length": {"parameter": "height"}, "depth": "select(kind == 1, 0.018, 0.03)", "u0": "0 - width / 2"}},
     {"name": "runoff-glass", "part": "window", "when": "glazing * (storage <= 0) * (1 - lit)",
-     "points": [["-width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"],
-                ["width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"]],
-     "zone": {"length": "height - 2 * select(kind == 2, 0.065, 0.045)", "depth": "select(kind == 1, 0.02, select(kind == 3, 0.03, 0.012))", "u0": "0 - width / 2"}}
+     "points": [["-width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, max(0.065, frameWidth), frameWidth)"],
+                ["width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, max(0.065, frameWidth), frameWidth)"]],
+     "zone": {"length": "height - 2 * select(kind == 2, max(0.065, frameWidth), frameWidth)", "depth": "select(kind == 1, 0.02, select(kind == 3, 0.03, 0.012))", "u0": "0 - width / 2"}}
   ],
   "layers": {
     "frame": [
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.6, "color": [0.22, 0.2, 0.16], "streakLength": 0.5, "period": 2.2, "variety": 0.6, "lip": 1, "lipDepth": 0.045}, "seed": 21, "follow": {"zone": "runoff-head"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.6, "color": [0.22, 0.2, 0.16], "streakLength": 0.5, "period": 1.6, "variety": 0.6, "lip": 1, "lipDepth": 0.045}, "seed": 21, "follow": {"zone": "runoff-head"}},
       {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 1, "streakLength": 0.12, "period": 0.6, "film": 0.9, "filmDepth": 0.06, "color": [0.8, 0.78, 0.72]}, "seed": 22, "follow": {"zone": "runoff-head"}}
     ],
     "glass": [
-      {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 0.6, "streakLength": 0.8, "period": 2.4, "film": 0.35, "filmDepth": 0.1, "foot": 0.7, "opaque": 0.85, "color": [0.6, 0.58, 0.53]}, "seed": 23, "follow": {"zone": "runoff-glass"}}
+      {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 0.6, "streakLength": 0.8, "period": 1.7, "film": 0.35, "filmDepth": 0.1, "foot": 0.7, "opaque": 0.85, "color": [0.6, 0.58, 0.53]}, "seed": 23, "follow": {"zone": "runoff-glass"}}
     ]
   }
 }

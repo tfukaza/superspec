@@ -149,7 +149,8 @@ fn window(
 /// (#4b5257), `door` (true), `stacks` (0–4, -1: one or two), `cables` (0–6, 2), `bars`
 /// (0–1, 0.3), `units` (0–1, 0.45), `depth` (a stub's, m, 0.8–12; 0: seeded), `shops` (a
 /// stub's front ground storey left blank for shopfronts stood before it, false), `gable` (a
-/// stub's ends that face a street: `none` | `start` | `end` | `both`, `none`), `seed`.
+/// stub's ends that face a street: `none` | `start` | `end` | `both`, `none`), `plinth` (m of
+/// dark band at the foot of its street faces, 0–1.3, 0), `seed`.
 /// Drying racks and extract vents dress a seeded few upper windows.
 ///
 /// Features ([`features`]), in item axes with the faces' outward normals (`front` faces -y):
@@ -191,6 +192,8 @@ struct Party {
     shops: bool,
     /// Whether the start and the end face a street (see `gable`).
     gable: [bool; 2],
+    /// The height of the dark band at the foot of its street faces; 0 for none.
+    plinth: f64,
     bays: usize,
     blank: Vec<bool>,
     units: Vec<bool>,
@@ -282,6 +285,10 @@ impl Party {
                 ));
             }
         };
+        // `plinth`: m of dark painted band at the foot of a wall's face, or of a stub's front
+        // and ends (0–1.3, 0: none), as along a street front; it stops at a stub's back door
+        // and leaves out a front that shopfronts stand before.
+        let plinth = a.bounded("plinth", 0., 0. ..=1.3)?;
         let key = a.seed()?;
         a.finish()?;
         let mut rng = SeededRng::from_text(&key);
@@ -305,6 +312,7 @@ impl Party {
             depth: 0.,
             shops: false,
             gable: [false; 2],
+            plinth,
             bays: 0,
             blank: vec![],
             units: vec![],
@@ -533,6 +541,15 @@ fn wall(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
                 noise_seed + 3.,
             )?;
         }
+        if plan.plinth > 0. {
+            d.cuboid(
+                "wall",
+                [x0, face, 0.],
+                [x1, face + PLINTH, plan.plinth],
+                srgb(PLINTH_TINT),
+                "bd",
+            )?;
+        }
         d.cuboid(
             "trim",
             [x0 - 0.03, back - 0.03, high],
@@ -735,8 +752,53 @@ fn stub(plan: &Party, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, Stri
                 gable_end(d, plan, side, &openings)?;
             }
         }
+        plinth(d, plan)?;
         back_lane(d, plan, &openings)
     })
+}
+
+/// How far a plinth stands out of its face, and the tint that darkens the render under it (a
+/// plinth is a band of the `wall` slot, so it weathers with the wall it is painted on).
+const PLINTH: f64 = 0.018;
+const PLINTH_TINT: &str = "#59554f";
+
+/// A stub's plinth: a dark band along the foot of its front, broken at its back door and left
+/// out where shopfronts stand before it, and round both its ends.
+fn plinth(d: &mut Fixture<'_, '_>, plan: &Party) -> Result<(), String> {
+    let (length, depth, high) = (plan.length, plan.depth, plan.plinth);
+    if high <= 0. {
+        return Ok(());
+    }
+    let tint = srgb(PLINTH_TINT);
+    if !plan.shops {
+        let runs = match plan.door {
+            // (the door's surround is 0.9 m wide between jambs of 0.12).
+            Some(bay) => {
+                let x = (bay as f64 + 0.5) * length / plan.bays as f64;
+                vec![[-PLINTH, x - 0.57], [x + 0.57, length + PLINTH]]
+            }
+            None => vec![[-PLINTH, length + PLINTH]],
+        };
+        for [from, to] in runs {
+            if to - from > 0.05 {
+                d.cuboid(
+                    "wall",
+                    [from, depth, 0.],
+                    [to, depth + PLINTH, high],
+                    tint,
+                    "bd",
+                )?;
+            }
+        }
+    }
+    d.cuboid("wall", [-PLINTH, 0., 0.], [0., depth, high], tint, "rd")?;
+    d.cuboid(
+        "wall",
+        [length, 0., 0.],
+        [length + PLINTH, depth, high],
+        tint,
+        "ld",
+    )
 }
 
 /// What guards and hangs under a window on a face's own frame (y = 0 on its plane, outward):
@@ -752,7 +814,7 @@ fn guard_and_unit(
         // Welded bars over the sash, standing on the sill, as the window item's: their rods
         // 3.5 cm off the face, on the frame.
         let set = &mut on(&mut *face.mesh, face.pen.moved([0., -0.06, 0.])?)?;
-        windows::security_bars_sized(
+        windows::security_bars_gauged(
             set,
             [
                 span[0] - 0.04,
@@ -763,6 +825,13 @@ fn guard_and_unit(
             windows::Guard::Bars,
             srgb("#33363a"),
             None,
+            // Few heavy bars, as the window item's.
+            windows::Gauge {
+                bar: 0.026,
+                rail: 0.028,
+                border: 0.036,
+                spacing: 1.6,
+            },
         )?;
     }
     if opening.unit {
@@ -777,6 +846,7 @@ fn guard_and_unit(
             aircon::Options {
                 plates: true,
                 louvred: false,
+                weight: 2.,
             },
         )?;
     }
@@ -909,7 +979,7 @@ fn back_lane(d: &mut Fixture<'_, '_>, plan: &Party, openings: &[Opening]) -> Res
         let (racked, vented) = (dress.chance(0.3), dress.chance(0.35));
         if racked {
             let rng = &mut SeededRng::from_text(&format!("{}/rack/{index}", plan.lane));
-            household::drying_rack(
+            household::drying_rack_with(
                 face,
                 [s0 - 0.15, s1 + 0.15],
                 z1 + 0.12,
@@ -917,6 +987,7 @@ fn back_lane(d: &mut Fixture<'_, '_>, plan: &Party, openings: &[Opening]) -> Res
                 rng,
                 None,
                 true,
+                2.,
             )?;
         }
         // An extract vent beside the window: a louvred box in a frame.

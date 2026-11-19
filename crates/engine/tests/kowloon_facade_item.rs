@@ -219,7 +219,7 @@ fn the_riser_stands_close_on_strapped_brackets_between_its_seams() {
         // A plate flat on the wall, wider than the duct, and a strap round the duct's sides and
         // front whose feet are bolted to it.
         assert!(
-            plate[1][1].abs() < 1e-9 && plate[0][1] > -0.01,
+            plate[1][1].abs() < 1e-9 && plate[0][1] > -0.02,
             "{k}: {plate:?}"
         );
         assert!(plate[0][0] < body[0][0] - 0.1 && plate[1][0] > body[1][0] + 0.1);
@@ -242,7 +242,7 @@ fn the_riser_stands_close_on_strapped_brackets_between_its_seams() {
         );
         let collar = bounds_of(&riser, |id| id.starts_with(&format!("branch-{j}/fitting")));
         assert!(
-            collar[1][1] > -0.001 && collar[0][1] > -0.02,
+            collar[1][1] > -0.001 && collar[0][1] > -0.03,
             "{j}: {collar:?}"
         );
     }
@@ -311,7 +311,7 @@ fn the_run_hangs_close_under_the_parapet_with_collared_drops() {
     for j in [0, 2] {
         let collar = bounds_of(&run, |id| id.starts_with(&format!("branch-{j}/fitting")));
         assert!(
-            collar[1][1] > -0.001 && collar[0][1] > -0.02,
+            collar[1][1] > -0.001 && collar[0][1] > -0.03,
             "{j}: {collar:?}"
         );
         let x = -(0.5 + pitch * (j as f64 + 0.25));
@@ -2612,35 +2612,60 @@ fn a_plinth_is_planned_per_edge_and_on_the_corner() {
 }
 
 #[test]
-fn zz_probe_side_plinth() {
+fn the_plinth_runs_on_round_a_neighbour_beside_a_street() {
+    // The reference shop house's side street (edge 1, along x = 9.8) is mostly shop openings:
+    // its plinth stands on three piers of 0.4 to 0.55 m between and beside them. The back
+    // neighbour's stub ends on that street, so its foot is painted to the same height and the
+    // plinth runs on past the building's back.
     let plan = plan("reference-shop-house.json");
     let overrides: Vec<(&str, serde_json::Value)> = plan
         .iter()
         .map(|(key, value)| (key.as_str(), value.clone()))
         .collect();
     let item = generate("kowloon-building.item.json", &overrides);
-    let transforms = item.geometry.world_transforms().unwrap();
-    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
-        for index in &node.meshes {
-            let mesh = &item.geometry.meshes[*index];
-            if !(mesh.id.starts_with("side-1/") || mesh.material_slot == "plinth") {
-                continue;
-            }
-            let mut low = [f64::MAX; 3];
-            let mut high = [f64::MIN; 3];
-            for p in &mesh.positions {
-                let q = matrix.point(*p);
-                for k in 0..3 {
-                    low[k] = low[k].min(q[k]);
-                    high[k] = high[k].max(q[k]);
+    // The world positions of the meshes `chosen` keeps (by ID and slot).
+    let points = |item: &GeneratedItem, chosen: &dyn Fn(&str, &str) -> bool| {
+        let transforms = item.geometry.world_transforms().unwrap();
+        let mut points = vec![];
+        for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+            for index in &node.meshes {
+                let mesh = &item.geometry.meshes[*index];
+                if chosen(&mesh.id, &mesh.material_slot) {
+                    points.extend(mesh.positions.iter().map(|p| matrix.point(*p)));
                 }
             }
-            if mesh.material_slot == "plinth" || (low[2] < 1.2 && high[0] - low[0] < 3.) {
-                println!(
-                    "PROBE {} [{}] y {:.3}..{:.3} x {:.3}..{:.3} z {:.3}..{:.3}",
-                    mesh.id, mesh.material_slot, low[1], high[1], low[0], high[0], low[2], high[2]
-                );
-            }
         }
+        points
+    };
+    let piers = points(&item, &|id, slot| {
+        id.starts_with("side-1/") && slot == "plinth"
+    });
+    for (from, to) in [(0.55, 0.95), (3.1, 3.6), (6.45, 7.0)] {
+        let on = |y: f64| piers.iter().any(|p| (p[1] - y).abs() < 1e-6 && p[2] > 0.99);
+        assert!(on(from) && on(to), "a pier's plinth from {from} to {to}");
     }
+    assert!(piers.iter().all(|p| {
+        [(0.55, 0.95), (3.1, 3.6), (6.45, 7.0)]
+            .iter()
+            .any(|(from, to)| p[1] > from - 1e-6 && p[1] < to + 1e-6)
+    }));
+    // The stub's end stands out of the side's wall plane as the plinth does, up to 1 m.
+    let band = |item: &GeneratedItem| -> Vec<[f64; 3]> {
+        points(item, &|id, slot| {
+            id.starts_with("party-2/") && slot == "wall"
+        })
+        .into_iter()
+        .filter(|p| p[0] > 9.8 + 0.017)
+        .collect()
+    };
+    let foot = band(&item);
+    assert!(!foot.is_empty(), "the back neighbour's end has a plinth");
+    let high = foot.iter().map(|p| p[2]).fold(f64::MIN, f64::max);
+    assert!((high - 1.).abs() < 1e-9, "its plinth is {high} m high");
+    assert!(foot.iter().all(|p| p[1] > 7. - 1e-6 && p[1] < 9.));
+    // Without a plinth on the street beside it, the neighbour has none.
+    let mut bare = overrides.clone();
+    bare.retain(|(key, _)| *key != "plinthPlans");
+    bare.push(("plinthPlans", json!([1.0, 0, 0, 0])));
+    assert!(band(&generate("kowloon-building.item.json", &bare)).is_empty());
 }

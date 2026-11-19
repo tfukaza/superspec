@@ -169,10 +169,13 @@ mod tests {
             r#"{"version":1,"contours":{"enabled":true,"width":2.5},"lights":[{"shadow":{"form":0.35}}]}"#,
         )
         .unwrap();
-        assert!(read.contours.enabled && read.contours.width == 2.5 && read.contours.depth == 0.04);
+        assert!(
+            read.contours.enabled && read.contours.width == 2.5 && read.contours.strength == 1.0
+        );
         assert_eq!(read.lights[0].shadow.form, 0.35);
         let written = serde_json::to_value(&read).unwrap();
-        assert_eq!(written["contours"]["strength"], 0.7);
+        assert_eq!(written["contours"]["darken"], 0.6);
+        assert!(written["contours"].get("color").is_none());
         assert_eq!(written["lights"][0]["shadow"]["form"], 0.35);
         assert!(written["lights"][0]["shadow"].get("formFill").is_none());
         assert_eq!(

@@ -628,7 +628,8 @@ fn choices_and_dimensions_reach_the_fixture() {
             .filter(|f| (f.width - width).abs() < 1e-9)
             .count()
     };
-    assert_eq!((wide(0.15), wide(0.4)), (14 + 8, 4));
+    // Bench supports are 0.15 m wide, the stout bollards 0.18 m and the bins 0.4 m.
+    assert_eq!((wide(0.15), wide(0.18), wide(0.4)), (8, 14, 4));
     // A street lamp reports its base plate's outline, for the paving of the item under it.
     let plate = natives.features("kowloon/street-lamp", &Values::new());
     assert_eq!(plate.len(), 1);
@@ -873,7 +874,8 @@ fn choices_and_dimensions_reach_the_fixture() {
         ]),
     )
     .unwrap();
-    assert!((extent(&conduit, 2) - 5.).abs() < 0.15 && (extent(&conduit, 0) - 1.5).abs() < 0.15);
+    // (Its junction boxes stand up to 0.1 m past its ends.)
+    assert!((extent(&conduit, 2) - 5.).abs() < 0.2 && (extent(&conduit, 0) - 1.5).abs() < 0.2);
     let rail = generate(&natives, "kowloon/rail", &values(&[("length", json!(5))])).unwrap();
     assert!((extent(&rail, 0) - 5.).abs() < 0.1);
     // Awning poles reach the ground below the canvas.
@@ -933,6 +935,17 @@ fn planned_gates_doors_and_hung_goods_reach_their_fixtures() {
     let thick = bay(&[("kind", json!("gate")), ("gateBars", json!(2))]);
     assert_eq!(triangles(&gate), triangles(&thick));
     assert_ne!(fingerprint(&gate), fingerprint(&thick));
+    // The lattice is a few bold bars 0.22 m apart; a closer spacing draws more of them, and
+    // a shutter's slats are few and deep unless a closer pitch is asked for.
+    let close = bay(&[("kind", json!("gate")), ("gateSpacing", json!(0.11))]);
+    assert!(triangles(&close) > triangles(&gate) + 200);
+    let shutter = bay(&[("kind", json!("shutter")), ("seed", json!(3))]);
+    let fine = bay(&[
+        ("kind", json!("shutter")),
+        ("seed", json!(3)),
+        ("slat", json!(0.075)),
+    ]);
+    assert!(triangles(&fine) > triangles(&shutter));
     let backed = bay(&[
         ("kind", json!("gate")),
         ("gate", json!("#808080")),
@@ -1163,8 +1176,9 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         lowest(&slot_points(&taut, "tarp"), 2),
         lowest(&slot_points(&slack, "tarp"), 2),
     );
+    // (Its rolled hem is 1.1 cm in radius, drawn bold.)
     assert!(
-        (taut_low + 0.4).abs() < 0.01,
+        (taut_low + 0.4 + 0.011).abs() < 0.005,
         "a taut sheet falls its drop: {taut_low}"
     );
     assert!(
@@ -1218,8 +1232,8 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         lowest(&slot_points(&striped, "metal"), 2) > -1.5,
         "a frame has no posts"
     );
-    // A scalloped hem rises between its lobes: less of its width (in centimetre columns,
-    // whatever the hem's bound edge adds) hangs at its full depth.
+    // A scalloped hem rises between its lobes: less of its width (in centimetre columns)
+    // hangs at its full depth, measured under its bound edge (1.1 cm in radius).
     let straight = tarp(&[
         ("stripes", json!(30)),
         ("valance", json!(0.25)),
@@ -1227,20 +1241,21 @@ fn cloth_hangs_between_its_fixings_and_sheets_tilt() {
         ("tilt", json!(0)),
         ("frame", json!(true)),
     ]);
-    let deep = |meshes: &[ItemMesh]| {
+    let deep = |meshes: &[ItemMesh], edge: f64| {
         slot_points(meshes, "tarp")
             .iter()
-            .filter(|p| p[2] < -0.4 - 0.245)
+            .filter(|p| p[2] < -0.4 - 0.245 - edge)
             .map(|p| (p[0] * 100.).round() as i64)
             .collect::<std::collections::BTreeSet<_>>()
             .len()
     };
     assert!(
-        deep(&striped) * 2 < deep(&straight),
+        deep(&striped, 0.011) * 2 < deep(&straight, 0.),
         "{} {}",
-        deep(&striped),
-        deep(&straight)
+        deep(&striped, 0.011),
+        deep(&straight, 0.)
     );
+    assert!(deep(&striped, 0.011) > 0);
     assert!((lowest(&slot_points(&striped, "tarp"), 2) + 0.65).abs() < 0.02);
     assert!(
         generate(
@@ -1377,11 +1392,26 @@ fn cables_sag_round_corners_and_hardware_is_bolted() {
         check("downpipe", &meshes);
         meshes
     };
-    let (plain, clipped) = (pipe(&[]), pipe(&[("clips", json!(1))]));
+    // (Clips hold the pipe in place of its straps.)
+    let (plain, clipped) = (
+        pipe(&[("straps", json!(false))]),
+        pipe(&[("clips", json!(1))]),
+    );
     let count = |meshes: &[ItemMesh]| meshes.iter().map(|m| m.indices.len() / 3).sum::<usize>();
     assert!(
         count(&clipped) > count(&plain) + 300,
         "three clips on three metres"
+    );
+    assert_eq!(
+        fingerprint(&clipped),
+        fingerprint(&pipe(&[("clips", json!(1)), ("straps", json!(false))])),
+        "a clipped pipe has no straps"
+    );
+    // The weight of the fittings is a parameter: 1 draws the plumber's own sizes.
+    assert!(count(&pipe(&[("weight", json!(1))])) == count(&pipe(&[])));
+    assert_ne!(
+        fingerprint(&pipe(&[("weight", json!(1))])),
+        fingerprint(&pipe(&[]))
     );
     let all: Vec<[f64; 3]> = clipped
         .iter()
@@ -1860,6 +1890,65 @@ fn a_party_neighbour_is_a_stained_wall_or_a_slice_of_a_building() {
             &natives,
             "kowloon/party",
             &values(&[("kind", json!("stub")), ("gable", json!("front"))])
+        )
+        .is_err()
+    );
+    // A plinth is a dark band of the wall, 18 mm proud of the foot of a stub's front and
+    // ends: it stops at the back door and is left off a front that shopfronts stand before.
+    let proud = |meshes: &[ItemMesh]| -> Vec<[f64; 3]> {
+        slot_points(meshes, "wall")
+            .into_iter()
+            .filter(|p| p[1] < -3.5 - 0.017 || p[0] < -0.017 || p[0] > 7.017)
+            .collect()
+    };
+    assert!(proud(&lane).is_empty() && proud(&shops).is_empty());
+    let with_plinth = |shops: bool| {
+        party(&[
+            ("kind", json!("stub")),
+            ("length", json!(7)),
+            ("own", json!(3)),
+            ("depth", json!(3.5)),
+            ("shops", json!(shops)),
+            ("seed", json!(4)),
+            ("plinth", json!(1)),
+        ])
+    };
+    let (painted, behind_shops) = (proud(&with_plinth(false)), proud(&with_plinth(true)));
+    assert!((highest(&painted, 2) - 1.).abs() < 1e-9 && lowest(&painted, 2).abs() < 1e-9);
+    let front = |points: &[[f64; 3]]| points.iter().filter(|p| p[1] < -3.5 - 0.017).count();
+    assert!(front(&painted) > 0 && front(&behind_shops) == 0);
+    assert!(
+        behind_shops.iter().any(|p| p[0] < -0.017) && behind_shops.iter().any(|p| p[0] > 7.017)
+    );
+    // (its vertices are darker than any of the stained render's).
+    let darkest = |meshes: &[ItemMesh], band: bool| {
+        meshes
+            .iter()
+            .filter(|m| m.material_slot == "wall")
+            .flat_map(|m| m.positions.iter().zip(&m.colors))
+            .filter(|(p, _)| p[2] <= 1.)
+            .filter(|(p, _)| {
+                if band {
+                    p[0] < -0.017 || p[0] > 7.017
+                } else {
+                    p[0] > 0.1 && p[0] < 6.9
+                }
+            })
+            .map(|(_, c)| c[0] + c[1] + c[2])
+            .fold(f64::MAX, f64::min)
+    };
+    let dressed = with_plinth(true);
+    assert!(
+        darkest(&dressed, true) < darkest(&dressed, false),
+        "{} against {}",
+        darkest(&dressed, true),
+        darkest(&dressed, false)
+    );
+    assert!(
+        generate(
+            &natives,
+            "kowloon/party",
+            &values(&[("kind", json!("stub")), ("plinth", json!(1.5))])
         )
         .is_err()
     );

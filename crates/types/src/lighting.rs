@@ -48,18 +48,22 @@ pub struct Lighting {
     pub contours: Contours,
 }
 
-/// Drawn contour lines: a dark line multiplied over the image along silhouettes (where depth
-/// steps) and creases (where the surface turns). Features too small to draw get none.
+/// Drawn contour lines: a line in the darkened color of each surface along silhouettes (where
+/// depth steps) and creases (where the surface turns). Features too small to draw get none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct Contours {
     pub enabled: bool,
-    /// How much of the line's color multiplies the image on a line, 0 to 1.
+    /// How much of the line's color replaces the image on a line, 0 to 1.
     pub strength: f64,
-    /// Line weight on a silhouette, CSS pixels; a crease is drawn a little thinner.
+    /// Line weight on a silhouette, CSS pixels; a crease is drawn at 0.6 of it.
     pub width: f64,
-    /// What the image is multiplied by on a full line, linear RGB.
-    pub color: Rgb,
+    /// The line is the color of the surface it outlines, this bright to the eye (0 black, 1 the
+    /// surface's own color; applied through the display's gamma).
+    pub darken: f64,
+    /// An optional tint the line is multiplied by as well, linear RGB; absent is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<Rgb>,
     /// The step in depth between neighboring surfaces that draws a silhouette, meters.
     pub depth: f64,
     /// The angle between neighboring surfaces that draws a full crease, radians.
@@ -72,9 +76,10 @@ impl Default for Contours {
     fn default() -> Self {
         Self {
             enabled: false,
-            strength: 0.7,
-            width: 2.0,
-            color: srgb("#3a2a20"),
+            strength: 1.0,
+            width: 1.25,
+            darken: 0.6,
+            color: None,
             depth: 0.04,
             normal: 0.7,
             fade: 0.08,
@@ -216,11 +221,12 @@ pub struct Shadow {
     /// Cosine of the angle to the light below which a face starts to count as shadowed.
     pub wrap: f64,
     pub noise: ShadowNoise,
-    /// Form light in shadow, 0 to 1 (experimental): the share of the light's own diffuse shading
-    /// a surface keeps where something else shades it. Written only when it is not 0.
+    /// Form light in shadow, 0 to 1 (experimental): the share of the light's diffuse shading a
+    /// surface keeps where something else shades it, from the light's compass direction level
+    /// with the ground. Written only when it is not 0.
     #[serde(skip_serializing_if = "is_zero")]
     pub form: f64,
-    /// A weaker form light from the light's direction mirrored about the vertical, 0 to 1.
+    /// A weaker form light from the opposite compass direction, 0 to 1.
     #[serde(skip_serializing_if = "is_zero")]
     pub form_fill: f64,
 }
@@ -486,7 +492,10 @@ impl Lighting {
         let contours = &self.contours;
         check.range("contours.strength", contours.strength, 0.0, 1.0);
         check.range("contours.width", contours.width, 0.5, 8.0);
-        check.color("contours.color", &contours.color);
+        check.range("contours.darken", contours.darken, 0.0, 1.0);
+        if let Some(color) = &contours.color {
+            check.color("contours.color", color);
+        }
         check.range("contours.depth", contours.depth, 0.001, 10.0);
         check.range(
             "contours.normal",

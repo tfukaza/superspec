@@ -64,6 +64,22 @@ pub struct Hardware {
     pub tint: V3,
     pub weathering: Option<weathered::Settings>,
 }
+/// How boldly a panel's artwork is drawn; the default is the facades' own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Art {
+    /// How many times as far the border, the lettering and the stains stand off the face (3,
+    /// 5 and 2 mm) and the frame off its edge. Layers a few millimeters apart are one depth to
+    /// a renderer some tens of meters away, where they show through one another in bands.
+    pub lift: f64,
+    /// How many times as wide the border line and the rust runs are; the runs are as many
+    /// times fewer.
+    pub line: f64,
+}
+impl Default for Art {
+    fn default() -> Self {
+        Self { lift: 1., line: 1. }
+    }
+}
 impl Hardware {
     pub(super) fn steel(&self) -> Steel<'_> {
         Steel {
@@ -227,6 +243,7 @@ fn body(
     sides: Sides,
     h: &Hardware,
     s: &Settings,
+    art: Art,
 ) -> Result<(), String> {
     let (w, height, depth, c) = (
         design.width,
@@ -305,7 +322,7 @@ fn body(
         Construction::Timber => 0.014,
         Construction::Lightbox => 0.006,
         _ => 0.009,
-    };
+    } * art.lift.min(3.5);
     let frame_h = if c == Construction::Timber {
         Hardware {
             slot: "timber".into(),
@@ -437,8 +454,24 @@ pub fn draw(
     hardware: &Hardware,
     s: &Settings,
 ) -> Result<(), String> {
+    draw_art(d, design, sides, hardware, s, Art::default())
+}
+/// [`draw`] with its artwork as bold as `art`.
+pub fn draw_art(
+    d: &mut Fixture<'_, '_>,
+    design: &Design,
+    sides: Sides,
+    hardware: &Hardware,
+    s: &Settings,
+    art: Art,
+) -> Result<(), String> {
     design.validate()?;
     s.weathering.validate()?;
+    if !(1. ..=16.).contains(&art.lift) || !(0.5..=6.).contains(&art.line) {
+        return Err(
+            "Sign artwork stands 1–16 times off its face in lines 0.5–6 times wide.".into(),
+        );
+    }
     if let Some(aging) = &hardware.weathering {
         aging.validate()?;
     }
@@ -456,7 +489,7 @@ pub fn draw(
     let (w, h, c) = (design.width, design.height, design.construction);
     let raster = s.weathering.texture_density > 0.;
     if !matches!(c, Construction::Painted | Construction::Cloth) {
-        body(d, design, sides, hardware, s)?
+        body(d, design, sides, hardware, s, art)?
     }
     for (y, out) in fronts(design, sides) {
         let surface = Surface::new(&d.pen, [0., y, 0.], [w, 0., 0.], [0., 0., h], out)?;
@@ -534,14 +567,14 @@ pub fn draw(
             .border
             .filter(|_| design.outline == Outline::Rectangle)
         {
-            let line = 0.008f64.max(0.012 * w.min(h) + 0.004);
+            let line = 0.008f64.max(0.012 * w.min(h) + 0.004) * art.line;
             for bounds in [
                 [edge, edge, w - edge, edge + line],
                 [edge, h - edge - line, w - edge, h - edge],
                 [edge, edge + line, edge + line, h - edge - line],
                 [w - edge - line, edge + line, w - edge, h - edge - line],
             ] {
-                let p = rectangle("paint", bounds, 0.003, border, d.repeat("paint"));
+                let p = rectangle("paint", bounds, 0.003 * art.lift, border, d.repeat("paint"));
                 if raster {
                     paints.push(p)
                 } else {
@@ -607,7 +640,7 @@ pub fn draw(
                     face: b.face,
                     direction: b.direction,
                     ink: b.ink,
-                    lift: 0.005,
+                    lift: 0.005 * art.lift,
                     shadow: b.shadow.map(|c| (c, 0.035 * box_[2].min(box_[3]))),
                 },
                 s.lettering,
@@ -618,7 +651,7 @@ pub fn draw(
                     paints.push(p)
                 } else {
                     let color = |point| {
-                        Ok(if p.lift < 0.005 {
+                        Ok(if p.lift < 0.005 * art.lift {
                             blend(p.tint, tone(design, s, point))
                         } else {
                             blend(
@@ -655,7 +688,7 @@ pub fn draw(
             && design.age > 0.45
             && c == Construction::Sheet
         {
-            let count = (w / 0.22).round().max(2.) as usize;
+            let count = (w / (0.22 * art.line)).round().max(2.) as usize;
             let stained = mix(design.ground, srgb("#7a4a2a"), 0.45 + 0.3 * design.age);
             let top = h - frame;
             for i in 0..count {
@@ -667,14 +700,15 @@ pub fn draw(
                     + 0.02
                     + ((w - 2. * frame - 0.04) * (i as f64 + 0.5 + 0.35 * wobble)) / count as f64;
                 let length = (h * 0.45).min((0.05 + 0.3 * design.age) * (0.6 + 0.5 * wobble));
-                let half = 0.003 + 0.004 * design.age;
+                let half = (0.003 + 0.004 * design.age) * art.line;
+                let lift = 0.002 * art.lift;
                 d.pen.face(
                     d.mesh,
                     "paint",
                     &[
-                        surface.at(x - half, top, 0.002),
-                        surface.at(x + half, top, 0.002),
-                        surface.at(x, top - length, 0.002),
+                        surface.at(x - half, top, lift),
+                        surface.at(x + half, top, lift),
+                        surface.at(x, top - length, lift),
                     ],
                     surface.out,
                     &Tint::Field(&|point| Ok(blend(stained, tone(design, s, point)))),

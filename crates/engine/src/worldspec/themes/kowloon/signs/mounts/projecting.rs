@@ -113,6 +113,7 @@ fn carry(
     hardware: &Hardware,
     age: f64,
     c: Carriage,
+    g: f64,
 ) -> Result<(), String> {
     let pen = if let Some(s) = &hardware.weathering {
         d.pen.with_weathering(
@@ -140,14 +141,14 @@ fn carry(
         steel,
         [[u - 0.02, 0., high], [u - 0.02, length, high]],
         [[1., 0., 0.], [0., 0., 1.]],
-        [0.04, 0.005],
+        [0.04, 0.005 * g],
     )?;
     steel::angle(
         d,
         steel,
         [[u - 0.02, 0., low], [u - 0.02, length, low]],
         [[1., 0., 0.], [0., 0., -1.]],
-        [0.04, 0.005],
+        [0.04, 0.005 * g],
     )?;
     wall_fixing(d, site, steel, age, u, high + 0.02, 0.15)?;
     wall_fixing(d, site, steel, age, u, low - 0.02, 0.15)?;
@@ -180,7 +181,7 @@ fn carry(
                 steel.toned(0.95),
                 [[u, y, low], [u, y, high]],
                 [1., 0., 0.],
-                [0.035, 0.006],
+                [0.035, 0.006 * g],
             )?;
         }
     }
@@ -191,7 +192,7 @@ fn carry(
             steel,
             [[u - 0.02, 0., middle], [u - 0.02, c.inner - 0.012, middle]],
             [[1., 0., 0.], [0., 0., 1.]],
-            [0.04, 0.005],
+            [0.04, 0.005 * g],
         )?;
         wall_fixing(d, site, steel, age, u, middle + 0.02, 0.15)?;
     }
@@ -200,9 +201,9 @@ fn carry(
             [u, c.inner + (c.outer - c.inner) * 0.8, high + 0.045],
             [u, 0.012, high + c.stay],
         ];
-        steel::rod(d, steel, &ends, 0.006, 5)?;
+        steel::rod(d, steel, &ends, 0.006 * g, 5)?;
         if site.detail > 0 {
-            steel::turnbuckle(d, steel.toned(0.85), ends, 0.006)?;
+            steel::turnbuckle(d, steel.toned(0.85), ends, 0.006 * g)?;
         }
         steel::fixing_plate(
             d,
@@ -225,7 +226,7 @@ fn carry(
                 [u, c.inner + (c.outer - c.inner) * 0.55, low - 0.02],
             ],
             [1., 0., 0.],
-            [0.035, 0.006],
+            [0.035, 0.006 * g],
         )?;
         wall_fixing(d, site, steel, age, u, low - c.strut, 0.1)?;
     }
@@ -237,11 +238,12 @@ impl Fixings {
         d: &mut Fixture<'_, '_>,
         site: &Site,
         hardware: &Hardware,
+        g: f64,
     ) -> Result<(), String> {
         let steel = hardware.steel();
         match self.support {
             Support::Carried { carriage: c, extra } => {
-                carry(d, site, hardware, self.age, c)?;
+                carry(d, site, hardware, self.age, c, g)?;
                 let u = c.u;
                 match extra {
                     Extra::None => {}
@@ -252,7 +254,7 @@ impl Fixings {
                             [u, (c.inner + c.outer) / 2., c.bottom - 0.012],
                             [u, (c.inner + c.outer) / 2., c.top + 0.012],
                         ],
-                        0.007,
+                        0.007 * g,
                         5,
                     )?,
                     Extra::Board { lit, trussed } => {
@@ -302,7 +304,7 @@ impl Fixings {
                     steel,
                     [[u - 0.02, 0., arm], [u - 0.02, reach, arm]],
                     [[1., 0., 0.], [0., 0., 1.]],
-                    [0.04, 0.005],
+                    [0.04, 0.005 * g],
                 )?;
                 steel::member(
                     d,
@@ -312,7 +314,7 @@ impl Fixings {
                         [u, 0.36_f64.min(standoff + 0.1), arm - 0.01],
                     ],
                     [1., 0., 0.],
-                    [0.035, 0.006],
+                    [0.035, 0.006 * g],
                 )?;
                 wall_fixing(d, site, steel, self.age, u, arm - 0.14, 0.4)?;
                 steel::member(
@@ -323,7 +325,9 @@ impl Fixings {
                     [0.03, 0.03],
                 )?;
                 for y in [standoff + 0.08, standoff + width - 0.08] {
-                    steel::rod(d, steel, &[[u, y, arm], [u, y, top]], 0.004, 4)?;
+                    // The hanging rods are the thinnest members: a bold sign's are heavier still.
+                    let radius = if g > 1. { 0.004 * g * 1.4 } else { 0.004 };
+                    steel::rod(d, steel, &[[u, y, arm], [u, y, top]], radius, 4)?;
                     if site.detail > 0 {
                         steel::chain(d, steel, [[u, y, arm], [u, y, top]], 0.035)?;
                     }

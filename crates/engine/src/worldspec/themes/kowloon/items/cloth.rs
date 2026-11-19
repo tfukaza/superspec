@@ -27,6 +27,11 @@ fn hang(t: f64) -> f64 {
     4. * t * (1. - t)
 }
 
+/// The radius of a cloth's rolled hem and of the ropes that tie it: thick enough to read
+/// as drawn lines from across a street.
+const HEM: f64 = 0.011;
+const ROPE: f64 = 0.013;
+
 fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }
@@ -276,7 +281,7 @@ pub(super) fn sagging_tarp(
             let path: Vec<V3> = (0..=columns)
                 .map(|i| valance_at(i as f64 / columns as f64, 1.).0)
                 .collect();
-            d.tube("tarp", &path, 0.004, edge, 4)?;
+            d.tube("tarp", &path, HEM, edge, 5)?;
         }
         // Hems: a rolled edge all round.
         let across = |v: f64| -> Vec<V3> {
@@ -290,7 +295,7 @@ pub(super) fn sagging_tarp(
                 .collect()
         };
         for path in [across(0.), across(1.), along(0.), along(1.)] {
-            d.tube("tarp", &path, 0.004, edge, 4)?;
+            d.tube("tarp", &path, HEM, edge, 5)?;
         }
         let rope = shade(hem, 0.8);
         let dark = shade(steel, 0.8);
@@ -298,11 +303,11 @@ pub(super) fn sagging_tarp(
             // Eyelets along the wall, each tied up to a hook.
             for i in 0..=eyelets {
                 let p = surface(i as f64 / eyelets as f64, 0.);
-                d.tube("tarp", &[p, [p[0], 0.008, p[2] + 0.07]], 0.003, rope, 4)?;
+                d.tube("tarp", &[p, [p[0], 0.014, p[2] + 0.1]], ROPE, rope, 5)?;
                 d.cuboid(
                     "metal",
-                    [p[0] - 0.012, 0., p[2] + 0.055],
-                    [p[0] + 0.012, 0.014, p[2] + 0.09],
+                    [p[0] - 0.022, 0., p[2] + 0.08],
+                    [p[0] + 0.022, 0.028, p[2] + 0.13],
                     dark,
                     "b",
                 )?;
@@ -314,20 +319,20 @@ pub(super) fn sagging_tarp(
             let front: Vec<V3> = (0..=arms)
                 .map(|i| {
                     let p = surface(i as f64 / arms as f64, 1.);
-                    [p[0], p[1], p[2] - 0.016]
+                    [p[0], p[1], p[2] - 0.024]
                 })
                 .collect();
-            d.tube("metal", &front, 0.012, steel, 6)?;
+            d.tube("metal", &front, 0.02, steel, 6)?;
             for end in &front {
                 let wall = [end[0], 0.012, -0.03];
-                d.tube("metal", &[wall, *end], 0.011, steel, 6)?;
+                d.tube("metal", &[wall, *end], 0.018, steel, 6)?;
                 let foot = [end[0], 0.012, -drop - 0.42];
                 let knee = [
                     end[0],
                     end[1] * 0.7,
                     wall[2] + (end[2] - wall[2]) * 0.7 - 0.01,
                 ];
-                d.tube("metal", &[foot, knee], 0.008, steel, 5)?;
+                d.tube("metal", &[foot, knee], 0.015, steel, 5)?;
                 wall_plate(d, [end[0], -0.03], 0.05, 0.07, dark)?;
                 wall_plate(d, [end[0], foot[2]], 0.04, 0.05, dark)?;
             }
@@ -341,12 +346,12 @@ pub(super) fn sagging_tarp(
             if poles > 0 && stand > drop + 0.3 {
                 // A post on a base plate, tied back to the wall.
                 let foot = [x + leans[p][0], top[1] + leans[p][1], -stand];
-                d.tube("metal", &[foot, top], 0.03, steel, 8)?;
-                d.disc("metal", top, 0.03, [0., 0., 1.], steel, 8)?;
+                d.tube("metal", &[foot, top], 0.04, steel, 8)?;
+                d.disc("metal", top, 0.04, [0., 0., 1.], steel, 8)?;
                 d.cuboid(
                     "metal",
-                    [foot[0] - 0.08, foot[1] - 0.08, -stand],
-                    [foot[0] + 0.08, foot[1] + 0.08, -stand + 0.014],
+                    [foot[0] - 0.1, foot[1] - 0.1, -stand],
+                    [foot[0] + 0.1, foot[1] + 0.1, -stand + 0.03],
                     dark,
                     "d",
                 )?;
@@ -355,29 +360,27 @@ pub(super) fn sagging_tarp(
                     d.tube(
                         "metal",
                         &[[top[0], top[1], top[2] - 0.02], fixing],
-                        0.008,
+                        0.02,
                         dark,
                         6,
                     )?;
-                    wall_plate(d, [x, 0.22], 0.04, 0.05, dark)?;
+                    wall_plate(d, [x, 0.22], 0.055, 0.065, dark)?;
                 }
                 if ties {
-                    // The corner's eyelet lashed to the post in two turns.
-                    for turn in [0.02, 0.05] {
-                        d.tube(
-                            "tarp",
-                            &[corner, [top[0], top[1] - 0.024, top[2] - turn]],
-                            0.004,
-                            rope,
-                            4,
-                        )?;
-                    }
+                    // The corner's eyelet lashed to the post in one heavy turn.
+                    d.tube(
+                        "tarp",
+                        &[corner, [top[0], top[1] - 0.03, top[2] - 0.035]],
+                        ROPE,
+                        rope,
+                        5,
+                    )?;
                 }
             } else {
                 // No post: the corner hangs from a stay fixed to the wall above.
                 let fixing = [x, 0.012, 0.25 + depth * 0.45];
-                d.tube("tarp", &[corner, fixing], 0.004, rope, 4)?;
-                wall_plate(d, [x, fixing[2]], 0.04, 0.05, dark)?;
+                d.tube("tarp", &[corner, fixing], ROPE, rope, 5)?;
+                wall_plate(d, [x, fixing[2]], 0.05, 0.06, dark)?;
             }
         }
         Ok(())
@@ -390,7 +393,7 @@ pub(super) fn sagging_tarp(
 /// `depth` and falls `drop`. Slots: `sheet` (tinted per vertex), `metal`. Parameters: `width`
 /// (m, 0.3–12, 1.6), `depth` (m, 0.15–2, 0.5), `drop` (m, 0–1, 0.14), `sag` (m, 0–0.3,
 /// 0.03), `tilt` (m a front corner may hang lower, seeded, 0–0.4, 0.06), `pitch` (m between
-/// corrugations, 0.04–0.3, 0.076), `color` (#8b8a80), `rust` (#6b3f24), `rusted` (share of
+/// corrugations, 0.04–0.3, 0.14),`color` (#8b8a80), `rust` (#6b3f24), `rusted` (share of
 /// rust, 0–1, 0.55), `steel` (brackets, #55554c), `seed`.
 pub(super) fn sheet_canopy(
     name: &str,
@@ -403,7 +406,7 @@ pub(super) fn sheet_canopy(
     let drop = a.bounded("drop", 0.14, 0. ..=1.)?;
     let sag = a.bounded("sag", 0.03, 0. ..=0.3)?;
     let tilt = a.bounded("tilt", 0.06, 0. ..=0.4)?;
-    let pitch = a.bounded("pitch", 0.076, 0.04..=0.3)?;
+    let pitch = a.bounded("pitch", 0.14, 0.04..=0.3)?;
     let color = a.color("color", "#8b8a80")?;
     let rust = a.color("rust", "#6b3f24")?;
     let rusted = a.bounded("rusted", 0.55, 0. ..=1.)?;
@@ -415,7 +418,8 @@ pub(super) fn sheet_canopy(
     let sheets = (width / 1.25).ceil().max(1.) as usize;
     let lap = if sheets > 1 { 0.07 } else { 0. };
     let each = (width + lap * (sheets - 1) as f64) / sheets as f64;
-    let amplitude = pitch * 0.12;
+    // Few deep corrugations: their ribs read from across a street.
+    let amplitude = pitch * 0.16;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "sheet-canopy")?;
         for sheet in 0..sheets {
@@ -463,25 +467,25 @@ pub(super) fn sheet_canopy(
         let inset = 0.1_f64.min(width / 4.);
         for i in 0..brackets {
             let x = -width / 2. + inset + (width - 2. * inset) * i as f64 / (brackets - 1) as f64;
-            let under = amplitude + 0.016;
+            let under = amplitude + 0.022;
             d.bar(
                 "metal",
                 [x, 0.01, -under],
                 [x, depth * 0.92, -drop * 0.92 - under],
-                0.022,
+                0.034,
                 steel,
             )?;
             d.bar(
                 "metal",
                 [x, 0.01, -drop - 0.26],
-                [x, depth * 0.72, -drop * 0.72 - under - 0.012],
-                0.016,
+                [x, depth * 0.72, -drop * 0.72 - under - 0.018],
+                0.028,
                 steel,
             )?;
             wall_plate(
                 d,
                 [x, -(drop + 0.26 + under) / 2.],
-                0.045,
+                0.055,
                 (drop + 0.36) / 2.,
                 steel,
             )?;

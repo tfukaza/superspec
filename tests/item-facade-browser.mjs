@@ -20,7 +20,7 @@ await mkdir(out, { recursive: true });
 const choice = process.env.MODEL ?? "side";
 // LANE=1 adds the road and the pedestrian avenue with its median's grass, trees and shrubs (write them first:
 //   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants).
-const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
+const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve(process.env.LANE_PLANTS ?? "generated/verification/treespec/lane-plants.json"), "utf8")) : null;
 // RESOLUTION (default 2048) bounds every receiver's atlas: at 1024 a storey wall of 10 m or more cannot reach TEXELS
 // (160 a metre) and is baked at about 100, which shows its streaks in bands at close range; 2048 costs about 0.6 GiB more
 // of baked maps on screen.
@@ -53,14 +53,18 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 const browser = await launchBrowser();
 try {
   // SCALE: device pixels per CSS pixel (default 1), for sharper pictures of small details.
-  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: Number(process.env.SCALE ?? 1) });
+  // VIEWPORT=<width>x<height> sets the page size (default 1400x1000), e.g. 1080x1080 for a square video.
+const [viewWidth, viewHeight] = (process.env.VIEWPORT ?? "1400x1000").split("x").map(Number);
+const page = await browser.newPage({ viewport: { width: viewWidth, height: viewHeight }, deviceScaleFactor: Number(process.env.SCALE ?? 1) });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
   // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
   page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
   await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 6144}${
     // TREE_LOOK=<leaves|sprays|shells|impostors>: every tree's and shrub's mass drawn in that illustrated look (anime-tree.ts).
-    process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}`);
+    process.env.TREE_LOOK ? `&treelook=${process.env.TREE_LOOK}` : ""}${
+    // QUERY adds page parameters (for example QUERY="aoshare=off").
+    process.env.QUERY ? `&${process.env.QUERY}` : ""}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   // The project is handed over as a file: a building with its images can pass the 50 MB an in-memory upload may hold.
   const projectFile = resolve(out, "washroom-facade.studio.json");
@@ -247,6 +251,7 @@ try {
     }, process.env.BACKDROP ?? "#d2ccc4");
     // VIEWS=<name>,<name> pictures only those views.
     const wanted = process.env.VIEWS?.split(",");
+    const frameReport = {};
     for (const [name, view] of Object.entries(views).filter(([name]) => !wanted || wanted.includes(name))) {
       // Every view keeps the scene's ambient occlusion: foliage neither casts nor receives it (ambient-occlusion.ts).
       await page.evaluate(view => { const s = window.__scene;
@@ -277,6 +282,112 @@ try {
         }, { points, scale });
         console.log(hits.map(line => `pick ${name} ${line}`).join("\n"));
       }
+      // FRAMES=1: the frame cost of this view (tests/scene-frames.mjs) at each of FRAMES_SIZES (default 1400x1000 and
+      // 1920x1080), plants shown even in a bare view, into <out>/frames.json.
+      if (process.env.FRAMES === "1") {
+        const { measureFrames } = await import("./scene-frames.mjs");
+        const results = frameReport[name] = {};
+        const viewport = page.viewportSize();
+        await page.evaluate(() => (window.__scene.scene ?? window.__scene.models).traverse(m => { if (m.userData?.foliage) { m.visible = true; if (m.userData.source) m.userData.source.visible = true; } }));
+        // The viewport fills the page while frames are measured, so its canvas is the size measured (the Studio's panels
+        // otherwise take half the page).
+        await page.evaluate(() => { const host = document.querySelector("#viewport"); host.dataset.framesStyle ??= host.getAttribute("style") ?? "";
+          Object.assign(host.style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh", zIndex: "50", margin: "0" }); });
+        for (const size of (process.env.FRAMES_SIZES ?? "1400x1000,1920x1080").split(",")) {
+          const [width, height] = size.split("x").map(Number);
+          await page.setViewportSize({ width, height });
+          await waitForFrames(page, 10);
+          results[size] = await measureFrames(page, { frames: Number(process.env.FRAMES_COUNT ?? 90) });
+          const r = results[size];
+          console.log(`frames ${name} ${size} (canvas ${r.canvas.join("x")}, ao ${r.ao}, contours ${r.contours}): GPU ${r.steady.gpuMs} ms, page ${r.steady.cpuMs} ms, ${r.steady.calls} draws, ${r.steady.triangles} triangles over ${r.steady.frames} frames; shadow map in a frame ${r.shadowInFrame}, redrawn ${r.shadowForcedMs} ms`);
+          console.log(`  passes (draws/triangles): ${Object.entries(r.counted).map(([pass, p]) => `${pass} ${p.calls}/${p.triangles}`).join(", ")}; shadow redraw ${r.shadowRedraw ? `${r.shadowRedraw.calls}/${r.shadowRedraw.triangles}` : "none"}; finished ms ${JSON.stringify(r.msFinished)}; memory ${JSON.stringify(r.memory)}`);
+          const scene = r.counted.scene?.categories ?? {};
+          console.log(`  scene pass by category: ${Object.entries(scene).sort((a, b) => b[1].calls - a[1].calls).map(([c, v]) => `${c} ${v.calls}/${v.triangles}`).join(", ")}`);
+        }
+        await page.evaluate(() => { const host = document.querySelector("#viewport"); host.setAttribute("style", host.dataset.framesStyle); delete host.dataset.framesStyle; });
+        await page.setViewportSize(viewport);
+        await waitForFrames(page, 6);
+        await writeFile(resolve(out, "frames.json"), JSON.stringify(frameReport, null, 1));
+      }
+    }
+    // RECORD=<seconds>: records a looping turntable video of the building alone straight from the canvas (MediaRecorder,
+    // H.264 MP4 where the browser has it, else WebM) to <out>/building-orbit.<ext>: the camera swings ±ORBIT_DEGREES
+    // (default 45) about the building's vertical axis and back, one full sine period, so the last frame meets the first.
+    // Everything but the building's own meshes is hidden (plants, the lane, the road, the neighbour stubs).
+    // Use with VIEWPORT=1080x1080 for a square video.
+    if (process.env.RECORD) {
+      const seconds = Number(process.env.RECORD), swing = Number(process.env.ORBIT_DEGREES ?? 45) * Math.PI / 180;
+      const centre = [(x0 + front) / 2, cy, (z0 + z1) / 2], fov = Number(process.env.RECORD_FOV ?? 24), recordElevation = Number(process.env.RECORD_ELEVATION ?? 10) * Math.PI / 180;
+      const recordDistance = Number(process.env.RECORD_DISTANCE ?? 62);
+      // The viewport fills the page, so the canvas is the page's size (the Studio's panels otherwise take half of it).
+      await page.evaluate(() => Object.assign(document.querySelector("#viewport").style, { position: "fixed", left: "0", top: "0", width: "100vw", height: "100vh", zIndex: "50", margin: "0" }));
+      await waitForFrames(page, 10);
+      const result = await page.evaluate(async ({ id, centre, azimuth, swing, seconds, fov, elevation, distance, fps, hide }) => {
+        const s = window.__scene;
+        // The building only: its own meshes, without the neighbour stubs it stands against.
+        const hidden = new RegExp(hide);
+        const parts = new Set();
+        s.models.traverse(m => { if (m.isMesh) { m.visible = m.name.startsWith(`${id}/`) && !hidden.test(m.name) && !m.userData?.foliage; if (m.visible) parts.add(m.name.split("/").slice(0, 4).join("/")); } });
+        (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = false; if (m.userData.source) m.userData.source.visible = false; } });
+        s.renderer.shadowMap.needsUpdate = true;
+        s.camera.fov = fov; s.camera.updateProjectionMatrix();
+        const place = t => {
+          const angle = azimuth + swing * Math.sin(2 * Math.PI * t);
+          s.camera.position.set(centre[0] + distance * Math.cos(elevation) * Math.cos(angle), centre[1] + distance * Math.cos(elevation) * Math.sin(angle), centre[2] + distance * Math.sin(elevation));
+          s.controls.target.fromArray(centre); s.controls.update(); s.draw();
+        };
+        place(0);
+        for (let i = 0; i < 30; i++) await new Promise(r => requestAnimationFrame(r));
+        const canvas = document.querySelector("#viewport canvas");
+        // Each frame is drawn, then encoded (WebCodecs, H.264) with its own fixed timestamp, so the video runs at an even
+        // `fps` however long a frame takes to draw. The node side wraps the chunks in an MP4 (tools/video/mp4.mjs).
+        const count = Math.round(seconds * fps), samples = [];
+        const base64 = bytes => { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
+        let description = null, failure = null;
+        const encoder = new VideoEncoder({
+          output: (chunk, meta) => { const data = new Uint8Array(chunk.byteLength); chunk.copyTo(data); samples.push({ data: base64(data), key: chunk.type === "key" });
+            if (meta?.decoderConfig?.description) description = base64(new Uint8Array(meta.decoderConfig.description)); },
+          error: e => { failure = String(e); },
+        });
+        encoder.configure({ codec: "avc1.640028", width: canvas.width, height: canvas.height, bitrate: 20_000_000, framerate: fps, avc: { format: "avc" } });
+        for (let i = 0; i < count; i++) {
+          // Captured right after the draw, before the compositor can clear the drawing buffer.
+          place(i / count);
+          const frame = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
+          await new Promise(r => requestAnimationFrame(r));
+          encoder.encode(frame, { keyFrame: i % fps === 0 });
+          frame.close();
+          if (encoder.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
+        }
+        await encoder.flush(); encoder.close();
+        return { failure, description, samples, frames: count, size: [canvas.width, canvas.height], parts: [...parts].sort() };
+      }, { id: facade.id, centre, azimuth, swing, seconds, fov, elevation: recordElevation, distance: recordDistance, fps: Number(process.env.RECORD_FPS ?? 60),
+        hide: process.env.RECORD_HIDE ?? "\\/party|neighbour|frontage|stub" });
+      console.log(`record parts shown: ${result.parts.join(" ")}`);
+      if (result.failure || !result.description) throw new Error(`encoding failed: ${result.failure ?? "no decoder description"}`);
+      const { mp4 } = await import("../tools/video/mp4.mjs");
+      const file = resolve(out, "building-orbit.mp4");
+      await writeFile(file, mp4({ width: result.size[0], height: result.size[1], fps: Number(process.env.RECORD_FPS ?? 60), description: Buffer.from(result.description, "base64"),
+        samples: result.samples.map(s => ({ data: Buffer.from(s.data, "base64"), key: s.key })) }));
+      console.log(`Recorded ${seconds} s (${result.frames} frames, canvas ${result.size.join("x")}, H.264) to ${file}`);
+    }
+    // ORBIT=<frames>: a turntable swing for a video — the reference camera swings ±ORBIT_DEGREES (default 45) about the
+    // building's vertical axis and back, one picture per frame in <out>/orbit/frame-NNNN.png (building only, no plants).
+    if (process.env.ORBIT) {
+      const frames = Number(process.env.ORBIT), swing = Number(process.env.ORBIT_DEGREES ?? 45) * Math.PI / 180;
+      await mkdir(resolve(out, "orbit"), { recursive: true });
+      const centre = [(x0 + front) / 2, cy, look.height];
+      for (let frame = 0; frame < frames; frame++) {
+        const angle = azimuth + swing * Math.sin(2 * Math.PI * frame / frames);
+        const position = [centre[0] + distance * Math.cos(elevation) * Math.cos(angle), centre[1] + distance * Math.cos(elevation) * Math.sin(angle), look.height + distance * Math.sin(elevation)];
+        await page.evaluate(({ position, target, fov }) => { const s = window.__scene;
+          (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = false; if (m.userData.source) m.userData.source.visible = false; } });
+          s.camera.fov = fov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(position); s.controls.target.fromArray(target); s.controls.update(); s.draw(); },
+          { position, target: centre, fov: look.fov });
+        await waitForFrames(page, 3);
+        await writeFile(resolve(out, "orbit", `frame-${String(frame).padStart(4, "0")}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));
+      }
+      console.log(`Wrote ${frames} orbit frames to ${resolve(out, "orbit")}`);
     }
     console.log(`Wrote ${wanted?.length ?? Object.keys(views).length} pictures to ${out}${errors.length ? `; page errors:\n${errors.slice(0, 8).join("\n")}` : ""}`);
   }

@@ -123,9 +123,9 @@ function facadeMaterials() {
     // The back of a closed bay's recess (behind a gate or shutter): grimy dark plaster, untinted.
     { id: "recess-plaster", entry: steel, parameters: { ...plain, substrate: [0.2, 0.185, 0.16], metalness: 0, roughness: 0.95, edgeRust: 0, surfaceRust: 0.1, rainRust: 0.25 }, seed: 5, meshes: [] },
     // The spandrels' small grey-green tiles, dirty in the joints.
-    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.016, glaze: [0.2, 0.25, 0.2], spare: [0.26, 0.29, 0.24], replaced: 0.015, missing: 0.03, variation: 0.14, fade: 0.45, grime: 0.8, jointRuns: 0.45, runReach: 1.4 }, seed: 7, meshes: [] },
+    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.011, glaze: [0.2, 0.25, 0.2], spare: [0.26, 0.29, 0.24], replaced: 0.015, missing: 0.03, variation: 0.14, fade: 0.45, grime: 0.8, jointRuns: 0.45, runReach: 1.4 }, seed: 7, meshes: [] },
     // A shop front's tiled dado: greener and glossier than the spandrels' sage, a few tiles lost from its foot up.
-    { id: "dado-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.016, glaze: [0.1, 0.19, 0.13], spare: [0.16, 0.24, 0.17], replaced: 0.012, missing: 0.06, variation: 0.12, grime: 0.8 }, seed: 11, meshes: [] },
+    { id: "dado-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.12, jointWidth: 0.011, glaze: [0.1, 0.19, 0.13], spare: [0.16, 0.24, 0.17], replaced: 0.012, missing: 0.06, variation: 0.12, grime: 0.8 }, seed: 11, meshes: [] },
     // Fixtures: printed air conditioner casings, painted steel gone dull and rusty, and thin galvanized sheet.
     { id: "aircon-casing", entry: "kowloon-aircon.material.ts", parameters: { yellowing: 0.25 }, seed: 7, meshes: [] },
     // The plastered walls and floor inside an open shop (tinted): pale, matt and a little grimy.
@@ -277,8 +277,9 @@ export function avenueFrontage(record, party) {
     parts.push({ id: `storeys-${i}`, ...(party?.zones?.length ? { zones: party.zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: {
       // (`top` over its parapet: nothing stands behind the row, and its back faces away from every picture).
       kind: "stub", length: unit, own: storeys, ground: 3.35, storey: 3, top: 80, depth: frontage.depth, shops: true, door: false, stacks: 0,
-      // (The first unit's end faces the front street: windows across it, a soil stack and vents, not a blank wall.)
-      cables: 1, bars: 0.15, units: 0.4, color: paint, seed, ...(i === 0 ? { gable: "end" } : {}) } },
+      // (The first unit's end faces the front street: windows across it, a soil stack and vents over a dark plinth,
+      // not a blank wall.)
+      cables: 1, bars: 0.15, units: 0.4, color: paint, seed, ...(i === 0 ? { gable: "end", plinth: 1 } : {}) } },
       placement: { position: [...at(s1, width + frontage.setback + frontage.depth), origin[2]], along: far } });
     s0 = s1;
     if (i + 1 < weights.length) piers.push(+s1.toFixed(3));
@@ -471,8 +472,9 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
         ? { ...layer, parameters: { ...layer.parameters, strength: +(layer.parameters.strength * 1.7).toFixed(2), longRuns: 1.4 } } : layer);
       const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#aaa391" } }, ...(neighbourLayers.length ? { layers: { wall: neighbourLayers } } : {}), parts: [
         // Three storeys, so the narrow street is closed on both sides past the building's back while the building's
-        // fourth storey and roof still stand above it.
-        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 3, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
+        // fourth storey and roof still stand above it. Its foot is painted dark as the building's plinth is (1 m), so
+        // the plinth runs on along the street front past the building's back.
+        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 3, top: 2, depth, units: 0.3, bars: 0.2, cables: 1, plinth: 1, seed: 41 } } },
         // Below that, a stained party wall (2 to 3.3 m by seed, under a coping) along its back, facing away from the avenue.
         { id: "back", generator: { kind: "native", name: "kowloon/party", parameters: { kind: "wall", length, top: 2.4, seed: 41 } },
           placement: { position: [length, 0, 0], along: [-1, 0] } }] };

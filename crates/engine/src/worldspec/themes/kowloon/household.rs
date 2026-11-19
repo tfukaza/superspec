@@ -149,6 +149,33 @@ pub fn drying_rack(
     settings: Option<&weathered::Settings>,
     textured: bool,
 ) -> Result<(), String> {
+    drying_rack_with(d, span, z, depth, rng, settings, textured, 1.)
+}
+/// `plain` at weight 1 and `bold` at weight 2.
+fn weighed(weight: f64, plain: f64, bold: f64) -> f64 {
+    plain + (bold - plain) * (weight - 1.)
+}
+fn validate_weight(weight: f64) -> Result<(), String> {
+    if weight.is_finite() && (1. ..=3.).contains(&weight) {
+        Ok(())
+    } else {
+        Err("Drying hardware weight must lie in 1..3.".into())
+    }
+}
+/// [`drying_rack`] with arms, poles and pegs of `weight` (1 their own size, 2 the weight of
+/// a drawing; 1–3).
+#[allow(clippy::too_many_arguments)]
+pub fn drying_rack_with(
+    d: &mut Fixture<'_, '_>,
+    span: [f64; 2],
+    z: f64,
+    depth: f64,
+    rng: &mut SeededRng,
+    settings: Option<&weathered::Settings>,
+    textured: bool,
+    weight: f64,
+) -> Result<(), String> {
+    validate_weight(weight)?;
     if !position(&[span[0], span[1], z])
         || span[1] - span[0] < 0.1
         || span[1] - span[0] > 20.
@@ -165,26 +192,34 @@ pub fn drying_rack(
         repeats: d.repeats,
     };
     for x in span {
-        frame.bar("metal", [x, 0., z], [x, depth, z + 0.04], 0.025, steel)?;
+        frame.bar(
+            "metal",
+            [x, 0., z],
+            [x, depth, z + 0.04],
+            weighed(weight, 0.025, 0.042),
+            steel,
+        )?;
         frame.bar(
             "metal",
             [x, 0., z - 0.25],
             [x, depth * 0.7, z + 0.02],
-            0.018,
+            weighed(weight, 0.018, 0.034),
             steel,
         )?;
     }
-    let poles = if depth > 0.5 { 3 } else { 2 };
+    // Heavy poles are fewer: two where three thin ones lay.
+    let poles = if depth > 0.5 && weight < 1.5 { 3 } else { 2 };
+    let bamboo = weighed(weight, 0.013, 0.021);
     for i in 0..poles {
         let y = depth * (0.35 + 0.65 * i as f64 / (poles - 1) as f64);
         d.tube(
             "paint",
             &[[span[0] - 0.15, y, z + 0.03], [span[1] + 0.15, y, z + 0.03]],
-            0.013,
+            bamboo,
             srgb("#c8b888"),
             6,
         )?;
-        laundry::washing(
+        laundry::washing_with(
             &mut Fixture {
                 pen: d.pen.moved([0., y, 0.])?,
                 mesh: d.mesh,
@@ -199,6 +234,7 @@ pub fn drying_rack(
                 support: Support::Pole,
             },
             textured,
+            weight,
         )?;
     }
     Ok(())
@@ -213,6 +249,21 @@ pub fn drying_pole(
     settings: Option<&weathered::Settings>,
     textured: bool,
 ) -> Result<(), String> {
+    drying_pole_with(d, x, z, length, rng, settings, textured, 1.)
+}
+/// [`drying_pole`] with a pole, socket and hangers of `weight` (as [`drying_rack_with`]).
+#[allow(clippy::too_many_arguments)]
+pub fn drying_pole_with(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    length: f64,
+    rng: &mut SeededRng,
+    settings: Option<&weathered::Settings>,
+    textured: bool,
+    weight: f64,
+) -> Result<(), String> {
+    validate_weight(weight)?;
     if !position(&[x, z]) || !length.is_finite() || !(0.35..=20.).contains(&length) {
         return Err("Invalid drying pole.".into());
     }
@@ -221,7 +272,7 @@ pub fn drying_pole(
     d.tube(
         "paint",
         &[[x, 0., z], [x, length, z + length * 0.12]],
-        0.014,
+        weighed(weight, 0.014, 0.022),
         srgb("#c8b888"),
         6,
     )?;
@@ -233,11 +284,11 @@ pub fn drying_pole(
     .tube(
         "metal",
         &[[x, 0., z], [x, 0.06, z + 0.007]],
-        0.024,
+        weighed(weight, 0.024, 0.036),
         shade(srgb("#a4a9aa"), 0.6),
         6,
     )?;
-    laundry::hangers(
+    laundry::hangers_with(
         &mut Fixture {
             pen: d.pen.facing([x, 0., z], [0., 1., 0.], [1., 0., 0.])?,
             mesh: d.mesh,
@@ -252,6 +303,7 @@ pub fn drying_pole(
         },
         rng,
         textured,
+        weight,
     )
 }
 /// Three roof drying lines between T-posts; only the posts receive metal aging.
@@ -263,6 +315,19 @@ pub fn drying_lines(
     settings: Option<&weathered::Settings>,
     textured: bool,
 ) -> Result<(), String> {
+    drying_lines_with(d, span, y, rng, settings, textured, 1.)
+}
+/// [`drying_lines`] with posts, lines and pegs of `weight` (as [`drying_rack_with`]).
+pub fn drying_lines_with(
+    d: &mut Fixture<'_, '_>,
+    span: [f64; 2],
+    y: f64,
+    rng: &mut SeededRng,
+    settings: Option<&weathered::Settings>,
+    textured: bool,
+    weight: f64,
+) -> Result<(), String> {
+    validate_weight(weight)?;
     if !position(&[span[0], span[1], y]) || span[1] - span[0] < 0.3 || span[1] - span[0] > 20. {
         return Err("Invalid drying lines.".into());
     }
@@ -273,12 +338,18 @@ pub fn drying_lines(
         repeats: d.repeats,
     };
     for x in span {
-        frame.bar("metal", [x, y, 0.], [x, y, 1.9], 0.04, srgb("#a4a9aa"))?;
+        frame.bar(
+            "metal",
+            [x, y, 0.],
+            [x, y, 1.9],
+            weighed(weight, 0.04, 0.055),
+            srgb("#a4a9aa"),
+        )?;
         frame.bar(
             "metal",
             [x, y - 0.4, 1.9],
             [x, y + 0.4, 1.9],
-            0.03,
+            weighed(weight, 0.03, 0.045),
             srgb("#a4a9aa"),
         )?;
     }
@@ -287,10 +358,10 @@ pub fn drying_lines(
             "paint",
             [span[0], y + offset, 1.88],
             [span[1], y + offset, 1.88],
-            0.008,
+            weighed(weight, 0.008, 0.02),
             srgb("#2a2927"),
         )?;
-        laundry::washing(
+        laundry::washing_with(
             &mut Fixture {
                 pen: frame.pen.moved([0., y + offset, 0.])?,
                 mesh: frame.mesh,
@@ -305,6 +376,7 @@ pub fn drying_lines(
                 support: Support::Line,
             },
             textured,
+            weight,
         )?;
     }
     Ok(())
@@ -338,6 +410,9 @@ pub struct CagePlan {
     /// `[x0, x1]`: where the front's middle rail is left out, over what stands behind it; it
     /// stops at the infill bars either side.
     pub middle_gap: Option<[f64; 2]>,
+    /// A cage of few heavy bars: the infill bars share each side evenly at about `spacing`,
+    /// and the floor's runners and the wall stays are of the bars' weight instead of 9 and 12 mm.
+    pub bold: bool,
 }
 impl CagePlan {
     fn validate(&self) -> Result<(), String> {
@@ -399,6 +474,23 @@ pub fn planned_cage(
     let frame_rail = plan.rail.unwrap_or(0.028);
     let post = plan.rail.map_or(0.03, |r| r + 0.002);
     let pitch = plan.spacing.unwrap_or(0.11);
+    // A bold cage shares its bars evenly, so no narrow gap is left at an end.
+    let even = |length: f64| length / (length / pitch).round().max(1.);
+    let (pitch, side_pitch) = if plan.bold {
+        (even(x1 - x0), even(depth))
+    } else {
+        (pitch, pitch)
+    };
+    let (runner, runner_pitch, cross_pitch, stay) = if plan.bold {
+        (
+            bar * 0.75,
+            side_pitch,
+            pitch * (0.2 / pitch).ceil().max(1.),
+            [0.04, 0.02],
+        )
+    } else {
+        (0.009, 0.11, 0.2, [0.025, 0.012])
+    };
     let pen = if let Some(s) = settings {
         d.pen.with_weathering(
             d.mesh,
@@ -446,7 +538,7 @@ pub fn planned_cage(
                 finish,
                 [[x, 0.012, z], [x, depth - 0.014, front]],
                 [1., 0., 0.],
-                [0.025, 0.012],
+                stay,
             )?;
         }
     }
@@ -470,10 +562,10 @@ pub fn planned_cage(
             repeat,
         )
     };
-    let mut y = 0.055;
+    let mut y = runner_pitch / 2.;
     while y < depth {
-        rail([x0, y, z0], [x1, y, z0], 0.009)?;
-        y += 0.11;
+        rail([x0, y, z0], [x1, y, z0], runner)?;
+        y += runner_pitch;
     }
     let middle = plan
         .middle
@@ -506,16 +598,16 @@ pub fn planned_cage(
         x += pitch;
     }
     for x in [x0, x1] {
-        let mut y = pitch;
+        let mut y = side_pitch;
         while y < depth - 0.03 {
             rail([x, y, z0], [x, y, z1], bar)?;
-            y += pitch;
+            y += side_pitch;
         }
     }
-    let mut x = x0 + 0.2;
+    let mut x = x0 + cross_pitch;
     while x < x1 - 0.1 {
         rail([x, 0., z0], [x, depth, z0], bar)?;
-        x += 0.2;
+        x += cross_pitch;
     }
     // A planned roof draws from its own stream, so the contents stay the seed's.
     let roofed = match plan.roof {
@@ -649,10 +741,28 @@ pub fn wall_lamp(
     z: f64,
     settings: &weathered::Settings,
 ) -> Result<(), String> {
+    guarded_wall_lamp(d, x, z, settings, None)
+}
+fn validate_guard(guard: Option<f64>) -> Result<(), String> {
+    if guard.is_none_or(|wire| (0.004..=0.04).contains(&wire)) {
+        Ok(())
+    } else {
+        Err("A wall lamp's guard is of 4–40 mm wire.".into())
+    }
+}
+/// [`wall_lamp`] whose guard bars are `guard` m thick (8 mm when `None`).
+pub fn guarded_wall_lamp(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    settings: &weathered::Settings,
+    guard: Option<f64>,
+) -> Result<(), String> {
     if !position(&[x, z]) {
         return Err("Invalid wall lamp position.".into());
     }
     settings.validate()?;
+    validate_guard(guard)?;
     let pen = hardware(d, Some(settings))?;
     Fixture {
         pen: pen.clone(),
@@ -683,7 +793,7 @@ pub fn wall_lamp(
             "metal",
             [x + bar, 0.128, z + 0.015],
             [x + bar, 0.128, z + 0.115],
-            0.008,
+            guard.unwrap_or(0.008),
             shade(srgb("#a4a9aa"), 0.4),
         )?;
     }
@@ -697,10 +807,22 @@ pub fn round_wall_lamp(
     z: f64,
     settings: &weathered::Settings,
 ) -> Result<(), String> {
+    guarded_round_wall_lamp(d, x, z, settings, None)
+}
+/// [`round_wall_lamp`] in a cage of `guard` m wire: a ring and two hoops instead of three of
+/// 12 mm.
+pub fn guarded_round_wall_lamp(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    settings: &weathered::Settings,
+    guard: Option<f64>,
+) -> Result<(), String> {
     if !position(&[x, z]) {
         return Err("Invalid wall lamp position.".into());
     }
     settings.validate()?;
+    validate_guard(guard)?;
     // Sizes in units of `k` m: a plate 26 cm across under a glass 17 cm across.
     let k = 1.2;
     let (plate, centre) = (0.11 * k, z + 0.115 * k);
@@ -786,9 +908,13 @@ pub fn round_wall_lamp(
             ]
         })
         .collect();
-    m.tube("metal", &ring, 0.006 * k, wire, 6)?;
-    for hoop in 0..3 {
-        let bearing = hoop as f64 * std::f64::consts::PI / 3.;
+    let (ring_radius, hoop_radius, hoops) = match guard {
+        Some(wire) => (wire / 2., wire * 0.45, 2),
+        None => (0.006 * k, 0.005 * k, 3),
+    };
+    m.tube("metal", &ring, ring_radius, wire, 6)?;
+    for hoop in 0..hoops {
+        let bearing = hoop as f64 * std::f64::consts::PI / hoops as f64;
         let (c, s) = (
             superspec_geometry::math::cos(bearing),
             superspec_geometry::math::sin(bearing),
@@ -803,7 +929,7 @@ pub fn round_wall_lamp(
                 [r * c, r * s, h]
             })
             .collect();
-        m.tube("metal", &hoop, 0.005 * k, wire, 6)?;
+        m.tube("metal", &hoop, hoop_radius, wire, 6)?;
     }
     conduit(0.012, settings)?.run(
         d,
@@ -820,6 +946,19 @@ pub fn meter_bank(
     rng: &mut SeededRng,
     settings: &weathered::Settings,
 ) -> Result<(), String> {
+    meter_bank_with(d, x, z, count, rng, settings, 1.)
+}
+/// [`meter_bank`] with conduits and their clips of `weight` (as [`drying_rack_with`]).
+pub fn meter_bank_with(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    count: usize,
+    rng: &mut SeededRng,
+    settings: &weathered::Settings,
+    weight: f64,
+) -> Result<(), String> {
+    validate_weight(weight)?;
     if !position(&[x, z]) || count > 64 {
         return Err("Invalid meter bank position or count.".into());
     }
@@ -847,14 +986,16 @@ pub fn meter_bank(
             0.13,
             srgb("#d8d8cc"),
         )?;
-        conduit(0.011, settings)?.run(
-            d,
-            &[
-                [x0 + 0.12, 0.03, z + 0.34],
-                [x0 + 0.12, 0.03, z + 1.2 + i as f64 * 0.07],
-            ],
-            Some(0.),
-        )?;
+        conduit(weighed(weight, 0.011, 0.018), settings)?
+            .weighted(weight)?
+            .run(
+                d,
+                &[
+                    [x0 + 0.12, 0.03, z + 0.34],
+                    [x0 + 0.12, 0.03, z + 1.2 + i as f64 * 0.07],
+                ],
+                Some(0.),
+            )?;
     }
     Ok(())
 }

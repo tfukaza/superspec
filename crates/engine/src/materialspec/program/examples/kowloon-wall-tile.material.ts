@@ -36,7 +36,7 @@ const faded = mix(faced, add(mul(faced, 0.6), vec3(0.19, 0.19, 0.17)), mul(fade,
 
 // Dirt: out of the joints onto the faces, in patches, and washed down in streaks.
 const beside = sub(1, smoothstep(0.002, min(mul(tileSize, 0.24), 0.018), grid.sideDistance));
-const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(4.5, 0.8)), seed("tile-streaks")));
+const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(6.5, 0.8)), seed("tile-streaks")));
 const patches = smoothstep(0.5, 0.8, valueNoise(add(mul(surface, 2.3), vec2(4.1, 9.7)), seed("tile-patches")));
 // Plus a broad soot band under the panel's top, where the sill above drips.
 const headSoot = mul(sub(1, smoothstep(0.05, 0.35, max(sub(boundsMax.z, world.z), 0))), add(0.4, mul(0.6, streaks)));

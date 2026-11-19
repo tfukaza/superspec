@@ -38,7 +38,7 @@ const along = creaseTangent("exposed", edgeAngle, limit);
 const at = vec2(surface.x, surface.y);
 const wide = mul(inkWidth, add(0.55, mul(0.9, valueNoise(mul(at, 2.7), seed("ink-width")))));
 const broken = sub(1, mul(breakup, smoothstep(0.42, 0.72, valueNoise(add(mul(at, 5.3), vec2(3.1, 7.7)), seed("ink-breaks")))));
-const grain = add(0.75, mul(0.25, valueNoise(mul(at, 16), seed("ink-grain"))));
+const grain = add(0.75, mul(0.25, valueNoise(mul(at, 24), seed("ink-grain"))));
 const standing = mix(sub(1, upright), 1, abs(along.z));
 // Beside an exposed edge the grime starts where the worn arris ends.
 const beside = mul(mul(sub(1, smoothstep(mul(wide, 0.2), wide, exposed)), smoothstep(mul(highlightWidth, 0.6), mul(highlightWidth, 1.4), exposed)), standing);

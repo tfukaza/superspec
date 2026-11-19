@@ -141,6 +141,7 @@ still multiplying (the image is `exposure × color`, clipped).
 | environment light | color, intensity |
 | ambient (hemisphere) light | whether it casts shadows |
 | ambient occlusion | shadow style: softness, spread, darkness, tint, wrap, noise |
+| contour lines (experimental) | form light in shadow and its fill (experimental) |
 
 Renderer implementation choices are not settings and are not in the record: shadow
 map resolution and type, bias, kernel tap counts, AO sample counts, antialiasing.
@@ -248,7 +249,7 @@ channel; direction of unit length within 0.001 (consumers normalize it); softnes
 spread and maxSoftness in [0, 2]; darkness, tintStrength, wrap, noise edge and noise
 amount in [0, 1]; noise scale in [0.01, 100] m; seed an unsigned 32-bit integer; AO
 radius and thickness in [0.01, 10] m, AO intensity in [0, 4]; ids and the environment
-source are 1 to 64 of `A-Z a-z 0-9 . _ -`; at most one light. The ranges are at least
+source are 1 to 64 of `A-Z a-z 0-9 . _ -`; at most one light; `shadow.form` and `shadow.formFill` in [0, 1]; contour `strength` in [0, 1], `width` in [0.5, 8] px, `depth` in [0.001, 10] m, `normal` in [0.01, π] rad, `fade` in [0.001, 10] m per pixel. The ranges are at least
 as wide as the viewer's query-parameter overrides were, so every existing URL still
 states a valid record.
 
@@ -477,3 +478,126 @@ shadow map's texels as blocky speckle over the whole lit wall), `darkness` 0.1, 
 `intensity` below 1 (0.8) and a `thickness` of 0.3 m. (Radius 1.1 m with thickness 0.12 m, tried first, broke up into blocky noise over open wall.) A per-light caster
 size threshold or a per-model shadow class would be an additive field of `lights[].shadow` or of the scene, never of a
 material.
+
+## Illustration experiments (2026-11-19, pending review)
+
+Two switchable settings for an illustrated look, both off in the shipped record, so every existing picture is unchanged,
+and both on in `tests/item-facade-browser.mjs` (`FORM=<0 to 1>`, `FORM_FILL=<0 to 1>`, `CONTOURS=0|1`). They follow the
+standing rule: one is a setting of the light, the other of the scene, neither of a material. Like `painted`, each is
+written only when it differs from its default, so records and exports that never set them keep their bytes.
+
+```jsonc
+{
+  "version": 1,
+  "contours": {                       // global; absent is off
+    "enabled": true,
+    "strength": 1.0,                  // how much of the line's color replaces the image on a line
+    "width": 1.25,                    // CSS pixels on a silhouette; a crease is 0.6 of it
+    "darken": 0.6,                    // the line is the surface's own color times this
+    // "color": [r, g, b]             // optional tint, linear RGB; absent is none
+    "depth": 0.04,                    // meters: the step in depth that draws a silhouette
+    "normal": 0.7,                    // radians: the turn that draws a full crease (it starts at half)
+    "fade": 0.08                      // meters a CSS pixel covers where lines are gone (they fade from a quarter)
+  },
+  "lights": [{ "shadow": {
+    "form": 0.35,                     // per light; absent is 0
+    "formFill": 0.0                   // absent is 0
+  } }]
+}
+```
+
+Page overrides: `shadowform`, `shadowformfill`; `contours=on|off`, `contourstrength`, `contourwidth`, `contourdarken`,
+`contourcolor` (sRGB hex tint), `contourdepth`, `contournormal`, `contourfade`.
+
+### Form light in shadow (`lights[].shadow.form`, `formFill`)
+
+A small prop standing wholly in shadow is lit by ambient light alone and loses its form. With `form` above 0 a surface
+that something else shades keeps that share of the sun's diffuse shading, so the side turned to the sun stays brighter
+than the side turned away. It is implemented in the shadow style (`shadow-style.ts`), where the sun's shadow is applied,
+which every lit material of the viewer goes through, baked or per pixel:
+
+- It is weighted by how much the cast shadow hides (`1 - cast`), so nothing changes in sunlight, and it is added before
+  the shadow's shade multiplies the color, so it is darkened and tinted (cool, desaturated) like the rest of the shadow.
+- The light comes from the sun's compass direction, level with the ground, not from the sun itself. The first version
+  used the sun's own direction; the ground, which faces the sun more than any wall, was then lifted most, and the cast
+  shadows on the paving visibly faded at 0.35. Level light gives a level surface nothing:
+  the ground, a roof and an awning's top keep their shadows in full, and the sides of what stands on them are told
+  apart. A wall that faces the sun's side and lies in a cast shadow is still lifted a little (the trees' dapple on the
+  side face is fainter at 0.35); that is the size-blind part of the trick. A sun nearly overhead has no compass
+  direction and gives no form light.
+- `formFill` is the same shading from the opposite compass direction, on what is in shadow or turned from the sun, so
+  the far sides are graded as well. It is diffuse only, like `form`.
+- Painted materials shade themselves (their own band) and painted foliage has its own lighting: both are left alone.
+- The form light is compiled into the shadow style only while `form` or `formFill` is above 0 (turning it on or off
+  recompiles the patched programs once, like changing the style). A uniform alone was not enough: with the code present
+  and switched off by a zero, one washroom pixel differed by one level.
+
+### Contour lines (`contours`)
+
+A drawn line along silhouettes and creases, in the darkened color of the surface it outlines. It is a pass over the composited frame
+(`browser/renderer/contours.ts`, added to the frame `ambient-occlusion.ts` composes) and draws nothing of the scene: it
+reads the depth, the face normals and the foliage mask the ambient occlusion already draws. With ambient occlusion off
+the frame is still composed, with the occlusion's passes left out and that depth drawn for the lines alone.
+
+- **Silhouettes** come from depth. Across a flat surface the reciprocal of the view distance is linear on screen
+  however steeply the surface is seen, so its second difference is zero on a wall at a grazing angle and positive on
+  the nearer side of a step. The line therefore lies on the nearer surface only, one `width` wide. The step is `depth`
+  meters, and never less than the depth buffer resolves at that distance nor than a line width and a half as the pixel
+  covers it.
+- **Creases** come from the face normals: the angle to the neighboring pixel's normal, full at `normal` and starting at
+  half of it, owned by the nearer pixel of the pair so the line is on one side. A crease is drawn at 0.7 of the width:
+  the outline of a form weighs a little more than the edges inside it (0.6 since 2026-11-19).
+- **The surface's own color, darker** (revised 2026-11-19: a fixed dark brown, #3a2a20 multiplied at 0.7, read as
+  too cartoony). On a line the image becomes the color of the surface the line belongs to (linear, before tone
+  mapping) times `darken`, 15% more saturated so it does not read as dirt, times the optional `color` tint: a cream wall
+  gets a darker cream line, a green frame a darker green one, a red sign a darker red one. That color is read from the
+  same taps as the line, weighted by how much line each holds, so the soft edge spilling onto the far surface still
+  takes the nearer surface's color. The old look is `{ "darken": 1, "strength": 0.7, "color": [0.042, 0.023, 0.014] }`.
+- **A fine line.** The default is 1.25 CSS pixels (creases 0.75, at least one device pixel), scaled by the device pixel
+  ratio, so a picture at `SCALE=2` has lines of the same apparent weight (2 pixels at first; thinner since 2026-11-19). The depth has one sample a pixel, so the line is read
+  through a small tent filter and has a soft edge.
+- **Too small or too dense to draw.** A pixel whose surface is farther on both sides within three line widths (a cage
+  bar, a cable, a lattice, a glazing bar) is part of something too thin to hold a line on each side and gets none; and
+  where more than about a third of the surrounding block (eight line widths across) is line, the lines are left out,
+  since they would only blacken (the block is at least 12 CSS pixels, so a thinner line does not shrink it onto a single
+  tile). With the thinner line the minimum feature, three line widths, is about 4 pixels instead of 6, so thinner
+  frames and sills carry a line. Lines also fade with the size of a pixel in the scene (`fade`), so far detail stays
+  clean. Texture never draws a line: only geometry is in the depth and normals.
+- **Glass** is in the depth as a surface: a pane gets a line where it meets its frame and none across it, and nothing
+  seen through it is outlined.
+- **Foliage: none.** Foliage is not in that depth (it would darken the building through the tree), so it gets no line,
+  and lines of what is behind a leaf are masked out. A line along the edge of the leaf mask was tried on the avenue and
+  changed nothing that could be seen: the viewer draws the painted crowns over the frame with passes of their own. So
+  trunks, crowns, shrubs and grass have no contour.
+- The line is drawn in linear color before the output pass, so it is tone mapped with the image, and painted
+  materials, which that frame already brings back to their authored color, take it like any other.
+
+### Verification
+
+Building scene, real GPU (ANGLE D3D11, NVIDIA RTX 5060 Ti), pictures in `generated/verification/illus/`:
+`compare-<view>.png` is a sheet of four (top: both off, form 0.35; bottom: contours, both) for `storey`, `shops`,
+`street`, `side-face` and `base`, from one bake; `crop-*.png` are parts of them at full size;
+`generated/verification/illus-2x/` holds `shops` and `storey` at `SCALE=2`.
+
+- Form: on the side face the stacked cartons by the shutter, in the trees' shadow, show a lit right side and a darker
+  front where they were one flat tone; the paving's shadows are unchanged.
+- Contours: a fine brown line on the building's edges, sills, courses, signs, crates, cartons, bollards and kerbs; none
+  on the lattice grilles, the cage bars, the hanging cables or the wall's texture; with ambient occlusion off the lines
+  are the same.
+- The washroom (`tests/material-washroom-browser.mjs`, 256 px) with both off, against a build of the same tree without
+  these changes: 0 of 763,092 pixels differ with `ao=off` and with `ao=on`.
+- Cost: at 1420 by 1868 device pixels the frame took 8.8 ms without and 9.2 ms with contours (median of 9 runs of 20
+  frames, `shops`; the frame is bound by the CPU's draw calls, so this is the difference in frame time, not the passes'
+  GPU time). The form light made no measurable difference. With ambient occlusion off, contours draw the scene's depth
+  once more (the occlusion otherwise has drawn it).
+- Checks: `tsc --noEmit`, `node --test tests/browser/rust-lighting.test.ts` (13 tests),
+  `cargo test -p superspec-types -p superspec-model lighting`.
+
+Revision (2026-11-19), surface-colored lines: `generated/verification/illus-surface/compare-<view>.png` for `reference`,
+`storey`, `shops` and `street` (form 0.35 in all four panels; top: no contours, the first brown line at 2 px; bottom:
+the brown at the new 1.25 px, the surface-colored line at 1.25 px).
+
+Limits: the form light cannot tell a prop from a wall (see above); a joint or bevel whose step is near `depth` draws a
+broken line (the paving's joints); a kerb's bevels draw two or three parallel lines close up; the Studio's Lighting
+panel has no controls for either setting (they keep the record's values); the game runtime draws both through the same
+`SceneLighting`, which was not pictured.

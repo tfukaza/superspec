@@ -37,7 +37,7 @@ const woven = mul(dyed, clamp(mul(div(dot(weave, vec3(0.3333)), 0.42), 1), 0.55,
 // Bleached in clouds toward old cloth; soiled down the fall and at the hem; stained in a few places.
 const clouds = valueNoise(mul(vec2(along, world.z), 1.7), seed("canvas-bleach"));
 const bleached = mix(woven, vec3(0.4, 0.35, 0.26), mul(bleaching, add(0.15, mul(0.45, smoothstep(0.35, 0.8, clouds)))));
-const runs = smoothstep(0.4, 0.82, valueNoise(vec2(mul(along, 9), mul(world.z, 1.2)), seed("canvas-runs")));
+const runs = smoothstep(0.4, 0.82, valueNoise(vec2(mul(along, 13), mul(world.z, 1.2)), seed("canvas-runs")));
 const hem = sub(1, smoothstep(0, 0.3, upIt));
 const stains = smoothstep(0.66, 0.82, valueNoise(add(mul(vec2(along, world.z), 3.1), vec2(7.3, 2.2)), seed("canvas-stains")));
 // Soot gathers toward the wall, at the top of the fall.
@@ -50,7 +50,7 @@ const soiled = mul(soil, min(add(add(add(mul(runs, 0.4), mul(hem, add(0.25, mul(
 const facing = normalize(add(vec2(normal.x, normal.y), vec2(1e-4, 0)));
 const eaveAlong = dot(vec2(world.x, world.y), vec2(neg(facing.y), facing.x));
 const drop = max(sub(boundsMax.z, world.z), 0);
-const thread = smoothstep(0.62, 0.78, valueNoise(vec2(mul(eaveAlong, 7), mul(drop, 0.8)), seed("canvas-threads")));
+const thread = smoothstep(0.62, 0.78, valueNoise(vec2(mul(eaveAlong, 10), mul(drop, 0.8)), seed("canvas-threads")));
 const threadReach = add(0.08, mul(0.3, valueNoise(vec2(mul(eaveAlong, 4), 0.5), seed("canvas-thread-reach"))));
 const threads = mul(thread, sub(1, smoothstep(mul(threadReach, 0.6), threadReach, drop)));
 const edgeSoot = mul(sub(1, smoothstep(0.015, 0.05, drop)), add(0.6, mul(0.4, runs)));

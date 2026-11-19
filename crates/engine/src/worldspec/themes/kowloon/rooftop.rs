@@ -101,6 +101,13 @@ pub(super) struct Aerial {
     pub spread: f64,
     /// The bearing of the first stay in radians; the others share the circle evenly.
     pub bearing: f64,
+    /// The sections in meters of the mast (before `size` thickens it), an array's boom, its
+    /// elements and a stay, and how many elements an array has (2–9).
+    pub mast: f64,
+    pub boom: f64,
+    pub element: f64,
+    pub elements: usize,
+    pub stay: f64,
 }
 impl Default for Aerial {
     fn default() -> Self {
@@ -109,6 +116,11 @@ impl Default for Aerial {
             stays: 0,
             spread: 0.8,
             bearing: 0.,
+            mast: 0.03,
+            boom: 0.018,
+            element: 0.012,
+            elements: 5,
+            stay: 0.006,
         }
     }
 }
@@ -125,6 +137,10 @@ pub(super) fn aerial_with(
         || shape.stays > 4
         || !(0.2..=5.).contains(&shape.spread)
         || !shape.bearing.is_finite()
+        || [shape.mast, shape.boom, shape.element, shape.stay]
+            .iter()
+            .any(|v| !(0.004..=0.1).contains(v))
+        || !(2..=9).contains(&shape.elements)
     {
         return Err(
             "An aerial's arrays are 0.5–3 times their size, with 0–4 stays reaching 0.2–5 m."
@@ -146,7 +162,13 @@ pub(super) fn aerial_with(
     };
     let steel = shade(srgb("#a4a9aa"), rng.float(0.6, 0.95));
     let top = [base[0], base[1], base[2] + height];
-    d.bar("metal", base, top, 0.03 * (1. + (size - 1.) * 0.5), steel)?;
+    d.bar(
+        "metal",
+        base,
+        top,
+        shape.mast * (1. + (size - 1.) * 0.5),
+        steel,
+    )?;
     let mut array = 0;
     // The source draws a fresh condition on every loop test, including the final one.
     loop {
@@ -174,13 +196,20 @@ pub(super) fn aerial_with(
             "metal",
             at(-reach * 0.35, 0.),
             at(reach * 0.65, 0.),
-            0.018,
+            shape.boom,
             steel,
         )?;
-        for i in 0..5 {
-            let a = -reach * 0.3 + i as f64 * reach * 0.9 / 4.;
-            let half = (0.3 - i as f64 * 0.04) * size;
-            d.bar("metal", at(a, -half), at(a, half), 0.012, steel)?;
+        // The elements shorten from 0.3 to 0.14 m a side along the boom.
+        let last = (shape.elements - 1) as f64;
+        let taper = if shape.elements == 5 {
+            0.04
+        } else {
+            0.16 / last
+        };
+        for i in 0..shape.elements {
+            let a = -reach * 0.3 + i as f64 * reach * 0.9 / last;
+            let half = (0.3 - i as f64 * taper) * size;
+            d.bar("metal", at(a, -half), at(a, half), shape.element, steel)?;
         }
         array += 1;
     }
@@ -213,7 +242,7 @@ pub(super) fn aerial_with(
                 "metal",
                 [base[0], base[1], collar],
                 foot,
-                0.006,
+                shape.stay,
                 shade(steel, 0.6),
             )?;
             d.cuboid(

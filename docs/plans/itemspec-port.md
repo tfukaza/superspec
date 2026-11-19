@@ -288,6 +288,17 @@ that faces a street (`gable`) has columns of windows across its depth, a soil st
   seeded street rule. `roofClutter` (0 to 1) scales `kowloon/roof-clutter`: vent stubs with cowls or
   goosenecks along `roofVentSide`, pipes on sleepers along `roofPipeSide`, pots along `roofPotSide`, and
   a cable from the first aerial to the stair hut.
+- **Drawn weight at street level.** Nothing linear on the street is thinner than about 2.5 cm, and
+  counts fall where thicker pieces would clog. Paving and kerb stones have 2 cm joints and paving
+  stones a dark 1.2 cm chamfer into them (`street.rs` `paving_stone`), so a joint is a drawn line;
+  drain and manhole covers are four heavy bars and the avenue's slot drain 9 cm bars every 0.25 m;
+  benches have two 7.5 cm slats; bollards are 18 cm with a broad band; lamp arms, braces and scrolls,
+  bicycles (fat tyres, six spokes, 5 cm tubes) and hand carts are heavier. A roller shutter's slats
+  are 0.15 m apart and 3.4 cm deep (`slat`; `shutters::slatted_roller_shutter`) and a gate's lattice
+  2.6 cm uprights 0.22 m apart (`gateSpacing`; `ground::Plan::gate_lattice`): only the item
+  generators ask for these, so the older Kowloon models draw as before. A sheet canopy's
+  corrugations are 0.14 m apart; a hung cloth's hems and ropes are 2 to 2.6 cm thick, its posts 8 cm
+  and stays 4 cm; hung goods' cords are 2.6 cm strips; rack posts, brooms and awning poles are stouter.
 
 ItemSpec itself gained two things for this: a choice control reads as its index among its choices in
 expressions (so a `when` can test a kind), and an item may have 128 controls and a placed item a million

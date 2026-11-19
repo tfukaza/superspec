@@ -43,14 +43,15 @@ export interface LightShadow {
   wrap: number;
   noise: ShadowNoise;
   /**
-   * Form light in shadow, 0 to 1 (experimental): the share of the light's own diffuse shading a surface keeps where
-   * something else shades it, so a prop standing in shadow still shows a lit and a dark side. It is shaded and tinted
-   * like the rest of the shadow. Absent is 0 (ormOf); a record holds it only when it is not 0.
+   * Form light in shadow, 0 to 1 (experimental): the share of the light's diffuse shading a surface keeps where something
+   * else shades it, so a prop standing in shadow still shows a lit and a dark side. It comes from the light's compass
+   * direction, level with the ground, so the ground and other level surfaces keep their cast shadows in full; it is
+   * darkened and tinted like the rest of the shadow. Absent is 0 (`formOf`); a record holds it only when it is not 0.
    */
   form?: number;
   /**
-   * A second, weaker form light for what the first leaves flat, 0 to 1 (experimental): the same shading from the light's
-   * direction mirrored about the vertical, on surfaces in shadow or turned from the light. Absent is 0.
+   * A second, weaker form light for what the first leaves flat, 0 to 1 (experimental): the same shading from the opposite
+   * compass direction, on surfaces in shadow or turned from the light. Absent is 0.
    */
   formFill?: number;
 }
@@ -104,23 +105,28 @@ export interface Lighting {
   painted?: PaintedFinishing;
   /**
    * Contour lines over the finished image, for the whole scene (never per material; experimental). Absent is the
-   * default (DEFAULT_CONTOURS, which is off); a record holds it only when it differs.
+   * default (`DEFAULT_CONTOURS`, which is off); a record holds it only when it differs.
    */
   contours?: Contours;
 }
 
 /**
- * Drawn contour lines: a dark line multiplied over the image along silhouettes (where depth steps) and creases (where
+ * Drawn contour lines: a line in the darkened color of each surface along silhouettes (where depth steps) and creases (where
  * the surface turns), found in screen space from what the camera sees. Features too small to draw get none.
  */
 export interface Contours {
   enabled: boolean;
-  /** How much of the line's color multiplies the image on a line, 0 to 1. */
+  /** How much of the line's color replaces the image on a line, 0 to 1. */
   strength: number;
   /** Line weight on a silhouette, CSS pixels (the same apparent weight at any device pixel ratio); a crease is drawn a little thinner. */
   width: number;
-  /** What the image is multiplied by on a full line, linear RGB. */
-  color: Rgb;
+  /**
+   * The line is the color of the surface it outlines, `darken` as bright to the eye (0 black, 1 the surface's own
+   * color; applied through the display's gamma), slightly more saturated.
+   */
+  darken: number;
+  /** An optional tint the line is multiplied by as well, linear RGB; absent is none. */
+  color?: Rgb;
   /** The step in depth between neighboring surfaces that draws a silhouette, meters. */
   depth: number;
   /** The angle between neighboring surfaces that draws a full crease, radians; the line starts at half of it. */
@@ -129,11 +135,8 @@ export interface Contours {
   fade: number;
 }
 
-/** Off; turned on, a fine dark warm brown (#3a2a20) line about two pixels wide. */
-export const DEFAULT_CONTOURS: Contours = {
-  enabled: false, strength: 0.7, width: 2, color: [0.04231141061442144, 0.023153366173251363, 0.014443843592229466],
-  depth: 0.04, normal: 0.7, fade: 0.08,
-};
+/** Off; turned on, a fine line a little over a pixel wide in the darkened color of each surface. */
+export const DEFAULT_CONTOURS: Contours = { enabled: false, strength: 1, width: 1.25, darken: 0.6, depth: 0.04, normal: 0.7, fade: 0.08 };
 
 /** A record's contours, the default (off) where the record holds none. */
 export function contoursOf(lighting: Lighting): Contours {
@@ -266,8 +269,8 @@ export function statesAmbientOcclusion(record: unknown): boolean {
  *   `shadowtintstrength`, `shadowwrap`, `shadownoisescale`, `shadowedge`, `shadownoise` and `shadowseed` replace single
  *   values of the shadow's look.
  * - `shadowform` and `shadowformfill` replace the form light in shadow and its fill.
- * - `contours=on` or `off` turns contour lines on or off; `contourstrength`, `contourwidth`, `contourcolor` (sRGB hex),
- *   `contourdepth`, `contournormal` and `contourfade` replace their values.
+ * - `contours=on` or `off` turns contour lines on or off; `contourstrength`, `contourwidth`, `contourdarken`,
+ *   `contourcolor` (an sRGB hex tint), `contourdepth`, `contournormal` and `contourfade` replace their values.
  * - `ao=off` turns ambient occlusion off and `ao=on` turns it on, whatever the record and the renderer's own default
  *   say; `aoradius`, `aointensity` and `aothickness` replace its values.
  */
@@ -317,7 +320,8 @@ export function lightingFromQuery(record: Lighting, query: URLSearchParams): Lig
     enabled: drawn === "on" ? true : drawn === "off" ? false : stated.enabled,
     strength: number("contourstrength", stated.strength, 0, 1),
     width: number("contourwidth", stated.width, 0.5, 8),
-    color: color("contourcolor", stated.color),
+    darken: number("contourdarken", stated.darken, 0, 1),
+    ...(query.get("contourcolor") || stated.color ? { color: color("contourcolor", stated.color ?? [1, 1, 1]) } : {}),
     depth: number("contourdepth", stated.depth, 0.001, 10),
     normal: number("contournormal", stated.normal, 0.01, Math.PI),
     fade: number("contourfade", stated.fade, 0.001, 10),
@@ -394,7 +398,7 @@ export function parseLighting(value: unknown): Lighting {
   if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) throw new LightingError([{ field: "", message: "must be an object" }]);
   const root = fields(value, "", ["version", "exposure", "toneMapping", "environment", "ambient", "ambientOcclusion", "lights", "painted", "contours"]);
   const paintedFields = fields(root.painted, "painted", ["toneMapping", "ambientOcclusion"]);
-  const contourFields = fields(root.contours, "contours", ["enabled", "strength", "width", "color", "depth", "normal", "fade"]);
+  const contourFields = fields(root.contours, "contours", ["enabled", "strength", "width", "darken", "color", "depth", "normal", "fade"]);
   if (root.version === undefined) fail("version", "is required");
   else if (root.version !== 1) fail("version", "must be 1");
   const environment = fields(root.environment, "environment", ["source", "intensity", "rotation"]);
@@ -482,7 +486,8 @@ export function parseLighting(value: unknown): Lighting {
     enabled: boolean(contourFields.enabled, "contours.enabled", DEFAULT_CONTOURS.enabled),
     strength: number(contourFields.strength, "contours.strength", DEFAULT_CONTOURS.strength, 0, 1),
     width: number(contourFields.width, "contours.width", DEFAULT_CONTOURS.width, 0.5, 8),
-    color: color(contourFields.color, "contours.color", DEFAULT_CONTOURS.color),
+    darken: number(contourFields.darken, "contours.darken", DEFAULT_CONTOURS.darken, 0, 1),
+    ...(contourFields.color === undefined ? {} : { color: color(contourFields.color, "contours.color", [1, 1, 1]) }),
     depth: number(contourFields.depth, "contours.depth", DEFAULT_CONTOURS.depth, 0.001, 10),
     normal: number(contourFields.normal, "contours.normal", DEFAULT_CONTOURS.normal, 0.01, Math.PI),
     fade: number(contourFields.fade, "contours.fade", DEFAULT_CONTOURS.fade, 0.001, 10),

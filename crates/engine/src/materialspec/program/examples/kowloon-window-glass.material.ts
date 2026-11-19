@@ -38,7 +38,7 @@ const leftWidth = add(0.08, mul(0.2, hash(key, seed("curtain-left"))));
 const rightWidth = add(0.08, mul(0.2, hash(key, seed("curtain-right"))));
 const drawn = step(hash(key, seed("curtain-drawn")), curtains);
 const curtain = mul(drawn, max(sub(1, smoothstep(sub(leftWidth, 0.015), leftWidth, acrossIt)), smoothstep(sub(1, rightWidth), add(sub(1, rightWidth), 0.015), acrossIt)));
-const folds = add(0.55, mul(0.45, valueNoise(vec2(mul(run, 13), mul(world.z, 0.6)), seed("curtain-folds"))));
+const folds = add(0.55, mul(0.45, valueNoise(vec2(mul(run, 18), mul(world.z, 0.6)), seed("curtain-folds"))));
 const cloth = mix(mix(vec3(0.8, 0.74, 0.56), vec3(0.42, 0.52, 0.6), step(0.6, hash(key, seed("cloth-a")))), vec3(0.72, 0.5, 0.42), step(0.8, hash(key, seed("cloth-b"))));
 // A drape or blind across the whole window in some, further back and dimmer.
 const draped = mul(step(hash(key, seed("drape")), 0.4), smoothstep(0.25, 0.4, upIt));
@@ -59,7 +59,7 @@ const glass = add(lit, mul(vec3(0.55, 0.62, 0.66), sheen));
 
 // Dirt: a film in streaks, and grime along each pane's edges and along the foot.
 const rim = creaseDistance("boundary", 30, 0.16);
-const streaks = smoothstep(0.35, 0.8, valueNoise(vec2(mul(run, 10), mul(world.z, 1.1)), seed("glass-streaks")));
+const streaks = smoothstep(0.35, 0.8, valueNoise(vec2(mul(run, 15), mul(world.z, 1.1)), seed("glass-streaks")));
 const dirty = mul(dirt, add(0.45, mul(1.1, hash(key, seed("glass-dirty")))));
 const film = mul(mul(dirty, 0.3), add(0.35, mul(0.65, streaks)));
 const packed = mul(dirty, mul(sub(1, smoothstep(0.004, 0.11, rim)), add(0.45, mul(0.55, valueNoise(mul(vec2(run, world.z), 31), seed("glass-rim"))))));

@@ -29,10 +29,33 @@ pub fn headed_roller_shutter(
     settings: &Settings,
     head_box: [f64; 2],
 ) -> Result<(), String> {
+    slatted_roller_shutter(pen, mesh, span, paint, settings, head_box, SLATS)
+}
+
+/// The curtain's corrugation unless given: [pitch, rise] of a slat in meters.
+pub const SLATS: [f64; 2] = [0.09, 0.022];
+/// A corrugation of fewer, deeper slats, which reads from across a street.
+pub const BOLD_SLATS: [f64; 2] = [0.15, 0.034];
+
+/// [`headed_roller_shutter`] with its curtain's slats as given: [pitch from 0.04 to 0.5 m,
+/// rise from 0.005 to 0.04 m out of the curtain's plane].
+pub fn slatted_roller_shutter(
+    pen: &Pen,
+    mesh: &mut Mesh<'_>,
+    span: [f64; 4],
+    paint: V3,
+    settings: &Settings,
+    head_box: [f64; 2],
+    slats: [f64; 2],
+) -> Result<(), String> {
     let [x0, x1, raised, head] = span;
     let [box_height, rust] = head_box;
     if !(0.05..=2.).contains(&box_height) || !(0. ..=1.).contains(&rust) {
         return Err("A shutter head box is 0.05 to 2 m high and rusted from 0 to 1.".into());
+    }
+    let [pitch, rise] = slats;
+    if !(0.04..=0.5).contains(&pitch) || !(0.005..=0.04).contains(&rise) {
+        return Err("A shutter's slats are 0.04 to 0.5 m apart and rise 0.005 to 0.04 m.".into());
     }
     if span.iter().any(|v| !v.is_finite() || v.abs() > 10000.)
         || x1 <= x0
@@ -46,8 +69,8 @@ pub fn headed_roller_shutter(
     }
     let width = x1 - x0;
     let height = head - raised;
-    let pitch = 0.09;
-    let rise = 0.022;
+    // Where a slat's crest stands; the usual slats keep theirs to the last bit.
+    let proud = if slats == SLATS { 0.052 } else { 0.03 + rise };
     let stretch = hypot(pitch / 2., rise) / (pitch / 2.);
     let key = format!(
         "curtain/{}/{}",
@@ -79,8 +102,8 @@ pub fn headed_roller_shutter(
             &[
                 [0., 0.03, z],
                 [width, 0.03, z],
-                [width, 0.052, crest],
-                [0., 0.052, crest],
+                [width, proud, crest],
+                [0., proud, crest],
             ],
             [0., 1., -0.4],
             &color,
@@ -92,8 +115,8 @@ pub fn headed_roller_shutter(
             mesh,
             "metal",
             &[
-                [0., 0.052, crest],
-                [width, 0.052, crest],
+                [0., proud, crest],
+                [width, proud, crest],
                 [width, 0.03, top],
                 [0., 0.03, top],
             ],

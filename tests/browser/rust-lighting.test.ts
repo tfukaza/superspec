@@ -35,8 +35,13 @@ test("form light and contours are off by default and held only when set, as the 
   assert.deepEqual(formOf(drawn.lights[0].shadow), { form: 0.35, fill: 0 });
   assert.equal("formFill" in drawn.lights[0].shadow, false);
   assert.deepEqual(parseLighting(storedLighting(drawn, false)), drawn);
-  // The default line is #3a2a20.
-  assert.equal(hexFromLinear(DEFAULT_CONTOURS.color), "3a2a20");
+  // The line is the surface's own color, darkened, with no tint unless one is stated.
+  assert.equal(DEFAULT_CONTOURS.color, undefined);
+  assert.equal("color" in drawn.contours!, false);
+  const tinted = parseLighting({ version: 1, contours: { color: [0.5, 0.4, 0.3], darken: 1 } });
+  assert.deepEqual(tinted.contours, { ...DEFAULT_CONTOURS, darken: 1, color: [0.5, 0.4, 0.3] });
+  assert.deepEqual(lightingFromQuery(tinted, new URLSearchParams("")).contours, tinted.contours);
+  assert.throws(() => parseLighting({ version: 1, contours: { darken: 2 } }), (error: LightingError) => error.findings[0].field === "contours.darken");
   // Page parameters are session overrides of both, and an untouched record stays the default.
   const query = (text: string): URLSearchParams => new URLSearchParams(text);
   const session = lightingFromQuery(defaultLighting(), query("contours=on&contourwidth=3&shadowform=0.4"));

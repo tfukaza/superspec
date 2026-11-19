@@ -239,8 +239,15 @@ export function densityCards(field: DensityField, cards: THREE.Texture, options:
     axes.push(up.x, up.y, up.z);
     randoms.push(random());
     looks.push(sparse + 0.5 * (0.65 + 0.35 * depth));
-    if (!twig && shapes > 0 && extra() < shapes) { const aspect = 1.4 + 0.8 * extra(); forms.push(1.1 * Math.sqrt(aspect), 1 / Math.sqrt(aspect), 0); }
-    else forms.push(1, 1, 0);
+    if (!twig && shapes > 0 && extra() < shapes) {
+      const aspect = 1.4 + 0.8 * extra();
+      forms.push(1.1 * Math.sqrt(aspect), 1 / Math.sqrt(aspect), 0);
+      // A wide card lies along its limb: the way the nearest twig grows (or, with none near, out from the trunk), flatter
+      // than the twig rises, kept in place of its plane (the vertex stage lays it into the picture).
+      const limb = nearestTwig(p)?.d.clone() ?? new THREE.Vector3(p.x - middle.x, p.y - middle.y, 0);
+      limb.z *= 0.4;
+      if (limb.lengthSq() > 1e-8) { limb.normalize(); planes.splice(planes.length - 3, 3, limb.x, limb.y, limb.z); }
+    } else forms.push(1, 1, 0);
     // Sparkles: tiny cards a little out of the foliage from a denser card near its outside.
     if (family && !twig && sparkles > 0 && depth < 0.8) for (let k = extra() < sparkles % 1 ? Math.ceil(sparkles) : Math.floor(sparkles); k > 0; k--) {
       const q = p.clone().addScaledVector(n, 0.1 + 0.12 * extra()).add(new THREE.Vector3(extra() - 0.5, extra() - 0.5, extra() - 0.5).multiplyScalar(0.3));
@@ -359,11 +366,23 @@ void main() {
   vec3 side = normalize(mix(sideW, sideC, f)), up = normalize(mix(upW, upC, f));
   // The card's own normal, turned toward the viewer, for its shading.
   vCard = dot(plane, view) < 0.0 ? -plane : plane;
+  // A wide card (its plane holds its limb's way): its long side along the limb as the picture shows it, its up the
+  // picture's up across it, facing the camera; it reads as a spray lying along the limb.
+  bool wide = !branch && aForm.x != aForm.y;
+  if (wide) {
+    vec3 laid = plane - view * dot(plane, view);
+    if (length(laid) > 1e-3) {
+      side = normalize(laid);
+      up = normalize(cross(view, side));
+      if (dot(up, upC) < 0.0) up = -up;
+    }
+    vCard = view;
+  }
   // Rolled at random only as far as it faces the camera: a world card's turn is in its own up. A branch card only
   // sways a little about its root.
   float roll = branch ? 0.5 * (fract(aRandom * 7.0) - 0.5) : 6.2831853 * fract(aRandom * 7.0) * f;
-  // A wide card lies about level, tilted a little, not rolled round.
-  if (!branch && aForm.x != aForm.y) roll = 0.6 * (fract(aRandom * 7.0) - 0.5);
+  // A wide card is not rolled round: it keeps its limb's way, sagging a little.
+  if (wide) roll = 0.25 * (fract(aRandom * 7.0) - 0.5);
   vec2 corner = mat2(cos(roll), sin(roll), -sin(roll), cos(roll)) * (position.xy * aForm.xy);
   float s = (hybrid > 0.5 && aKind.x > -0.5 ? aKind.y : size * 2.0 * fract(aLook)) * (0.9 + 0.2 * fract(aRandom * 13.7)) * (1.0 + variation * 0.9 * (fract(aRandom * 57.1) - 0.5));
   vKind = aKind.x;

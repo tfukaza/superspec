@@ -1,13 +1,14 @@
-// The avenue trees' bark: painted as an illustration's, not textured. A warm grey-brown in four flat steps from a clear
+// The avenue trees' bark: painted as an illustration's, not textured. A warm olive grey-brown (the anime-tree concept's:
+// lit about #706756, shade #37352b) in four flat steps from a clear
 // light side to a dark side (three shade bands of the sun on the bark's normal, their edges a little broken), with broad
 // vertical brush strokes (bold furrows a few centimeters wide, running up the stem, no fine noise), darker toward the
 // forks under the crown and with a little warm bounce from the paving at the foot. Limbs take the same paint as they
 // thin. The bark family evaluates it per pixel; its base color is the lit profile's albedo.
 import { defineMaterial, param, vec2, vec3, mix, mul, add, sub, div, fbm, seed, world, shadeBand, sunDirection, normal, edgeBreak, smoothstep } from "@superspec/material/v1";
 
-const light = param.vec3({ default: vec3(0.235, 0.2, 0.155), range: [0, 1], label: "Lit bark" });
-const stroke = param.vec3({ default: vec3(0.12, 0.1, 0.08), range: [0, 1], label: "Furrow strokes" });
-const shade = param.vec3({ default: vec3(0.3, 0.31, 0.36), range: [0, 1], label: "Dark side tint" });
+const light = param.vec3({ default: vec3(0.17, 0.14, 0.095), range: [0, 1], label: "Lit bark" });
+const stroke = param.vec3({ default: vec3(0.1, 0.085, 0.06), range: [0, 1], label: "Furrow strokes" });
+const shade = param.vec3({ default: vec3(0.31, 0.3, 0.27), range: [0, 1], label: "Dark side tint" });
 const bounce = param.vec3({ default: vec3(1.18, 1.04, 0.86), range: [0, 2], label: "Warm bounce at the foot" });
 const strokeWidth = param.scalar({ default: 0.07, range: [0.02, 0.4], unit: "m", label: "Stroke width" });
 const strokeLength = param.scalar({ default: 1.1, range: [0.2, 4], unit: "m", label: "Stroke length" });

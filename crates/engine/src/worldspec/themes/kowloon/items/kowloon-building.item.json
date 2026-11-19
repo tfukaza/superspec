@@ -127,9 +127,9 @@
     "lampStyle": {"type": "choice", "default": "bulkhead", "choices": ["bulkhead", "round"]},
     "cageColor": {"type": "color", "default": "#c9c3b2"},
     "cageRust": {"type": "number", "default": 0.3, "min": 0, "max": 1},
-    "cageBar": {"type": "number", "default": 0.008, "min": 0.004, "max": 0.05, "unit": "m"},
-    "cageRail": {"type": "number", "default": 0.02, "min": 0.008, "max": 0.08, "unit": "m"},
-    "cageSpacing": {"type": "number", "default": 0.09, "min": 0.04, "max": 0.5, "unit": "m"}
+    "cageBar": {"type": "number", "default": 0.024, "min": 0.004, "max": 0.05, "unit": "m"},
+    "cageRail": {"type": "number", "default": 0.036, "min": 0.008, "max": 0.08, "unit": "m"},
+    "cageSpacing": {"type": "number", "default": 0.19, "min": 0.04, "max": 0.5, "unit": "m"}
   },
   "derived": {
     "height": "groundHeight + (floors - 1) * storyHeight",
@@ -282,7 +282,8 @@
                        "stacks": {"expr": "select(count(partyLanePlans, e) >= 2, cell(partyLanePlans, e, 1), -1)"},
                        "cables": {"expr": "select(count(partyLanePlans, e) >= 3, cell(partyLanePlans, e, 2), 2)"},
                        "bars": {"expr": "select(count(partyLanePlans, e) >= 4, cell(partyLanePlans, e, 3), 0.3)"},
-                       "units": {"expr": "select(count(partyLanePlans, e) >= 5, cell(partyLanePlans, e, 4), 0.45)"}}},
+                       "units": {"expr": "select(count(partyLanePlans, e) >= 5, cell(partyLanePlans, e, 4), 0.45)"},
+                       "plinth": {"expr": "clamp((cell(partyPlans, e) == 2) * select(e_previous_street, select((e > 0) * (count(plinthPlans) >= e), cell(plinthPlans, e - 1), plinth), select(e_next_street, select(count(plinthPlans) > e + 1, cell(plinthPlans, e + 1), select(count(plinthPlans) > 0, cell(plinthPlans, 0), plinth)), 0)), 0, 1.3)"}}},
       "placement": {"position": ["e_x", "e_y", 0], "along": ["e_dx", "e_dy"]},
       "zones": [
         {"name": "runoff-coping", "below": "top", "length": "height + parapet + 1", "u0": "e_perimeter"},
@@ -403,9 +404,9 @@
   "layers": {
     "wall": [
       {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85, "bareCover": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
-      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.022, "halo": 0.32, "haloWidth": 0.14, "fixtureHalo": 0.9, "fixtureWidth": 0.4}, "seed": 9, "follow": {"opening": "opening-edge", "sill": "sill", "fixture": "fixture", "fixing": "fixing"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 6.5, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.1, "color": [0.29, 0.26, 0.22], "streakLength": 1.4, "shift": 1.7, "period": 4.2, "variety": 0.4, "lip": 0.6}, "seed": 5, "follow": {"zone": ["runoff-coping", "runoff-sill", "runoff-top"]}}
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.016, "halo": 0.32, "haloWidth": 0.14, "fixtureHalo": 0.9, "fixtureWidth": 0.4}, "seed": 9, "follow": {"opening": "opening-edge", "sill": "sill", "fixture": "fixture", "fixing": "fixing"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 5, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.1, "color": [0.29, 0.26, 0.22], "streakLength": 1.4, "shift": 1.7, "period": 3.2, "variety": 0.4, "lip": 0.6}, "seed": 5, "follow": {"zone": ["runoff-coping", "runoff-sill", "runoff-top"]}}
     ]
   }
 }

@@ -111,6 +111,10 @@ pub struct Proposal {
     pub shown: bool,
     pub above: f64,
     pub business: Option<Business>,
+    /// How boldly the panels' artwork is drawn (the facades' own by default).
+    pub art: panel::Art,
+    /// How many times as thick a projecting sign's rods and flat bars are (1 by default).
+    pub gauge: f64,
     site: Site,
     fixings: Fixings,
 }
@@ -137,6 +141,8 @@ impl Proposal {
                 site.elevation + middle - 1.6
             },
             business: Some(business.clone()),
+            art: panel::Art::default(),
+            gauge: 1.,
             site: site.clone(),
             fixings,
         }
@@ -152,6 +158,9 @@ impl Proposal {
             return Ok(());
         }
         mesh.spend_work(1)?;
+        if !(1. ..=4.).contains(&self.gauge) {
+            return Err("A projecting sign's rods are 1–4 times their usual thickness.".into());
+        }
         let mut d = Fixture {
             pen: self.site.pen.clone(),
             mesh,
@@ -160,7 +169,7 @@ impl Proposal {
         let steel = self.steel.steel();
         match self.fixings {
             Fixings::None => {}
-            Fixings::Projecting(f) => f.draw(&mut d, &self.site, &self.steel)?,
+            Fixings::Projecting(f) => f.draw(&mut d, &self.site, &self.steel, self.gauge)?,
             Fixings::Flat {
                 rect,
                 construction,
@@ -252,7 +261,7 @@ impl Proposal {
             }
         }
         for p in &self.panels {
-            panel::draw(
+            panel::draw_art(
                 &mut Fixture {
                     pen: p.pen.clone(),
                     mesh: d.mesh,
@@ -262,6 +271,7 @@ impl Proposal {
                 p.sides,
                 &self.steel,
                 s,
+                self.art,
             )?
         }
         Ok(())

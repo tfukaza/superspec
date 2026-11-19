@@ -216,13 +216,14 @@ fn shutter(
     if raised != 0. {
         goods(d, x0, x1, rng)?;
     }
-    shutters::headed_roller_shutter(
+    shutters::slatted_roller_shutter(
         &d.pen,
         d.mesh,
         [x0, x1, raised, head],
         paint,
         &s.kit.settings().weathering,
         [box_height, plan.head_rust],
+        plan.shutter_slats.unwrap_or(shutters::SLATS),
     )?;
     let hardware = hardware(d, s, MetalKind::Frame)?;
     let ring_x = (x0 + x1) / 2.;
@@ -309,14 +310,31 @@ fn gate(
             "A gate's bars scale by 0.5 to 3 and its backing is a normalized color.".into(),
         );
     }
+    if plan.gate_lattice.is_some_and(|[upright, link, spacing]| {
+        !(0.005..=0.06).contains(&upright)
+            || !(0.005..=0.06).contains(&link)
+            || !(0.08..=0.45).contains(&spacing)
+    }) {
+        return Err("A gate's lattice has bars 0.005 to 0.06 m wide, 0.08 to 0.45 m apart.".into());
+    }
+    let [upright, link, spacing] = plan.gate_lattice.unwrap_or([0.018, 0.012, 0.14]);
     let o = opening(Kind::Gate, unit, rng)?.unwrap();
     let (x0, x1, head) = (o.u0, o.u1, o.z1);
     rng.float(0.1, 0.6);
     let steel = plan.gate.unwrap_or(srgb("#647a6b"));
     // The widths of the lattice's uprights and links.
     let (upright, link) = match plan.gate_bars {
-        Some(k) => (0.018 * k, 0.012 * k),
-        None => (0.018, 0.012),
+        Some(k) => (upright * k, link * k),
+        None => (upright, link),
+    };
+    // A lattice of its own sizes has its pivots on the uprights' middles, larger, and its
+    // links one just in front of the other: [the links' planes, the pivots' ends and caps].
+    let (middle, knob, [near, far, pin, cap]) = if plan.gate_lattice.is_some() {
+        let near = 0.088 + link / 2.;
+        let pin = near + 0.007 + link / 2.;
+        (upright / 2., 1.5, [near, near + 0.004, pin, pin + 0.001])
+    } else {
+        (0.009, 1., [0.094, 0.109, 0.117, 0.118])
     };
     let drawn = rng.pick(&[1., 1., 0.55, 0.35]);
     let galvanized = srgb("#a4a9aa");
@@ -363,7 +381,7 @@ fn gate(
         }
     }
     let pen = hardware(d, s, MetalKind::Cage)?;
-    let count = ((x1 - x0) / 0.14).round().max(5.) as usize;
+    let count = ((x1 - x0) / spacing).round().max(5.) as usize;
     let end = x0 + (x1 - x0 - 0.05) * drawn;
     let pitch = (end - x0) / count as f64;
     for i in 0..=count {
@@ -379,8 +397,8 @@ fn gate(
         for z in [0.06, head - 0.07] {
             d.disc(
                 "metal",
-                [x + 0.009, 0.086, z],
-                0.018,
+                [x + middle, 0.086, z],
+                0.018 * knob,
                 [0., 1., 0.],
                 galvanized,
                 6,
@@ -391,15 +409,15 @@ fn gate(
             for z in [center - link_height / 2., center + link_height / 2.] {
                 d.tube(
                     "metal",
-                    &[[x + 0.009, 0.082, z], [x + 0.009, 0.117, z]],
-                    0.006,
+                    &[[x + middle, 0.082, z], [x + middle, pin, z]],
+                    0.006 * knob,
                     galvanized,
                     6,
                 )?;
                 d.disc(
                     "metal",
-                    [x + 0.009, 0.118, z],
-                    0.009,
+                    [x + middle, cap, z],
+                    0.009 * knob,
                     [0., 1., 0.],
                     galvanized,
                     6,
@@ -414,22 +432,22 @@ fn gate(
             let high = center + link_height / 2.;
             on(d, &pen).bar(
                 "paint",
-                [x + 0.009, 0.094, low],
-                [x + pitch + 0.009, 0.094, high],
+                [x + middle, near, low],
+                [x + pitch + middle, near, high],
                 link,
                 steel,
             )?;
             on(d, &pen).bar(
                 "paint",
-                [x + 0.009, 0.109, high],
-                [x + pitch + 0.009, 0.109, low],
+                [x + middle, far, high],
+                [x + pitch + middle, far, low],
                 link,
                 steel,
             )?;
             d.disc(
                 "metal",
-                [x + pitch / 2. + 0.009, 0.117, center],
-                0.012,
+                [x + pitch / 2. + middle, pin, center],
+                0.012 * knob,
                 [0., 1., 0.],
                 galvanized,
                 6,
@@ -642,6 +660,11 @@ pub struct Plan {
     pub gate_bars: Option<f64>,
     /// Closed sheet steel leaves of this colour behind the lattice, hiding the timber doors.
     pub gate_backing: Option<V3>,
+    /// The lattice's own sizes before `gate_bars` scales its bars: the width of an upright
+    /// (0.018 m) and of a link (0.012 m), and the uprights' spacing (0.14 m; 0.08 to 0.45).
+    pub gate_lattice: Option<[f64; 3]>,
+    /// The pitch and rise of a shutter's slats ([`shutters::SLATS`]).
+    pub shutter_slats: Option<[f64; 2]>,
 }
 /// [`draw`] with whatever `plan` fixes of the bay; an empty plan draws the seeded bay.
 pub fn planned(

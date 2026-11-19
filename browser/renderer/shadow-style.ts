@@ -13,9 +13,11 @@ import type { LightShadow, Rgb } from "./lighting.ts";
  * shadow. Faces turned away from the light are unlit without being in the shadow map; a soft facing term joins them
  * to the cast shadows, so both read as one shade.
  *
- * Form light (`form`, experimental, off at 0): inside a cast shadow a share of the light's own diffuse shading is kept,
- * so a prop standing in shadow shows a lit and a dark side; `formFill` adds a weaker one from the mirrored direction.
- * Both are tinted and darkened like the shadow they are in, and compiled in only while one of them is above 0. Painted materials shade themselves and take neither.
+ * Form light (`form`, experimental, off at 0): inside a cast shadow a share of the light's diffuse shading is kept, from
+ * the light's compass direction level with the ground, so a prop standing in shadow shows a lit and a dark side while the
+ * ground keeps its shadow; `formFill` adds a weaker one from the opposite side. Both are tinted and darkened like the
+ * shadow they are in, and compiled in only while one of them is above 0. Painted materials shade themselves and take
+ * neither.
  *
  * The gradient is contact-hardening. three.js binds the shadow map as a comparison sampler, which cannot return a
  * depth, so the distance to the occluder is estimated by comparing against a few depths nearer the light and
@@ -241,7 +243,7 @@ export class ShadowStyle {
     msShadowNoiseScale: { value: 1 }, msShadowEdgeNoise: { value: 0 }, msShadowNoiseAmount: { value: 0 },
     msShadowColor: { value: new THREE.Color() }, msShadowColorAlt: { value: new THREE.Color() },
     msShadowWrap: { value: 0.3 }, msShadowSeed: { value: 0 },
-    // Form light in shadow and its fill (0 is none), and the world's up axis the fill is mirrored about.
+    // Form light in shadow and its fill (0 is none), and the world's up axis, which the form light is level to.
     msShadowForm: { value: 0 }, msShadowFormFill: { value: 0 }, msShadowUp: { value: new THREE.Vector3(0, 0, 1) },
   };
 

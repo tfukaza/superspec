@@ -301,6 +301,48 @@ pub fn anti_climb(
     color: V3,
     settings: &weathered::Settings,
 ) -> Result<(), String> {
+    anti_climb_of(d, x, z, radius, color, settings, Fan::default())
+}
+/// The rods of a climbing barrier: the default is the facades' own eleven 14 mm spokes under a
+/// 24 mm rim.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fan {
+    /// The radius of the rim's tube in meters.
+    pub rim: f64,
+    /// The radius of each spoke in meters.
+    pub spoke: f64,
+    /// How many spokes fan out between the upright's two ends: 1, 2, 3, 5, 7, 11 or 23.
+    pub spokes: usize,
+}
+impl Default for Fan {
+    fn default() -> Self {
+        Self {
+            rim: 0.012,
+            spoke: 0.007,
+            spokes: 11,
+        }
+    }
+}
+/// [`anti_climb`] of other rods: fewer, bolder spokes read from further off.
+pub fn anti_climb_of(
+    d: &mut Fixture<'_, '_>,
+    x: f64,
+    z: f64,
+    radius: f64,
+    color: V3,
+    settings: &weathered::Settings,
+    fan: Fan,
+) -> Result<(), String> {
+    if !(0.004..=0.05).contains(&fan.rim)
+        || !(0.003..=0.05).contains(&fan.spoke)
+        || 24 % (fan.spokes + 1) != 0
+        || fan.spokes == 0
+    {
+        return Err(
+            "A climbing barrier's rods are 3–50 mm in radius, with 1, 2, 3, 5, 7, 11 or 23 spokes."
+                .into(),
+        );
+    }
     if [x, z, radius]
         .iter()
         .any(|v| !v.is_finite() || v.abs() > 1000.)
@@ -332,7 +374,7 @@ pub fn anti_climb(
             ]
         })
         .collect();
-    metal.tube("metal", &arc, 0.012, color, 8)?;
+    metal.tube("metal", &arc, fan.rim, color, 8)?;
     metal.pen.beveled_bar(
         metal.mesh,
         "metal",
@@ -345,8 +387,9 @@ pub fn anti_climb(
         &Tint::Color(color),
         metal.repeat("metal"),
     )?;
-    for i in 1..12 {
-        metal.tube("metal", &[[x, y, z], arc[i * 2]], 0.007, color, 6)?;
+    let step = 24 / (fan.spokes + 1);
+    for i in 1..=fan.spokes {
+        metal.tube("metal", &[[x, y, z], arc[i * step]], fan.spoke, color, 6)?;
     }
     for height in [z - radius * 0.8, z + radius * 0.8] {
         steel::fixing_plate(

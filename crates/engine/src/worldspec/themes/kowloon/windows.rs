@@ -74,6 +74,65 @@ pub struct Options {
     /// For a lit window, the depth (m) of a room drawn behind its recess instead of the flat
     /// back panel: see [`lit_room`].
     pub room: Option<f64>,
+    /// Member sizes other than the kind's own: see [`Weight`].
+    pub weight: Option<Weight>,
+}
+
+/// The face widths of a window's members in meters, for a window drawn bolder (or finer) than
+/// its kind's own 45 mm frame, 34 mm mullions and 24 mm glazing bars.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weight {
+    /// The perimeter frame (a timber frame is never under its own 65 mm).
+    pub frame: f64,
+    /// The mullions between lights; the transom and a mid rail are 2 mm wider.
+    pub mullion: f64,
+    /// A glazing bar across a lower light.
+    pub bar: f64,
+    /// The radius of a lever handle's rod; an open light's stay is three quarters of it.
+    pub handle: f64,
+}
+
+/// The member sizes a window is drawn with: the kind's own, or those of a [`Weight`].
+#[derive(Clone, Copy)]
+struct Members {
+    /// Half a mullion, and how far a light's glass stays from the light's edge.
+    mullion: f64,
+    glass: f64,
+    /// Half the transom (and mid rail), and how far the glass stays from its centre line.
+    transom: f64,
+    rise: f64,
+    /// Half a glazing bar.
+    bar: f64,
+    /// The section of an opened sash's rails.
+    sash: f64,
+    handle: f64,
+    stay: f64,
+}
+impl Members {
+    fn of(weight: Option<Weight>) -> Self {
+        match weight {
+            None => Self {
+                mullion: 0.017,
+                glass: 0.018,
+                transom: 0.018,
+                rise: 0.02,
+                bar: 0.012,
+                sash: 0.03,
+                handle: 0.0055,
+                stay: 0.004,
+            },
+            Some(w) => Self {
+                mullion: w.mullion / 2.,
+                glass: w.mullion / 2. + 0.001,
+                transom: w.mullion / 2. + 0.001,
+                rise: w.mullion / 2. + 0.003,
+                bar: w.bar / 2.,
+                sash: w.bar.max(0.03),
+                handle: w.handle,
+                stay: w.handle * 0.75,
+            },
+        }
+    }
 }
 
 /// The slot of a lit room's walls, ceiling, floor and lamp batten, coloured per vertex in the
@@ -453,6 +512,17 @@ pub fn window_with(
     {
         return Err("Window options need a bounded open count, light width and glow.".into());
     }
+    if options.weight.is_some_and(|w| {
+        !(0.03..=0.15).contains(&w.frame)
+            || !(0.02..=0.12).contains(&w.mullion)
+            || !(0.012..=0.08).contains(&w.bar)
+            || !(0.003..=0.03).contains(&w.handle)
+    }) {
+        return Err(
+            "A window's frame is 30–150 mm wide, its mullions 20–120 mm, its glazing bars 12–80 mm and its handles' rods 3–30 mm in radius."
+                .into(),
+        );
+    }
     let [x, z, w, h] = rectangle;
     let (x1, z1) = (x + w, z + h);
     let span = [x, x1, z, z1];
@@ -485,6 +555,13 @@ pub fn window_with(
     } else {
         0.045
     };
+    let member = options.weight.map_or(member, |w| {
+        if look.kind == Kind::Timber {
+            w.frame.max(member)
+        } else {
+            w.frame
+        }
+    });
     let inner_bottom = z + member;
     let inner_top = z + h - member;
     if look.kind == Kind::Slider && (w - 2. * member) / if w > 1.7 { 3. } else { 2. } <= 0.06 + 1e-9
@@ -643,6 +720,7 @@ fn frame_and_leaves(
     let [x, x1, z, z1] = span;
     let [w, h] = dimensions;
     let d = FRAME_DEPTH;
+    let m = Members::of(options.weight);
     drawing.frame_box([x, 0., z], [x + member, d, z1], look.frame)?;
     drawing.frame_box([x1 - member, 0., z], [x1, d, z1], look.frame)?;
     drawing.frame_box(
@@ -825,7 +903,7 @@ fn frame_and_leaves(
     let middle = inner[2] + (transom - inner[2]) * 0.5;
     let railed = options.mid_rail && transom - inner[2] > 0.3;
     let bars = if railed { &[][..] } else { bars };
-    let foot = if railed { middle + 0.018 } else { inner[2] };
+    let foot = if railed { middle + m.transom } else { inner[2] };
     let louvre = options
         .louvre
         .filter(|_| transom + 0.1 < inner[3])
@@ -838,8 +916,8 @@ fn frame_and_leaves(
         let l1 = l0 + pitch;
         if i > 0 {
             drawing.frame_box(
-                [l0 - 0.017, 0., inner[2]],
-                [l0 + 0.017, d * 0.85, inner[3]],
+                [l0 - m.mullion, 0., inner[2]],
+                [l0 + m.mullion, d * 0.85, inner[3]],
                 look.frame,
             )?;
         }
@@ -848,7 +926,7 @@ fn frame_and_leaves(
             let drop = transom - foot;
             let out = sin(rng.float(0.3, 0.6)).min(0.45 / drop);
             let tip = [d + out * drop, transom - (1. - out * out).sqrt() * drop];
-            let (a, b) = (l0 + 0.018, l1 - 0.018);
+            let (a, b) = (l0 + m.glass, l1 - m.glass);
             drawing.sheet(
                 "glass",
                 &[
@@ -864,7 +942,7 @@ fn frame_and_leaves(
                     "paint",
                     [x, d, transom - 0.015],
                     [x, tip[0], tip[1]],
-                    0.03,
+                    m.sash,
                     look.frame,
                 )?;
             }
@@ -872,13 +950,13 @@ fn frame_and_leaves(
                 "paint",
                 [a, tip[0], tip[1]],
                 [b, tip[0], tip[1]],
-                0.03,
+                m.sash,
                 look.frame,
             )?;
             drawing.tube(
                 "metal",
                 &[[b - 0.03, d, foot + 0.02], [b - 0.03, tip[0], tip[1]]],
-                0.004,
+                m.stay,
                 shade(look.frame, 0.6),
                 5,
             )?;
@@ -903,7 +981,7 @@ fn frame_and_leaves(
                     "paint",
                     [hinge, d, zb],
                     [tip[0], tip[1], zb],
-                    0.03,
+                    m.sash,
                     look.frame,
                 )?;
             }
@@ -911,13 +989,18 @@ fn frame_and_leaves(
                 "paint",
                 [tip[0], tip[1], foot],
                 [tip[0], tip[1], transom],
-                0.03,
+                m.sash,
                 look.frame,
             )?;
         }
         if Some(i) == louvre {
             // Glass slats in clips down both sides, tilted to shed rain.
-            let (a, b, z0, z1) = (l0 + 0.018, l1 - 0.018, transom + 0.02, inner[3] - 0.012);
+            let (a, b, z0, z1) = (
+                l0 + m.glass,
+                l1 - m.glass,
+                transom + m.rise,
+                inner[3] - 0.012,
+            );
             let slats = ((z1 - z0) / 0.075).round().max(2.) as usize;
             let rise = (z1 - z0) / slats as f64;
             for slat in 0..slats {
@@ -939,7 +1022,12 @@ fn frame_and_leaves(
         } else if transom < inner[3] {
             drawing.panel(
                 "glass",
-                [l0 + 0.018, l1 - 0.018, transom + 0.02, inner[3] - 0.012],
+                [
+                    l0 + m.glass,
+                    l1 - m.glass,
+                    transom + m.rise,
+                    inner[3] - 0.012,
+                ],
                 d * 0.4 - 0.003,
                 [0.88, 0.94, 0.93],
             )?;
@@ -948,7 +1036,12 @@ fn frame_and_leaves(
             if railed {
                 drawing.panel(
                     "glass",
-                    [l0 + 0.018, l1 - 0.018, inner[2] + 0.012, middle - 0.02],
+                    [
+                        l0 + m.glass,
+                        l1 - m.glass,
+                        inner[2] + 0.012,
+                        middle - m.rise,
+                    ],
                     d * 0.4 - 0.003,
                     [0.88, 0.94, 0.93],
                 )?;
@@ -957,7 +1050,12 @@ fn frame_and_leaves(
         }
         drawing.panel(
             "glass",
-            [l0 + 0.018, l1 - 0.018, inner[2] + 0.012, transom - 0.02],
+            [
+                l0 + m.glass,
+                l1 - m.glass,
+                inner[2] + 0.012,
+                transom - m.rise,
+            ],
             d * 0.4 - 0.003,
             [0.88, 0.94, 0.93],
         )?;
@@ -968,14 +1066,16 @@ fn frame_and_leaves(
             bead,
         )?;
         if options.handles {
+            // A heavier rod stands further off the frame and hangs lower.
+            let out = d + 0.024_f64.max(m.handle * 3.);
             drawing.tube(
                 "metal",
                 &[
                     [l1 - 0.015, d, latch + 0.012],
-                    [l1 - 0.015, d + 0.024, latch + 0.012],
-                    [l1 - 0.015, d + 0.024, latch - 0.075],
+                    [l1 - 0.015, out, latch + 0.012],
+                    [l1 - 0.015, out, latch - 0.075_f64.max(m.handle * 9.)],
                 ],
-                0.0055,
+                m.handle,
                 srgb("#8d8468"),
                 6,
             )?;
@@ -983,23 +1083,23 @@ fn frame_and_leaves(
         for t in bars {
             let bar = inner[2] + (transom - inner[2]) * t;
             drawing.frame_box(
-                [l0, 0.02, bar - 0.012],
-                [l1, d * 0.6, bar + 0.012],
+                [l0, 0.02, bar - m.bar],
+                [l1, d * 0.6, bar + m.bar],
                 look.frame,
             )?;
         }
     }
     if transom < inner[3] {
         drawing.frame_box(
-            [inner[0], 0., transom - 0.018],
-            [inner[1], d * 0.9, transom + 0.018],
+            [inner[0], 0., transom - m.transom],
+            [inner[1], d * 0.9, transom + m.transom],
             look.frame,
         )?;
     }
     if railed {
         drawing.frame_box(
-            [inner[0], 0., middle - 0.018],
-            [inner[1], d * 0.9, middle + 0.018],
+            [inner[0], 0., middle - m.transom],
+            [inner[1], d * 0.9, middle + m.transom],
             look.frame,
         )?;
     }
@@ -1057,6 +1157,56 @@ pub fn security_bars_sized(
     color: V3,
     weathering: Option<&super::weathered::Settings>,
 ) -> Result<(), String> {
+    security_bars_gauged(
+        drawing,
+        dimensions,
+        pattern,
+        color,
+        weathering,
+        Gauge::default(),
+    )
+}
+/// The sections of a security grille in meters and how openly it is spaced; the default is the
+/// facades' own 12 mm bars in a 20 mm border.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Gauge {
+    /// The infill bars (uprights and lattice).
+    pub bar: f64,
+    /// The cross rails of the `Bars` and `Grid` patterns.
+    pub rail: f64,
+    /// The border.
+    pub border: f64,
+    /// How many times as far apart the infill bars stand.
+    pub spacing: f64,
+}
+impl Default for Gauge {
+    fn default() -> Self {
+        Self {
+            bar: 0.012,
+            rail: 0.014,
+            border: 0.02,
+            spacing: 1.,
+        }
+    }
+}
+/// [`security_bars_sized`] welded of other sections: fewer, bolder bars read from further off.
+pub fn security_bars_gauged(
+    drawing: &mut Fixture<'_, '_>,
+    dimensions: [f64; 4],
+    pattern: Guard,
+    color: V3,
+    weathering: Option<&super::weathered::Settings>,
+    gauge: Gauge,
+) -> Result<(), String> {
+    if [gauge.bar, gauge.rail, gauge.border]
+        .iter()
+        .any(|v| !(0.004..=0.1).contains(v))
+        || !(0.5..=4.).contains(&gauge.spacing)
+    {
+        return Err(
+            "Security bars are 4–100 mm thick and 0.5–4 times their usual distance apart.".into(),
+        );
+    }
     let original = drawing.pen.clone();
     if let Some(settings) = weathering {
         drawing.pen = original.with_weathering(
@@ -1067,7 +1217,7 @@ pub fn security_bars_sized(
             vec!["paint".into(), "metal".into()],
         )?;
     }
-    let result = security_geometry(drawing, dimensions, pattern, color);
+    let result = security_geometry(drawing, dimensions, pattern, color, gauge);
     drawing.pen = original;
     result
 }
@@ -1076,6 +1226,7 @@ fn security_geometry(
     dimensions: [f64; 4],
     pattern: Guard,
     color: V3,
+    gauge: Gauge,
 ) -> Result<(), String> {
     let [x, z, w, h] = dimensions;
     if dimensions.iter().chain(&color).any(|v| !v.is_finite())
@@ -1095,25 +1246,27 @@ fn security_geometry(
             let a = 0f64.max(s);
             let b = w.min(s + h);
             if b - a >= 1e-6 {
-                rod(x + a, z + (a - s), x + b, z + (b - s), 0.012)?;
-                rod(x + a, z + h - (a - s), x + b, z + h - (b - s), 0.012)?;
+                rod(x + a, z + (a - s), x + b, z + (b - s), gauge.bar)?;
+                rod(x + a, z + h - (a - s), x + b, z + h - (b - s), gauge.bar)?;
             }
-            s += 0.24;
+            s += 0.24 * gauge.spacing;
         }
     } else {
         let grid = matches!(pattern, Guard::Grid);
-        let count = (w / if grid { 0.2 } else { 0.13 }).round().max(2.) as usize;
+        let count = (w / (if grid { 0.2 } else { 0.13 } * gauge.spacing))
+            .round()
+            .max(2.) as usize;
         for i in 1..count {
             rod(
                 x + w * i as f64 / count as f64,
                 z,
                 x + w * i as f64 / count as f64,
                 z + h,
-                0.012,
+                gauge.bar,
             )?;
         }
         let rails = if grid {
-            (h / 0.25).round().max(2.) as usize
+            (h / (0.25 * gauge.spacing)).round().max(2.) as usize
         } else {
             2
         };
@@ -1123,12 +1276,12 @@ fn security_geometry(
                 z + h * i as f64 / rails as f64,
                 x + w,
                 z + h * i as f64 / rails as f64,
-                0.014,
+                gauge.rail,
             )?;
         }
     }
-    rod(x, z, x, z + h, 0.02)?;
-    rod(x + w, z, x + w, z + h, 0.02)?;
-    rod(x, z, x + w, z, 0.02)?;
-    rod(x, z + h, x + w, z + h, 0.02)
+    rod(x, z, x, z + h, gauge.border)?;
+    rod(x + w, z, x + w, z + h, gauge.border)?;
+    rod(x, z, x + w, z, gauge.border)?;
+    rod(x, z + h, x + w, z + h, gauge.border)
 }

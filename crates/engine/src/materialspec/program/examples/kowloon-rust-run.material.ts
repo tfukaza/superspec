@@ -14,7 +14,7 @@ const zone = zoneCoord("zone");
 const extent = zoneExtent("zone");
 const fall = div(zone.y, max(extent.y, 0.05));
 // Threads across the run, each wandering a little as it falls; fewer of them survive further down.
-const at = vec2(add(mul(zone.x, 28), mul(zone.z, 53)), mul(zone.y, 2));
+const at = vec2(add(mul(zone.x, 44), mul(zone.z, 53)), mul(zone.y, 2.5));
 const threads = valueNoise(at, seed("run-threads"));
 const kept = smoothstep(sub(0.25, mul(0.5, mul(breakup, sub(1, fall)))), add(0.5, mul(breakup, 0.25)), add(threads, mul(0.35, sub(1, fall))));
 const weight = add(0.65, mul(0.35, valueNoise(vec2(mul(zone.z, 91), mul(zone.y, 1.5)), seed("run-weight"))));
