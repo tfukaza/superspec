@@ -39,7 +39,7 @@ use superspec_types::rng::SeededRng;
 mod street;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "2";
+const VERSION: &str = "3";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -406,17 +406,60 @@ fn window(
     if bars > 6 && bars != 99 {
         return Err(format!("{name}: bars must be a whole number in 0..6."));
     }
-    let mut rng = a.rng()?;
+    // `storage`: the share (0–1, 0) of the opening's width stacked with cartons behind the
+    // glass, as a storeroom's window shows; they stand in the recess, seeded apart from the rest.
+    // Such a window's panes are left out as with `glazing` false: the glass is a painted
+    // surface that shows nothing behind it.
+    let storage = a.bounded("storage", 0., 0. ..=1.)?;
+    let key = a.seed()?;
+    let mut rng = SeededRng::from_text(&key);
     a.finish()?;
+    let recess = look.recess;
     let mut output = draw(cancelled, |mesh| {
         windows::window_sized(
             &mut fixture(mesh, "window")?,
             [-width / 2., 0., width, height],
             &look,
             &mut rng,
-        )
+        )?;
+        if storage > 0. && recess >= 0.15 && !look.boarded {
+            let d = &mut fixture(mesh, "window")?;
+            let mut rng = SeededRng::from_text(&format!("{key}/storage"));
+            let (back, front) = (-recess + 0.008, -0.075);
+            let mut x = -width / 2. + 0.05;
+            while x < width / 2. - 0.3 {
+                d.mesh.spend_work(1)?;
+                let carton = rng.float(0.3, 0.46).min(width / 2. - 0.05 - x);
+                let stacked = rng.chance(storage);
+                let top = 0.05 + (height - 0.15) * rng.float(0.3, 0.95);
+                let mut z = 0.05;
+                while stacked && z < top {
+                    let high = rng.float(0.24, 0.36).min(height - 0.06 - z);
+                    let card = super::palette::shade(srgb("#b08a5c"), rng.float(0.75, 1.1));
+                    let inset = rng.float(0., 0.03);
+                    // In the goods' own `stock` slot: plain card, not the frame's paint.
+                    d.cuboid(
+                        "stock",
+                        [x + inset, back, z],
+                        [x + inset + carton - 0.02, front, z + high - 0.006],
+                        card,
+                        "",
+                    )?;
+                    d.cuboid(
+                        "stock",
+                        [x + inset + carton * 0.42, front, z],
+                        [x + inset + carton * 0.54, front + 0.002, z + high - 0.006],
+                        super::palette::shade(card, 0.75),
+                        "",
+                    )?;
+                    z += high;
+                }
+                x += carton + rng.float(0., 0.06);
+            }
+        }
+        Ok(())
     })?;
-    if !glazing {
+    if !glazing || storage > 0. {
         output.meshes.retain(|mesh| mesh.material_slot != "glass");
     }
     Ok(output)
@@ -630,7 +673,8 @@ fn pipe_elbow(
 /// Anchor: the centre of the slab's back edge on the wall plane, at the slab's top (z = 0).
 /// Parameters: `width` (m along the wall, 2.4), `depth` (m out from the wall, 1.1), `splay`
 /// (m each front corner widens sideways, 0), `thickness` (m of slab, 0.12), `parapet`
-/// (true), `parapet_height` (m, 0.85), `color` (#d6e4d4), `trim` (cap, #e6e2d6).
+/// (true), `parapet_height` (m, 0.85), `color` (#d6e4d4), `trim` (cap, #e6e2d6), `chamfer`
+/// (m off the slab's open lower arrises, 0.02).
 fn balcony(
     name: &str,
     values: &Values,
@@ -656,6 +700,8 @@ fn balcony(
     let brackets = a.bounded("brackets", 0., 0. ..=20.)?;
     // `upstand`: m of concrete upstand under a steel rail.
     let upstand = a.bounded("upstand", 0.3, 0.05..=0.55)?;
+    // `chamfer`: m the slab's three open lower arrises are cut back (0–0.05, 0.02).
+    let chamfer = a.bounded("chamfer", 0.02, 0. ..=0.05)?;
     a.finish()?;
     let outline = [
         [-width / 2., 0., 0.],
@@ -670,7 +716,11 @@ fn balcony(
     };
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "balcony")?;
-        balconies::slab(d, &outline, -thickness, 0., color, "concrete")?;
+        if chamfer > 0. && chamfer < thickness / 2. && chamfer < width.min(depth) / 4. {
+            chamfered_slab(d, &outline, thickness, chamfer, color)?;
+        } else {
+            balconies::slab(d, &outline, -thickness, 0., color, "concrete")?;
+        }
         if brackets > 0. {
             street::brackets(d, width, depth, thickness, brackets, color)?;
         }
@@ -681,6 +731,81 @@ fn balcony(
         }
         Ok(())
     })
+}
+
+/// A balcony slab from z = -`thickness` to 0 over a counterclockwise outline (back left, back
+/// right, front right, front left) whose three open lower arrises are chamfered by `chamfer`:
+/// the edge a passer-by sees from below. The back edge stands against the wall and stays square.
+fn chamfered_slab(
+    d: &mut Fixture<'_, '_>,
+    outline: &[V3; 4],
+    thickness: f64,
+    chamfer: f64,
+    color: V3,
+) -> Result<(), String> {
+    // Each edge's line moved inward (left of a counterclockwise edge); the back one stays.
+    let lines: Vec<([f64; 2], [f64; 2])> = (0..4)
+        .map(|i| {
+            let (a, b) = (outline[i], outline[(i + 1) % 4]);
+            let (x, y) = (b[0] - a[0], b[1] - a[1]);
+            let length = (x * x + y * y).sqrt();
+            let (x, y) = (x / length, y / length);
+            let moved = if i == 0 { 0. } else { chamfer };
+            ([a[0] - y * moved, a[1] + x * moved], [x, y])
+        })
+        .collect();
+    let mut inner = [[0.; 3]; 4];
+    for (i, point) in inner.iter_mut().enumerate() {
+        let (a, u) = lines[(i + 3) % 4];
+        let (b, v) = lines[i];
+        let denominator = u[0] * v[1] - u[1] * v[0];
+        if denominator.abs() < 1e-9 {
+            return Err("A balcony slab's corners turn.".into());
+        }
+        let t = ((b[0] - a[0]) * v[1] - (b[1] - a[1]) * v[0]) / denominator;
+        *point = [a[0] + u[0] * t, a[1] + u[1] * t, -thickness];
+    }
+    let at = |p: V3, z: f64| [p[0], p[1], z];
+    let break_line = -thickness + chamfer;
+    d.face("concrete", outline, [0., 0., 1.], color)?;
+    d.face("concrete", &inner, [0., 0., -1.], color)?;
+    // The back, against the wall.
+    d.face(
+        "concrete",
+        &[
+            inner[0],
+            inner[1],
+            at(outline[1], break_line),
+            outline[1],
+            outline[0],
+            at(outline[0], break_line),
+        ],
+        [0., -1., 0.],
+        color,
+    )?;
+    for i in 1..4 {
+        let (a, b) = (outline[i], outline[(i + 1) % 4]);
+        let outward = [b[1] - a[1], a[0] - b[0], 0.];
+        d.face(
+            "concrete",
+            &[at(a, break_line), at(b, break_line), b, a],
+            outward,
+            color,
+        )?;
+        let size = (outward[0] * outward[0] + outward[1] * outward[1]).sqrt();
+        d.face(
+            "concrete",
+            &[
+                inner[i],
+                inner[(i + 1) % 4],
+                at(b, break_line),
+                at(a, break_line),
+            ],
+            [outward[0] / size, outward[1] / size, -1.],
+            color,
+        )?;
+    }
+    Ok(())
 }
 
 /// The unbaked weathering of a native fixture, with the fixture's name as its seed.
@@ -1046,7 +1171,10 @@ fn plants(
 /// `kowloon/cage`: a welded window cage with fixing hardware, optional corrugated roof and
 /// seeded household contents. Anchor: bottom-centre on the wall plane. Parameters: `width`
 /// (m, 1.9), `height` (m, 1.6), `depth` (m out from the wall, 0.65), `color` (#7fb0c8),
-/// `stocked` (contents, true), `textured` (plant and cloth atlases, true), `seed`.
+/// `stocked` (contents, true), `textured` (plant and cloth atlases, true), `seed`, and what a
+/// plan fixes instead of the seed: `contents` (`auto` | `plants` | `washing` | `storage`
+/// (stacked cartons) | `mixed` | `empty`, `auto`), `roof` (`auto` | `none` | `sheet`, `auto`)
+/// and `roofColor` (of a `sheet` roof, #7f9a6c).
 fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let width = a.number("width", 1.9)?;
@@ -1058,10 +1186,40 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         stocked: a.boolean("stocked", true)?,
     };
     let textured = a.boolean("textured", true)?;
+    const CONTENTS: [&str; 6] = ["auto", "plants", "washing", "storage", "mixed", "empty"];
+    let contents = a.text("contents", "auto")?;
+    let roof = a.text("roof", "auto")?;
+    let roof_color = a.color("roofColor", "#7f9a6c")?;
+    let plan = household::CagePlan {
+        contents: match CONTENTS.iter().position(|c| *c == contents) {
+            Some(0) => None,
+            Some(index) => Some(CONTENTS[index]),
+            None => {
+                return Err(format!(
+                    "{name}: contents must be one of {}.",
+                    CONTENTS.join(", ")
+                ));
+            }
+        },
+        roof: match roof.as_str() {
+            "auto" => None,
+            "none" => Some(false),
+            "sheet" => Some(true),
+            _ => return Err(format!("{name}: roof must be one of auto, none, sheet.")),
+        },
+        roof_color: Some(roof_color),
+    };
     let mut rng = a.rng()?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::cage(&mut fixture(mesh, "cage")?, &cage, &mut rng, None, textured)
+        household::planned_cage(
+            &mut fixture(mesh, "cage")?,
+            &cage,
+            &mut rng,
+            None,
+            textured,
+            &plan,
+        )
     })
 }
 
@@ -1317,7 +1475,11 @@ fn roller_shutter(
 /// frame, transom, threshold, hardware and posters) placed within a bay. Anchor:
 /// bottom-centre of the bay on the wall plane; the seed chooses the door's design and its
 /// position within the bay. Parameters: `width` (m of bay, 1.5–100, 1.6), `height` (m of
-/// storey, 2.2–50, 3), `trim` (#ccc7b8), `posters` (true), `detail` (0–2, 1), `seed`.
+/// storey, 2.2–50, 3), `trim` (#ccc7b8), `posters` (true), `detail` (0–2, 1), `seed`, and what
+/// a plan fixes instead of the seed: `door` (`auto` | `single` | `double`: painted panelled
+/// leaves; `glazed`: a half-glazed timber leaf; `steel`; `auto`), `color` (the leaves' paint,
+/// used when `door` is not `auto`, #2f4f43) and `transom` (`auto` | `glazed` | `mesh`: an open
+/// grid of bars | `none`, `auto`).
 fn entrance(
     name: &str,
     values: &Values,
@@ -1329,6 +1491,8 @@ fn entrance(
     let trim = a.color("trim", "#ccc7b8")?;
     let posters = a.boolean("posters", true)?;
     let detail = a.integer("detail", 1, 0..=2)?;
+    let color = a.color("color", "#2f4f43")?;
+    let design = door_design(&mut a, color)?;
     let key = a.seed()?;
     a.finish()?;
     let settings = doors::Settings {
@@ -1345,13 +1509,49 @@ fn entrance(
         key: key.clone(),
     };
     draw(cancelled, |mesh| {
-        doors::entrance(
+        doors::planned_entrance(
             &mut fixture(mesh, "entrance")?,
             &unit,
             &settings,
             &mut SeededRng::from_text(&key),
+            &design,
         )
         .map(|_| ())
+    })
+}
+
+/// Reads the `door` and `transom` choices of an entrance; a named door is painted `paint`.
+fn door_design(a: &mut Arguments<'_>, paint: V3) -> Result<doors::Design, String> {
+    let style = match a.text("door", "auto")?.as_str() {
+        "auto" => None,
+        "single" => Some(doors::Style::Single),
+        "double" => Some(doors::Style::Double),
+        "glazed" => Some(doors::Style::Glazed),
+        "steel" => Some(doors::Style::Steel),
+        _ => {
+            return Err(format!(
+                "{}: door must be one of auto, single, double, glazed, steel.",
+                a.name
+            ));
+        }
+    };
+    let transom = match a.text("transom", "auto")?.as_str() {
+        "auto" => None,
+        "glazed" => Some(doors::Transom::Glazed),
+        "mesh" => Some(doors::Transom::Mesh),
+        "none" => Some(doors::Transom::None),
+        _ => {
+            return Err(format!(
+                "{}: transom must be one of auto, glazed, mesh, none.",
+                a.name
+            ));
+        }
+    };
+    Ok(doors::Design {
+        style,
+        paint: style.map(|_| paint),
+        transom,
+        fit: None,
     })
 }
 
@@ -1360,7 +1560,11 @@ fn entrance(
 /// plane. Parameters: `kind` (`shutter` | `gate` | `door` | `shop` | `service`, `shutter`),
 /// `width` (m, 1.5–40, 3.6), `height` (m of storey, 2.2–50, 3.4), `frame` (#2f4f43), `trim`
 /// (#ccc7b8), `shutter` (#5a6f68), `accent` (#5f8a72), `posters` (true), `signs` (draw the
-/// bay's shop signs, true), `seed`.
+/// bay's shop signs, true), `seed`, and what a plan fixes instead of the seed: `door` and
+/// `transom` (a door bay's entrance, as `kowloon/entrance`; a named door is painted `frame`),
+/// `opening` (m; the head height of a wall opening as wide as the bay, which a shutter then
+/// fills, closed and painted `shutter`, and a door's frame and transom fill; 0: unfitted),
+/// `head` (m of a shutter's head box, 0.1–1, 0.22) and `headRust` (0–1, 0).
 fn ground_bay(
     name: &str,
     values: &Values,
@@ -1382,6 +1586,15 @@ fn ground_bay(
     };
     let posters = a.boolean("posters", true)?;
     let signs = a.boolean("signs", true)?;
+    let opening = a.bounded("opening", 0., 0. ..=50.)?;
+    let plan = ground::Plan {
+        door: door_design(&mut a, style.frame)?,
+        fit: (opening > 0.).then_some(opening),
+        shutter_head: Some(a.bounded("head", 0.22, 0.1..=1.)?),
+        head_rust: a.bounded("headRust", 0., 0. ..=1.)?,
+        // `gate`: the paint of a gate's lattice (#647a6b).
+        gate: Some(a.color("gate", "#647a6b")?),
+    };
     let key = a.seed()?;
     a.finish()?;
     let kit = kit(&key, 1, 0.)?;
@@ -1392,7 +1605,7 @@ fn ground_bay(
         key: key.clone(),
     };
     draw(cancelled, |mesh| {
-        let proposals = ground::draw(
+        let proposals = ground::planned(
             &mut fixture(mesh, "ground-bay")?,
             kind,
             &unit,
@@ -1402,6 +1615,7 @@ fn ground_bay(
                 posters,
             },
             &mut SeededRng::from_text(&key),
+            &plan,
         )?;
         if signs {
             for proposal in &proposals {

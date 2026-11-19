@@ -39,7 +39,9 @@ const bleached = mix(woven, vec3(0.4, 0.35, 0.26), mul(bleaching, add(0.15, mul(
 const runs = smoothstep(0.4, 0.82, valueNoise(vec2(mul(along, 19), mul(world.z, 1.2)), seed("canvas-runs")));
 const hem = sub(1, smoothstep(0, 0.3, upIt));
 const stains = smoothstep(0.66, 0.82, valueNoise(add(mul(vec2(along, world.z), 3.1), vec2(7.3, 2.2)), seed("canvas-stains")));
-const soiled = mul(soil, min(add(add(mul(runs, 0.4), mul(hem, add(0.25, mul(0.35, runs)))), mul(stains, 0.45)), 0.85));
+// Soot gathers toward the wall, at the top of the fall.
+const sooty = mul(smoothstep(0.55, 1, upIt), add(0.3, mul(0.3, runs)));
+const soiled = mul(soil, min(add(add(add(mul(runs, 0.4), mul(hem, add(0.25, mul(0.35, runs)))), mul(stains, 0.45)), sooty), 0.85));
 
 export default defineMaterial({
   name: "Kowloon canvas",

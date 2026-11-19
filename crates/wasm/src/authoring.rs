@@ -2,6 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use superspec_engine::authoring::{Diagnostic, Output, Project, ProjectOutput, Request, Session};
 use wasm_bindgen::prelude::*;
 
+/// The most bytes of project or request source one call accepts: 128 MiB, so a scene may carry
+/// its foliage batches beside its items and images.
+const PROJECT_BYTES: usize = 128 * 1024 * 1024;
+
 /// Worker-local authored sources and immutable generation artifacts share the native engine.
 #[wasm_bindgen]
 #[derive(Default)]
@@ -102,7 +106,7 @@ impl Authoring {
     }
 
     pub fn library_assets(&mut self, source: &str) -> String {
-        if source.len() > 32 * 1024 * 1024 {
+        if source.len() > PROJECT_BYTES {
             return "[]".into();
         }
         let names = serde_json::from_str::<Request>(source)
@@ -132,7 +136,7 @@ impl Authoring {
     /// Stages the model and packet before publishing either; failures retain the prior accepted model.
     pub fn build(&mut self, source: &str, revision: u32) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "request",
                     "Authoring request allowance exceeded.",
@@ -181,7 +185,7 @@ impl Authoring {
     /// nothing and never replaces the accepted model.
     pub fn bake_fields(&mut self, source: &str, revision: u32, names: &str) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "request",
                     "Authoring request allowance exceeded.",
@@ -237,7 +241,7 @@ impl Authoring {
         names: &str,
     ) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "project",
                     "Authoring project allowance exceeded.",
@@ -277,7 +281,7 @@ impl Authoring {
     pub fn open_project_fields(&mut self, source: &str, revision: u32) -> String {
         self.project_fields = None;
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "project",
                     "Authoring project allowance exceeded.",
@@ -355,7 +359,7 @@ impl Authoring {
     /// [`Self::layout_records`].
     pub fn layout_project(&mut self, source: &str, revision: u32) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "project",
                     "Authoring project allowance exceeded.",
@@ -408,7 +412,7 @@ impl Authoring {
         };
         let failed = |message: String| vec![Diagnostic::message("project", message)];
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(failed("Authoring project allowance exceeded.".into()));
             }
             let document: serde_json::Value =
@@ -567,7 +571,7 @@ impl Authoring {
     }
 
     pub fn project_library_assets(&mut self, source: &str) -> String {
-        if source.len() > 32 * 1024 * 1024 {
+        if source.len() > PROJECT_BYTES {
             return "[]".into();
         }
         let Ok(project) = serde_json::from_str::<Project>(source) else {
@@ -655,7 +659,7 @@ impl Authoring {
     /// same `build_project` the export and native commands use. Stages the packet like `build`.
     pub fn preview_project(&mut self, source: &str, revision: u32) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "project",
                     "Authoring project allowance exceeded.",
@@ -697,7 +701,7 @@ impl Authoring {
     /// models as the staged packet, and each material's preview shader in the metadata. No bake.
     pub fn shade_project(&mut self, source: &str, revision: u32) -> String {
         let result = (|| {
-            if source.len() > 32 * 1024 * 1024 {
+            if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
                     "project",
                     "Authoring project allowance exceeded.",
@@ -869,7 +873,7 @@ impl Authoring {
     }
 
     fn export_build(&mut self, source: &str, revision: u32) -> Result<ProjectOutput, JsValue> {
-        if source.len() > 32 * 1024 * 1024 {
+        if source.len() > PROJECT_BYTES {
             return Err(JsValue::from_str("Authoring project allowance exceeded."));
         }
         let project: Project =

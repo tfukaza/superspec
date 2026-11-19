@@ -236,6 +236,21 @@ fn lettering_checks_capacity_before_acquiring_fonts_and_propagates_loader_failur
     assert_eq!(seen, [("NotoSansHK[wght].ttf", Some(900.))]);
 }
 
+#[test]
+fn lettering_extension_rejects_another_atlas_before_acquiring_fonts() {
+    let other = superspec_geometry::image::Image {
+        width: 2,
+        height: 2,
+        rgba: vec![255; 16],
+        mime: "image/png",
+    };
+    let error = lettering::extend("修", &other, &mut |_| {
+        panic!("an image of another layout must fail before font acquisition")
+    })
+    .unwrap_err();
+    assert!(error.contains("cannot be extended"), "{error}");
+}
+
 fn embedded_maps(invalid_properties: bool) -> Vec<u8> {
     let document: Value = json!({
         "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0},"metallicRoughnessTexture":{"index":1}}}],

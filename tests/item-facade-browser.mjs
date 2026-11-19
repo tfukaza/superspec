@@ -23,7 +23,7 @@ const choice = process.env.MODEL ?? "side";
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
 const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
-// The whole building is GPU-baked within BAKE_MEMORY MiB (default 7680; with its weathering layers it takes about 6.5 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
+// The whole building is GPU-baked within BAKE_MEMORY MiB (default 4096; with its weathering layers it takes about 2.2 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
 // per-pixel look, which shows a layered slot's base alone (no paint or grime).
 // Only the building (and the lane's paving and trees) is drawn; ROOM=1 brings back the washroom items and the grass patch.
 // BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
@@ -54,7 +54,7 @@ try {
   page.on("pageerror", error => errors.push(error.message));
   // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
   page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 7680}`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 4096}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
   // The project is handed over as a file: a building with its images can pass the 50 MB an in-memory upload may hold.
   const projectFile = resolve(out, "washroom-facade.studio.json");
@@ -83,23 +83,29 @@ try {
     // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
     // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
     const softSun = {
-      intensity: 2, color: [1, 0.9, 0.77],
+      intensity: 1.8, color: [1, 0.9, 0.77],
       shadow: {
-        // A wide, soft edge that widens with the distance to what casts it.
-        softness: 0.06, spread: 0.11, maxSoftness: 0.4,
+        // An edge that is tight at contact and widens fast with the distance to what casts it: a small caster (a cage, a
+        // bracket, a pipe) has no umbra left a hand's breadth away and its shadow fades out, while a balcony or an awning,
+        // far wider than its penumbra, still shades clearly.
+        softness: 0.04, spread: 0.16, maxSoftness: 0.5,
         // A light shade with only a slight cool cast, as in the reference picture, faintly mottled (broad, gentle
         // patches about 1.5 m across) with a slight wobble to its edge.
-        darkness: 0.2, tintStrength: 0.2, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
+        darkness: 0.1, tintStrength: 0.2, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
         noise: { scale: 1.5, edge: 0.04, amount: 0.08, seed: 7 },
       },
     };
     // The rest of the same global record (exposure, tone mapping, ambient and environment light, ambient occlusion):
     // `softScene`, then LIGHT_SCENE, a JSON object merged over it the same way.
-    // An overcast day: more light from the sky than from the sun, and ambient occlusion wide and strong enough to
-    // darken under ledges, awnings and the balcony (AO=off, in the page's address, leaves it out).
+    // A bright overcast day: more light from the sky than from the sun. Ambient occlusion is for the large forms only
+    // (under the balcony, awnings and ledges): blended in at less than full strength, with surfaces taken to be fairly
+    // thin (`thickness` 0.3 m), so a pipe, a cage bar or a bracket leaves no dark halo. (A wider radius with a smaller
+    // thickness, tried first, broke the occlusion up into blocky noise over open wall.)
+    // (AO=off, in the page's address, leaves it out).
     const softScene = {
-      ambient: { sky: [1, 0.98, 0.95], ground: [0.3, 0.28, 0.24], intensity: 0.75 },
-      ambientOcclusion: { enabled: true, radius: 0.85, intensity: 3, thickness: 0.5 },
+      exposure: 1.06,
+      ambient: { sky: [1, 0.98, 0.95], ground: [0.42, 0.4, 0.35], intensity: 1.15 },
+      ambientOcclusion: { enabled: true, radius: 0.55, intensity: 0.8, thickness: 0.3 },
     };
     const lit = await page.evaluate(({ sun, soft, extra, keep, scene }) => {
       const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
@@ -112,7 +118,7 @@ try {
       s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
       window.__facadeLighting = record;
       return { before, after: JSON.stringify(light), scene: JSON.stringify({ ...record, lights: undefined }) };
-    }, { sun: process.env.SUN ?? "-42,50", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep",
+    }, { sun: process.env.SUN ?? "6,52", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep",
       scene: { ...softScene, ...JSON.parse(process.env.LIGHT_SCENE ?? "{}") } });
     console.log(`sun before ${lit.before}`);
     if (lit.after) console.log(`sun after  ${lit.after}\nscene ${lit.scene}`);
@@ -143,10 +149,12 @@ try {
     const cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, front = x1;
     // The reference picture's camera: at the cut corner, 22 degrees off the front's normal toward the side, 8 above the
     // ground, 62 m from the building through a long lens (26 degrees), so the front is wide and the side foreshortened.
-    const azimuth = 22 * Math.PI / 180, elevation = 8 * Math.PI / 180, distance = 62;
+    // A plan file's "/view" key replaces any of these: azimuth, elevation and fov in degrees, distance and (target) height in meters.
+    const look = { azimuth: 22, elevation: 8, distance: 62, height: 7.4, fov: 19.5, ...JSON.parse(overrides ?? "{}")["/view"] };
+    const azimuth = look.azimuth * Math.PI / 180, elevation = look.elevation * Math.PI / 180, distance = look.distance;
     const views = {
-      reference: { position: [(x0 + front) / 2 + distance * Math.cos(elevation) * Math.cos(azimuth), cy + distance * Math.cos(elevation) * Math.sin(azimuth), 7.4 + distance * Math.sin(elevation)],
-        target: [(x0 + front) / 2, cy, 7.4], fov: 19.5, bare: true },
+      reference: { position: [(x0 + front) / 2 + distance * Math.cos(elevation) * Math.cos(azimuth), cy + distance * Math.cos(elevation) * Math.sin(azimuth), look.height + distance * Math.sin(elevation)],
+        target: [(x0 + front) / 2, cy, look.height], fov: look.fov, bare: true },
       // Square on, from the lane.
       front: { position: [front + 30, cy, cz], target: [front, cy, cz] },
       // At an angle from down the lane, to see the fixtures and riser stand off the wall.

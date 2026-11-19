@@ -18,6 +18,7 @@ const lamps = param.scalar({ default: 0.2, range: [0, 1], label: "Share with a l
 const sky = param.scalar({ default: 0.5, range: [0, 1], label: "Sky sheen" });
 const dirt = param.scalar({ default: 0.55, range: [0, 1], label: "Dirt" });
 const gloss = param.scalar({ default: 0.1, range: [0, 1], label: "Clean roughness" });
+const glow = param.scalar({ default: 1.5, range: [0, 8], label: "Lit tube glow" });
 
 // Where the texel is in its window: meters from one side along the glass, and 0 to 1 across and up it.
 const extent = sub(boundsMax, boundsMin);
@@ -50,16 +51,19 @@ const depth = mul(add(0.55, mul(0.9, hash(key, seed("room")))), sub(1, mul(0.5, 
 const room = mul(tint, depth);
 const behind = mix(mix(room, mul(drape, 0.16), mul(draped, interior)), mul(mul(cloth, folds), 0.2), mul(curtain, interior));
 const lit = mix(behind, vec3(0.62, 0.68, 0.58), mul(tube, interior));
-const sheen = mul(mul(sky, 0.05), mul(smoothstep(0.2, 1, upIt), add(0.4, mul(0.6, valueNoise(mul(vec2(run, world.z), 1.7), seed("sheen"))))));
+const sheen = mul(mul(sky, 0.14), mul(smoothstep(0.05, 1, upIt), add(0.4, mul(0.6, valueNoise(mul(vec2(run, world.z), 1.7), seed("sheen"))))));
 const glass = add(lit, mul(vec3(0.55, 0.62, 0.66), sheen));
 
 // Dirt: a film in streaks, and grime along each pane's edges and along the foot.
 const rim = creaseDistance("boundary", 30, 0.16);
 const streaks = smoothstep(0.35, 0.8, valueNoise(vec2(mul(run, 23), mul(world.z, 1.1)), seed("glass-streaks")));
-const film = mul(mul(dirt, 0.3), add(0.35, mul(0.65, streaks)));
-const packed = mul(dirt, mul(sub(1, smoothstep(0.004, 0.11, rim)), add(0.45, mul(0.55, valueNoise(mul(vec2(run, world.z), 31), seed("glass-rim"))))));
-const footing = mul(mul(dirt, 0.5), mul(sub(1, smoothstep(0, 0.22, upIt)), add(0.4, mul(0.6, streaks))));
-const soiled = min(add(add(film, mul(packed, 0.8)), footing), 0.9);
+const dirty = mul(dirt, add(0.45, mul(1.1, hash(key, seed("glass-dirty")))));
+const film = mul(mul(dirty, 0.3), add(0.35, mul(0.65, streaks)));
+const packed = mul(dirty, mul(sub(1, smoothstep(0.004, 0.11, rim)), add(0.45, mul(0.55, valueNoise(mul(vec2(run, world.z), 31), seed("glass-rim"))))));
+const footing = mul(mul(dirty, 0.5), mul(sub(1, smoothstep(0, 0.22, upIt)), add(0.4, mul(0.6, streaks))));
+// Dust washed down from the head of the window in runs.
+const heads = mul(mul(dirty, 0.55), mul(smoothstep(0.55, 1, upIt), smoothstep(0.4, 0.75, valueNoise(vec2(mul(run, 37), mul(world.z, 0.7)), seed("glass-head")))));
+const soiled = min(add(add(add(film, mul(packed, 0.8)), footing), heads), 0.9);
 
 export default defineMaterial({
   name: "Kowloon window glass",
@@ -67,5 +71,7 @@ export default defineMaterial({
     baseColor: mix(glass, vec3(0.2, 0.19, 0.165), soiled),
     roughness: mix(gloss, 0.85, soiled),
     metalness: 0,
+    // A lit tube glows through the glass and its dirt.
+    emissive: mul(vec3(1, 0.86, 0.62), mul(mul(tube, interior), mul(glow, sub(1, mul(soiled, 0.5))))),
   },
 });

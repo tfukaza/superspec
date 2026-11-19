@@ -5,8 +5,8 @@ use super::{
     ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PatternAnchor, PreparedItem, Values,
     compose::{self, Environment, Opaque},
     decal, fail, footprint, panel, procedural, route,
-    schema::{Generator, PartDefinition, Scalar, Switch, bounded_name},
-    surfaces::{Frame, Outline, Surfaces, prism},
+    schema::{Axis, Generator, PartDefinition, Scalar, Switch, bounded_name},
+    surfaces::{self, Frame, Outline, Surfaces, beveled_prism, prism},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -48,6 +48,35 @@ impl Context<'_> {
             ));
         }
         Ok(value)
+    }
+    /// A bevel's radius (0 for none, at most `limit`) and its 1 or 2 chords.
+    pub(super) fn bevel(
+        &self,
+        pointer: &str,
+        radius: &Scalar,
+        segments: &Scalar,
+        limit: f64,
+    ) -> Result<(f64, usize), ItemDiagnostic> {
+        let radius = self.scalar(radius, &format!("{pointer}/bevel"))?;
+        let segments = self.scalar(segments, &format!("{pointer}/bevelSegments"))?;
+        if radius < 0. || radius > limit {
+            return Err(self.fail(
+                &format!("{pointer}/bevel"),
+                "ITEM_GEOMETRY",
+                format!(
+                    "A bevel is a radius from 0 to less than half of every dimension it rounds (here at most {limit:.4} m)."
+                ),
+            ));
+        }
+        if segments != 1. && segments != 2. {
+            return Err(self.fail(
+                &format!("{pointer}/bevelSegments"),
+                "ITEM_GEOMETRY",
+                "A bevel has 1 or 2 segments.",
+            ));
+        }
+        // Without a radius the segments say nothing, so they stay out of the geometry key.
+        Ok((radius, if radius > 0. { segments as usize } else { 1 }))
     }
     /// Length, radius, wall thickness, segments and capping of a straight pipe.
     pub(super) fn pipe(
@@ -104,6 +133,11 @@ impl Context<'_> {
 enum PartShape {
     Box {
         size: V3,
+        #[serde(skip_serializing_if = "Bevel::none")]
+        bevel: Bevel,
+        /// The one axis whose edges the bevel rounds; every edge when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        along: Option<Axis>,
     },
     Pipe {
         length: f64,
@@ -133,7 +167,22 @@ enum PartShape {
     Prism {
         outline: Vec<footprint::P2>,
         height: f64,
+        #[serde(skip_serializing_if = "Bevel::none")]
+        bevel: Bevel,
     },
+}
+
+/// A resolved bevel: its radius and chords. Absent from a geometry key when the radius is 0,
+/// so parts without one keep the keys they had.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(super) struct Bevel {
+    pub radius: f64,
+    pub segments: usize,
+}
+impl Bevel {
+    pub(super) fn none(&self) -> bool {
+        self.radius == 0.
+    }
 }
 
 /// Most parts an item may expand to, counting every copy of a repeated part.
@@ -382,14 +431,34 @@ pub(super) fn prepare(
             let (shape, groups, local): (PartShape, &[&str], Vec<Attachment>) = match &part
                 .generator
             {
-                Generator::Box { size } => {
+                Generator::Box {
+                    size,
+                    bevel,
+                    bevel_segments,
+                    bevel_axis,
+                } => {
                     let mut resolved = [0.; 3];
                     for axis in 0..3 {
                         resolved[axis] =
                             context.dimension(&size[axis], &format!("{generator}/size/{axis}"))?;
                     }
+                    // Edges along one axis are rounded out of the other two dimensions.
+                    let smallest = (0..3)
+                        .filter(|axis| (*bevel_axis).is_none_or(|along| along as usize != *axis))
+                        .map(|axis| resolved[axis])
+                        .fold(f64::INFINITY, f64::min);
+                    let (radius, segments) = context.bevel(
+                        &generator,
+                        bevel,
+                        bevel_segments,
+                        (smallest / 2. - 5e-4).max(0.),
+                    )?;
                     (
-                        PartShape::Box { size: resolved },
+                        PartShape::Box {
+                            size: resolved,
+                            bevel: Bevel { radius, segments },
+                            along: (*bevel_axis).filter(|_| radius > 0.),
+                        },
                         &["side", "top", "bottom"],
                         vec![],
                     )
@@ -487,6 +556,8 @@ pub(super) fn prepare(
                     footprint: reference,
                     height,
                     inset,
+                    bevel,
+                    bevel_segments,
                 } => {
                     let edges = footprint::resolve(
                         context.definition,
@@ -497,10 +568,25 @@ pub(super) fn prepare(
                     )?;
                     let inset = context.scalar(inset, &format!("{generator}/inset"))?;
                     let height = context.dimension(height, &format!("{generator}/height"))?;
+                    let outline = footprint::outline(&edges, inset);
+                    let (radius, segments) = context.bevel(
+                        &generator,
+                        bevel,
+                        bevel_segments,
+                        (height / 2. - 5e-4).max(0.),
+                    )?;
+                    if radius > 0. && !surfaces::insets(&outline, radius) {
+                        return Err(context.fail(
+                            &format!("{generator}/bevel"),
+                            "ITEM_GEOMETRY",
+                            "The bevel is wider than an edge of the outline can lose.",
+                        ));
+                    }
                     (
                         PartShape::Prism {
-                            outline: footprint::outline(&edges, inset),
+                            outline,
                             height,
+                            bevel: Bevel { radius, segments },
                         },
                         &["side", "top", "bottom"],
                         vec![],
@@ -640,7 +726,7 @@ pub(super) fn decals(
         };
         let surface = match &part.shape {
             PartShape::Panel(panel) => decal::Surface::Panel(panel),
-            PartShape::Box { size } => decal::Surface::Box(*size),
+            PartShape::Box { size, .. } => decal::Surface::Box(*size),
             PartShape::Route(route) => decal::Surface::Route(route),
             PartShape::Pipe { .. }
             | PartShape::Duct { .. }
@@ -884,7 +970,7 @@ impl PreparedPart {
                     *length, *width, *height, *thickness, *capped, cancelled,
                 )?));
             }
-            PartShape::Box { size } => prism(
+            PartShape::Box { size, bevel, .. } if bevel.none() => prism(
                 &mut surfaces,
                 ["side", "bottom", "top"],
                 &Frame {
@@ -896,9 +982,52 @@ impl PreparedPart {
                 None,
                 [0., size[2]],
             )?,
+            PartShape::Box {
+                size,
+                bevel,
+                along: Some(axis @ (Axis::X | Axis::Y)),
+            } => surfaces::bar(
+                &mut surfaces,
+                *size,
+                *axis == Axis::X,
+                bevel.radius,
+                bevel.segments,
+            )?,
+            PartShape::Box { size, bevel, along } => {
+                let frame = Frame {
+                    origin: [0.; 3],
+                    x: [1., 0., 0.],
+                    y: [0., 1., 0.],
+                };
+                let outline = Outline::rounded_rectangle(
+                    [0., 0.],
+                    [size[0], size[1]],
+                    bevel.radius,
+                    bevel.segments,
+                );
+                let groups = ["side", "bottom", "top"];
+                if along.is_some() {
+                    // Upright edges only: the rounded outline swept up, with flat caps.
+                    prism(&mut surfaces, groups, &frame, &outline, None, [0., size[2]])?
+                } else {
+                    beveled_prism(
+                        &mut surfaces,
+                        groups,
+                        &frame,
+                        &outline,
+                        [0., size[2]],
+                        bevel.radius,
+                        bevel.segments,
+                    )?
+                }
+            }
             PartShape::Panel(panel) => panel.build(&mut surfaces)?,
             PartShape::Route(route) => route.build(&mut surfaces)?,
-            PartShape::Prism { outline, height } => prism(
+            PartShape::Prism {
+                outline,
+                height,
+                bevel,
+            } => beveled_prism(
                 &mut surfaces,
                 ["side", "bottom", "top"],
                 &Frame {
@@ -907,8 +1036,9 @@ impl PreparedPart {
                     y: [0., 1., 0.],
                 },
                 &Outline::flat(outline.clone()),
-                None,
                 [0., *height],
+                bevel.radius,
+                bevel.segments,
             )?,
             PartShape::Item { .. } | PartShape::Native(_) => {
                 return Err("Sub-item and native parts are built by their owner.".into());

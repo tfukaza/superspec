@@ -7,9 +7,9 @@
 //! solid as the panel minus its extruded openings.
 use super::{
     Feature, ItemDiagnostic, PatternAnchor,
-    parts::Context,
+    parts::{Bevel, Context},
     schema::{Edge, OpeningDefinition, OpeningMode, OpeningShape, PanelDefinition, Rule},
-    surfaces::{Frame, Outline, P2, Surfaces, prism},
+    surfaces::{Frame, Outline, P2, Surfaces, inset, prism, rim},
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -56,6 +56,8 @@ pub(super) struct Panel {
     thickness: f64,
     openings: Vec<Opening>,
     anchor: P2,
+    #[serde(skip_serializing_if = "Bevel::none")]
+    bevel: Bevel,
 }
 
 /// Start of a span of `size` inside `available`, by the shared placement rule.
@@ -104,6 +106,21 @@ pub(super) fn resolve(
     let width = context.dimension(&definition.width, &format!("{pointer}/width"))?;
     let height = context.dimension(&definition.height, &format!("{pointer}/height"))?;
     let thickness = context.dimension(&definition.thickness, &format!("{pointer}/thickness"))?;
+    let (radius, segments) = context.bevel(
+        pointer,
+        &definition.bevel,
+        &definition.bevel_segments,
+        (thickness - SLIVER)
+            .min(width.min(height) / 2. - 5e-4)
+            .max(0.),
+    )?;
+    let bevel = Bevel { radius, segments };
+    // A rounded rim takes its radius from the panel's edge and from round every opening.
+    let margin = if radius > 0. {
+        MARGIN.max(2. * radius + 0.002)
+    } else {
+        MARGIN
+    };
     if definition.openings.len() > 32 {
         return Err(context.fail(
             &format!("{pointer}/openings"),
@@ -174,8 +191,16 @@ pub(super) fn resolve(
             parameters: context.parameters,
             derived: &derived,
         };
-        let mut resolved = resolve_opening(&copy, opening, [width, height, thickness], &pointer)?;
+        let mut resolved =
+            resolve_opening(&copy, opening, [width, height, thickness], margin, &pointer)?;
         resolved.id = id;
+        if resolved.recess.is_some_and(|depth| depth < radius + SLIVER) {
+            return Err(context.fail(
+                &format!("{pointer}/depth"),
+                "ITEM_OPENING",
+                "A recess is deeper than the panel's bevel.",
+            ));
+        }
         if !ids.insert(resolved.id.clone()) {
             return Err(context.fail(
                 &format!("{pointer}/id"),
@@ -184,16 +209,16 @@ pub(super) fn resolve(
             ));
         }
         if let Some(other) = openings.iter().find(|other| {
-            resolved.x < other.x + other.width + MARGIN - 1e-9
-                && other.x < resolved.x + resolved.width + MARGIN - 1e-9
-                && resolved.z < other.z + other.height + MARGIN - 1e-9
-                && other.z < resolved.z + resolved.height + MARGIN - 1e-9
+            resolved.x < other.x + other.width + margin - 1e-9
+                && other.x < resolved.x + resolved.width + margin - 1e-9
+                && resolved.z < other.z + other.height + margin - 1e-9
+                && other.z < resolved.z + resolved.height + margin - 1e-9
         }) {
             return Err(context.fail(
                 &pointer,
                 "ITEM_OPENING",
                 format!(
-                    "Opening {} overlaps opening {} or leaves less than {MARGIN} m between them.",
+                    "Opening {} overlaps opening {} or leaves less than {margin} m between them.",
                     resolved.id, other.id
                 ),
             ));
@@ -213,6 +238,7 @@ pub(super) fn resolve(
         thickness,
         openings,
         anchor,
+        bevel,
     })
 }
 
@@ -220,6 +246,7 @@ fn resolve_opening(
     context: &Context<'_>,
     opening: &OpeningDefinition,
     [panel_width, panel_height, panel_thickness]: [f64; 3],
+    margin: f64,
     pointer: &str,
 ) -> Result<Opening, ItemDiagnostic> {
     let fail = |field: &str, message: String| {
@@ -254,15 +281,15 @@ fn resolve_opening(
         height,
         &format!("{pointer}/v"),
     )?;
-    if x < MARGIN - 1e-9
-        || z < MARGIN - 1e-9
-        || x + width > panel_width - MARGIN + 1e-9
-        || z + height > panel_height - MARGIN + 1e-9
+    if x < margin - 1e-9
+        || z < margin - 1e-9
+        || x + width > panel_width - margin + 1e-9
+        || z + height > panel_height - margin + 1e-9
     {
         return Err(fail(
             "",
             format!(
-                "Opening {} spans u {:.4} to {:.4} and v {:.4} to {:.4}; it must stay {MARGIN} m inside the {panel_width} by {panel_height} m panel.",
+                "Opening {} spans u {:.4} to {:.4} and v {:.4} to {:.4}; it must stay {margin} m inside the {panel_width} by {panel_height} m panel.",
                 opening.id,
                 x,
                 x + width,
@@ -423,26 +450,38 @@ impl Panel {
     }
     pub(super) fn build(&self, surfaces: &mut Surfaces<'_>) -> Result<(), String> {
         let (w, h, t) = (self.width, self.height, self.thickness);
+        // A bevel rounds the front's rim: the front face shrinks by its radius, and the edge
+        // faces and reveals start that far behind it.
+        let (r, chords) = (self.bevel.radius, self.bevel.segments);
+        // This frame's normal is -Y: depth 0 is the front face.
+        let across = Frame {
+            origin: [0.; 3],
+            x: [1., 0., 0.],
+            y: [0., 0., 1.],
+        };
         // Front and back: the panel rectangle with the openings as holes.
         for (group, y, through_only, facing) in [
             ("front", 0., false, [0., -1., 0.]),
             ("back", t, true, [0., 1., 0.]),
         ] {
-            let mut loops: Vec<Vec<V3>> =
-                vec![vec![[0., 0., 0.], [w, 0., 0.], [w, h, 0.], [0., h, 0.]]];
+            let front = group == "front";
+            let g = if front { r } else { 0. };
+            let mut loops: Vec<Vec<V3>> = vec![vec![
+                [g, g, 0.],
+                [w - g, g, 0.],
+                [w - g, h - g, 0.],
+                [g, h - g, 0.],
+            ]];
             for opening in &self.openings {
                 if !through_only || opening.recess.is_none() {
-                    loops.push(
-                        opening
-                            .outline(0.)
-                            .iter()
-                            .map(|p| [p[0], p[1], 0.])
-                            .collect(),
-                    );
+                    let mut outline = opening.outline(0.);
+                    if g > 0. {
+                        outline = inset(&outline, -g);
+                    }
+                    loops.push(outline.iter().map(|p| [p[0], p[1], 0.]).collect());
                 }
             }
             let profile = triangulate(loops, &[], &[])?;
-            let front = group == "front";
             surfaces.indexed(
                 group,
                 &profile
@@ -470,21 +509,29 @@ impl Panel {
             surfaces.polygon(
                 "edge",
                 &[
-                    [a[0], 0., a[1]],
-                    [b[0], 0., b[1]],
+                    [a[0], r, a[1]],
+                    [b[0], r, b[1]],
                     [b[0], t, b[1]],
                     [a[0], t, a[1]],
                 ],
                 outward,
-                &[
-                    [along, 0.],
-                    [along + span, 0.],
-                    [along + span, t],
-                    [along, t],
-                ],
+                &[[along, r], [along + span, r], [along + span, t], [along, t]],
                 None,
             )?;
             along += span;
+        }
+        if r > 0. {
+            rim(
+                surfaces,
+                "edge",
+                &across,
+                &Outline::flat(corners.to_vec()),
+                1.,
+                -r,
+                1.,
+                [r, r, -1.],
+                chords,
+            )?;
         }
         for opening in &self.openings {
             let ring = opening.outline(0.);
@@ -501,21 +548,34 @@ impl Panel {
                 surfaces.polygon(
                     "reveal",
                     &[
-                        [a[0], 0., a[1]],
-                        [b[0], 0., b[1]],
+                        [a[0], r, a[1]],
+                        [b[0], r, b[1]],
                         [b[0], depth, b[1]],
                         [a[0], depth, a[1]],
                     ],
                     [center[0] - middle[0], 0., center[1] - middle[1]],
                     &[
-                        [along, 0.],
-                        [along + span, 0.],
+                        [along, r],
+                        [along + span, r],
                         [along + span, depth],
                         [along, depth],
                     ],
                     None,
                 )?;
                 along += span;
+            }
+            if r > 0. {
+                rim(
+                    surfaces,
+                    "reveal",
+                    &across,
+                    &Outline::flat(ring.clone()),
+                    -1.,
+                    -r,
+                    1.,
+                    [r, r, -1.],
+                    chords,
+                )?;
             }
             if opening.recess.is_some() {
                 surfaces.polygon(
@@ -526,12 +586,7 @@ impl Panel {
                     None,
                 )?;
             }
-            // Frame and glazing sit at the middle of the thickness. This frame's normal is -Y.
-            let across = Frame {
-                origin: [0.; 3],
-                x: [1., 0., 0.],
-                y: [0., 0., 1.],
-            };
+            // Frame and glazing sit at the middle of the thickness.
             let slab = |size: f64| [-(t + size) / 2., -(t - size) / 2.];
             if let Some([border, frame_depth]) = opening.frame {
                 prism(

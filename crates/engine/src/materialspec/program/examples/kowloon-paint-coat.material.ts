@@ -11,6 +11,7 @@ const amount = param.scalar({ default: 1, range: [0, 1], label: "Paint amount" }
 const peeling = param.scalar({ default: 0.35, range: [0, 1], label: "Peeling" });
 const patchScale = param.scalar({ default: 2.4, range: [0.1, 8], unit: "1/m", label: "Patch frequency" });
 const patches = param.scalar({ default: 0, range: [0, 1], label: "Repainted repairs" });
+const unevenness = param.scalar({ default: 1, range: [0, 1], label: "Uneven tone" });
 
 const at = mul(vec2(surface.x, surface.y), patchScale);
 const warped = add(at, mul(domainWarp(mul(at, 1.3), seed("paint-warp")), 0.5));
@@ -34,7 +35,9 @@ const patch = mul(mul(step(hash(cell, seed("patch-on")), mul(patches, 0.65)), sm
 const shade = sub(hash(cell, seed("patch-shade")), 0.5);
 const warmth = sub(hash(cell, seed("patch-warmth")), 0.5);
 const patchTone = add(vec3(add(1, mul(shade, 0.22))), mul(vec3(0.05, 0.01, -0.05), warmth));
-const coat = mix(mul(color, 0.86), color, smoothstep(0.3, 0.7, mottle));
+// The coat is a little darker and dirtier toward the edge of a peeled patch, where it is lifting.
+const rim = smoothstep(sub(threshold, 0.012), threshold, field);
+const coat = mul(mix(mul(color, sub(1, mul(0.14, unevenness))), color, smoothstep(0.3, 0.7, mottle)), sub(1, mul(0.22, rim)));
 
 export default defineLayer({
   name: "Kowloon paint coat",

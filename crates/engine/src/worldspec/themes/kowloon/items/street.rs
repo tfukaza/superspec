@@ -2,7 +2,7 @@
 //! stock, pavements, cornices, conduits, balcony doors, rails and ladders. Conventions are
 //! those of the parent module.
 use super::{Arguments, draw, fixture, on, pen, room_pen, sign_settings};
-use crate::itemspec::definition::{NativeOutput, Values};
+use crate::itemspec::definition::{ItemMesh, NativeOutput, Values};
 use crate::worldspec::themes::kowloon::{
     facade_plan,
     fixture::Fixture,
@@ -13,12 +13,16 @@ use crate::worldspec::themes::kowloon::{
     pen::Tint,
     pipes, shop,
 };
+use std::collections::BTreeMap;
 use superspec_geometry::V3;
 use superspec_types::rng::SeededRng;
 
 /// `kowloon/shop-room`: an open shop behind its shopfront opening: floor, ceiling and walls,
 /// the raised shutter's head box and threshold, and the trade's furniture and stock (shelf
-/// banks packed with goods, counter, hung packets, cartons, lights). Anchor: bottom-centre of
+/// banks packed with goods, counter, hung goods, crates and cartons, lights). Walls are in the
+/// `interior` slot, the ceiling in `concrete`, the floor in `shop-floor`, the provisions shop's
+/// lit tubes in `tube-light` and everything else, coloured per vertex, in `stock`; a host leaves
+/// the last three unbound to show them plain. Anchor: bottom-centre of
 /// the opening on the wall plane; the room lies behind the wall (+Y) and is as wide as the
 /// opening. Parameters: `trade` (`provisions` | `grocer` | `greengrocer` | `hardware` |
 /// `herbalist`, `provisions`), `width` (m, 1.8–40, 3), `height` (m from the floor to the
@@ -48,8 +52,10 @@ pub(super) fn shop_room(
     let floor = a.bounded("floor", 0.03, 0.02..=1.)?;
     let storey = a.number("storey", 3.35)?;
     let shutter = a.color("shutter", "#758077")?;
-    // `hanging`: strings of packets hung across the opening (true).
+    // `hanging`: goods hung on strings across the whole opening, under its head (true).
     let hanging = a.boolean("hanging", true)?;
+    // `fade`: how much of their saturation the stock's colours have lost (0–1, 0.5).
+    let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
     let key = a.seed()?;
     a.finish()?;
     // Timber is tinted per vertex here: the shipped atlas is not bound to an item's slots.
@@ -115,34 +121,120 @@ pub(super) fn shop_room(
             let inside = pen("shop-hanging")?
                 .moved([-width / 2., 0., floor])?
                 .facing([0.; 3], [1., 0., 0.], [0., -1., 0.])?;
-            shop::snack_string::row(
+            shop::provisions::hung(
                 &mut on(mesh, inside)?,
-                [0.3, width - 0.3, 0.14, height - 0.22],
-                &mut kit.rng(&format!("{key}/front-packets"))?,
-                false,
+                [0.2, width - 0.2, 0.16, height - 0.2],
+                (height - 2.).clamp(0.3, 0.95),
+                &mut kit.rng(&format!("{key}/front-goods"))?,
             )?;
         }
         Ok(())
     })?;
-    Ok(as_stock(output, &["interior", "concrete"]))
+    let mut output = as_stock(output, &["interior", "concrete", "tube-light"], fade);
+    floor_slot(&mut output, floor);
+    Ok(output)
+}
+
+/// Moves the room's floor (the upward `concrete` faces at `level`) to a `shop-floor` slot of
+/// its own: a material baked over the closed room's concrete darkens it, and a floor that
+/// stays plain shows the stock standing on it.
+fn floor_slot(output: &mut NativeOutput, level: f64) {
+    let Some(at) = output
+        .meshes
+        .iter()
+        .position(|m| m.material_slot == "concrete")
+    else {
+        return;
+    };
+    let source = output.meshes.remove(at);
+    let empty = |slot: &str| ItemMesh {
+        id: slot.into(),
+        positions: vec![],
+        normals: vec![],
+        uvs: vec![],
+        additional_uvs: source
+            .additional_uvs
+            .keys()
+            .map(|set| (*set, vec![]))
+            .collect(),
+        colors: vec![],
+        tangents: vec![],
+        indices: vec![],
+        material_slot: slot.into(),
+    };
+    let mut parts = [empty("concrete"), empty("shop-floor")];
+    let mut remaps = [BTreeMap::new(), BTreeMap::new()];
+    for corners in source.indices.chunks_exact(3) {
+        let floor = corners.iter().all(|i| {
+            let i = *i as usize;
+            (source.positions[i][2] - level).abs() < 1e-6 && source.normals[i][2] > 0.5
+        });
+        let (part, remap) = (
+            &mut parts[usize::from(floor)],
+            &mut remaps[usize::from(floor)],
+        );
+        for index in corners {
+            let next = part.positions.len() as u32;
+            let target = *remap.entry(*index).or_insert_with(|| {
+                let i = *index as usize;
+                part.positions.push(source.positions[i]);
+                part.normals.push(source.normals[i]);
+                part.uvs.push(source.uvs[i]);
+                part.colors.push(source.colors[i]);
+                if let Some(tangent) = source.tangents.get(i) {
+                    part.tangents.push(*tangent);
+                }
+                for (set, uvs) in &source.additional_uvs {
+                    if let (Some(uv), Some(target)) = (uvs.get(i), part.additional_uvs.get_mut(set))
+                    {
+                        target.push(*uv);
+                    }
+                }
+                next
+            });
+            part.indices.push(target);
+        }
+    }
+    let [rest, floor] = parts;
+    for (offset, part) in [rest, floor]
+        .into_iter()
+        .filter(|part| !part.indices.is_empty())
+        .enumerate()
+    {
+        output.meshes.insert(at + offset, part);
+    }
 }
 
 /// Moves every mesh but those of the `kept` slots to the `stock` slot: the goods, furniture
 /// and fittings of a shop are thousands of small pieces coloured per vertex, which a host shows
-/// as they are rather than baking a material over each.
-fn as_stock(mut output: NativeOutput, kept: &[&str]) -> NativeOutput {
+/// as they are rather than baking a material over each. Their colours lose `fade` of their
+/// saturation and take a little dust, as stock that has stood in the sun.
+fn as_stock(mut output: NativeOutput, kept: &[&str], fade: f64) -> NativeOutput {
     for mesh in &mut output.meshes {
-        if !kept.contains(&mesh.material_slot.as_str()) {
-            mesh.material_slot = "stock".into();
+        if kept.contains(&mesh.material_slot.as_str()) {
+            continue;
+        }
+        mesh.material_slot = "stock".into();
+        for color in &mut mesh.colors {
+            let grey = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2];
+            let dust = [1., 0.985, 0.95];
+            for k in 0..3 {
+                let faded = grey + (color[k] - grey) * (1. - fade);
+                color[k] = faded * (1. + (dust[k] - 1.) * fade) + 0.03 * fade * dust[k];
+            }
         }
     }
     output
 }
 
-/// `kowloon/street-stock`: a shop's stock on the pavement in front of it: seeded stacks of
-/// slatted crates loaded with bottles or cartons, a stocked wire rack by the right jamb and a
-/// sack truck by the left. Anchor: bottom-centre of the frontage on the wall plane; the stock
-/// stands within 1 m of the wall. Parameters: `width` (m of frontage, 1.2–40, 3), `seed`.
+/// `kowloon/street-stock`: stock on the pavement in front of a wall, low-detail and coloured
+/// per vertex (slot `stock`). `kind` `shop` (the default) is a shop's display: stacked plastic
+/// crates and cartons either side of the way in, a sack truck by the left jamb, wire racks
+/// packed with goods at the pavement edge on the right, buckets and brooms; `crates`,
+/// `cartons` and `mixed` are a heap of those across the whole width. Anchor: bottom-centre of
+/// the frontage on the wall plane; the stock stands within 1.1 m of the wall. Parameters:
+/// `width` (m of frontage, 0.6–40, 3), `kind`, `fade` (of the colours' saturation, 0–1, 0.5),
+/// `seed`.
 pub(super) fn street_stock(
     name: &str,
     values: &Values,
@@ -150,9 +242,11 @@ pub(super) fn street_stock(
 ) -> Result<NativeOutput, String> {
     let mut a = Arguments::new(name, values);
     let width = a.number("width", 3.)?;
+    let kind: shop::provisions::Street =
+        a.choice("kind", "shop", &["shop", "crates", "cartons", "mixed"])?;
+    let fade = a.bounded("fade", 0.5, 0. ..=1.)?;
     let key = a.seed()?;
     a.finish()?;
-    // Timber is tinted per vertex here: the shipped atlas is not bound to an item's slots.
     let kit = Kit::new(sign_settings(&key), 1)?;
     let output = draw(cancelled, |mesh| {
         shop::provisions::street_fitted(
@@ -160,10 +254,10 @@ pub(super) fn street_stock(
             &kit,
             &key,
             width,
-            false,
+            kind,
         )
     })?;
-    Ok(as_stock(output, &[]))
+    Ok(as_stock(output, &[], fade))
 }
 
 /// `kowloon/pavement`: a raised pavement along a wall: seeded paving stones on a bed, a kerb
@@ -240,12 +334,29 @@ pub(super) fn pavement(
         let long = (x1 - x0) / stones as f64;
         for i in 0..stones {
             let left = x0 + i as f64 * long;
-            d.cuboid(
+            // A kerb stone with its road-side arris chamfered; its bed (edge 0) is not drawn.
+            let (inner, top) = (-depth + kerb - joint / 2., -0.012);
+            let arris = 0.02_f64.min((height + top) * 0.4);
+            let repeat = d.repeat("kerb");
+            profiled_strip(
+                &d.pen,
+                d.mesh,
                 "kerb",
-                [left + joint / 2., -depth, -height],
-                [left + long - joint / 2., -depth + kerb - joint / 2., -0.012],
-                shade(color, rng.float(0.62, 0.92)),
-                "d",
+                &Strip {
+                    span: [left + joint / 2., left + long - joint / 2.],
+                    section: &[
+                        [-depth, -height],
+                        [inner, -height],
+                        [inner, top],
+                        [-depth + arris, top],
+                        [-depth, top - arris],
+                    ],
+                    omitted_edges: &[0],
+                    miters: [None; 2],
+                    setback: 0.,
+                },
+                &Tint::Color(shade(color, rng.float(0.62, 0.92))),
+                repeat,
             )?;
         }
         if manhole && length >= 2.4 && depth >= 1. {
@@ -369,7 +480,7 @@ pub(super) fn tile_deck(
 /// cap 0.08 thick over a wall `thickness` deep, 0.08 proud; `ledge`), `thickness` (m, of the
 /// coped wall, 0.05–1, 0.25), `miterStart`, `miterEnd` (the tangent of half the plan turn at
 /// each end: 1 at a square corner, 0.414 at a 45 degree one, 0 for a square end; 0),
-/// `color` (#ddd2bc).
+/// `color` (#ddd2bc), `bevel` (m of rounding at the section's corners, 0.012).
 pub(super) fn cornice(
     name: &str,
     values: &Values,
@@ -385,6 +496,9 @@ pub(super) fn cornice(
     let start = a.bounded("miterStart", 0., -4. ..=4.)?;
     let end = a.bounded("miterEnd", 0., -4. ..=4.)?;
     let color = a.color("color", "#ddd2bc")?;
+    // `bevel`: m each corner of the section (its nose above all) is rounded back, in two chords
+    // with turning normals (0–0.03, 0.012; at most a quarter of either neighbouring face).
+    let bevel = a.bounded("bevel", 0.012, 0. ..=0.03)?;
     a.finish()?;
     let ledge = [
         [-0.01, -0.06],
@@ -410,7 +524,7 @@ pub(super) fn cornice(
                 section,
                 omitted_edges: &[],
                 miters: [(start != 0.).then_some(-start), (end != 0.).then_some(end)],
-                setback: 0.012,
+                setback: bevel,
             },
             &Tint::Color(color),
             1.,
@@ -423,7 +537,8 @@ pub(super) fn cornice(
 /// `run`, then up `rise2`, with a junction box at each bend and at its foot. Anchor: the foot
 /// of the first rise on the wall plane. Parameters: `rise` (m, 0–40, 2.8), `run` (m along X,
 /// negative runs left, 2.7), `rise2` (m, 0–40, 0), `radius` (m, 0.005–0.05, 0.012), `color`
-/// (#4d5048), `boxes` (true).
+/// (#4d5048), `boxes` (true), `endBox` (m; the width of a pale lidded junction box at the
+/// conduit's far end, 0–1, 0: none).
 pub(super) fn conduit(
     name: &str,
     values: &Values,
@@ -436,6 +551,7 @@ pub(super) fn conduit(
     let radius = a.bounded("radius", 0.012, 0.005..=0.05)?;
     let color = a.color("color", "#4d5048")?;
     let boxes = a.boolean("boxes", true)?;
+    let end_box = a.bounded("endBox", 0., 0. ..=1.)?;
     a.finish()?;
     let y = radius + 0.028;
     let mut points: Vec<V3> = vec![[0., y, 0.]];
@@ -476,6 +592,24 @@ pub(super) fn conduit(
                     "b",
                 )?;
             }
+        }
+        if end_box >= 0.05 {
+            let p = points[points.len() - 1];
+            let (half, body) = (end_box / 2., srgb("#b9b6a8"));
+            d.cuboid(
+                "metal",
+                [p[0] - half, 0., p[2]],
+                [p[0] + half, 0.11, p[2] + end_box * 1.3],
+                body,
+                "b",
+            )?;
+            d.cuboid(
+                "metal",
+                [p[0] - half - 0.008, 0.11, p[2] - 0.008],
+                [p[0] + half + 0.008, 0.122, p[2] + end_box * 1.3 + 0.008],
+                shade(body, 0.9),
+                "b",
+            )?;
         }
         Ok(())
     })

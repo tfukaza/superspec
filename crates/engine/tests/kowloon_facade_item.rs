@@ -163,10 +163,10 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
         floor.layers["wall"][0].entry,
         "kowloon-paint-coat.material.ts"
     );
-    // Over the paint: the dirt every wall carries, then the layers that follow an edge.
+    // Over the paint: the inked edges every wall carries, then the layers that follow a feature.
     assert_eq!(
         floor.layers["wall"][1].entry,
-        "kowloon-wall-dirt.material.ts"
+        "kowloon-edge-ink.material.ts"
     );
     let follows: Vec<String> = floor.layers["wall"][1..]
         .iter()
@@ -174,7 +174,7 @@ fn a_floor_is_a_wall_with_its_windows_fixtures_and_weathering() {
         .collect();
     // Runoff streaks from its top, its sills and its air conditioners' drips; on the tiled
     // spandrels from the sills and drips.
-    assert_eq!(follows, ["eave", "sill", "drip"]);
+    assert_eq!(follows, ["top", "sill", "drip"]);
     // The soot band follows the pavement line, which only a storey at street level has.
     let soot = floor.layers["wall"]
         .iter()
@@ -226,7 +226,7 @@ fn a_side_stacks_a_ground_floor_upper_floors_and_a_parapet() {
         .collect();
     for entry in [
         "kowloon-grime-streaks.material.ts",
-        "kowloon-wall-dirt.material.ts",
+        "kowloon-edge-ink.material.ts",
         "kowloon-soot-band.material.ts",
         "kowloon-notices.material.ts",
     ] {
@@ -342,6 +342,14 @@ fn a_building_follows_its_footprint_cutting_corners_between_streets() {
     );
     assert_eq!(sides(&block, "side-").len(), 6);
     assert_eq!(sides(&block, "corner-"), ["corner-0", "corner-1"]);
+    // With its seeded open shops it stays within what a placed item may hold.
+    let vertices: usize = block
+        .geometry
+        .meshes
+        .iter()
+        .map(|m| m.positions.len())
+        .sum();
+    assert!(vertices < 1_000_000, "the block has {vertices} vertices");
     // A clockwise footprint is refused at its part.
     let files = library();
     let reader = |name: &str| -> Result<Arc<[u8]>, String> {
@@ -608,6 +616,75 @@ fn the_reference_plan_builds_its_shops_balcony_roof_and_pavement() {
     assert!(triangles < 400_000);
 }
 
+/// The distance from `p` to the segment `a`-`b`.
+fn to_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let along: [f64; 3] = std::array::from_fn(|i| b[i] - a[i]);
+    let length: f64 = along.iter().map(|v| v * v).sum();
+    let t = if length > 0. {
+        ((0..3).map(|i| (p[i] - a[i]) * along[i]).sum::<f64>() / length).clamp(0., 1.)
+    } else {
+        0.
+    };
+    (0..3)
+        .map(|i| (p[i] - a[i] - along[i] * t).powi(2))
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// A parapet's wall is weathered from its `top` (the streaks under its coping), so every face
+/// of every parapet's wall must find a `top` feature of its own part within its own height:
+/// at each of its corners, on the long sides as on the corner's facets.
+#[test]
+fn every_parapet_wall_of_the_reference_plan_has_a_top_within_its_height() {
+    let plan = plan("reference-shop-house.json");
+    let overrides: Vec<(&str, serde_json::Value)> = plan
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect();
+    let building = generate("kowloon-building.item.json", &overrides);
+    let transforms = building.geometry.world_transforms().unwrap();
+    let mut walls = 0;
+    for (node, matrix) in building.geometry.nodes.iter().zip(&transforms) {
+        let part = node.name.as_deref().unwrap_or_default();
+        for index in &node.meshes {
+            let mesh = &building.geometry.meshes[*index];
+            if mesh.material_slot != "wall" || !mesh.id.contains("/parapet/parapet/") {
+                continue;
+            }
+            walls += 1;
+            let points: Vec<[f64; 3]> = mesh.positions.iter().map(|p| matrix.point(*p)).collect();
+            let low = points.iter().map(|p| p[2]).fold(f64::INFINITY, f64::min);
+            let high = points
+                .iter()
+                .map(|p| p[2])
+                .fold(f64::NEG_INFINITY, f64::max);
+            let height = high - low;
+            assert!((0.3..=2.).contains(&height), "{}: {height}", mesh.id);
+            let tops: Vec<_> = building
+                .geometry
+                .features
+                .iter()
+                .filter(|f| f.part == part && f.name == "top")
+                .collect();
+            for p in &points {
+                let nearest = tops
+                    .iter()
+                    .flat_map(|f| f.points.windows(2))
+                    .map(|ends| to_segment(*p, ends[0], ends[1]))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    nearest <= height + 1e-6,
+                    "{} at {p:?}: the nearest of {} top features of {part} is {nearest} m away, beyond its height {height}",
+                    mesh.id,
+                    tops.len()
+                );
+            }
+        }
+    }
+    // Four sides and the four facets of the round corner, each with a front, a back and edges.
+    assert!(walls >= 16, "{walls} parapet wall faces");
+}
+
 #[test]
 fn the_small_warehouse_plan_builds_from_the_same_items() {
     let plan = plan("small-warehouse.json");
@@ -623,8 +700,9 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
             wanted.iter().all(|name| segments.any(|s| s == *name))
         })
     };
-    // A shutter and a door over a tiled dado, a number plate, two caged windows (one hooded),
-    // three panelled boards, the corner drain, a tiled roof deck, and paving on all four sides.
+    // A shutter and a door over a tiled dado, a number plate, two caged windows (one roofed),
+    // three panelled boards, the corner drain, a tiled roof deck, and paving on all four sides;
+    // planned vents, a second conduit to its junction box, and a string course on every side.
     for piece in [
         "side-0/ground/shop-0/bay/",
         "side-0/ground/shop-1/bay/",
@@ -632,24 +710,80 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         "plaque-0-0/flat/",
         "side-0/floor-0/cage-0/",
         "side-0/floor-0/cage-1/",
-        "side-0/floor-0/canopy-0/",
         "board-0-0/board/",
         "board-0-2/board/",
         "side-0/drain-0/",
+        "side-0/conduit-1/",
+        "side-0/ventAt-0/",
+        "side-0/ventAt-2/",
+        "side-0/floor-0/band/",
+        "side-1/floor-0/band/",
+        "side-2/floor-1/band/",
+        "side-3/floor-0/band/",
+        "side-1/floor-0/window-0/bars/",
         "roofTiles-0/",
         "pavement-0/",
         "pavement-3/",
     ] {
         assert!(has(piece), "{piece} is missing");
     }
+    // What the plan leaves out: the shop fascia the string course replaces, the window hoods
+    // a full cage's own roof replaces, meters, and the back sides' seeded units, pipes and vents.
     for piece in [
         "corner-0/",
         "hut-0/",
         "side-0/balcony/",
+        "side-0/floor-0/canopy-0/",
         "side-0/floor-0/canopy-1/",
+        "side-0/ground/fascia/",
+        "side-0/ground/meters-1/",
+        "side-0/downpipe/",
+        "side-1/downpipe/",
+        "side-1/pipe-0/",
+        "side-2/pipe-0/",
+        "side-1/floor-0/aircon-0/",
+        "side-1/floor-1/aircon-1/",
+        "side-1/floor-0/vent-0/",
+        "side-2/floor-0/window-0/",
+        "side-3/riser/",
     ] {
         assert!(!has(piece), "{piece} should not be there");
     }
+    // The fitted bays fill their wall openings: the shutter's head box ends at the opening's
+    // head (2.82 m) and the door's frame at its own (2.52 m), each as wide as its span.
+    let transforms = building.geometry.world_transforms().unwrap();
+    let extent = |piece: &str, slot: &str| {
+        let wanted: Vec<&str> = piece.split('/').collect();
+        let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
+        for (node, matrix) in building.geometry.nodes.iter().zip(&transforms) {
+            for index in &node.meshes {
+                let mesh = &building.geometry.meshes[*index];
+                let mut segments = mesh.id.split('/');
+                if mesh.material_slot != slot
+                    || !wanted.iter().all(|name| segments.any(|s| s == *name))
+                {
+                    continue;
+                }
+                for p in &mesh.positions {
+                    let p = matrix.point(*p);
+                    for axis in 0..3 {
+                        bounds[0][axis] = bounds[0][axis].min(p[axis]);
+                        bounds[1][axis] = bounds[1][axis].max(p[axis]);
+                    }
+                }
+            }
+        }
+        bounds
+    };
+    let shutter = extent("side-0/ground/shop-0/bay", "metal");
+    assert!(
+        (shutter[0][0] - 0.45).abs() < 1e-6
+            && (shutter[1][0] - 2.75).abs() < 1e-6
+            && (shutter[1][2] - 2.82).abs() < 1e-6,
+        "{shutter:?}"
+    );
+    let wall = extent("side-0/ground/wall", "wall");
+    assert!((wall[1][0] - 6.).abs() < 1e-6, "{wall:?}");
     // Three storeys: 3.3 m and two of 3 m, a 0.45 m parapet and its 8 cm coping.
     assert!((top_of(&building, "side-0") - 9.83).abs() < 0.03);
     // The deck is tiled in its own slot, and the dado in the walls' tile.
@@ -660,6 +794,28 @@ fn the_small_warehouse_plan_builds_from_the_same_items() {
         .map(|m| m.material_slot.as_str())
         .collect();
     assert!(slots.contains("roof-tile") && slots.contains("tile"));
+    // The top storey's windows show their cartons, in the goods' plain slot; the others none.
+    assert!(has("side-0/floor-1/window-0/window/stock"));
+    assert!(!has("side-0/floor-0/window-0/window/stock"));
+    // A storeroom's window is left unglazed, so the stacks show: the glass is a painted surface.
+    assert!(has("side-0/floor-0/window-0/window/glass"));
+    assert!(!has("side-0/floor-1/window-0/window/glass"));
+    // The planned door's leaves are its paint, not the white of an unbaked finish: blue leads.
+    let leaves = extent("side-0/ground/shop-1/bay", "paint");
+    assert!((leaves[1][0] - 5.1).abs() < 1e-6, "{leaves:?}");
+    let blue = building
+        .geometry
+        .meshes
+        .iter()
+        .filter(|m| {
+            let mut segments = m.id.split('/');
+            m.material_slot == "paint"
+                && ["shop-1", "bay"].iter().all(|n| segments.any(|s| s == *n))
+        })
+        .flat_map(|m| &m.colors)
+        .filter(|c| c[2] > c[0] * 1.5 && c[2] > 0.05)
+        .count();
+    assert!(blue > 100, "{blue} blue vertices");
 }
 
 #[test]
@@ -795,4 +951,352 @@ fn wall_patterns_run_on_round_the_corners() {
             "{part}: {a:?}"
         );
     }
+}
+
+/// The item-space positions of the meshes under `part` whose ID contains `piece`.
+fn points_of(item: &GeneratedItem, part: &str, piece: &str) -> Vec<[f64; 3]> {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut points = vec![];
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        if node.name.as_deref() != Some(part) {
+            continue;
+        }
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if mesh.id.contains(piece) {
+                points.extend(mesh.positions.iter().map(|p| matrix.point(*p)));
+            }
+        }
+    }
+    points
+}
+
+#[test]
+fn a_round_corner_is_facets_along_an_arc_that_mouldings_and_patterns_follow() {
+    // The reference corner: a radius of 0.55 m. On a square corner the arc's radius is the cut,
+    // its centre (9.25, 0.55), and its four facets turn 22.5 degrees each.
+    let cut = 0.55f64;
+    let building = generate(
+        "kowloon-building.item.json",
+        &[
+            ("cornerStyle", json!("round")),
+            ("cut", json!(cut)),
+            ("cornerTiles", json!(true)),
+        ],
+    );
+    assert!(sides(&building, "corner-").is_empty());
+    let facets = [
+        "cornerArc-0-0",
+        "cornerArc-1-0",
+        "cornerArc-2-0",
+        "cornerArc-3-0",
+    ];
+    assert_eq!(sides(&building, "cornerArc-"), facets);
+    let on_arc = |k: usize| {
+        let angle = (-90. + 22.5 * k as f64).to_radians();
+        [9.8 - cut + cut * angle.cos(), cut + cut * angle.sin()]
+    };
+    let chord = 2. * cut * 11.25f64.to_radians().sin();
+    let anchor = |part: &str| {
+        building
+            .geometry
+            .anchors
+            .iter()
+            .find(|a| a.part == part)
+            .unwrap()
+            .clone()
+    };
+    let along = |part: &str| {
+        let a = anchor(part);
+        let start = translation(&building, part);
+        (0..3)
+            .map(|i| (start[i] - a.origin[i]) * a.u[i])
+            .sum::<f64>()
+    };
+    for (k, facet) in facets.iter().enumerate() {
+        let (from, to) = (on_arc(k), on_arc(k + 1));
+        let start = translation(&building, facet);
+        assert!(
+            (start[0] - from[0]).abs() < 1e-9 && (start[1] - from[1]).abs() < 1e-9,
+            "{facet} starts at {start:?}, not {from:?}"
+        );
+        let node = building
+            .geometry
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some(*facet))
+            .unwrap();
+        assert!(
+            (node.transform[0][0] - (to[0] - from[0]) / chord).abs() < 1e-9
+                && (node.transform[0][1] - (to[1] - from[1]) / chord).abs() < 1e-9,
+            "{facet} runs along {:?}",
+            node.transform[0]
+        );
+        // Every facet reaches the coping, and its pattern is measured round the outline.
+        assert!((top_of(&building, facet) - 13.18).abs() < 0.03);
+        assert!(
+            (along(facet) - (9.8 - cut + k as f64 * chord)).abs() < 1e-9,
+            "{facet}: {}",
+            along(facet)
+        );
+        // The tile band runs through the corner on every upper storey.
+        assert!(!points_of(&building, facet, "/floor-2/part/tileStrip/").is_empty());
+    }
+    // The second street's wall starts where the arc ends.
+    let second = translation(&building, "side-1");
+    assert!((second[0] - 9.8).abs() < 1e-9 && (second[1] - cut).abs() < 1e-9);
+    assert!((along("side-1") - (9.8 - cut + 4. * chord)).abs() < 1e-9);
+    // String courses are mitred by half the turn at every joint, so each one's end section is
+    // its neighbour's start section: side, four facets, side.
+    let run = [
+        "side-0", facets[0], facets[1], facets[2], facets[3], "side-1",
+    ];
+    for pair in run.windows(2) {
+        let end: Vec<[f64; 3]> = {
+            let start = translation(&building, pair[1]);
+            points_of(&building, pair[0], "/floor-1/part/band/")
+                .into_iter()
+                .filter(|p| (p[0] - start[0]).hypot(p[1] - start[1]) < 0.15)
+                .collect()
+        };
+        let next = points_of(&building, pair[1], "/floor-1/part/band/");
+        assert!(end.len() >= 5, "{} has a string course", pair[0]);
+        for p in &end {
+            assert!(
+                next.iter()
+                    // Native meshes are rounded to 10 µm in their own frames.
+                    .any(|q| (0..3).all(|i| (p[i] - q[i]).abs() < 2e-5)),
+                "{} and {} do not meet at {p:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+    // The roof slab follows the same outline, 0.2 m inside it: four corners become eight.
+    let roof = points_of(&building, "roof", "roof/top");
+    assert_eq!(roof.len(), 8);
+    let nearest = roof
+        .iter()
+        .map(|p| ((p[0] - (9.8 - cut)).hypot(p[1] - cut) - (cut - 0.2)).abs())
+        .fold(f64::MAX, f64::min);
+    assert!(nearest < 0.01, "the roof's corner is {nearest} off its arc");
+}
+
+/// A character without a cell in the shipped lettering atlas is left off its sign without an
+/// error, so every board text of the washroom building plans must be covered by the board face.
+#[test]
+fn washroom_plan_board_texts_have_every_glyph_in_the_shipped_atlas() {
+    use superspec_engine::worldspec::themes::kowloon::signs::lettering::{
+        Direction, Face, layout_line,
+    };
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/studio/washroom-items");
+    let mut texts = 0;
+    let mut missing = BTreeSet::new();
+    for path in std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+    {
+        let plan: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for text in plan["boardTexts"].as_array().into_iter().flatten() {
+            let text = text.as_str().unwrap();
+            texts += 1;
+            // Boards are lettered in the Kai face (items.rs), along their width or down it.
+            for direction in [Direction::Ltr, Direction::Ttb] {
+                let layout = layout_line(text, Face::Kai, 1., 1., direction).unwrap();
+                for character in layout.missing {
+                    missing.insert(format!("{character} in {text:?} of {}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(texts > 0, "no washroom plan lists board texts");
+    assert!(
+        missing.is_empty(),
+        "glyphs missing from the atlas: {missing:#?}"
+    );
+}
+
+/// Whether any mesh lies under the given path of part names.
+fn under(item: &GeneratedItem, piece: &str) -> bool {
+    let wanted: Vec<&str> = piece.split('/').filter(|s| !s.is_empty()).collect();
+    item.geometry.meshes.iter().any(|m| {
+        let mut segments = m.id.split('/');
+        wanted.iter().all(|name| segments.any(|s| s == *name))
+    })
+}
+
+#[test]
+fn a_clutter_plan_stands_crates_and_cartons_by_the_bays_it_names() {
+    // A heap stands by the jamb its plan names, reaching past it by the room there is.
+    let left = generate(
+        "kowloon-shopfront.item.json",
+        &[
+            ("width", json!(3)),
+            ("clutter", json!("crates")),
+            ("clutterSide", json!("left")),
+            ("clutterLeft", json!(0.4)),
+        ],
+    );
+    // (1.8 m wide: 0.4 m of it beyond the left jamb at -1.5.)
+    assert!((translation(&left, "clutter")[0] + 1.).abs() < 1e-9);
+    let right = generate(
+        "kowloon-shopfront.item.json",
+        &[
+            ("width", json!(3)),
+            ("clutter", json!("mixed")),
+            ("clutterSide", json!("right")),
+            ("clutterRight", json!(5)),
+        ],
+    );
+    // (at most six tenths of it stands beyond the jamb.)
+    assert!((translation(&right, "clutter")[0] - 1.68).abs() < 1e-9);
+    assert!(parts(&generate("kowloon-shopfront.item.json", &[]), "clutter").is_empty());
+    // A ground floor's plan names each bay's heap; an open shop may have one beside its stock.
+    let ground = generate(
+        "kowloon-ground-floor.item.json",
+        &[
+            ("width", json!(10)),
+            ("shopPlan", json!(["gate", "shutter", "open"])),
+            (
+                "clutterPlan",
+                json!(["cartons-left", "none", "crates-right"]),
+            ),
+        ],
+    );
+    assert!(under(&ground, "shop-0/clutter"));
+    assert!(!under(&ground, "shop-1/clutter"));
+    assert!(under(&ground, "shop-2/clutter") && under(&ground, "shop-2/stock"));
+    // A building hands each street side its row; sides it does not name keep the seed.
+    let building = generate(
+        "kowloon-building.item.json",
+        &[
+            ("shopPlans", json!([["gate", "shutter", "shutter"]])),
+            ("clutterPlans", json!([["mixed-left", "none", "none"]])),
+        ],
+    );
+    assert!(under(&building, "side-0/ground/shop-0/clutter"));
+    assert!(!under(&building, "side-0/ground/shop-1/clutter"));
+    assert!(!under(&building, "side-0/ground/shop-2/clutter"));
+    // Without a plan about one seeded bay in four is an open shop.
+    let (mut open, mut bays) = (0, 0);
+    for seed in 0..16 {
+        let ground = generate(
+            "kowloon-ground-floor.item.json",
+            &[("seed", json!(seed)), ("width", json!(12.7))],
+        );
+        for bay in 0..4 {
+            bays += 1;
+            open += usize::from(under(&ground, &format!("shop-{bay}/room")));
+        }
+    }
+    assert!(
+        (10..=24).contains(&open),
+        "{open} of {bays} seeded bays are open"
+    );
+}
+
+#[test]
+fn a_gate_takes_its_lattice_paint_from_the_building() {
+    let colors = |item: &GeneratedItem| -> Vec<u64> {
+        item.geometry
+            .meshes
+            .iter()
+            .filter(|m| m.id.contains("bay"))
+            .flat_map(|m| m.colors.iter().flatten().map(|v| v.to_bits()))
+            .collect()
+    };
+    let gate = |overrides: &[(&str, serde_json::Value)]| {
+        let mut all = vec![("kind", json!("gate"))];
+        all.extend(overrides.iter().cloned());
+        generate("kowloon-shopfront.item.json", &all)
+    };
+    let seeded = gate(&[]);
+    assert_eq!(
+        colors(&seeded),
+        colors(&gate(&[("gateColor", json!("#647a6b"))]))
+    );
+    assert_ne!(
+        colors(&seeded),
+        colors(&gate(&[("gateColor", json!("#7d7b74"))]))
+    );
+    let plan = [("shopPlans", json!([["gate", "shutter", "shutter"]]))];
+    let mut grey = plan.to_vec();
+    grey.push(("gateColor", json!("#7d7b74")));
+    let part = |item: &GeneratedItem| -> Vec<u64> {
+        item.geometry
+            .meshes
+            .iter()
+            .filter(|m| m.id.starts_with("side-0/") && m.id.contains("/shop-0/"))
+            .flat_map(|m| m.colors.iter().flatten().map(|v| v.to_bits()))
+            .collect()
+    };
+    assert_ne!(
+        part(&generate("kowloon-building.item.json", &plan)),
+        part(&generate("kowloon-building.item.json", &grey))
+    );
+}
+
+#[test]
+fn shop_rooms_of_two_streets_do_not_meet_behind_their_corner() {
+    // The deepest point behind the wall of the rooms under a part.
+    let depth = |item: &GeneratedItem, piece: &str| {
+        let wanted: Vec<&str> = piece.split('/').collect();
+        let transforms = item.geometry.world_transforms().unwrap();
+        let mut deepest = f64::NEG_INFINITY;
+        for (node, _) in item.geometry.nodes.iter().zip(&transforms) {
+            for index in &node.meshes {
+                let mesh = &item.geometry.meshes[*index];
+                let mut segments = mesh.id.split('/');
+                if wanted.iter().all(|name| segments.any(|s| s == *name)) {
+                    for p in &mesh.positions {
+                        deepest = deepest.max(p[1]);
+                    }
+                }
+            }
+        }
+        deepest
+    };
+    // The front's last shop reaches the corner, 3.1 m deep. The side that leaves the corner
+    // yields: its first bay starts within those 3.1 m, where only the half metre the front
+    // keeps clear of the corner is free, too shallow for a room, so it stays shut; its second
+    // bay starts beyond and is an open shop.
+    let plans = json!([["shutter", "shutter", "open"], ["open", "open"]]);
+    let building = generate(
+        "kowloon-building.item.json",
+        &[("shopPlans", plans.clone())],
+    );
+    assert!(under(&building, "side-0/ground/shop-2/room"));
+    assert!(!under(&building, "side-1/ground/shop-0/room"));
+    assert!(under(&building, "side-1/ground/shop-0/bay"));
+    assert!(under(&building, "side-1/ground/shop-1/room"));
+    // Where the plan says the first side keeps 3 m clear of the corner, the yielding side's
+    // rooms within the first side's depth are that deep and no deeper.
+    let clear = generate(
+        "kowloon-building.item.json",
+        &[
+            (
+                "shopPlans",
+                json!([["open", "shutter", "shutter"], ["open", "open"]]),
+            ),
+            ("shopDepth", json!(4)),
+            ("cornerClear", json!(3)),
+        ],
+    );
+    assert!((depth(&clear, "side-0/ground/shop-0/room") - 4.).abs() < 0.02);
+    for bay in ["shop-0", "shop-1"] {
+        let reach = depth(&clear, &format!("side-1/ground/{bay}/room"));
+        assert!((reach - 3.14).abs() < 0.02, "{bay} is {reach} m deep");
+    }
+    // A side with no street before it keeps its depth.
+    let alone = generate(
+        "kowloon-building.item.json",
+        &[
+            ("streets", json!([false, true, false, false])),
+            ("shopPlans", json!([[], ["open", "open"]])),
+        ],
+    );
+    assert!((depth(&alone, "side-1/ground/shop-0/room") - 3.1).abs() < 0.02);
 }

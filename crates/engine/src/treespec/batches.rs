@@ -472,14 +472,44 @@ pub fn tree_levels(
     Ok(all)
 }
 
+/// A single as the double whose shortest decimal is the single's own: a JSON writer prints it in
+/// as few digits as identify the single (`0.11888211`, not `0.11888211220502853`), and a reader
+/// that narrows it gets the same single back. The decimal lies within the single's rounding
+/// interval and the double nearest it cannot cross that interval's ends, which are doubles.
+fn single(value: f32) -> f64 {
+    if !value.is_finite() {
+        return f64::from(value);
+    }
+    value
+        .to_string()
+        .parse()
+        .expect("a finite single's decimal is a number")
+}
+
 /// The batches as a project document's `batches` list (`superspec_model::batches::of_project`),
-/// their meshes inline. Numbers are written in single precision, as they are delivered.
+/// their meshes inline. Numbers are written in single precision, as they are delivered: each as
+/// the shortest decimal that reads back as the same single ([`single`]), which is about half the
+/// text of the single widened to a double. Vertex colours that are all white, the reader's
+/// default, are left out.
 pub fn project_document(batches: &[FoliageBatch]) -> Value {
-    let flat = |values: &[V3]| -> Vec<f32> { values.iter().flatten().map(|v| *v as f32).collect() };
-    let named = |values: &BTreeMap<String, Vec<[f32; 3]>>| -> BTreeMap<String, Vec<f32>> {
+    let flat = |values: &[V3]| -> Vec<f64> {
+        values.iter().flatten().map(|v| single(*v as f32)).collect()
+    };
+    let scalars = |values: &BTreeMap<String, Vec<f32>>| -> BTreeMap<String, Vec<f64>> {
         values
             .iter()
-            .map(|(name, values)| (name.clone(), values.iter().flatten().copied().collect()))
+            .map(|(name, values)| (name.clone(), values.iter().map(|v| single(*v)).collect()))
+            .collect()
+    };
+    let named = |values: &BTreeMap<String, Vec<[f32; 3]>>| -> BTreeMap<String, Vec<f64>> {
+        values
+            .iter()
+            .map(|(name, values)| {
+                (
+                    name.clone(),
+                    values.iter().flatten().map(|v| single(*v)).collect(),
+                )
+            })
             .collect()
     };
     Value::Array(
@@ -492,15 +522,15 @@ pub fn project_document(batches: &[FoliageBatch]) -> Value {
                     .enumerate()
                     .map(|(index, placement)| {
                         let mut instance = json!({
-                            "translation": placement.translation.map(|v| v as f32),
-                            "rotation": placement.rotation.map(|v| v as f32),
-                            "scale": placement.scale.map(|v| v as f32),
+                            "translation": placement.translation.map(|v| single(v as f32)),
+                            "rotation": placement.rotation.map(|v| single(v as f32)),
+                            "scale": placement.scale.map(|v| single(v as f32)),
                         });
                         if let Some(tint) = batch.tints.get(index) {
-                            instance["tint"] = json!(tint);
+                            instance["tint"] = json!(tint.map(single));
                         }
                         if let Some(value) = batch.values.get(index) {
-                            instance["value"] = json!(value);
+                            instance["value"] = json!(value.map(single));
                         }
                         instance
                     })
@@ -509,13 +539,16 @@ pub fn project_document(batches: &[FoliageBatch]) -> Value {
                     "id": batch.id, "objectId": batch.object_id, "collision": batch.collision,
                     "mesh": {
                         "positions": flat(&mesh.positions), "normals": flat(&mesh.normals),
-                        "uvs": mesh.uvs.iter().flatten().map(|v| *v as f32).collect::<Vec<_>>(),
-                        "colors": flat(&mesh.colors), "indices": mesh.indices,
-                        "scalars": batch.vertex_scalars, "vectors": named(&batch.vertex_vectors),
+                        "uvs": mesh.uvs.iter().flatten().map(|v| single(*v as f32)).collect::<Vec<_>>(),
+                        "indices": mesh.indices,
+                        "scalars": scalars(&batch.vertex_scalars), "vectors": named(&batch.vertex_vectors),
                     },
                     "instances": instances,
-                    "scalars": batch.scalars, "vectors": named(&batch.vectors),
+                    "scalars": scalars(&batch.scalars), "vectors": named(&batch.vectors),
                 });
+                if mesh.colors.iter().flatten().any(|v| *v as f32 != 1.) {
+                    document["mesh"]["colors"] = json!(flat(&mesh.colors));
+                }
                 if let Some(foliage) = &batch.foliage {
                     document["foliage"] = json!(foliage);
                 }

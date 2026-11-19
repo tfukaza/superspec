@@ -5,9 +5,11 @@
   "parameters": {
     "z0": {"type": "number", "default": 0, "min": 0, "max": 200, "unit": "m"},
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
-    "paint": {"type": "color", "default": "#b0a696"},
+    "paint": {"type": "color", "default": "#c0b49e"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
-    "width": {"type": "number", "default": 9, "min": 0.3, "max": 40, "unit": "m"},
+    "width": {"type": "number", "default": 9, "min": 0.1, "max": 40, "unit": "m"},
+    "copingFlush": {"type": "boolean", "default": false},
+    "copingBevel": {"type": "number", "default": 0.02, "min": 0, "max": 0.035, "unit": "m"},
     "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
     "height": {"type": "number", "default": 0.95, "min": 0.3, "max": 2, "unit": "m"},
     "outlet": {"type": "boolean", "default": false},
@@ -25,8 +27,9 @@
     },
     {
       "id": "coping",
-      "generator": {"kind": "box", "size": ["width + 0.08", "thickness + 0.1", 0.08]},
-      "placement": {"position": [-0.04, -0.05, {"parameter": "height"}]},
+      "generator": {"kind": "box", "size": ["width + select(copingFlush * (miterStart > 0), 0.05 * miterStart, 0.04) + select(copingFlush * (miterEnd > 0), 0.05 * miterEnd, 0.04)", "thickness + 0.1", 0.08],
+        "bevel": {"parameter": "copingBevel"}, "bevelSegments": 2, "bevelAxis": "x"},
+      "placement": {"position": ["0 - select(copingFlush * (miterStart > 0), 0.05 * miterStart, 0.04)", -0.05, {"parameter": "height"}]},
       "slots": {"side": "trim", "top": "trim", "bottom": "trim"}
     },
     {
@@ -45,15 +48,15 @@
   ],
   "features": [
     {"name": "drip", "part": "outlet", "points": [["outletX - 0.14", 0, 0.1], ["outletX + 0.14", 0, 0.1]], "when": "outlet"},
-    {"name": "drip-above", "part": "outlet", "points": [["outletX - 0.14", 0, 0.15], ["outletX + 0.14", 0, 0.15]], "when": "outlet"},
+    {"name": "drip-above", "part": "outlet", "points": [["outletX - 0.14", 0, 0.4], ["outletX + 0.14", 0, 0.4]], "when": "outlet"},
     {"name": "eave", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
-    {"name": "eave-above", "part": "parapet", "points": [[0, 0, "height + 0.05"], [{"parameter": "width"}, 0, "height + 0.05"]]}
+    {"name": "eave-above", "part": "parapet", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]}
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
-      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.155], "period": 2.2}, "seed": 3, "follow": {"source": "eave", "guard": "eave-above"}}
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.22, 0.2, 0.17], "period": 3.6}, "seed": 3, "follow": {"source": "top", "guard": "eave-above"}}
     ]
   }
 }

@@ -1347,6 +1347,251 @@ fn the_washroom_duct_and_vent_build_as_one_item() {
     );
 }
 
+// ---- Bevels ---------------------------------------------------------------------------
+
+fn solid(generator: Value) -> Result<GeneratedItem, ItemDiagnostic> {
+    let text = json!({
+        "format": "itemspec", "version": 2, "id": "test",
+        "parameters": {"plan": {"type": "points", "default": [[0, 0], [4, 0], [4, 2], [2, 2], [2, 3], [0, 3]]}},
+        "parts": [{"id": "s", "generator": generator}]
+    })
+    .to_string();
+    generate(&text, &[])
+}
+fn groups(generated: &GeneratedItem) -> Vec<(&str, &str)> {
+    generated
+        .geometry
+        .meshes
+        .iter()
+        .map(|m| (m.id.as_str(), m.material_slot.as_str()))
+        .collect()
+}
+fn triangle_count(generated: &GeneratedItem) -> usize {
+    generated
+        .geometry
+        .meshes
+        .iter()
+        .map(|m| m.indices.len() / 3)
+        .sum()
+}
+/// The volume between two parallel sections `height` apart whose area is quadratic in between
+/// (Simpson's rule is exact for it): a chamfer's frustum.
+fn frustum(height: f64, area: impl Fn(f64) -> f64, reach: f64) -> f64 {
+    height / 6. * (area(0.) + 4. * area(reach / 2.) + area(reach))
+}
+
+#[test]
+fn a_bevel_rounds_a_box_inside_the_same_bounds_and_face_groups() {
+    let (a, b, c, r) = (0.6, 0.3, 0.2, 0.02);
+    let sharp = solid(json!({"kind": "box", "size": [a, b, c]})).unwrap();
+    // No radius, however it is written, is the box as it was: the same key and meshes.
+    let zero =
+        solid(json!({"kind": "box", "size": [a, b, c], "bevel": 0, "bevelSegments": 2})).unwrap();
+    assert_eq!(part_key(&zero, "s"), part_key(&sharp, "s"));
+    assert_eq!(zero.geometry_key, sharp.geometry_key);
+    assert_eq!(
+        serde_json::to_vec(&zero.geometry.meshes).unwrap(),
+        serde_json::to_vec(&sharp.geometry.meshes).unwrap()
+    );
+    let all = ["s/bottom", "s/side", "s/top"];
+    let mut volumes = vec![];
+    for segments in [1, 2] {
+        let round =
+            solid(json!({"kind": "box", "size": [a, b, c], "bevel": r, "bevelSegments": segments}))
+                .unwrap();
+        assert_ne!(part_key(&round, "s"), part_key(&sharp, "s"));
+        assert_eq!(round.geometry.bounds, sharp.geometry.bounds);
+        assert_eq!(groups(&round), groups(&sharp));
+        assert_eq!(round.geometry.anchors, sharp.geometry.anchors);
+        // Cheap: 60 triangles with one chord, 140 with two, against 12.
+        assert_eq!(triangle_count(&sharp), 12);
+        assert_eq!(triangle_count(&round), [60, 140][segments - 1]);
+        // Closed, wound outward, with no degenerate triangle.
+        volumes.push(closed_volume(&meshes(&round, &all)));
+        // The caps are the faces drawn in by the radius, flat and facing up and down.
+        let top = meshes(&round, &["s/top"])[0];
+        assert!(top.normals.iter().all(|n| *n == [0., 0., 1.]));
+        assert!(top.positions.iter().all(|p| p[2] == c
+            && p[0] >= r - 1e-12
+            && p[0] <= a - r + 1e-12
+            && p[1] >= r - 1e-12
+            && p[1] <= b - r + 1e-12));
+        // The rims belong to the sides and carry on their mapping: v runs on past the wall's
+        // height by the rim's arc at the top and before zero at the bottom.
+        let side = meshes(&round, &["s/side"])[0];
+        let v = side.uvs.iter().fold([f64::MAX, f64::MIN], |m, uv| {
+            [m[0].min(uv[1]), m[1].max(uv[1])]
+        });
+        close(v[0], r - r * PI / 2., 1e-12);
+        close(v[1], c - r + r * PI / 2., 1e-12);
+    }
+    // One chord is a chamfer: an octagonal belt between two frusta. An octagon drawn in by d
+    // keeps (a - 2d)(b - 2d) less four corner triangles with legs r - d(2 - sqrt 2).
+    let octagon = |d: f64| (a - 2. * d) * (b - 2. * d) - 2. * (r - d * (2. - 2f64.sqrt())).powi(2);
+    close(
+        volumes[0],
+        octagon(0.) * (c - 2. * r) + 2. * frustum(r, octagon, r),
+        1e-12,
+    );
+    // Two chords stand outside the chamfer and inside the box.
+    assert!(volumes[1] > volumes[0] && volumes[1] < a * b * c);
+
+    // Along one axis only the four edges that run that way are rounded: the section loses
+    // four corner triangles of r^2 / 2 and the ends stay flat, in 28 triangles.
+    for (axis, section, length) in [("x", b * c, a), ("y", a * c, b), ("z", a * b, c)] {
+        let bar = solid(json!({"kind": "box", "size": [a, b, c], "bevel": r, "bevelAxis": axis}))
+            .unwrap();
+        assert_eq!(bar.geometry.bounds, sharp.geometry.bounds);
+        assert_eq!(groups(&bar), groups(&sharp));
+        assert_eq!(triangle_count(&bar), 28);
+        close(
+            closed_volume(&meshes(&bar, &all)),
+            (section - 2. * r * r) * length,
+            1e-12,
+        );
+        // Top and bottom keep their plan mapping, and the sides their distance round the box.
+        let top = meshes(&bar, &["s/top"])[0];
+        assert!(
+            top.positions
+                .iter()
+                .zip(&top.uvs)
+                .all(|(p, uv)| p[2] == c && *uv == [p[0], p[1]])
+        );
+        let side = meshes(&bar, &["s/side"])[0];
+        let reach = side
+            .uvs
+            .iter()
+            .fold([0f64; 2], |m, uv| [m[0].max(uv[0]), m[1].max(uv[1])]);
+        if axis != "z" {
+            close(reach[0], 2. * (a + b), 1e-12);
+            close(reach[1], c - r + r * PI / 2., 1e-12);
+            // The front face reads x by z, as a sharp box's does.
+            let front: Vec<_> = (0..side.positions.len())
+                .filter(|i| side.normals[*i] == [0., -1., 0.])
+                .map(|i| (side.positions[i], side.uvs[i]))
+                .collect();
+            assert!(front.len() >= 4);
+            assert!(front.iter().all(|(p, uv)| *uv == [p[0], p[2]]));
+        }
+    }
+
+    // A radius that leaves no face, and a third chord, are refused at their field.
+    for (bevel, segments, pointer) in [
+        (0.1, 1, "/parts/0/generator/bevel"),
+        (0.02, 3, "/parts/0/generator/bevelSegments"),
+    ] {
+        let error = solid(
+            json!({"kind": "box", "size": [a, b, c], "bevel": bevel, "bevelSegments": segments}),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_GEOMETRY", pointer)
+        );
+    }
+}
+
+#[test]
+fn a_bevel_rounds_the_rims_of_a_footprint_prism() {
+    // An L of area 10 and perimeter 14 with five square corners and one re-entrant.
+    let (h, r) = (0.3, 0.05);
+    let prism = |bevel: f64| {
+        solid(
+            json!({"kind": "prism", "footprint": {"points": "plan"}, "height": h, "bevel": bevel}),
+        )
+        .unwrap()
+    };
+    let (sharp, round) = (prism(0.), prism(r));
+    let plain =
+        solid(json!({"kind": "prism", "footprint": {"points": "plan"}, "height": h})).unwrap();
+    assert_eq!(part_key(&sharp, "s"), part_key(&plain, "s"));
+    assert_eq!(round.geometry.bounds, sharp.geometry.bounds);
+    assert_eq!(groups(&round), groups(&sharp));
+    assert!(triangle_count(&round) > triangle_count(&sharp));
+    let all = ["s/bottom", "s/side", "s/top"];
+    close(closed_volume(&meshes(&sharp, &all)), 10. * h, 1e-12);
+    // Drawn in by d the L keeps 10 - 14 d + (5 - 1) d^2.
+    let area = |d: f64| 10. - 14. * d + 4. * d * d;
+    close(
+        closed_volume(&meshes(&round, &all)),
+        10. * (h - 2. * r) + 2. * frustum(r, area, r),
+        1e-12,
+    );
+    // The 2 m edge between two square corners cannot lose more than a meter at each end.
+    let error =
+        solid(json!({"kind": "prism", "footprint": {"points": "plan"}, "height": 3, "bevel": 1.1}))
+            .err()
+            .map(|error| (error.code, error.pointer));
+    assert_eq!(
+        error,
+        Some(("ITEM_GEOMETRY".into(), "/parts/0/generator/bevel".into()))
+    );
+}
+
+#[test]
+fn a_bevel_rounds_a_panel_front_and_its_openings_and_keeps_its_features() {
+    let (w, h, t, r) = (2., 1.5, 0.2, 0.015);
+    let (ow, oh) = (0.6, 0.5);
+    let panel = |bevel: Value| {
+        solid(
+            json!({"kind": "panel", "width": w, "height": h, "thickness": t, "bevel": bevel,
+            "openings": [{"id": "window", "width": ow, "height": oh,
+                "u": {"from": "start", "offset": 0.5}, "v": {"from": "start", "offset": 0.4}}]}),
+        )
+    };
+    let (sharp, round) = (panel(json!(0)).unwrap(), panel(json!(r)).unwrap());
+    assert_eq!(round.geometry.bounds, sharp.geometry.bounds);
+    assert_eq!(groups(&round), groups(&sharp));
+    // Base, top, opening edge and sill are reported where they were, and so is the anchor.
+    assert_eq!(round.geometry.features, sharp.geometry.features);
+    assert_eq!(round.geometry.anchors, sharp.geometry.anchors);
+    assert!(triangle_count(&round) > triangle_count(&sharp));
+    assert!(triangle_count(&round) <= triangle_count(&sharp) + 16);
+    let all = ["s/front", "s/back", "s/edge", "s/reveal"];
+    close(
+        closed_volume(&meshes(&sharp, &all)),
+        (w * h - ow * oh) * t,
+        1e-12,
+    );
+    // The front shrinks by the radius and the opening grows by it, over the radius' depth.
+    let face = |d: f64| (w - 2. * d) * (h - 2. * d) - (ow + 2. * d) * (oh + 2. * d);
+    close(
+        closed_volume(&meshes(&round, &all)),
+        face(0.) * (t - r) + frustum(r, face, r),
+        1e-12,
+    );
+    // The front stays one flat face with its metric mapping; the rims join edge and reveal.
+    let front = meshes(&round, &["s/front"])[0];
+    assert!(front.normals.iter().all(|n| *n == [0., -1., 0.]));
+    assert!(
+        front
+            .positions
+            .iter()
+            .zip(&front.uvs)
+            .all(|(p, uv)| p[1] == 0. && *uv == [p[0], p[2]])
+    );
+    close(area(front), face(r), 1e-12);
+    // An opening nearer the edge than both rims need is refused.
+    let error = solid(
+        json!({"kind": "panel", "width": w, "height": h, "thickness": t, "bevel": r,
+        "openings": [{"id": "window", "width": ow, "height": oh,
+            "u": {"from": "start", "offset": 0.025}, "v": {"from": "start", "offset": 0.4}}]}),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "ITEM_OPENING");
+    // An arched recess is rounded too, and the solid stays closed.
+    let niche = solid(
+        json!({"kind": "panel", "width": w, "height": h, "thickness": t,
+        "bevel": r, "bevelSegments": 2,
+        "openings": [{"id": "niche", "shape": "arch", "mode": "recess", "depth": 0.08,
+            "width": 0.5, "height": 0.6, "u": {"from": "center", "offset": 0},
+            "v": {"from": "start", "offset": 0.35}}]}),
+    )
+    .unwrap();
+    let volume = closed_volume(&meshes(&niche, &all));
+    assert!(volume < w * h * t && volume > w * h * t - 0.5 * 0.6 * 0.08 - 0.01);
+}
+
 #[test]
 fn generation_is_deterministic_and_cancellable() {
     for text in [WALL, WALL_LOW, PIPE, DUCT] {

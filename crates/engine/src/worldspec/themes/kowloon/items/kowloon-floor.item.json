@@ -4,9 +4,12 @@
   "id": "kowloon-floor",
   "parameters": {
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
-    "paint": {"type": "color", "default": "#b0a696"},
+    "paint": {"type": "color", "default": "#c0b49e"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
-    "width": {"type": "number", "default": 9, "min": 0.3, "max": 40, "unit": "m"},
+    "width": {"type": "number", "default": 9, "min": 0.1, "max": 40, "unit": "m"},
+    "tileStrip": {"type": "boolean", "default": false},
+    "tileStart": {"type": "boolean", "default": false},
+    "tileEnd": {"type": "boolean", "default": false},
     "height": {"type": "number", "default": 3.0, "min": 2.4, "max": 5, "unit": "m"},
     "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
     "z0": {"type": "number", "default": 0, "min": 0, "max": 200, "unit": "m"},
@@ -43,6 +46,9 @@
     "dado": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
     "spandrelPlan": {"type": "grid", "default": []},
     "cageFull": {"type": "boolean", "default": false},
+    "cagePlan": {"type": "grid", "default": [], "choices": ["auto", "plants", "washing", "storage", "mixed", "empty"]},
+    "storage": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "windowTransom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
     "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
     "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4}
   },
@@ -80,6 +86,7 @@
         "parameters": {"width": {"expr": "select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)"}, "height": {"parameter": "windowHeight"}, "kind": {"parameter": "windowKind"},
                        "frame": {"parameter": "frame"}, "recess": {"expr": "min(0.3, thickness - 0.02)"},
                        "glazing": {"parameter": "glazing"}, "hood": {"parameter": "hoods"},
+                       "transom": {"parameter": "windowTransom"}, "storage": {"parameter": "storage"},
                        "seed": {"expr": "seed * 1000 + level * 37 + i"},
                        "bars": {"choose": [false, true], "by": "select(cell(windowPlan, i) == 0, random(seed, level, i, 3) < barsChance, cell(windowPlan, i) == 3)"},
                        "barsPattern": {"choose": ["bars", "grid", "diamond"], "by": "random(seed, i, 6) * 3"}}},
@@ -103,7 +110,7 @@
     {
       "id": "plinth",
       "when": "plinth > 0",
-      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.018, {"parameter": "plinth"}]},
+      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.018, {"parameter": "plinth"}], "bevel": "min(0.008, plinth / 4)", "bevelAxis": "x"},
       "placement": {"position": [0, -0.018, 0]},
       "slots": {"side": "plinth", "top": "plinth", "bottom": "plinth"}
     },
@@ -127,7 +134,7 @@
     {
       "id": "canopy",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
-      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(count(canopyPlan) > 0, cell(canopyPlan, i), random(seed, level, i, 17) < canopyChance)",
+      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(count(canopyPlan) > 0, cell(canopyPlan, i) * (1 - cageFull * (cell(fixturePlan, i) == 4)), random(seed, level, i, 17) < canopyChance)",
       "generator": {"kind": "native", "name": "kowloon/awning",
         "parameters": {"width": {"expr": "(select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.76"}, "depth": 0.34, "drop": 0.1, "canvas": false,
                        "color": "#6c6a5a", "hem": {"parameter": "frame"}, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
@@ -158,13 +165,36 @@
       "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
     },
     {
+      "id": "tileStrip",
+      "when": "tileStrip",
+      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.015, "sill - 0.12"]},
+      "placement": {"position": [0, -0.015, 0.06]},
+      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+    },
+    {
+      "id": "tileStart",
+      "when": "tileStart * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, 0), tileBands) * (select(cell(windowPlan, 0) == 0, random(seed, level, 0, 11) < windowChance, cell(windowPlan, 0) >= 2)) * (select(banks > 0, cell(spanPlan, 0, 0), start + 0.12) > 0.02)",
+      "generator": {"kind": "box", "size": ["select(banks > 0, cell(spanPlan, 0, 0), start + 0.12)", 0.015, "sill - 0.12"]},
+      "placement": {"position": [0, -0.015, 0.06]},
+      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+    },
+    {
+      "id": "tileEnd",
+      "when": "tileEnd * (bays > 0) * select(count(spandrelPlan) > 0, cell(spandrelPlan, bays - 1), tileBands) * (select(cell(windowPlan, bays - 1) == 0, random(seed, level, bays - 1, 11) < windowChance, cell(windowPlan, bays - 1) >= 2)) * (width - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12) > 0.02)",
+      "generator": {"kind": "box", "size": ["width - select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", 0.015, "sill - 0.12"]},
+      "placement": {"position": ["select(banks > 0, cell(spanPlan, bays - 1, 1), start + bays * bayWidth - 0.12)", -0.015, 0.06]},
+      "slots": {"side": "tile", "top": "tile", "bottom": "tile"}
+    },
+    {
       "id": "cage",
       "repeat": [{"name": "i", "count": {"derived": "bays"}}],
       "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",
       "generator": {"kind": "native", "name": "kowloon/cage",
         "parameters": {"width": {"expr": "select(cageFull, (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) + 0.16, min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2))"},
                        "height": {"expr": "select(cageFull, windowHeight + 0.05, min(windowHeight * 0.4, 0.8))"}, "depth": {"expr": "select(cageFull, 0.7, 0.48)"},
-                       "color": {"choose": ["#857a61", "#b9bdb8"], "by": "cageFull"}, "stocked": {"parameter": "cageFull"}, "seed": {"expr": "seed * 1000 + level * 37 + i"}}},
+                       "color": {"choose": ["#857a61", "#b9bdb8"], "by": "cageFull"}, "stocked": {"parameter": "cageFull"}, "seed": {"expr": "seed * 1000 + level * 37 + i"},
+                       "contents": {"choose": ["auto", "plants", "washing", "storage", "mixed", "empty"], "by": "cell(cagePlan, i)"},
+                       "roof": {"choose": ["auto", "none", "sheet"], "by": "select(cageFull * (count(canopyPlan) > 0) * (cell(fixturePlan, i) == 4), 1 + cell(canopyPlan, i), 0)"}}},
       "placement": {"position": ["select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)", 0, {"parameter": "sill"}]}
     },
     {
@@ -179,7 +209,10 @@
   "features": [
     {"name": "pavement", "part": "wall", "points": [[0, 0, 0], [{"parameter": "width"}, 0, 0]], "when": "level == 0"},
     {"name": "eave", "part": "wall", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
-    {"name": "eave-above", "part": "wall", "points": [[0, 0, "height + 0.05"], [{"parameter": "width"}, 0, "height + 0.05"]]},
+    {"name": "eave-above", "part": "wall", "points": [[0, 0, "height + 0.3"], [{"parameter": "width"}, 0, "height + 0.3"]]},
+    {"name": "sill", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill - 0.06"]]},
+    {"name": "sill-above", "part": "tiles-{i}", "repeat": {"name": "i", "count": {"derived": "bays"}}, "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill + 0.24"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", -0.015, "sill + 0.24"]]},
+    {"name": "sill-above", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}}, "when": "select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)", "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", 0, "sill + 0.3"], ["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) + (select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), bayWidth - 0.24)) / 2", 0, "sill + 0.3"]]},
     {"name": "rust", "part": "wall", "repeat": {"name": "i", "count": {"derived": "bays"}},
      "when": "(select(cell(windowPlan, i) == 0, random(seed, level, i, 11) < windowChance, cell(windowPlan, i) >= 2)) * select(cell(fixturePlan, i) == 0, random(seed, level, i, 16) < cageChance, cell(fixturePlan, i) == 4)",
      "points": [["(select(banks > 0, (cell(spanPlan, i, 0) + cell(spanPlan, i, 1)) / 2, start + i * bayWidth + bayWidth / 2)) - min((select(banks > 0, cell(spanPlan, i, 1) - cell(spanPlan, i, 0), windowWidth)) * 0.55, 1.2) / 2 + 0.03", -0.008, "sill - 0.01"],
@@ -199,34 +232,34 @@
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
-      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.155], "period": 2.2}, "seed": 3, "follow": {"source": "eave", "guard": "eave-above"}},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.22, 0.2, 0.17], "period": 3.6}, "seed": 3, "follow": {"source": "top", "guard": "eave-above"}},
       {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.7, "shift": 1.3, "period": 3.1}, "seed": 5, "follow": {"source": "sill", "guard": "sill-above"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.5, "shift": 2.7, "period": 2.3, "color": [0.33, 0.27, 0.2]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
-      {"entry": "kowloon-soot-band.material.ts", "parameters": {"reach": 1.02}, "seed": 2, "follow": {"base": "pavement"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.3, "streakLength": 1.5, "shift": 2.7, "period": 3.3, "color": [0.4, 0.33, 0.25]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
+      {"entry": "kowloon-soot-band.material.ts", "parameters": {"reach": 1.02, "haze": 0.6, "hazeStrength": 0.3, "ragged": 0.22}, "seed": 2, "follow": {"base": "pavement"}},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"run": "rust"}}
     ],
     "plinth": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": [0.062, 0.06, 0.054], "peeling": 0.12}, "seed": 1},
-      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9}
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": [0.07, 0.068, 0.062], "peeling": 0, "unevenness": 1}, "seed": 1},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9}
     ],
     "trim": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
-      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.8, "soot": 0, "settled": 1}, "seed": 9},
-      {"entry": "kowloon-concrete-edges.material.ts", "parameters": {}, "seed": 12},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 0, "clouds": 0, "soot": 0, "settled": 0.8}, "seed": 9},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.09, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 12},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"run": "rust"}}
     ],
     "concrete": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
-      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.8, "soot": 0, "settled": 1}, "seed": 9},
-      {"entry": "kowloon-concrete-edges.material.ts", "parameters": {}, "seed": 12},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 0, "clouds": 0, "soot": 0, "settled": 0.8}, "seed": 9},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.09, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 12},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"run": "rust"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.155], "period": 2.2}, "seed": 3, "follow": {"source": "ledge", "guard": "ledge-above"}}
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.22, 0.2, 0.17], "period": 3.6}, "seed": 3, "follow": {"source": "ledge", "guard": "ledge-above"}}
     ],
     "tile": [
       {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.7, "shift": 1.3, "period": 3.1}, "seed": 5, "follow": {"source": "sill", "guard": "sill-above"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.5, "shift": 2.7, "period": 2.3, "color": [0.33, 0.27, 0.2]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.3, "streakLength": 1.5, "shift": 2.7, "period": 3.3, "color": [0.4, 0.33, 0.25]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"run": "rust"}}
     ]
   }

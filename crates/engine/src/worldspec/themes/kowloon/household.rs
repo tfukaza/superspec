@@ -317,6 +317,15 @@ pub struct Cage {
     pub color: V3,
     pub stocked: bool,
 }
+/// What a plan fixes of a cage instead of leaving it to the seed; the default fixes nothing.
+#[derive(Clone, Copy, Default)]
+pub struct CagePlan {
+    /// What a stocked cage holds: `plants`, `washing`, `storage`, `mixed` or `empty`.
+    pub contents: Option<&'static str>,
+    /// Whether it has its corrugated roof, and that roof's paint (the seed's when `None`).
+    pub roof: Option<bool>,
+    pub roof_color: Option<V3>,
+}
 /// Welded enclosure, fixing hardware, optional corrugated roof and seeded household contents.
 pub fn cage(
     d: &mut Fixture<'_, '_>,
@@ -324,6 +333,17 @@ pub fn cage(
     rng: &mut SeededRng,
     settings: Option<&weathered::Settings>,
     textured: bool,
+) -> Result<(), String> {
+    planned_cage(d, c, rng, settings, textured, &CagePlan::default())
+}
+/// [`cage`] with whatever `plan` fixes of it; an empty plan draws the seeded cage.
+pub fn planned_cage(
+    d: &mut Fixture<'_, '_>,
+    c: &Cage,
+    rng: &mut SeededRng,
+    settings: Option<&weathered::Settings>,
+    textured: bool,
+    plan: &CagePlan,
 ) -> Result<(), String> {
     let [x0, x1] = c.span;
     let [z0, z1] = c.heights;
@@ -441,8 +461,15 @@ pub fn cage(
         rail([x, 0., z0], [x, depth, z0], 0.012)?;
         x += 0.2;
     }
-    if rng.chance(0.55) {
-        let roof = if rng.chance(0.5) {
+    // A planned roof draws from its own stream, so the contents stay the seed's.
+    let roofed = match plan.roof {
+        Some(roofed) => roofed,
+        None => rng.chance(0.55),
+    };
+    if roofed {
+        let roof = if plan.roof.is_some() {
+            plan.roof_color.unwrap_or(srgb("#b9c79a"))
+        } else if rng.chance(0.5) {
             srgb("#b9c79a")
         } else {
             metal_color(srgb("#a4a9aa"), rng.float(0., 0.6), settings)
@@ -465,6 +492,41 @@ pub fn cage(
         return Ok(());
     }
     let content = rng.pick(&["plants", "plants", "washing", "storage", "mixed"]);
+    let content = plan.contents.unwrap_or(content);
+    if content == "storage" && plan.contents.is_some() {
+        // Planned storage is cartons: stacked one or two high along the cage, taped shut.
+        let mut x = x0 + 0.05;
+        while x < x1 - 0.3 {
+            d.mesh.spend_work(1)?;
+            let size = rng.float(0.3, 0.42).min(depth - 0.12);
+            let mut z = z0 + 0.012;
+            for _ in 0..rng.integer(1, 2) {
+                let high = size * rng.float(0.75, 1.);
+                if z + high > z1 - 0.1 {
+                    break;
+                }
+                let y = depth - 0.07 - size - rng.float(0., 0.05);
+                let card = shade(srgb("#b08a5c"), rng.float(0.8, 1.15));
+                d.cuboid(
+                    "paint",
+                    [x, y, z],
+                    [x + size, y + size, z + high],
+                    card,
+                    "d",
+                )?;
+                d.cuboid(
+                    "paint",
+                    [x + size * 0.44, y - 0.002, z + high - 0.002],
+                    [x + size * 0.56, y + size + 0.002, z + high + 0.002],
+                    shade(card, 0.72),
+                    "d",
+                )?;
+                z += high + 0.004;
+            }
+            x += size + rng.float(0.03, 0.12);
+        }
+        return Ok(());
+    }
     if content == "plants" || content == "mixed" {
         plants(d, [x0, x1], depth * 0.6, z0 + 0.01, rng, textured)?;
     }

@@ -465,3 +465,15 @@ commit and the same Wasm with only the lighting change between them:
 
 The environment's `rotation`, `toneMapping` other than `aces`, `environment.source:
 "none"` and an empty `lights` list are implemented but were not rendered and compared.
+
+## Small casters (2026-11-18, pending review)
+
+A scene of fixtures on a wall (cages, brackets, pipes, air conditioners) reads as illustrated when small things shade
+lightly and large forms clearly. Version 1 has no caster-size or per-model shadow weight; within the record the same
+effect comes from three global or per-light settings, as `tests/item-facade-browser.mjs` sets them: the sun's shadow
+`softness` 0.04 with `spread` 0.16 and `maxSoftness` 0.5 (the penumbra grows with the distance to the caster, so a
+narrow caster's umbra fades within a hand's breadth; `spread` 0.3 with `maxSoftness` 0.9, tried first, showed the
+shadow map's texels as blocky speckle over the whole lit wall), `darkness` 0.1, and ambient occlusion with a moderate `radius` (0.55 m),
+`intensity` below 1 (0.8) and a `thickness` of 0.3 m. (Radius 1.1 m with thickness 0.12 m, tried first, broke up into blocky noise over open wall.) A per-light caster
+size threshold or a per-model shadow class would be an additive field of `lights[].shadow` or of the scene, never of a
+material.

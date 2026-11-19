@@ -12,6 +12,7 @@ pub(super) fn bake(
     font_dir: Option<&Path>,
     names: &[String],
     extra: &str,
+    extend: Option<&Path>,
 ) -> Result<(), String> {
     let mut selected = if names.is_empty() {
         RECIPES.to_vec()
@@ -26,7 +27,7 @@ pub(super) fn bake(
             ));
         }
     }
-    if !extra.is_empty() && !selected.contains(&"lettering") {
+    if (!extra.is_empty() || extend.is_some()) && !selected.contains(&"lettering") {
         return Err("Extra glyphs require the lettering recipe.".into());
     }
     // Preserve the requested order but write each image only once.
@@ -41,6 +42,7 @@ pub(super) fn bake(
             lettering::bake(
                 font_dir.unwrap_or_else(|| Path::new("generated/kowloon-kit-fonts")),
                 extra,
+                extend,
             )
         })
         .transpose()?;

@@ -241,8 +241,20 @@ impl Default for Scalar {
         Self::Number(0.)
     }
 }
+impl Scalar {
+    /// The absent value of an optional field: a literal zero.
+    pub(super) fn is_zero(&self) -> bool {
+        matches!(self, Self::Number(value) if *value == 0.)
+    }
+    fn is_one(&self) -> bool {
+        matches!(self, Self::Number(value) if *value == 1.)
+    }
+}
 fn segments() -> Scalar {
     Scalar::Number(16.)
+}
+fn one() -> Scalar {
+    Scalar::Number(1.)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -286,21 +298,37 @@ pub enum Generator {
         asset: String,
         scene: Option<usize>,
     },
-    /// Version 2 part generator. The box spans from the part origin to `size`.
+    /// Version 2 part generator. The box spans from the part origin to `size`. `bevel` rounds
+    /// its twelve edges with that radius in `bevelSegments` (1 or 2) chords; 0 leaves them
+    /// sharp. With `bevelAxis` only the four edges along that axis are rounded, so boxes laid
+    /// end to end (a coping, a kerb) keep one section.
+    #[serde(rename_all = "camelCase")]
     Box {
         size: [Scalar; 3],
+        #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+        bevel: Scalar,
+        #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
+        bevel_segments: Scalar,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bevel_axis: Option<Axis>,
     },
     /// Version 2 part generator.
     Panel(PanelDefinition),
     /// Version 2 part generator.
     Route(RouteDefinition),
     /// Version 2 part generator: a footprint swept upward, with its street corners cut and
-    /// an optional inset. Face groups `side`, `top`, `bottom`.
+    /// an optional inset. Face groups `side`, `top`, `bottom`. `bevel` rounds the rims of its
+    /// top and bottom as a box's.
+    #[serde(rename_all = "camelCase")]
     Prism {
         footprint: FootprintReference,
         height: Scalar,
         #[serde(default)]
         inset: Scalar,
+        #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+        bevel: Scalar,
+        #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
+        bevel_segments: Scalar,
     },
     /// Version 2 part generator: another item definition, placed as a sub-item.
     Item(ItemReference),
@@ -310,6 +338,14 @@ pub enum Generator {
     /// The value of an absent root `generator`: the item is defined by `parts`.
     #[default]
     Parts,
+}
+/// An axis of a part's own frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Axis {
+    X,
+    Y,
+    Z,
 }
 impl Generator {
     pub fn is_parts(&self) -> bool {
@@ -366,7 +402,9 @@ pub struct RepeatAxis {
 /// A footprint read from controls: `points` names a `points` control, `streets` an optional
 /// `flags` control (one per edge, edge i running from point i to point i + 1), and `cut` the
 /// length a corner between two street edges is cut back along each, at 45 degrees on a square
-/// corner. Only convex corners are cut.
+/// corner. Only convex corners are cut. With `round` of 2 to 16 the cut is that many facets
+/// along the arc that touches both edges where the cut starts and ends, and `facet` says
+/// which of them a copy's cut corner values describe.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FootprintReference {
@@ -374,6 +412,10 @@ pub struct FootprintReference {
     pub streets: Option<String>,
     #[serde(default)]
     pub cut: Scalar,
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub round: Scalar,
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub facet: Scalar,
 }
 
 /// One generator of a version 2 item, with its own meshes, features and geometry key.
@@ -460,6 +502,12 @@ pub struct PanelDefinition {
     pub openings: Vec<OpeningDefinition>,
     /// `[u, v]` of the pattern anchor on the front face; the bottom-left corner when absent.
     pub pattern_anchor: Option<[Scalar; 2]>,
+    /// Rounds the rim of the front face (where it meets the four edge faces) and the front
+    /// rim of every opening with this radius in `bevelSegments` (1 or 2) chords.
+    #[serde(default, skip_serializing_if = "Scalar::is_zero")]
+    pub bevel: Scalar,
+    #[serde(default = "one", skip_serializing_if = "Scalar::is_one")]
+    pub bevel_segments: Scalar,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

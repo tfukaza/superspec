@@ -102,12 +102,12 @@ export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.t
   // The fixtures' own recipes: glazing, wall tiles, air conditioner casings and awning canvas; the street's paving and asphalt.
   "kowloon-window-glass.material.ts", "kowloon-wall-tile.material.ts", "kowloon-aircon.material.ts", "kowloon-canvas.material.ts",
   "kowloon-paving.material.ts", "kowloon-asphalt.material.ts", "kowloon-poster-print.material.ts",
-  "kowloon-concrete-edges.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts"];
+  "kowloon-concrete-edges.material.ts", "kowloon-edge-ink.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts"];
 function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
     // The reference shop house's cream render: the concrete's plaster coat, with patches lost to the concrete beneath.
-    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, chipAmount: 0.1, chipRelief: 0.001, darknessA: 0.45, darknessB: 0.5, hueAmount: 0.06, hueAngle: 60 }, seed: 11, meshes: [] },
+    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.1, chipRelief: 0.001, darknessA: 0.12, darknessB: 0.12, blendContrast: 1, hueAmount: 0, hueAngle: 60 }, seed: 11, meshes: [] },
     // The fixtures are drawn with their paint as vertex tints (a frame's green, a cage's khaki, an awning's stripes), which
     // the picture keeps over their baked looks (`?bakedtints=on`): so their materials are pale, and add only what age
     // does to the paint: dullness, dirt and rust.
@@ -116,12 +116,14 @@ function facadeMaterials() {
     { id: "enamel", entry: steel, parameters: { ...plain, substrate: [0.78, 0.76, 0.7], metalness: 0.1, roughness: 0.45, edgeRust: 0.3, surfaceRust: 0.05, rainRust: 0.4 }, seed: 7, meshes: [] },
     // Old glazing with the room painted into it, and what stands behind an open or unglazed light (tinted: the dark of
     // the room, its curtains and drapes).
-    { id: "window-glass", entry: "kowloon-window-glass.material.ts", parameters: { tint: [0.085, 0.095, 0.085], sky: 1, lamps: 0.3 }, seed: 7, meshes: [] },
+    { id: "window-glass", entry: "kowloon-window-glass.material.ts", parameters: { tint: [0.135, 0.127, 0.112], sky: 1, lamps: 0.22, dirt: 0.6 }, seed: 7, meshes: [] },
     { id: "room-dark", entry: steel, parameters: { ...plain, substrate: [0.85, 0.85, 0.85], metalness: 0, roughness: 0.92, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
     // The spandrels' small grey-green tiles, dirty in the joints.
-    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.065, glaze: [0.205, 0.26, 0.19], spare: [0.27, 0.32, 0.25], replaced: 0.03, variation: 0.14, grime: 0.75 }, seed: 7, meshes: [] },
+    { id: "facade-tile", entry: "kowloon-wall-tile.material.ts", parameters: { tileSize: 0.065, glaze: [0.205, 0.26, 0.19], spare: [0.235, 0.29, 0.22], replaced: 0.012, missing: 0.03, variation: 0.12, grime: 0.8 }, seed: 7, meshes: [] },
     // Fixtures: printed air conditioner casings, painted steel gone dull and rusty, and thin galvanized sheet.
     { id: "aircon-casing", entry: "kowloon-aircon.material.ts", parameters: { yellowing: 0.25 }, seed: 7, meshes: [] },
+    // The plastered walls and floor inside an open shop (tinted): pale, matt and a little grimy.
+    { id: "shop-plaster", entry: steel, parameters: { ...plain, substrate: [0.82, 0.8, 0.76], metalness: 0, roughness: 0.92, edgeRust: 0, surfaceRust: 0.06, rainRust: 0.2 }, seed: 3, meshes: [] },
     { id: "poster-print", entry: "kowloon-poster-print.material.ts", parameters: {}, seed: 7, meshes: [] },
     // Signs: the painted ground, worn and stained, and its lettering with paint lost from the strokes (both tinted).
     { id: "sign-board", entry: "kowloon-sign-board.material.ts", parameters: { flaking: 0.8, fading: 0.65, grime: 0.75, rust: 0.7 }, seed: 7, meshes: [] },
@@ -130,12 +132,12 @@ function facadeMaterials() {
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
     { id: "aged-metal", entry: steel, parameters: { ...plain, substrate: [0.72, 0.72, 0.7], metalness: 0.35, roughness: 0.6, edgeRust: 0.75, surfaceRust: 0.3, rainRust: 0.7 }, seed: 5, meshes: [] },
     // Awning canvas, dyed by its tints (plain or striped): the weave, bleaching, soil and stains.
-    { id: "canvas", entry: "kowloon-canvas.material.ts", parameters: { clothA: [0.86, 0.85, 0.82], clothB: [0.86, 0.85, 0.82], striped: 0, bleaching: 0.35 }, seed: 7, meshes: [] },
+    { id: "canvas", entry: "kowloon-canvas.material.ts", parameters: { clothA: [0.86, 0.85, 0.82], clothB: [0.86, 0.85, 0.82], striped: 0, bleaching: 0, soil: 0.22 }, seed: 7, meshes: [] },
     // The street: flagged pavement and its kerb (their stones shaded by tints), and the asphalt beyond.
     // (The pavement item lays its own stones, so the recipe's flags are made too large to show: one stone a receiver.)
-    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.6, 0.59, 0.56], variation: 0.05, grime: 0.85 }, seed: 7, meshes: [] },
+    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.52, 0.51, 0.48], variation: 0.05, grime: 1 }, seed: 7, meshes: [] },
     { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
-    { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.135, 0.135, 0.13], cracks: 0, patches: 0.15 }, seed: 7, meshes: [] },
+    { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.2, wearing: 0.12, stains: 0.6 }, seed: 7, meshes: [] },
     { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
   ];
 }

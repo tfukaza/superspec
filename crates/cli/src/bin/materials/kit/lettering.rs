@@ -82,9 +82,17 @@ fn load_font(font: FontSpec, directory: &Path, client: &Client) -> Result<Font, 
     })
 }
 
-pub(super) fn bake(directory: &Path, extra: &str) -> Result<(Vec<u8>, Vec<u8>), String> {
+/// With a shipped atlas image, its cells are kept and only new glyphs are rendered.
+pub(super) fn bake(
+    directory: &Path,
+    extra: &str,
+    shipped: Option<&Path>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let shipped = shipped
+        .map(|path| crate::decode(path).map_err(|e| format!("{}: {e}", path.display())))
+        .transpose()?;
     let mut client = None;
-    lettering::bake(extra, &mut |spec| {
+    let mut load = |spec: FontSpec| {
         if client.is_none() {
             client = Some(
                 Client::builder()
@@ -94,5 +102,9 @@ pub(super) fn bake(directory: &Path, extra: &str) -> Result<(Vec<u8>, Vec<u8>), 
             );
         }
         load_font(spec, directory, client.as_ref().unwrap())
-    })
+    };
+    match &shipped {
+        Some(image) => lettering::extend(extra, image, &mut load),
+        None => lettering::bake(extra, &mut load),
+    }
 }

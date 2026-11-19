@@ -309,6 +309,56 @@ fn a_plant_becomes_a_batch_per_part_and_level_with_its_family() {
     superspec_model::batches::add_project(&mut again, &document).unwrap();
     assert_eq!(again.manifest.batches.len(), all.len());
     assert_eq!(again.manifest.batches[0].foliage, all[0].batch.foliage);
+
+    // The document states every number as the single that is delivered, in the fewest digits that
+    // identify it (at most 9), and leaves out all-white vertex colours: what it delivers is what
+    // the batches deliver. (A placement is renormalized from the singles it is read as, so it may
+    // differ from one made of doubles in its last place.)
+    let (read, made) = (&again.batches, &scene.batches);
+    assert_eq!(read.positions, made.positions);
+    assert_eq!(read.normals, made.normals);
+    assert_eq!(read.uvs, made.uvs);
+    assert_eq!(read.colors, made.colors);
+    assert_eq!(read.indices, made.indices);
+    assert_eq!(read.attributes, made.attributes);
+    assert_eq!(read.placements.len(), made.placements.len());
+    for (a, b) in read.placements.iter().zip(&made.placements) {
+        assert!((a - b).abs() <= 1e-6 * b.abs().max(1.), "{a} {b}");
+    }
+    let listed = document["batches"].as_array().unwrap();
+    for (FoliageBatch { batch, mesh }, written) in all.iter().zip(listed) {
+        let read = |value: &serde_json::Value| -> Vec<f32> {
+            let numbers = value.as_array().unwrap();
+            numbers.iter().map(|v| v.as_f64().unwrap() as f32).collect()
+        };
+        let positions: Vec<f32> = mesh.positions.iter().flatten().map(|v| *v as f32).collect();
+        assert_eq!(read(&written["mesh"]["positions"]), positions);
+        assert!(written["mesh"].get("colors").is_none(), "{}", batch.id);
+        for (name, values) in &batch.vertex_scalars {
+            assert_eq!(&read(&written["mesh"]["scalars"][name]), values, "{name}");
+        }
+        for (name, values) in &batch.vectors {
+            assert_eq!(read(&written["vectors"][name]), values.concat(), "{name}");
+        }
+        for (placement, instance) in batch
+            .placements
+            .iter()
+            .zip(written["instances"].as_array().unwrap())
+        {
+            assert_eq!(
+                read(&instance["rotation"]),
+                placement.rotation.map(|v| v as f32)
+            );
+        }
+    }
+    let text = serde_json::to_string(&listed).unwrap();
+    let longest = text
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .filter(|token| token.contains('.'))
+        .map(|token| token.replace('.', "").trim_start_matches('0').len())
+        .max()
+        .unwrap();
+    assert!(longest <= 9, "a number of {longest} digits");
 }
 
 /// The lawn's height at a point of the plan (see `lawn_ground`).
@@ -597,7 +647,7 @@ fn write_lane_plants() {
             .map_or(0., |p| p[2])
     };
     // Two trees and a shrub: each plant's levels are about 6 MB of project, which a Studio
-    // project holds at most 32 MiB of.
+    // project holds at most 128 MiB of.
     for (index, (definition, at)) in [
         (broadleaf(0.75), [-2.2, -5.9]),
         (broadleaf(0.65), [-2.3, 1.6]),

@@ -215,6 +215,110 @@ fn unknown_parameters_and_bad_values_are_refused() {
 }
 
 #[test]
+fn open_shops_and_street_stock_stay_light() {
+    let natives = Natives::new();
+    let vertices = |name: &str, entries: &[(&str, Value)]| -> usize {
+        generate(&natives, name, &values(entries))
+            .unwrap()
+            .iter()
+            .map(|m| m.positions.len())
+            .sum()
+    };
+    let room = vertices(
+        "kowloon/shop-room",
+        &[("trade", json!("provisions")), ("width", json!(6))],
+    );
+    let stock = vertices("kowloon/street-stock", &[("width", json!(6))]);
+    println!("provisions shop room (6 m): {room} vertices; street stock (6 m): {stock} vertices");
+    // A packed shop of baked goods was 164 000 vertices and its street stock 22 000.
+    assert!(room < 60_000 && stock < 12_000);
+    // Its lit tubes are a slot of their own, bright and uncoloured by the room.
+    let shop = generate(
+        &natives,
+        "kowloon/shop-room",
+        &values(&[("trade", json!("provisions")), ("width", json!(6))]),
+    )
+    .unwrap();
+    let tubes: Vec<&ItemMesh> = shop
+        .iter()
+        .filter(|m| m.material_slot == "tube-light")
+        .collect();
+    assert_eq!(tubes.len(), 1);
+    assert!(tubes[0].colors.iter().all(|c| c[0] > 0.9 && c[2] > 0.9));
+    let slots: Vec<&str> = shop.iter().map(|m| m.material_slot.as_str()).collect();
+    for slot in ["interior", "concrete", "shop-floor", "stock"] {
+        assert!(slots.contains(&slot), "{slot} in {slots:?}");
+    }
+    // The room's floor is a slot of its own, 3 cm above its anchor (clear of the ground the
+    // shop stands on) and as large as the room; the ceiling stays concrete.
+    let floor: Vec<&[f64; 3]> = shop
+        .iter()
+        .filter(|m| m.material_slot == "shop-floor")
+        .flat_map(|m| &m.positions)
+        .collect();
+    assert!(floor.iter().all(|p| (p[2] - 0.03).abs() < 1e-6));
+    let reach = |axis: usize| {
+        floor.iter().map(|p| p[axis]).fold(f64::MIN, f64::max)
+            - floor.iter().map(|p| p[axis]).fold(f64::MAX, f64::min)
+    };
+    assert!((reach(0) - 6.).abs() < 1e-6 && (reach(1) - 3.1).abs() < 1e-6);
+    assert!(
+        shop.iter()
+            .filter(|m| m.material_slot == "concrete")
+            .flat_map(|m| &m.positions)
+            .all(|p| p[2] > 2.)
+    );
+    // Stock colours fade: half their saturation by default, all of it at 1.
+    let saturation = |fade: f64| {
+        let meshes = generate(
+            &natives,
+            "kowloon/street-stock",
+            &values(&[("width", json!(6)), ("fade", json!(fade))]),
+        )
+        .unwrap();
+        let colors: Vec<&[f64; 4]> = meshes.iter().flat_map(|m| &m.colors).collect();
+        colors
+            .iter()
+            .map(|c| {
+                c[..3].iter().cloned().fold(f64::MIN, f64::max)
+                    - c[..3].iter().cloned().fold(f64::MAX, f64::min)
+            })
+            .sum::<f64>()
+            / colors.len() as f64
+    };
+    let (vivid, faded, grey) = (saturation(0.), saturation(0.5), saturation(1.));
+    assert!(
+        faded < vivid * 0.62 && grey < vivid * 0.25,
+        "{vivid} {faded} {grey}"
+    );
+    // Heaps of crates, cartons or both fill their width and stay within a metre of the wall.
+    for kind in ["crates", "cartons", "mixed"] {
+        let heap = generate(
+            &natives,
+            "kowloon/street-stock",
+            &values(&[("width", json!(1.5)), ("kind", json!(kind))]),
+        )
+        .unwrap();
+        check(kind, &heap);
+        assert!(heap.iter().all(|m| m.material_slot == "stock"));
+        assert!(
+            heap.iter()
+                .flat_map(|m| &m.positions)
+                .all(|p| p[0].abs() <= 0.8 && p[1] <= 0.09 && p[1] > -1.1 && p[2] >= 0.),
+            "{kind} stays in its place"
+        );
+    }
+    assert!(
+        generate(
+            &natives,
+            "kowloon/street-stock",
+            &values(&[("kind", json!("pianos"))])
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn choices_and_dimensions_reach_the_fixture() {
     let natives = Natives::new();
     let extent = |meshes: &[ItemMesh], axis: usize| {

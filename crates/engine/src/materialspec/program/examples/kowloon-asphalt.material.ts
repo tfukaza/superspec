@@ -57,7 +57,7 @@ export default defineMaterial({
   layers: [
     layer({ id: "patch", mask: mul(patch, 0.75), baseColor: mul(binder, 0.62), roughness: 0.85 }),
     layer({ id: "rim", mask: patchRim, baseColor: mul(binder, 0.35), roughness: 0.9, height: { add: -0.002 } }),
-    layer({ id: "silt", mask: mul(silt, 0.7), baseColor: vec3(0.3, 0.28, 0.23), roughness: 1 }),
+    layer({ id: "silt", mask: mul(silt, 0.8), baseColor: mul(binder, 0.45), roughness: 1 }),
     layer({ id: "oil", mask: mul(oil, 0.7), baseColor: vec3(0.012, 0.012, 0.012), roughness: 0.5 }),
     layer({ id: "crazing", mask: crazing, baseColor: vec3(0.012, 0.012, 0.011), roughness: 1, height: { add: -0.002 } }),
   ],

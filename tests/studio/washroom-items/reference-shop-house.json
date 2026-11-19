@@ -1,6 +1,11 @@
 {
   "//": "kowloon-building controls that recreate the reference shop house bay by bay (the authored model=\"reference-corner\"), from that model's own numbers. Edge 0 is the front, edge 1 the right side from the cut corner; storey 0 is the ground floor. The back and left edges are left to the seed.",
   "seed": 3,
+  "/corner": "The street corner is rounded with a radius of 0.55 m (four facets), and the green mosaic band runs through it. The front's wall ends 0.55 m before the corner (at 9.25 m) and the side's starts 0.55 m after it, so the front's wide bank and shop end at 8.75 m.",
+  "cornerStyle": "round",
+  "cut": 0.55,
+  "cornerSegments": 4,
+  "cornerTiles": true,
   "shopWidth": 2.9,
   "signs": false,
   "streetWindowHeight": 1.7,
@@ -13,12 +18,15 @@
   "spandrelPlans": [[[], [0, 0, 1], [0, 0, 1], [0, 0, 1]], [[], [1, 1], [1, 1], [1, 1]]],
   "awningLower": 0.45,
   "/shops": "Front: a closed gate bay under a sagging green tarp on poles, then the open provisions shop under the striped canvas. Side: a gate and the open hardware shop.",
-  "shopSpansPlans": [[[0.4, 2.7], [3.05, 9.05]], [[0.4, 2.55], [3.05, 5.9]]],
+  "shopSpansPlans": [[[0.4, 2.7], [3.05, 8.75]], [[0.4, 2.55], [3.05, 5.9]]],
   "shopPlans": [["gate", "open"], ["gate", "open"]],
   "tradePlans": [["auto", "provisions"], ["auto", "hardware"]],
   "awningPlans": [["tarp", "striped"], ["none", "tarp"]],
+  "/clutter": "Crates and cartons stacked to the left of the front's gate and round the corner on the side street; the gates are galvanised.",
+  "clutterPlans": [["mixed-left", "none"], ["cartons-left", "none"]],
+  "gateColor": "#7d7b74",
   "spansPlans": [
-    [[], [[0.55, 2.65], [3.2, 4.15], [5.95, 9.05]], [[0.55, 2.65], [3.2, 5.4], [5.95, 9.05]], [[0.55, 2.65], [3.2, 5.4], [5.95, 9.05]]],
+    [[], [[0.55, 2.65], [3.2, 4.15], [5.95, 8.75]], [[0.55, 2.65], [3.2, 5.4], [5.95, 8.75]], [[0.55, 2.65], [3.2, 5.4], [5.95, 8.75]]],
     [[], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]], [[0.45, 2.4], [3.05, 5.45]]]
   ],
   "windowsPlans": [

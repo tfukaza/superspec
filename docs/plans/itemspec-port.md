@@ -159,12 +159,20 @@ items. Nothing is particular to the corner shop: the plan file names what goes w
 - **Open shops.** A shopfront of kind `open` is a room behind the opening (`kowloon/shop-room`: floor,
   ceiling, walls, the raised shutter's head, and its trade's furniture and goods: `provisions`, `grocer`,
   `greengrocer`, `hardware` or `herbalist`) with stock on the pavement (`kowloon/street-stock`: stacked
-  crates of bottles and cartons, a wire rack, a sack truck). The provisions shop is the reference model's,
-  fitted to any room (`shop::provisions::furnish_fitted`). A ground floor's `shopSpans` place shops of any
-  width, `tradePlan` names their trades and `shopDepth` their depth; rooms of two street sides are not
-  kept apart at a corner, so a plan keeps them clear. The goods' meshes are in a `stock` slot of their own,
-  coloured per vertex: a project leaves it unbound (plain) rather than baking a material over thousands of
-  small pieces.
+  plastic crates and cartons, wire racks, a sack truck, buckets and brooms). The provisions shop is fitted
+  to any room and packed (`shop::provisions::furnish_fitted`): shelves to the ceiling on three walls, a
+  display rack inside the opening, goods hung across it. Its goods and the street stock are low-detail
+  (a few faces each, no bottoms or backs): a 6 m shop is 21 000 vertices where the baked goods were
+  164 000, its street stock 4 000 for 22 000, so about one seeded bay in four is an open shop. A ground
+  floor's `shopSpans` place shops of any width, `tradePlan` names their trades and `shopDepth` their depth.
+  At a corner of two streets the side that arrives keeps its rooms and the side that leaves yields: its
+  bays within `shopDepth` of the corner are only as deep as `cornerClear` (how far the first side's shops
+  stay from the corner, 0.5 m) leaves free, and stay shut where that is under 2.4 m. `clutterPlan` names
+  what stands by each bay (`none`, `auto`, `crates`, `cartons`, `mixed`, with `-left` or `-right` for the
+  jamb) and `gateColor` paints the gates' lattice. The goods' meshes are in a `stock` slot of their own,
+  coloured per vertex and faded (`fade`), the room's floor in `shop-floor` and the provisions shop's lit
+  tubes in `tube-light`: a project leaves these unbound (plain) rather than baking a material over
+  thousands of small pieces, or binds an emissive material to the tubes.
 - **Awnings.** `awningPlan` chooses `awning` (the bracketed household canvas), `tarp` (a sagging canvas on
   two poles) or `striped` (the fitted canvas with stripes and a valance). `kowloon/awning` and
   `kowloon/tarp` take `poles` and `stand`.
@@ -205,6 +213,31 @@ for squares and their two colours), a drain with a `hopper`, a tiled roof deck (
 controls from the same round: `spandrelPlans` (which window banks have tiled spandrels), `awningLower`,
 `roofRailShare` (the rail covers part of each street parapet), `shutterColor` and `doorColor`, and the
 balcony's quarter fan (`kowloon/fan-divider`). String courses are thin (0.11 m proud).
+
+A later round planned the rest of that picture, again as controls of the same items (each absent control
+leaves the seeded result as it was):
+
+- **Entrances.** `door` (`auto`, `single`, `double`, `glazed`, `steel`) and `transom` (`auto`, `glazed`,
+  `mesh`, `none`) name a door bay's entrance (`doors::Design`, read by `kowloon/entrance` and
+  `kowloon/ground-bay`); a named door is painted `doorColor`.
+- **Fitted bays.** `fittedBays` cuts each planned door's wall opening to the door (2.5 m) and has the
+  bay's fixture fill its opening (`kowloon/ground-bay` `opening`): a shutter stands closed between guides
+  at the span's edges, in `shutterColor`, under a head box of `shutterHead` metres rusted by
+  `shutterHeadRust`; a door's frame takes the span and its transom the head. `meters: false` leaves the
+  meter banks between bays out.
+- **Cages and storerooms.** `cagePlans` (per edge, storey and bay: `auto`, `plants`, `washing`, `storage`,
+  `mixed`, `empty`) names a cage's contents (`kowloon/cage` `contents`; planned storage is stacked
+  cartons), and on a building of `fullCages` the `canopiesPlans` cell roofs the cage itself (`roof`)
+  instead of hooding the window. `storagePlans` (per edge, a share per storey) stacks cartons behind a
+  storey's glass (`kowloon/window` `storage`); `windowTransom` places the windows' transom bar.
+- **Walls.** `bandsAround` runs the string courses round every side, mitred at the square corners, and
+  replaces the shops' box fascia by the same course. `vents: false` and `ventPlans` (per edge: x, z, and
+  optionally width and height) place wall vents by plan; a sixth `conduitPlans` column is the width of a
+  junction box at the conduit's end (`kowloon/conduit` `endBox`). `backPipes` (3) and `downpipes` (true)
+  are the back sides' seeded pipes and every side's roof downpipe; with `windowsPlans` and
+  `fixturesPlans` rows for the back edges a plan leaves a side wall bare.
+- **Camera.** A plan's `"/view"` key (`azimuth`, `elevation`, `fov` in degrees, `distance` and target
+  `height` in metres) replaces the `reference` view of `tests/item-facade-browser.mjs`.
 
 ItemSpec itself gained two things for this: a choice control reads as its index among its choices in
 expressions (so a `when` can test a kind), and an item may have 128 controls and a placed item a million
@@ -263,9 +296,15 @@ The building's look is recipes and layers that any item can use; none is tied to
 - **Limits.** The wall slot is at its eight layers. `kowloon/tarp`'s mesh has a triangle without a direction, which a
   bound receiver refuses, so awning cloth stays unbound (plain tints). Lettering stays the shipped glyph sheet: baked
   at 160 texels a meter its cutout breaks up. Notices are baked at the wall's density, so their print is soft.
-- **Light** (`tests/item-facade-browser.mjs`, the scene's global record only): a warm soft key from the front-left
-  (azimuth -42, elevation 50), ambient 0.75, ambient occlusion on (radius 0.85, intensity 3), a warm pale backdrop;
-  the `reference` view fills the frame (19.5 degree lens) and five detail views were added.
+- **Edges.** `kowloon-edge-ink` draws every exposed edge of a receiver (convex creases and open rims) as a worn pale
+  arris with a narrow, broken line of grime beside it, heavier on upright edges and in inside corners, and rounds
+  convex creases over in shading. It took the place of the all-over dirt on walls: plaster is calm, and its marks are
+  placed (streaks, soot, rust runs, repairs, edges).
+- **Light** (`tests/item-facade-browser.mjs`, the scene's global record only): a bright overcast day: a warm soft key
+  from just off the camera (azimuth 6, elevation 52, intensity 1.8), ambient 1.15, exposure 1.06, light shadows
+  (darkness 0.1), ambient occlusion on in the views without plants (radius 0.6, intensity 1.6; the occlusion pass does
+  not stand foliage cards up, so it is off where trees are drawn), a warm pale backdrop; the `reference` view fills
+  the frame (19.5 degree lens) and five detail views were added.
 
 ### The scene
 

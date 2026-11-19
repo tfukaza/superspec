@@ -176,14 +176,11 @@ const kowloonSlots = { wall: "render-paint", plinth: "render-paint", trim: "rend
   glass: "window-glass", pane: "room-dark",
   galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
   opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",
-  // `tarp` (awning and tarpaulin cloth) wants "canvas", but stays plain for now: the `kowloon/tarp` mesh has a triangle
-  // without a direction, which a bound receiver's layout refuses ("Receiver has a degenerate direction"), and one
-  // refused receiver leaves the whole scene without its baked looks.
-  "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
+  tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
   // A sign's lettering stays the shipped glyph sheet (crisp at any size); its ground is worn and stained.
   rust: "rusted-pipe", board: "sign-board",
   // The pavement's stones and kerb, and the plastered walls inside an open shop (tinted per vertex).
-  paving: "paving", kerb: "kerb", interior: "concrete-slab" };
+  paving: "paving", kerb: "kerb", "roof-tile": "paving", interior: "shop-plaster" };
 export const facade = {
   id: "facade",
   entry: "kowloon-facade-side.item.json",

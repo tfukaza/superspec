@@ -60,11 +60,73 @@ pub struct Bounds {
     pub x0: f64,
     pub x1: f64,
 }
+/// The leaf construction a plan may name instead of leaving it to the seed.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Style {
+    /// One painted panelled leaf.
+    Single,
+    /// Two painted panelled leaves.
+    Double,
+    /// One timber leaf with a glazed upper half.
+    Glazed,
+    /// One pressed steel leaf.
+    Steel,
+}
+/// The light over the door a plan may name.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transom {
+    Glazed,
+    /// An open grid of thin bars over the dark of the room.
+    Mesh,
+    None,
+}
+/// What a plan fixes of an entrance; the default leaves everything to the seed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Design {
+    pub style: Option<Style>,
+    pub paint: Option<V3>,
+    pub transom: Option<Transom>,
+    /// The head height of a wall opening as wide as the unit, which the entrance then fills:
+    /// its frame reaches the unit's edges and its transom the head.
+    pub fit: Option<f64>,
+}
 pub fn entrance_bounds(unit: &Unit, rng: &mut SeededRng) -> Result<Bounds, String> {
+    planned_bounds(unit, rng, &Design::default())
+}
+/// [`entrance_bounds`] under a plan; it draws from `rng` exactly as the seeded bounds do.
+pub fn planned_bounds(unit: &Unit, rng: &mut SeededRng, design: &Design) -> Result<Bounds, String> {
     unit.validate()?;
-    let double = unit.u1 - unit.u0 > 2.3 && rng.chance(0.4);
+    let span = unit.u1 - unit.u0;
+    let double = span > 2.3 && rng.chance(0.4);
     let w = if double { 1.4 } else { rng.float(0.85, 1.) };
-    let x0 = unit.u0 + 0.3_f64.max((unit.u1 - unit.u0 - w) * rng.pick(&[0.25, 0.5, 0.75]));
+    let x0 = unit.u0 + 0.3_f64.max((span - w) * rng.pick(&[0.25, 0.5, 0.75]));
+    let planned = design.style.map(|style| style == Style::Double);
+    let (double, w, x0) = match (planned, design.fit) {
+        (None, None) => (double, w, x0),
+        (planned, fit) => {
+            let double = planned.unwrap_or(double);
+            let w = match (double, fit) {
+                (true, Some(_)) => span - 0.2,
+                (true, None) => 1.4_f64.min(span - 0.2),
+                (false, Some(_)) => (span - 0.2).min(1.05),
+                (false, None) if planned == Some(false) && w > 1. => 0.92,
+                (false, None) => w,
+            };
+            // A planned door stands where the seed put it when the unit has room, else centred.
+            let centred = fit.is_some() || x0 + w > unit.u1 - 0.1;
+            (
+                double,
+                w,
+                if centred {
+                    unit.u0 + (span - w) / 2.
+                } else {
+                    x0
+                },
+            )
+        }
+    };
     Ok(Bounds {
         double,
         w,
@@ -527,7 +589,26 @@ pub fn entrance(
     s: &Settings,
     design: &mut SeededRng,
 ) -> Result<Bounds, String> {
+    planned_entrance(d, unit, s, design, &Design::default())
+}
+/// [`entrance`] with whatever `plan` fixes of it; an empty plan draws the seeded entrance.
+pub fn planned_entrance(
+    d: &mut Fixture<'_, '_>,
+    unit: &Unit,
+    s: &Settings,
+    design: &mut SeededRng,
+    plan: &Design,
+) -> Result<Bounds, String> {
     unit.validate()?;
+    if plan
+        .paint
+        .is_some_and(|paint| paint.iter().any(|v| !v.is_finite() || *v < 0.))
+        || plan
+            .fit
+            .is_some_and(|head| !head.is_finite() || !(2.3..=unit.height).contains(&head))
+    {
+        return Err("A planned entrance needs a finite paint and a head within its storey.".into());
+    }
     let w = &s.weathering;
     if w.seed.len() > 2048
         || s.detail > 2
@@ -551,7 +632,7 @@ pub fn entrance(
     }
     // Admit the owned finish before consuming the shared design stream.
     d.pen.with_timber(s.timber.clone())?;
-    let bounds = entrance_bounds(unit, design)?;
+    let bounds = planned_bounds(unit, design, plan)?;
     let Bounds {
         double,
         w: width,
@@ -562,13 +643,23 @@ pub fn entrance(
     let selected = srgb(design.pick(&DOORS));
     design.float(0., 0.2);
     let steel = design.chance(0.35);
-    let glazed = !steel && !double;
+    let steel = plan.style.map_or(steel, |style| style == Style::Steel);
+    let glazed = plan
+        .style
+        .map_or(!steel && !double, |style| style == Style::Glazed);
     let paint = if glazed {
         srgb(rng(s, &format!("{}/wood", unit.key)).pick(&WOODS))
     } else {
         selected
     };
-    let transom = if unit.height - h > 0.95 { 0.36 } else { 0. };
+    let paint = plan.paint.unwrap_or(paint);
+    let transom = match (plan.transom, plan.fit) {
+        (Some(Transom::None), _) => 0.,
+        (_, Some(head)) if head - h - 0.1 >= 0.15 => (head - h - 0.1).min(0.9),
+        (None, _) if unit.height - h <= 0.95 => 0.,
+        _ => 0.36,
+    };
+    let meshed = plan.transom == Some(Transom::Mesh);
     let tint = shade(paint, 0.8);
     let frame_surface = if w.texture_density > 0. {
         Some(paint_surface(
@@ -679,7 +770,8 @@ pub fn entrance(
             } else {
                 d.pen.clone()
             };
-            let surface = if !steel {
+            // A planned paint with nothing to bake it is the leaf's plain colour.
+            let surface = if !steel && !(plan.paint.is_some() && w.texture_density == 0.) {
                 Some(paint_surface(
                     s,
                     key.clone(),
@@ -772,7 +864,26 @@ pub fn entrance(
             )?;
         }
     }
-    if transom > 0. {
+    if transom > 0. && meshed {
+        frame.draw(d, [x0, 0., h], [x1, 0.075, h + 0.045], "blr", tint)?;
+        let wire = shade(paint, 0.55);
+        let columns = ((width / 0.085).round() as usize).max(2);
+        let rows = (((transom - 0.045) / 0.085).round() as usize).max(2);
+        for i in 1..columns {
+            let x = x0 + width * i as f64 / columns as f64;
+            d.bar(
+                "metal",
+                [x, 0.04, h + 0.045],
+                [x, 0.04, h + transom],
+                0.009,
+                wire,
+            )?;
+        }
+        for i in 1..rows {
+            let z = h + 0.045 + (transom - 0.045) * i as f64 / rows as f64;
+            d.bar("metal", [x0, 0.046, z], [x1, 0.046, z], 0.009, wire)?;
+        }
+    } else if transom > 0. {
         glass(
             d,
             [x0, h + 0.045, x1, h + transom],

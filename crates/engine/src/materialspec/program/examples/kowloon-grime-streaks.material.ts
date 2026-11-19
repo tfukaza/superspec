@@ -18,24 +18,29 @@ const streakLength = param.scalar({ default: 2.8, range: [0.1, 10], unit: "m", l
 const period = param.scalar({ default: 4, range: [0.5, 20], unit: "m", label: "Repeat along the edge" });
 const shift = param.scalar({ default: 0, range: [0, 100], unit: "m", label: "Pattern offset" });
 
-const guardLift = param.scalar({ default: 0.05, range: [0.005, 1], unit: "m", label: "Guard offset above the edge" });
+const guardLift = param.scalar({ default: 0.3, range: [0.005, 1], unit: "m", label: "Guard offset above the edge" });
 
 const distance = featureDistance("source", 10);
 const along = featureTangent("source", 10);
-// Which side of the edge: a distance alone cannot say. Where the owner also draws the same edge `guardLift` uphill as
+// Which side of the edge: a distance alone cannot say. Where the owner also draws the same edge `guardLift` (0.3 m) uphill as
 // the feature the slot names `guard`, the two distances differ by the cosine of the angle off straight below: 1 under
 // the edge, 0 level with its ends, negative above it. Streaks then hang only below the edge, fanning out a little past
 // its ends as they fall, instead of ringing each end and climbing the wall above. Without a guard every side is below.
 const guarded = featureDistance("guard", 12);
-const beneath = select(lt(guarded, 11.5), clamp(div(sub(guarded, distance), guardLift), 0, 1), 1);
-const under = smoothstep(0.9, 0.985, beneath);
+// (Where the nearest guard is another edge's, further down the wall, it is much nearer than this edge: the texel is
+// below this edge all the same.)
+const side = div(sub(guarded, distance), guardLift);
+const beneath = select(lt(guarded, 11.5), select(lt(side, -1.3), 1, clamp(side, 0, 1)), 1);
+// (The lift is large and the threshold loose because an edge is often not in the plane of the face below it: a panel
+// reports its top along the middle of its thickness, which shortens the difference close under the edge.)
+const under = smoothstep(0.45, 0.75, beneath);
 // Downhill on the surface (straight down a flat one, so it is never zero), and the direction across the edge in the
 // surface: a unit vector where the receiver has the edge, zero where it has none (then nothing is drawn).
 const downhill = normalize(add(sub(gravity, mul(normal, dot(gravity, normal))), vec3(0, 0, -1e-4)));
 const across = cross(normal, along);
 const facing = dot(across, downhill);
 // The drop along the downhill line from the edge to this point, and where on the edge that line starts.
-const drop = div(mul(distance, max(beneath, 0.5)), max(abs(facing), 0.2));
+const drop = div(distance, max(abs(facing), 0.2));
 const start = sub(dot(world, along), mul(drop, dot(downhill, along)));
 const tile = vec2(div(add(start, shift), period), min(div(drop, streakLength), 0.999));
 // Beyond the longest streak, or where the receiver has no such edge, nothing.

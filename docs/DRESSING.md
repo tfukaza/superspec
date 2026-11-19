@@ -786,7 +786,11 @@ Noto Serif HK, LXGW WenKai TC, Yuji Boku, Dela Gothic One, Huninn and WDXL
 Lubrifont TC, with Oswald, Yuji Syuku, Anton and Bebas Neue for capitals),
 cached in `generated/kowloon-kit-fonts`. Pass `--fonts DIRECTORY` to use another cache.
 The atlas holds capitals, digits, punctuation and every shipped ideograph.
-Pass `--extra CHARACTERS` to include new glyphs. Publish the generated
+Pass `--extra CHARACTERS` to include new glyphs. A plain run renders every cell
+and advance afresh and orders ideographs by code point, which moves shipped cells.
+To add glyphs without changing shipped signs, also pass
+`--extend assets/materials/lettering.png`: the shipped cells, their order and the
+advances are kept and the new glyphs take the cells after them. Publish the generated
 `lettering.png` and `atlas.json` together to `assets/materials/` and
 `crates/engine/src/worldspec/themes/kowloon/signs/`, respectively.
 

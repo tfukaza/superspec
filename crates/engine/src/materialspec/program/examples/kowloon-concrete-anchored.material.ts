@@ -33,6 +33,7 @@ const chippedRoughness = param.scalar({ default: 0.92, range: [0, 1], label: "Ch
 const chipRelief = param.scalar({ default: 0.0035, range: [0, 0.006], unit: "m", label: "Chip relief" });
 const cutouts = param.bool({ default: true, label: "Repair cutouts" });
 const holes = param.bool({ default: true, label: "Form-tie holes" });
+const joints = param.bool({ default: true, label: "Construction joints" });
 const plaster = param.bool({ default: false, label: "Plaster coat" });
 const plasterChips = param.bool({ default: true, label: "Plaster loss" });
 const ground = param.bool({ default: false, label: "Ground slab" });
@@ -81,7 +82,7 @@ const repaired = mul(layered, add(vec3(1), mul(cutoutCoverage, add(
 ))));
 
 // Construction joints every 2 m from the anchor and the repair outlines, with chipped shoulders.
-const seamDistance = min(abs(sub(modulo(add(meters.x, 1), 2), 1)), abs(cutoutDistance));
+const seamDistance = min(select(joints, abs(sub(modulo(add(meters.x, 1), 2), 1)), 100), abs(cutoutDistance));
 const seamGrain = valueNoise(add(mul(meters, 137), vec2(3.1, 8.7)), seed("seam-grain"));
 const chippedWidth = add(add(0.009, mul(smoothstep(0.4, 0.78, fractal(mul(meters, 22), seed("seam-pockets"))), 0.037)), mul(sub(seamGrain, 0.5), 0.006));
 const pixel = max(mul(footprint, 0.65), 0.0006);

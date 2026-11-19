@@ -369,14 +369,34 @@ fn distance_alpha(mask: &[bool], embolden: f32) -> Vec<u8> {
     alpha
 }
 
+/// Renders every cell and advance afresh from the fonts, with the ideographs in code point order.
 pub fn bake(
     extra: &str,
     load_font: &mut dyn FnMut(FontSpec) -> Result<Font, String>,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let current: serde_json::Value = serde_json::from_str(ATLAS).map_err(|e| e.to_string())?;
-    let current = current["characters"]
+    render(extra, None, load_font)
+}
+
+/// Adds glyphs to the shipped atlas image. Its cells, their order and its advances are kept
+/// exactly; only characters it lacks are rendered, in the cells after the last shipped one.
+pub fn extend(
+    extra: &str,
+    shipped: &Image,
+    load_font: &mut dyn FnMut(FontSpec) -> Result<Font, String>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    render(extra, Some(shipped), load_font)
+}
+
+fn render(
+    extra: &str,
+    shipped: Option<&Image>,
+    load_font: &mut dyn FnMut(FontSpec) -> Result<Font, String>,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let metrics: serde_json::Value = serde_json::from_str(ATLAS).map_err(|e| e.to_string())?;
+    let current = metrics["characters"]
         .as_str()
         .ok_or("Missing shipped atlas character list.")?;
+    let latin_order = format!(" {LATIN}");
     let ideographs: BTreeSet<_> = current
         .chars()
         .chain(
@@ -387,7 +407,34 @@ pub fn bake(
         .chain(extra.chars())
         .filter(|&c| !LATIN.contains(c) && !c.is_whitespace())
         .collect();
-    let characters: String = LATIN.chars().chain(ideographs).collect();
+    let (characters, kept): (String, usize) = if let Some(image) = shipped {
+        let faces: Vec<_> = FACES.iter().map(|face| face.id).collect();
+        if (image.width, image.height) != (SIZE, SIZE)
+            || image.rgba.len() != SIZE * SIZE * 4
+            || !current.starts_with(LATIN)
+            || metrics["size"] != json!(SIZE)
+            || metrics["cell"] != json!(CELL)
+            || metrics["em"] != json!(EM)
+            || metrics["columns"] != json!(COLUMNS)
+            || metrics["rows"] != json!(ROWS)
+            || metrics["faces"] != json!(faces)
+            || metrics["latin"] != json!(latin_order)
+        {
+            return Err(
+                "The shipped atlas has another layout and cannot be extended; bake it afresh."
+                    .into(),
+            );
+        }
+        (
+            current
+                .chars()
+                .chain(ideographs.into_iter().filter(|&c| !current.contains(c)))
+                .collect(),
+            current.chars().count(),
+        )
+    } else {
+        (LATIN.chars().chain(ideographs).collect(), 0)
+    };
     if characters.chars().count() > COLUMNS * ROWS {
         return Err(format!(
             "The atlas can fit {} characters per face.",
@@ -405,8 +452,10 @@ pub fn bake(
         }
     }
     let mut advance_table = BTreeMap::new();
-    let mut rgba = [255, 255, 255, 0].repeat(SIZE * SIZE);
-    let latin_order = format!(" {LATIN}");
+    let mut rgba = match shipped {
+        Some(image) => image.rgba.clone(),
+        None => [255, 255, 255, 0].repeat(SIZE * SIZE),
+    };
     for (face_index, face) in FACES.iter().enumerate() {
         let mut ideograph_fonts = Vec::new();
         for spec in face.ideographs {
@@ -430,7 +479,7 @@ pub fn bake(
             .map(|c| advance(&latin, c).map(|a| (f64::from(a / em) * 10_000.).round() / 10_000.))
             .collect::<Result<Vec<_>, _>>()?;
         advance_table.insert(face.id, advances);
-        for (index, character) in characters.chars().enumerate() {
+        for (index, character) in characters.chars().enumerate().skip(kept) {
             let (scaler, origin) = if LATIN.contains(character) {
                 (
                     &latin,
@@ -468,14 +517,18 @@ pub fn bake(
         "faces": FACES.iter().map(|face| face.id).collect::<Vec<_>>(),
         "characters": characters,
         "latin": latin_order,
-        "advances": advance_table,
+        "advances": if shipped.is_some() { metrics["advances"].clone() } else { json!(advance_table) },
     });
-    let png = image::encode(&Image {
-        width: SIZE,
-        height: SIZE,
-        rgba,
-        mime: "image/png",
-    })?;
+    // The atlas ships with every build, so spend the slower, smaller lossless encoding on it.
+    let png = image::encode_small_cancellable(
+        &Image {
+            width: SIZE,
+            height: SIZE,
+            rgba,
+            mime: "image/png",
+        },
+        &|| false,
+    )?;
     let mut json = serde_json::to_vec_pretty(&layout).map_err(|e| e.to_string())?;
     json.push(b'\n');
     Ok((png, json))

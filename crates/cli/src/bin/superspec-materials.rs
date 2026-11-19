@@ -94,6 +94,7 @@ fn kit_textures(output: &Path, args: &[std::ffi::OsString]) -> Result<(), String
     let mut args = args.iter();
     let mut font_dir = None;
     let mut extra = "";
+    let mut extend = None;
     let mut names = Vec::new();
     while let Some(argument) = args.next() {
         match argument.to_str() {
@@ -106,17 +107,22 @@ fn kit_textures(output: &Path, args: &[std::ffi::OsString]) -> Result<(), String
                     .and_then(|arg| arg.to_str())
                     .ok_or("Missing UTF-8 extra glyphs.")?
             }
+            Some("--extend") => {
+                extend = Some(Path::new(
+                    args.next().ok_or("Missing shipped atlas image.")?,
+                ))
+            }
             Some(name) => names.push(name.to_owned()),
             None => return Err("Texture name must be valid UTF-8.".into()),
         }
     }
-    kit::bake(output, font_dir, &names, extra)
+    kit::bake(output, font_dir, &names, extra, extend)
 }
 
 const USAGE: &str = "\
 Usage: superspec-materials RECIPE INPUTS OUTPUT
   site-textures | kowloon-prop-textures | kitchen-metal | brushed-metal  NEW_DIRECTORY
-  kowloon-kit-textures  NEW_DIRECTORY [TEXTURE ...] [--fonts DIRECTORY] [--extra CHARACTERS]
+  kowloon-kit-textures  NEW_DIRECTORY [TEXTURE ...] [--fonts DIRECTORY] [--extra CHARACTERS] [--extend LETTERING_PNG]
   concrete  SOURCE_A SOURCE_B NEW_DIRECTORY
   vent-metal | restaurant-tiles | shop-timber  SOURCE_PNG NEW_DIRECTORY
   crate-wear | shop-cartons  REPOSITORY [ATLAS_DIRECTORY] NEW_DIRECTORY

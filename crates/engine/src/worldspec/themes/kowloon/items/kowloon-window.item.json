@@ -15,7 +15,8 @@
     "transom": {"type": "number", "default": 0.84, "min": 0.5, "max": 0.95},
     "glazing": {"type": "boolean", "default": true},
     "bars": {"type": "boolean", "default": false},
-    "barsPattern": {"type": "choice", "default": "bars", "choices": ["bars", "grid", "diamond"]}
+    "barsPattern": {"type": "choice", "default": "bars", "choices": ["bars", "grid", "diamond"]},
+    "storage": {"type": "number", "default": 0, "min": 0, "max": 1}
   },
   "parts": [
     {
@@ -24,8 +25,8 @@
         "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "hood": {"parameter": "hood"}, "recess": {"parameter": "recess"},
                        "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"},
-                       "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}}},
-      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "metal": "metal", "concrete": "concrete"}
+                       "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}, "storage": {"parameter": "storage"}}},
+      "slots": {"paint": "frame", "glass": "glass", "pane": "pane", "metal": "metal", "concrete": "concrete", "stock": "stock"}
     },
     {
       "id": "bars",
@@ -37,6 +38,6 @@
   ],
   "features": [
     {"name": "sill", "part": "window", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.06},
-    {"name": "sill-above", "part": "window", "points": [["-width / 2", 0, 0.05], ["width / 2", 0, 0.05]]}
+    {"name": "sill-above", "part": "window", "points": [["-width / 2", 0, 0.3], ["width / 2", 0, 0.3]]}
   ]
 }

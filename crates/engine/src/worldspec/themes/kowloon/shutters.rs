@@ -15,7 +15,23 @@ pub fn roller_shutter(
     paint: V3,
     settings: &Settings,
 ) -> Result<(), String> {
+    headed_roller_shutter(pen, mesh, span, paint, settings, [0.22, 0.])
+}
+
+/// [`roller_shutter`] with its head box as given: [height in meters, rust from 0 to 1].
+pub fn headed_roller_shutter(
+    pen: &Pen,
+    mesh: &mut Mesh<'_>,
+    span: [f64; 4],
+    paint: V3,
+    settings: &Settings,
+    head_box: [f64; 2],
+) -> Result<(), String> {
     let [x0, x1, raised, head] = span;
+    let [box_height, rust] = head_box;
+    if !(0.05..=2.).contains(&box_height) || !(0. ..=1.).contains(&rust) {
+        return Err("A shutter head box is 0.05 to 2 m high and rusted from 0 to 1.".into());
+    }
     if span.iter().any(|v| !v.is_finite() || v.abs() > 10000.)
         || x1 <= x0
         || head <= raised
@@ -123,12 +139,19 @@ pub fn roller_shutter(
             "bd",
         )?;
     }
+    let boxed = if rust > 0. {
+        Tint::Color(std::array::from_fn(|k| {
+            paint[k] + ([0.196, 0.068, 0.023][k] - paint[k]) * rust
+        }))
+    } else {
+        color
+    };
     hardware.cuboid(
         mesh,
         "metal",
         [x0 - 0.06, 0., head],
-        [x1 + 0.06, 0.13, head + 0.22],
-        &color,
+        [x1 + 0.06, 0.13, head + box_height],
+        &boxed,
         settings.metal.repeat,
         "b",
     )

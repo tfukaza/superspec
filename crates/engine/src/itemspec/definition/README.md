@@ -94,8 +94,9 @@ message.
 
 | Generator | Fields | Face groups |
 | --- | --- | --- |
-| `box` | `size` (spans from the part origin) | `side`, `top`, `bottom` |
-| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
+| `box` | `size` (spans from the part origin), `bevel`, `bevelSegments`, `bevelAxis` | `side`, `top`, `bottom` |
+| `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
+| `prism` | `footprint`, `height`, `inset`, `bevel`, `bevelSegments` (see Footprints) | `side`, `top`, `bottom` |
 | `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
 | `pipe`, `duct` | as version 1 | `surface` |
 | `item` | `entry` (one or a list), `pick`, `parameters` | the sub-item's slots |
@@ -106,6 +107,19 @@ Placement rules position openings and fittings: `{"from": "start"|"end"|"center"
 larger than `every`; copies are named `<id>-1`, `<id>-2`, ...) and `{"point": i}`.
 For an opening the rule places its near edge inside the length left over after its
 own size; for a fitting it places the fitting's centre by arc length.
+
+**Bevels.** `bevel` is a radius in meters that rounds real edges where a silhouette shows them,
+in `bevelSegments` chords (1, a chamfer, by default; or 2); 0, the default, leaves the part and
+its geometry key as they were. A box rounds its twelve edges, or with `bevelAxis` (`x`, `y` or
+`z`) only the four along that axis, so boxes laid end to end (a coping, a fascia, a kerb) keep
+one section. A prism rounds the rims of its top and bottom. A panel rounds the rim of its front
+face and the front rim of every opening; openings then stay twice the radius plus 2 mm from
+the panel's edge and from each other where that exceeds 0.02 m. The radius is less than half of
+every dimension it rounds (`ITEM_GEOMETRY` at the field). Bounds, face groups, features and
+anchors do not change: a rounded strip joins the wall it leaves (`side`, `edge`, `reveal`),
+carries on that wall's texture coordinates by arc length, and its normals turn from the wall's
+to the cap's, so one chord already shades as a round. A box costs 60 triangles with one chord
+(140 with two, 28 along one axis) against 12. Shading-only rounding belongs to materials.
 
 **Panel.** Width is local X, height Z, thickness Y; the front face is y = 0 and
 faces -Y, and the origin is its bottom-left corner. Openings are `rectangle` or
@@ -193,12 +207,24 @@ counterclockwise seen from above) and a `flags` control up to 64 booleans. A rep
 `"footprint": {"points": ..., "streets": ..., "cut": ...}` runs over the polygon's edges (edge i
 from point i to point i + 1) instead of a count. Each copy reads `<name>_x`, `_y` (the wall's
 start), `_dx`, `_dy` (its direction), `_length`, `_street`, `_next_street`, `_previous_street`,
-`_cut` and the cut corner at its end, `_cx`, `_cy`, `_cdx`, `_cdy`, `_clength`, plus the
-footprint's bounds `_min_x`, `_min_y`, `_max_x`, `_max_y`. A convex corner between two street
-edges is cut back `cut` along each (at most a third of either edge). `placement.along` sets a
-part's X axis to a plan direction without trigonometry, so its front (-Y) faces out of the
+`_cut`, `_previous_cut` and the cut corner at its end, `_cx`, `_cy`, `_cdx`, `_cdy`, `_clength`,
+plus the footprint's bounds `_min_x`, `_min_y`, `_max_x`, `_max_y`. A convex corner between two
+street edges is cut back `cut` along each (at most a third of either edge). `placement.along`
+sets a part's X axis to a plan direction without trigonometry, so its front (-Y) faces out of the
 footprint. The `prism` generator sweeps the cut footprint, moved `inset` inward, up by `height`
 (face groups `side`, `top`, `bottom`). A clockwise footprint fails with `ITEM_FOOTPRINT`.
+
+A footprint with `"round": n` (2 to 16) cuts each such corner into `n` facets instead of one:
+the chords of the arc that touches both edges where the cut starts and ends (on a square corner
+its radius is the cut). `_facets` is their number at the edge's end (0 where it is not cut, 1
+for a chamfer), and `"facet": k` chooses the one that `_cx`, `_cy`, `_cdx`, `_cdy` and
+`_clength` describe, so a part repeated over a count and then over the footprint
+(`[{"name":"f","count":"n"},{"name":"c","footprint":{..., "round":"n","facet":"f"}}]` with
+`"when":"f < c_facets"`) stands on every facet. `_perimeter` and `_cperimeter` are the distance
+round the cut outline to the wall's and to that facet's start, for patterns that run on.
+`_miter_start`, `_miter_end`, `_cmiter_start` and `_cmiter_end` are the tangent of half the plan
+turn at the wall's and the facet's ends (1 at a square corner), which a moulding mitres by. A
+prism and a pavement given the same footprint follow the same outline.
 
 **Plans.** A `grid` control holds nested lists (at most four deep, 4096 entries) of numbers
 or, with `choices`, of texts among them: an explicit plan of what goes where. Expressions read it
@@ -226,7 +252,9 @@ Composed examples are in `worldspec/themes/kowloon/items/`: small items (`kowloo
 `kowloon-roof`), storeys made of them (`kowloon-floor`, `kowloon-ground-floor`), a building side
 that stacks storeys and adds its services (`kowloon-facade-side`), and `kowloon-building`, which
 places a side along every edge of its footprint, shops on street edges, back doors and pipes on
-the rest, and a cut corner with a sign between two streets.
+the rest, and a cut corner with a sign between two streets (`cornerStyle` `chamfer`, or `round`
+in `cornerSegments` facets with mitred string courses; `cornerTiles` runs the tile band through
+it).
 
 In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
 its slots are bound to the project's materials, every part and face group is a receiver

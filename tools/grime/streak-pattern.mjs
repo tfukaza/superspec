@@ -16,7 +16,7 @@ import { PNG } from "pngjs";
 
 const PERIOD = 4;
 const LONGEST = 2.8;
-const width = Number(process.argv[2] ?? 1024), height = Number(process.argv[3] ?? 512);
+const width = Number(process.argv[2] ?? 2048), height = Number(process.argv[3] ?? 1024);
 
 /** A lattice hash in [0, 1). */
 function hash(x, y, seed) {
@@ -71,7 +71,13 @@ for (let row = 0; row < height; row++) {
     const broken = fractal(u, drop, 13, 11, 2, 423);
     const grain = noise(u / PERIOD * Math.round(PERIOD * 71), drop * 67, Math.round(PERIOD * 71), 431);
     const detail = 0.12 + 0.62 * smoothstep(0.36, 0.68, fine) + 0.18 * broken + 0.08 * grain;
-    const coverage = Math.min(stain * 0.85 * detail * 2.3, 1);
+    // Many thin streaks, one to four centimeters wide, each sharp where it starts under the edge and thinning as it
+    // falls: what a wall shows most of. They wander a little and are not softened by the deposit's detail.
+    const drift = (periodic(u, 2.3, drop * 0.9, 433) - 0.5) * 0.05;
+    const thread = smoothstep(0.44, 0.52, periodic(u + drift, 30, 3.3, 151)) * (0.5 + 0.5 * periodic(u, 8.1, 7.7, 157));
+    const threadReach = 0.45 + 1.9 * periodic(u, 29, 8.8, 163) ** 1.1;
+    const thin = thread * Math.max(1 - drop / threadReach, 0) ** 0.7 * (0.75 + 0.25 * grain);
+    const coverage = Math.min(Math.max(stain * 0.85 * detail * 1.9, thin), 1);
     png.data.set([255, 255, 255, Math.round(coverage * 255)], (row * width + column) * 4);
   }
 }

@@ -173,9 +173,26 @@ fn shutter(
     unit: &Unit,
     s: &Settings<'_>,
     rng: &mut SeededRng,
+    plan: &Plan,
 ) -> Result<Vec<Proposal>, String> {
     let o = opening(Kind::Shutter, unit, rng)?.unwrap();
-    let (x0, x1, head) = (o.u0, o.u1, o.z1);
+    let box_height = plan.shutter_head.unwrap_or(0.22);
+    if !(0.1..=1.).contains(&box_height)
+        || !(0. ..=1.).contains(&plan.head_rust)
+        || plan
+            .fit
+            .is_some_and(|top| !(box_height + 1.2..=unit.height).contains(&top))
+    {
+        return Err(
+            "A planned shutter needs a head box of 0.1 to 1 m under an opening within its storey."
+                .into(),
+        );
+    }
+    // A fitted shutter fills its wall opening: guides at the bay's edges, the box under the head.
+    let (x0, x1, head) = match plan.fit {
+        Some(top) => (unit.u0 + 0.06, unit.u1 - 0.06, top - box_height),
+        None => (o.u0, o.u1, o.z1),
+    };
     let paint = if rng.chance(0.5) {
         s.style.shutter
     } else {
@@ -189,16 +206,23 @@ fn shutter(
     };
     let options = [0., 0., 0., 0., rng.float(0.5, 1.), rng.float(1.5, 2.)];
     let raised = rng.pick(&options);
+    // A fitted shutter is also as planned: closed, in the style's own paint.
+    let (paint, raised) = if plan.fit.is_some() {
+        (s.style.shutter, 0.)
+    } else {
+        (paint, raised)
+    };
     d.panel("paint", [x0, x1, 0., head], 0.004, srgb("#2a2927"))?;
     if raised != 0. {
         goods(d, x0, x1, rng)?;
     }
-    shutters::roller_shutter(
+    shutters::headed_roller_shutter(
         &d.pen,
         d.mesh,
         [x0, x1, raised, head],
         paint,
         &s.kit.settings().weathering,
+        [box_height, plan.head_rust],
     )?;
     let hardware = hardware(d, s, MetalKind::Frame)?;
     let ring_x = (x0 + x1) / 2.;
@@ -267,18 +291,19 @@ fn shutter(
         0.091,
         srgb("#2a2927"),
     )?;
-    fascia(d, [x0, x1, head + 0.22], unit, s.kit, rng)
+    fascia(d, [x0, x1, head + box_height], unit, s.kit, rng)
 }
 fn gate(
     d: &mut Fixture<'_, '_>,
     unit: &Unit,
     s: &Settings<'_>,
     rng: &mut SeededRng,
+    lattice: Option<V3>,
 ) -> Result<Vec<Proposal>, String> {
     let o = opening(Kind::Gate, unit, rng)?.unwrap();
     let (x0, x1, head) = (o.u0, o.u1, o.z1);
     rng.float(0.1, 0.6);
-    let steel = srgb("#647a6b");
+    let steel = lattice.unwrap_or(srgb("#647a6b"));
     let drawn = rng.pick(&[1., 1., 0.55, 0.35]);
     let galvanized = srgb("#a4a9aa");
     d.panel("paint", [x0, x1, 0., head], 0.004, srgb("#2a2927"))?;
@@ -569,6 +594,32 @@ pub fn draw(
     s: &Settings<'_>,
     rng: &mut SeededRng,
 ) -> Result<Vec<Proposal>, String> {
+    planned(d, kind, unit, s, rng, &Plan::default())
+}
+/// What a plan fixes of a bay instead of leaving it to the seed; the default fixes nothing.
+#[derive(Clone, Copy, Default)]
+pub struct Plan {
+    /// The entrance of a door bay.
+    pub door: doors::Design,
+    /// The head height of a wall opening as wide as the bay: a shutter then fills it (closed,
+    /// in the style's shutter paint) and a door's frame does (see [`doors::Design::fit`]).
+    pub fit: Option<f64>,
+    /// The height of a shutter's head box (0.22 m).
+    pub shutter_head: Option<f64>,
+    /// How far the head box has rusted, 0 to 1.
+    pub head_rust: f64,
+    /// The paint of a gate's lattice (a grey green).
+    pub gate: Option<V3>,
+}
+/// [`draw`] with whatever `plan` fixes of the bay; an empty plan draws the seeded bay.
+pub fn planned(
+    d: &mut Fixture<'_, '_>,
+    kind: Kind,
+    unit: &Unit,
+    s: &Settings<'_>,
+    rng: &mut SeededRng,
+    plan: &Plan,
+) -> Result<Vec<Proposal>, String> {
     validate(unit)?;
     d.mesh.spend_work(1)?;
     if [s.style.frame, s.style.trim, s.style.shutter, s.style.accent]
@@ -579,11 +630,15 @@ pub fn draw(
         return Err("Ground bay pigments must be normalized linear colors.".into());
     }
     match kind {
-        Kind::Shutter => shutter(d, unit, s, rng),
-        Kind::Gate => gate(d, unit, s, rng),
+        Kind::Shutter => shutter(d, unit, s, rng, plan),
+        Kind::Gate => gate(d, unit, s, rng, plan.gate),
         Kind::Shop => shop(d, unit, s, rng),
         Kind::Door => {
-            doors::entrance(d, unit, &doors(s), rng)?;
+            let design = doors::Design {
+                fit: plan.fit,
+                ..plan.door
+            };
+            doors::planned_entrance(d, unit, &doors(s), rng, &design)?;
             Ok(vec![])
         }
         Kind::Service => {
