@@ -198,6 +198,18 @@ chain of planes, not one linked program:
   share of an edit bakes only the materials the edit can change. The bytes are a local bake's
   (`a_distributed_stack_bakes_the_bytes_of_a_local_one_and_its_session_makes_no_plane`,
   `tests/stage2-layers-parity.mjs`).
+- **Opacity.** A stack has an opacity where its base states one (glass, a cutout) or a layer gives
+  `opacity`. A layer that gives no `opacity` leaves the opacity beneath as it is, covered or not; one
+  that gives it combines it by its coverage and blend rule like any channel (`opacity: 0.9` sets
+  0.9 where it covers; `blend: { opacity: "max" }` only ever adds). The composed slot is drawn as
+  its base says: a cutout at the base's cutoff where the base declares one (`alphaCutout`), else
+  blended where the opacity is below 1; a stack without an opacity is opaque. The CPU bake keeps
+  it in the color map's alpha (the composite reads the opacity plane, and the base's metadata says
+  how it is drawn); the GPU stack bake does the same (`stackOpacity` in `browser/renderer/bake.ts`:
+  the composed base color map's alpha, its key marked `:blend` or `:cutout<c>`); stacks without an
+  opacity keep their keys and texels (`crates/engine/tests/material_layer_opacity.rs`,
+  `tests/layer-opacity-browser.mjs`). The per-pixel look of a layered slot shows the base alone,
+  with the base's opacity.
 - A composite that cannot be compiled (a stack whose channels and the base's live inputs exceed
   the 64 inputs a composite reads) is reported on the slot's base module, and
   `Session::check_layered` (which `shade_project` runs for a GPU host) refuses a slot as its bake

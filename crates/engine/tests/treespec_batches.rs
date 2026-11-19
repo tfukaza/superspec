@@ -392,6 +392,16 @@ fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefini
     definition
 }
 
+/// The lane plants' grade of the painted colours (`write_lane_plants`).
+const LANE_PALETTE: superspec_types::batch::FoliagePalette =
+    superspec_types::batch::FoliagePalette {
+        hue: -8.,
+        saturation: 0.78,
+        value: 0.95,
+        shade: 0.85,
+        shade_hue: -6.,
+    };
+
 /// A plant's painted mass (roadmap milestone `painted-trees-milestone`), in the plant's own space
 /// (its base at the origin), with the milestone's settings:
 /// - every leaf cluster, clumped or not (the mass model only sorts them, so the plant without it
@@ -572,13 +582,39 @@ fn write_washroom_trees() {
     );
 }
 
-/// The lane's grass patch, between the washroom's low wall and the Kowloon building across it
-/// (`tests/studio/washroom-items`, `FACADE=building`): 15 cm cells over x -3.8 to -0.55 and
-/// y -8 to -2.9, a meter in from the building's fixtures, rolling by a few centimeters.
+/// The scene's pedestrian avenue along the Kowloon building's right side
+/// (`tests/studio/washroom-items/avenue.json`, which `build.mjs` places as
+/// `kowloon/pedestrian-avenue`): the one source of where its median, trees and shrubs stand.
+fn avenue() -> serde_json::Value {
+    serde_json::from_str(include_str!(
+        "../../../tests/studio/washroom-items/avenue.json"
+    ))
+    .unwrap()
+}
+
+/// The scene point `along` and `across` (meters) from the avenue's origin.
+fn avenue_point(avenue: &serde_json::Value, along: f64, across: f64) -> [f64; 2] {
+    let v = |key: &str, k: usize| avenue[key][k].as_f64().unwrap();
+    [0, 1].map(|k| v("origin", k) + along * v("along", k) + across * v("across", k))
+}
+
+/// The grass of the avenue's median: cells of about 15 cm over the soil inside its planter
+/// kerbs, a few centimeters above the soil and rolling by a few, below the kerbs' top.
 fn lane_ground() -> GroundMesh {
-    let (low, cell, columns, rows) = ([-3.8, -8.0], 0.15, 21usize, 34usize);
+    let avenue = avenue();
+    let m = |key: &str| avenue["median"][key].as_f64().unwrap();
+    let inset = m("kerb") + 0.005;
+    let along = [m("start") + inset, m("end") - inset];
+    let across = [
+        m("offset") - m("width") / 2. + inset,
+        m("offset") + m("width") / 2. - inset,
+    ];
+    let soil = avenue["origin"][2].as_f64().unwrap() + m("rise") - m("soil");
+    let rows = ((along[1] - along[0]) / 0.15).round().max(1.) as usize;
+    let columns = ((across[1] - across[0]) / 0.15).round().max(1.) as usize;
     let height = |x: f64, y: f64| {
-        0.012 + 0.03 * ((1.3 * x + 0.4).sin() * (0.8 * y).cos() + 0.5 * (0.5 * x - 0.9 * y).sin())
+        soil + 0.052
+            + 0.03 * ((1.3 * x + 0.4).sin() * (0.8 * y).cos() + 0.5 * (0.5 * x - 0.9 * y).sin())
     };
     let mut ground = GroundMesh {
         positions: vec![],
@@ -586,27 +622,37 @@ fn lane_ground() -> GroundMesh {
     };
     for row in 0..=rows {
         for column in 0..=columns {
-            let (x, y) = (low[0] + column as f64 * cell, low[1] + row as f64 * cell);
+            let [x, y] = avenue_point(
+                &avenue,
+                along[0] + (along[1] - along[0]) * row as f64 / rows as f64,
+                across[0] + (across[1] - across[0]) * column as f64 / columns as f64,
+            );
             ground.positions.push([x, y, height(x, y)]);
         }
     }
+    // Columns run across and rows along: the triangles face up when across turns
+    // counterclockwise of along.
+    let v = |key: &str, k: usize| avenue[key][k].as_f64().unwrap();
+    let turned = v("along", 0) * v("across", 1) - v("along", 1) * v("across", 0) > 0.;
     let width = columns as u32 + 1;
     for row in 0..rows as u32 {
         for column in 0..columns as u32 {
             let a = row * width + column;
-            ground
-                .indices
-                .extend([a, a + 1, a + width + 1, a, a + width + 1, a + width]);
+            ground.indices.extend(if turned {
+                [a, a + width + 1, a + 1, a, a + width, a + width + 1]
+            } else {
+                [a, a + 1, a + width + 1, a, a + width + 1, a + width]
+            });
         }
     }
     ground
 }
 
 /// Writes the lane's plants (`lane-plants.json` in `TREESPEC_OUTPUT`, default
-/// `generated/verification/treespec`): the grass patch of `lane_ground`, grown as the washroom
-/// lawn's grass, and two birches and a shrub, painted as the milestone's trees (each a
-/// `FoliageMass`), standing in front of the Kowloon building, one tree on the patch. `tests/studio/washroom-items/build.mjs` adds them
-/// with the building (`LANE=1`).
+/// `generated/verification/treespec`): the median grass of `lane_ground`, grown as the washroom
+/// lawn's grass, and the avenue's birches and shrubs, painted as the milestone's trees (each a
+/// `FoliageMass`), standing in a row on the median along the Kowloon building's right side.
+/// `tests/studio/washroom-items/build.mjs` adds them with the building (`LANE=1`).
 #[test]
 #[ignore = "writes the lane plants for the item building picture"]
 fn write_lane_plants() {
@@ -628,6 +674,8 @@ fn write_lane_plants() {
     let grass_look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
         "family": "grass", "patch": "lane", "far": 40, "material": "painted-grass",
         "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 },
+        // The tips' lit highlight muted to the scene, as the trees' palette (`LANE_PALETTE`).
+        "tip": { "highlight": [0.5, 0.57, 0.3], "amount": 0.25 },
     }))
     .unwrap();
     let mut all = batches::grass_levels(&patch, [0.; 3], &grass_look, None).unwrap();
@@ -681,23 +729,40 @@ fn write_lane_plants() {
             .filter(|p| (p[0] - x).abs() < 0.2 && (p[1] - y).abs() < 0.2)
             .map_or(0., |p| p[2])
     };
-    // Two trees and a shrub, each painted as one mass: its bark and shadow proxy are batches, and
+    // Trees and shrubs, each painted as one mass: its bark and shadow proxy are batches, and
     // its foliage is the mass on the shadow proxy, which a renderer draws in place of leaves and
     // hull, so those are left out (a Studio project holds at most 128 MiB).
-    for (index, ((definition, mass), at)) in [
-        (birch(0.9), [-2.2, -5.9]),
-        (birch(0.8), [-2.3, 1.6]),
-        (shrub, [-1.4, -3.6]),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    // They stand in a row down the avenue's median (`avenue.json`): the trees at their stations,
+    // alternately the larger and the smaller birch, and a shrub between each two.
+    let avenue = avenue();
+    let stations = |key: &str| -> Vec<f64> {
+        let v = |field: &str| avenue[key][field].as_f64().unwrap();
+        (0..v("count") as usize)
+            .map(|i| v("first") + i as f64 * v("spacing"))
+            .collect()
+    };
+    let middle = avenue["median"]["offset"].as_f64().unwrap();
+    let mut row = vec![];
+    for (i, along) in stations("trees").into_iter().enumerate() {
+        row.push((
+            birch([0.9, 0.8][i % 2]),
+            avenue_point(&avenue, along, middle),
+        ));
+    }
+    for along in stations("shrubs") {
+        row.push((shrub.clone(), avenue_point(&avenue, along, middle)));
+    }
+    for (index, ((definition, mass), at)) in row.into_iter().enumerate() {
         use superspec_types::batch::FoliageFamily;
         let plant = tree::generate(&definition, &|| false).unwrap();
         let base = [at[0], at[1], height(at[0], at[1]) - 0.02];
+        // Beside the weathered building (warm grey plaster, dull sage tile, faded awnings) the
+        // greens are graded down: less saturated and a little darker, warmer, the shade side a
+        // deeper teal-olive, so the lime highlights become a soft yellow-green.
         let painted = superspec_types::batch::FoliageMass {
             level: mass.level,
             card_keep: mass.card_keep,
+            palette: LANE_PALETTE,
             ..painted_mass(&definition, &plant)
         };
         let mut levels = batches::tree_levels(&plant, base, &look).unwrap();

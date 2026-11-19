@@ -5,7 +5,7 @@
 // hem, and a few dark water stains.
 import {
   defineMaterial, layer, param, vec2, vec3, add, sub, mul, div, mix, max, min, clamp, floor, rem, abs, step, smoothstep,
-  dot, cross, normalize, hash, valueNoise, sampleColor, seed, uv, world, normal, boundsMin, boundsMax,
+  dot, cross, normalize, neg, hash, valueNoise, sampleColor, seed, uv, world, normal, boundsMin, boundsMax,
 } from "@superspec/material/v1";
 
 const clothA = param.vec3({ default: vec3(0.184, 0.242, 0.188), range: [0, 1], label: "Cloth A" });
@@ -45,11 +45,15 @@ const sooty = mul(smoothstep(0.55, 1, upIt), add(0.3, mul(0.3, runs)));
 const soiled = mul(soil, min(add(add(add(mul(runs, 0.4), mul(hem, add(0.25, mul(0.35, runs)))), mul(stains, 0.45)), sooty), 0.85));
 // Water off the wall above runs down the cloth in thin dark threads from its top edge, each its own length, with a band
 // of soot along that edge.
-const thread = smoothstep(0.6, 0.78, valueNoise(vec2(mul(along, 16), mul(world.z, 0.6)), seed("canvas-threads")));
-const threadReach = add(0.25, mul(0.6, valueNoise(vec2(mul(along, 5), 0.5), seed("canvas-thread-reach"))));
-const fromTop = sub(1, upIt);
-const threads = mul(thread, sub(1, smoothstep(mul(threadReach, 0.6), threadReach, fromTop)));
-const edgeSoot = mul(sub(1, smoothstep(0.02, 0.12, fromTop)), add(0.6, mul(0.4, runs)));
+// (Measured on the cloth, not the receiver's bounds, which take in its poles: along the eave is across the slope's
+// horizontal facing, and the fall is metres dropped below the cloth's top.)
+const facing = normalize(add(vec2(normal.x, normal.y), vec2(1e-4, 0)));
+const eaveAlong = dot(vec2(world.x, world.y), vec2(neg(facing.y), facing.x));
+const drop = max(sub(boundsMax.z, world.z), 0);
+const thread = smoothstep(0.62, 0.78, valueNoise(vec2(mul(eaveAlong, 14), mul(drop, 0.8)), seed("canvas-threads")));
+const threadReach = add(0.08, mul(0.3, valueNoise(vec2(mul(eaveAlong, 4), 0.5), seed("canvas-thread-reach"))));
+const threads = mul(thread, sub(1, smoothstep(mul(threadReach, 0.6), threadReach, drop)));
+const edgeSoot = mul(sub(1, smoothstep(0.015, 0.05, drop)), add(0.6, mul(0.4, runs)));
 const wallSoiled = mul(wallRuns, min(add(threads, mul(edgeSoot, 0.75)), 0.95));
 
 export default defineMaterial({

@@ -23,6 +23,8 @@ const highlightWidth = param.scalar({ default: 0.009, range: [0.002, 0.05], unit
 const wear = param.scalar({ default: 0.4, range: [0, 1], label: "Arris chipping" });
 const radius = param.scalar({ default: 0.014, range: [0.002, 0.05], unit: "m", label: "Rounded edge radius" });
 const jointClear = param.scalar({ default: 0.06, range: [0.005, 0.5], unit: "m", label: "Clear of a joint" });
+const halo = param.scalar({ default: 0, range: [0, 1], label: "Grime round openings" });
+const haloWidth = param.scalar({ default: 0.12, range: [0.02, 0.5], unit: "m", label: "Opening grime width" });
 const edgeAngle = param.scalar({ default: 35, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
 
 const limit = add(mul(inkWidth, 1.6), footprint);
@@ -39,7 +41,14 @@ const standing = mix(sub(1, upright), 1, abs(along.z));
 // Beside an exposed edge the grime starts where the worn arris ends.
 const beside = mul(mul(sub(1, smoothstep(mul(wide, 0.2), wide, exposed)), smoothstep(mul(highlightWidth, 0.6), mul(highlightWidth, 1.4), exposed)), standing);
 const corner = sub(1, smoothstep(0, mul(wide, 1.3), inside));
-const ink = mul(mul(mul(inkStrength, max(beside, corner)), broken), grain);
+// Round an opening (where the slot follows `opening`, the openings' edges, and `sill`): a soft halo hugging the reveal,
+// wider and darker toward the bottom, where water off the sill spreads into the corners.
+const toOpening = featureDistance("opening", add(haloWidth, 0.4));
+const toSill = featureDistance("sill", 0.6);
+const low = sub(1, smoothstep(0.05, 0.45, toSill));
+const reach = mul(haloWidth, add(add(0.6, mul(0.6, valueNoise(mul(at, 3.3), seed("halo-reach")))), mul(low, 1.4)));
+const ring = mul(mul(halo, sub(1, smoothstep(mul(reach, 0.15), reach, toOpening))), add(0.55, mul(0.45, low)));
+const ink = max(mul(mul(mul(inkStrength, max(beside, corner)), broken), grain), mul(ring, grain));
 
 // The arris itself: worn paler and smoother, with chips where it is not.
 const chips = smoothstep(0.55, 0.72, valueNoise(add(mul(at, 23), vec2(9.4, 1.6)), seed("ink-chips")));

@@ -38,7 +38,9 @@ const faded = mix(faced, add(mul(faced, 0.6), vec3(0.19, 0.19, 0.17)), mul(fade,
 const beside = sub(1, smoothstep(0.002, mul(tileSize, 0.24), grid.sideDistance));
 const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(9, 0.8)), seed("tile-streaks")));
 const patches = smoothstep(0.5, 0.8, valueNoise(add(mul(surface, 2.3), vec2(4.1, 9.7)), seed("tile-patches")));
-const film = mul(grime, min(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.12)), mul(streaks, 0.12)), 0.85));
+// Plus a broad soot band under the panel's top, where the sill above drips.
+const headSoot = mul(sub(1, smoothstep(0.05, 0.35, max(sub(boundsMax.z, world.z), 0))), add(0.4, mul(0.6, streaks)));
+const film = mul(grime, min(add(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.12)), mul(streaks, 0.12)), mul(headSoot, 0.5)), 0.85));
 
 // Runs down the vertical joints from the panel's top (surface x runs along the wall, y up it).
 const joint = floor(add(div(surface.x, tileSize), 0.5));

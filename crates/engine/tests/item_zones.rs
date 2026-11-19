@@ -132,7 +132,13 @@ fn a_zone_hangs_below_its_edge_and_stops_at_the_openings_below() {
 
 /// `ms_zone_find` of the GPU runtime (`glsl.rs`, `ZONES`), read off the packed rows in single
 /// precision as a GPU does: the shader's algorithm against the CPU's, through the packing.
-fn shader_zone(rows: &[f64], count: usize, place: usize, p: [f32; 3], n: [f32; 3]) -> Option<[f32; 6]> {
+fn shader_zone(
+    rows: &[f64],
+    count: usize,
+    place: usize,
+    p: [f32; 3],
+    n: [f32; 3],
+) -> Option<[f32; 6]> {
     let texel = |row: usize, column: usize| -> [f32; 4] {
         let at = (row * 7 + column) * 4;
         std::array::from_fn(|i| rows[at + i] as f32)
@@ -215,14 +221,22 @@ fn the_packed_zones_a_gpu_reads_give_what_the_cpu_finds() {
     let (rows, count) = pack_zones(&features, &names, &follow, wall_box);
     assert_eq!(rows.len() % 28, 0);
     // A receiver nowhere near is given none of them.
-    assert_eq!(pack_zones(&features, &names, &follow, [[20., 0., 0.], [21., 0., 3.]]).1, 0);
-    let followed = NamedFeatures::new(
-        &superspec_engine::materialspec::program::followed_features(&features, &follow),
-    )
+    assert_eq!(
+        pack_zones(&features, &names, &follow, [[20., 0., 0.], [21., 0., 3.]]).1,
+        0
+    );
+    let followed = NamedFeatures::new(&superspec_engine::materialspec::program::followed_features(
+        &features, &follow,
+    ))
     .unwrap();
     let mut compared = 0;
     for (place, name) in names.iter().enumerate() {
-        let set = if name == "zone" { followed.zones("zone") } else { named.zones(name) }.unwrap();
+        let set = if name == "zone" {
+            followed.zones("zone")
+        } else {
+            named.zones(name)
+        }
+        .unwrap();
         for i in 0..=80 {
             for j in 0..=60 {
                 // (Off the stops' and openings' exact edges, where single precision may go either way.)
@@ -235,8 +249,11 @@ fn the_packed_zones_a_gpu_reads_give_what_the_cpu_finds() {
                         compared += 1;
                         let close = |a: f64, b: f32| (a - f64::from(b)).abs() < 1e-4;
                         assert!(
-                            close(cpu.u, gpu[0]) && close(cpu.v, gpu[1]) && close(cpu.id, gpu[2])
-                                && close(cpu.limit, gpu[3]) && close(cpu.scale, gpu[4])
+                            close(cpu.u, gpu[0])
+                                && close(cpu.v, gpu[1])
+                                && close(cpu.id, gpu[2])
+                                && close(cpu.limit, gpu[3])
+                                && close(cpu.scale, gpu[4])
                                 && close(cpu.span[1], gpu[5]),
                             "{name} at {p:?}: {cpu:?} against {gpu:?}"
                         );

@@ -675,22 +675,27 @@ ${Array.from({ length: MAX_TILES }, (_, index) => `  if (${index} < msTiles) {
 /**
  * The maps of a stack composed from its planes over a receiver's atlas: base color (encoded by the sRGB target),
  * packed properties and emissive, from the plane of the material that last changed each channel, or the channel's
- * default where none did (`STACK_CHANNELS` in the engine). Drawn over the charts only, like the evaluate pass.
+ * default where none did (`STACK_CHANNELS` in the engine). The base color's alpha is the stack's opacity where it has
+ * one (linear, as an atlas bake keeps a cutout's or a blended program's), else 1. Drawn over the charts only, like the
+ * evaluate pass.
  */
 export const STACK_COMPOSE_FRAGMENT = `
 uniform vec2 msAtlas;
 uniform highp sampler2D msColor;
+uniform highp sampler2D msOpacity;
 uniform highp sampler2D msRoughness;
 uniform highp sampler2D msMetalness;
 uniform highp sampler2D msEmissive;
 uniform bool msHasColor;
+uniform bool msHasOpacity;
 uniform bool msHasRoughness;
 uniform bool msHasMetalness;
 uniform int msOutput;
 layout(location = 0) out vec4 msOut;
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
-  if (msOutput == 0) msOut = vec4(clamp(msHasColor ? texelFetch(msColor, at, 0).rgb : vec3(0.5), 0.0, 1.0), 1.0);
+  if (msOutput == 0) msOut = vec4(clamp(msHasColor ? texelFetch(msColor, at, 0).rgb : vec3(0.5), 0.0, 1.0),
+    msHasOpacity ? clamp(texelFetch(msOpacity, at, 0).r, 0.0, 1.0) : 1.0);
   else if (msOutput == 1) msOut = vec4(1.0, clamp(msHasRoughness ? texelFetch(msRoughness, at, 0).r : 1.0, 0.0, 1.0),
     clamp(msHasMetalness ? texelFetch(msMetalness, at, 0).r : 0.0, 0.0, 1.0), 1.0);
   else msOut = vec4(max(texelFetch(msEmissive, at, 0).rgb, vec3(0.0)), 1.0);

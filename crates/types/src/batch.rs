@@ -624,6 +624,16 @@ mod tests {
                 }),
                 ..plant.clone()
             },
+            Foliage {
+                mass: Some(FoliageMass {
+                    palette: FoliagePalette {
+                        saturation: 3.,
+                        ..FoliagePalette::default()
+                    },
+                    ..mass.clone()
+                }),
+                ..plant.clone()
+            },
             // Grass has no mass.
             Foliage {
                 mass: Some(mass.clone()),

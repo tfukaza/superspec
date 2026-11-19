@@ -532,7 +532,7 @@ impl<'a, 'b> Lanes<'a, 'b> {
                 | Builtin::FeatureTangent
                 | Builtin::ZoneCoord
                 | Builtin::ZoneExtent
-            | Builtin::ZoneSpan
+                | Builtin::ZoneSpan
         );
         let result = if uniform {
             for (slot, operand) in gathered.iter_mut().zip(operands) {

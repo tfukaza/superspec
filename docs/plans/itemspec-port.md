@@ -45,7 +45,7 @@ generator documents its anchor and parameters; `tests/kowloon_items.rs` checks e
 | Ground floor | `entrance`, `ground-bay` (shutter, gate, door, shop, service) |
 | Roof | `water-tank`, `stair-hut`, `aerial`, `rooftop-shack`, `rooftop` (a whole roof's equipment) |
 | Signs | `sign`, `blade-sign`, `hung-sign` |
-| Street and facade details | `shop-room`, `street-stock`, `pavement`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
+| Street and facade details | `shop-room`, `street-stock`, `pavement`, `pedestrian-avenue`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
 | Shop interiors | `grocer-prop`, `shelving`, `counter`, `crate`, `bottle-crate`, `counter-scale`, `price-card`, `pendant-lamp`, `ceiling-fan`, `tube-light`, `wall-clock`, `calendar`, `hanging-scale`, `stool` |
 
 Not ported, because they need whole-facade or room planning state rather than parameters:
@@ -358,6 +358,12 @@ The building's look is recipes and layers that any item can use; none is tied to
   baked (800 texels a meter). Its earlier smears were the recipe's: it read the glyph sheet upside down, and its wear
   was measured on world x + y, which is constant across a sign turned 45 degrees; the sign, poster, air conditioner,
   ink and dirt recipes read `surface` instead.
+- **Cutouts at a distance; layered opacity.** Box-filtered mips averaged a thin stroke's alpha below the cutoff, so
+  lettering broke up with distance. A cutout's GPU-baked base colour map now keeps its coverage down the mip chain
+  (`TargetSpec.coverage`, `GpuBaker.preserveCoverage`: each level's alpha is scaled so the share of texels at or above
+  the cutoff is the full level's). A layered slot keeps its stack's opacity (the base's, or a layer's that gives one) in
+  its composed base colour map's alpha and is drawn as the base says, a cutout or blended (MaterialSpec program README,
+  layered slots), so glass and lettering can take weathering layers.
 - **Repairs.** `kowloon-repairs` draws hard-edged repair panels and crisp peel patches only inside frames the owner
   draws (`repair`/`repair-inner`, `peel`/`peel-inner`: an outline and the same outline 5 cm in, which together say
   which side a texel is on). Floors and ground floors seed a few per storey; the paint coat's own peeling and lattice
@@ -377,9 +383,15 @@ The building's look is recipes and layers that any item can use; none is tied to
 
 `tests/studio/washroom-items/build.mjs` places the side (`FACADE=1`) or the building
 (`FACADE=building`) across the lane beyond the washroom's low wall. With `LANE=1` (written by
-`treespec_batches::write_lane_plants`) it paves the lane, lays a patch of the washroom lawn's
-painted grass toward the lane's open end, and stands three TreeSpec broadleaf trees and two
-shrubs in front of the building. `tests/item-facade-browser.mjs` (`MODEL=building`,
+`treespec_batches::write_lane_plants`) it paves the front street's road and lays a pedestrian
+avenue along the building's right side (edge 1): `kowloon/pedestrian-avenue`, 14 m from the wall
+line and 32 m long, courses of large slabs with darker bands, kerbs where it meets the road,
+bollards across its ends, and a raised median planter 2.4 m wide with slot drains and benches
+beside it. The washroom lawn's painted grass fills the median, and birches stand in a row down
+it, 7 m apart, with a shrub between each two. `tests/studio/washroom-items/avenue.json` is the
+one source of the avenue's line, median and stations, read by both `build.mjs` and
+`write_lane_plants`. The avenue's top is 4.5 cm below the building's pavement, which stands over
+it with its kerb stones as an edging. `tests/item-facade-browser.mjs` (`MODEL=building`,
 `BUILDING_PARAMETERS`, `RESOLUTION`, default 1024, and `TEXELS`, default 256 per meter) pictures
 it in the built studio. The earlier low concrete detail came from baking at 256 pixels per
 receiver, about 21 per meter on a 12 m wall.

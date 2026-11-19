@@ -191,6 +191,8 @@ function fixedNoise(size = 64): THREE.DataTexture {
 export class AmbientOcclusion {
   private readonly composer: EffectComposer;
   private readonly pass: GTAOPass;
+  /** Whether materials that are not tone mapped are kept so (see `untoned`); off only to compare pictures with it. */
+  static invertUntoned = true;
 
   /** Why this renderer cannot composite, or null: the scene target needs renderable half-float color. */
   static unavailable(renderer: THREE.WebGLRenderer): string | null {
@@ -285,7 +287,7 @@ void main() {
       const material = (object as THREE.Mesh).isMesh ? (object as THREE.Mesh).material : undefined;
       for (const one of Array.isArray(material) ? material : material ? [material] : []) if (!one.toneMapped) prepareUntoned(one);
     });
-    untoned.mode.value = UNTONED_MODES.get(this.renderer.toneMapping) ?? 0;
+    untoned.mode.value = AmbientOcclusion.invertUntoned ? UNTONED_MODES.get(this.renderer.toneMapping) ?? 0 : 0;
     untoned.exposure.value = this.renderer.toneMappingExposure;
     try { this.composer.render(); } finally {
       untoned.mode.value = 0;

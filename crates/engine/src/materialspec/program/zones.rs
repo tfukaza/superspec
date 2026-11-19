@@ -279,7 +279,10 @@ pub fn pack(
                 }),
             ];
             let misses = (0..3).any(|axis| {
-                let low = corners.iter().map(|c: &[f64; 3]| c[axis]).fold(f64::INFINITY, f64::min);
+                let low = corners
+                    .iter()
+                    .map(|c: &[f64; 3]| c[axis])
+                    .fold(f64::INFINITY, f64::min);
                 let high = corners
                     .iter()
                     .map(|c: &[f64; 3]| c[axis])

@@ -66,17 +66,19 @@ const packed = mul(dirty, mul(sub(1, smoothstep(0.004, 0.11, rim)), add(0.45, mu
 const footing = mul(mul(dirty, 0.5), mul(sub(1, smoothstep(0, 0.22, upIt)), add(0.4, mul(0.6, streaks))));
 // Dust washed down from the head of the window in runs.
 const heads = mul(mul(dirty, 0.55), mul(smoothstep(0.55, 1, upIt), smoothstep(0.4, 0.75, valueNoise(vec2(mul(run, 37), mul(world.z, 0.7)), seed("glass-head")))));
-const soiled = min(add(add(add(film, mul(packed, 0.8)), footing), heads), 0.9);
+const soiled = min(add(add(film, mul(packed, 0.8)), footing), 0.9);
+// Dust washed down from the head dries pale on the dark glass.
+const dusted = min(mul(heads, 1.4), 0.8);
 
 export default defineMaterial({
   name: "Kowloon window glass",
   base: {
-    baseColor: mix(glass, vec3(0.2, 0.19, 0.165), soiled),
+    baseColor: mix(mix(glass, vec3(0.2, 0.19, 0.165), soiled), vec3(0.52, 0.5, 0.45), dusted),
     roughness: mix(gloss, 0.85, soiled),
     metalness: 0,
     // A lit tube glows through the glass and its dirt.
     emissive: mul(vec3(1, 0.86, 0.62), mul(mul(tube, interior), mul(glow, sub(1, mul(soiled, 0.5))))),
     // Clear glass lets the room through where it is clean; dirt and sheen are on the glass.
-    opacity: clamp(add(sub(1, transmission), add(mul(soiled, 1.2), mul(sheen, 2))), 0, 1),
+    opacity: clamp(add(sub(1, transmission), add(add(mul(soiled, 1.2), dusted), mul(sheen, 2))), 0, 1),
   },
 });

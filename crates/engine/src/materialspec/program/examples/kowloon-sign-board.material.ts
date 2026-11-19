@@ -33,7 +33,9 @@ const runs = smoothstep(0.35, 0.8, valueNoise(vec2(mul(round, 26), mul(world.z, 
 const head = mul(smoothstep(0.45, 1, upIt), add(0.2, mul(0.6, runs)));
 const foot = mul(sub(1, smoothstep(0, 0.1, upIt)), 0.5);
 const soiled = mul(grime, min(add(add(head, foot), mul(runs, 0.18)), 0.8));
-const rusted = mul(rust, mul(sub(1, smoothstep(0.004, 0.05, rim)), smoothstep(0.35, 0.7, valueNoise(mul(at, 19), seed("sign-rust")))));
+// Rust round the rim, as a frame of old steel would: a band that eats in unevenly, with runs down from it.
+const rimBand = sub(1, smoothstep(add(0.02, mul(0.05, valueNoise(mul(at, 4), seed("sign-rust-reach")))), 0.09, rim));
+const rusted = mul(rust, mul(rimBand, smoothstep(0.25, 0.55, valueNoise(mul(at, 19), seed("sign-rust")))));
 
 export default defineMaterial({
   name: "Kowloon sign board",
@@ -41,6 +43,6 @@ export default defineMaterial({
   layers: [
     layer({ id: "flaked", mask: flaked, baseColor: vec3(0.42, 0.41, 0.36), roughness: 0.9, height: { add: -0.0004 } }),
     layer({ id: "soiled", mask: soiled, baseColor: mul(chalked, vec3(0.32, 0.29, 0.24)), roughness: 0.9 }),
-    layer({ id: "rust", mask: rusted, baseColor: vec3(0.3, 0.13, 0.05), roughness: 0.95 }),
+    layer({ id: "rust", mask: rusted, baseColor: vec3(0.42, 0.2, 0.08), roughness: 0.95 }),
   ],
 });

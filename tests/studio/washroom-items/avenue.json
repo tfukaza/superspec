@@ -1,0 +1,16 @@
+{
+  "//": "The pedestrian avenue along the building's right-side street (kowloon-building edge 1), in the scene's coordinates (meters, Z up). build.mjs places kowloon/pedestrian-avenue from it; crates/engine/tests/treespec_batches.rs (write_lane_plants) stands the trees and shrubs on its median and lays the median's grass from it. Distances are measured along `along` from `origin` and across along `across`.",
+  "/origin": "The avenue's start: on the building's side wall line (y = 3.0) at the front street's kerb line (x = -3.05), its top 4.5 cm below the building's pavement (z = 0.15), so the house pavement and its kerb stones stand over it.",
+  "origin": [-3.05, 3.0, 0.105],
+  "along": [-1, 0],
+  "across": [0, 1],
+  "length": 32,
+  "width": 14,
+  "/height": "Its open ends and far side drop this far to the road (z = 0).",
+  "height": 0.105,
+  "/median": "The planted median: its middle `offset` across from the wall line, `width` wide, from `start` to `end` along; planter kerbs `kerb` wide rising `rise` above the paving, the soil `soil` below their top.",
+  "median": { "offset": 7, "width": 2.4, "start": 2.5, "end": 28.5, "kerb": 0.2, "rise": 0.3, "soil": 0.14 },
+  "/trees": "Stations along the median's middle: `count` of them, from `first`, `spacing` apart. Shrubs stand between the trees, and a pair of benches beside the planter at each shrub.",
+  "trees": { "first": 4.5, "spacing": 7, "count": 4 },
+  "shrubs": { "first": 8, "spacing": 7, "count": 3 }
+}

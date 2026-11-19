@@ -116,7 +116,7 @@ try {
         // An edge that is tight at contact and widens with the distance to what casts it: a thin caster (a cage bar, a
         // bracket, a pipe) a hand's breadth off the wall leaves a soft, light shadow, while a course, a sign, a cage, an
         // awning or the building itself, wider than its penumbra, shades clearly.
-        softness: 0.03, spread: 0.08, maxSoftness: 0.35,
+        softness: 0.045, spread: 0.12, maxSoftness: 0.4,
         // A soft cool shade, as in the reference pictures, faintly mottled (broad, gentle patches about 1.5 m across) with a
         // slight wobble to its edge: clear enough that large forms read (darkness 0.1, tried first, washed out everything).
         darkness: 0.34, tintStrength: 0.28, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.45,
@@ -191,6 +191,9 @@ try {
       close: { position: [front + 4, y1 + 1.5, 6], target: [front, y1 - 2, 5.5] },
       // From the street corner (+x, +y), raised, as the reference picture of the shop house is taken.
       corner: { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5] },
+      // Along the pedestrian avenue (`tests/studio/washroom-items/avenue.json`) from beyond its far end, toward the side
+      // face and the street corner: the median's row of trees and its grass, the benches and the paving.
+      avenue: { position: [x0 - 26, y1 + 11, 7], target: [(x0 + front) / 2, y1 - 2, 5.5] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
       // Details, without the plants: the corner's foot and the pavement, the balcony and what hangs under it, the signs

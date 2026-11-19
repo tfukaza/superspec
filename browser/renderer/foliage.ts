@@ -495,6 +495,8 @@ export class FoliageView {
   private group?: THREE.Object3D;
   private override: FoliageProfile | null;
   private boundarySignature = "";
+  /** What of the plants casts shadows now (see `update`). */
+  private casting = "";
   private readonly frustum = new THREE.Frustum();
   private readonly matrix = new THREE.Matrix4();
   /** Time to make the boundary field last, and how often it was made. */
@@ -536,7 +538,8 @@ export class FoliageView {
     mesh.userData.foliageLevel.msFoliagePlantMass = { value: mesh.userData.plantMass ?? new THREE.Vector4() };
     // A plant casts its shadow from its bark and its canopy's proxy, which only the sun's shadow camera draws; leaves and
     // the hull cast none (the proxy stands for them) and fold the cast shadow into their band.
-    mesh.userData.foliageCasts = look.family === "bark" || look.family === "shadow";
+    // A painted mass casts from its own parts (painted-mass.ts), not from the coarse proxy that carries it.
+    mesh.userData.foliageCasts = look.family === "bark" || (look.family === "shadow" && !look.mass);
     mesh.castShadow = mesh.userData.foliageCasts;
     mesh.receiveShadow = look.family !== "shadow" && drawnProfile(look, this.override) === "lit";
     if (look.family === "shadow") mesh.layers.set(SHADOW_PROXY_LAYER);
@@ -610,6 +613,14 @@ export class FoliageView {
       this.stats.packs++;
       this.stats.packMs += performance.now() - began;
     }
+    // The sun's shadow map is made again only when asked: when a plant's casting parts are shown or hidden (by a level
+    // change or by the page), its shadow must follow.
+    let shown = "";
+    for (const patch of this.patches) for (const level of patch.levels) {
+      if (level.mesh.castShadow) shown += level.mesh.visible ? "1" : "0";
+      for (const part of level.painted ?? []) shown += part.visible && level.mesh.visible ? "1" : "0";
+    }
+    if (shown !== this.casting) { this.casting = shown; this.renderer.shadowMap.needsUpdate = true; }
     return true;
   }
 

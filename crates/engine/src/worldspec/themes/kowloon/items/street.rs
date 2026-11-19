@@ -607,6 +607,345 @@ pub(super) fn pavement_corner(
     })
 }
 
+/// Kerb stones of `stone` length at most along `span` of a frame's X, their road face on
+/// y = 0 (toward -Y), `kerb` deep and their top at -0.012 with the road-side arris
+/// chamfered, as the pavement's kerb; the road is `height` below the paving's top.
+#[allow(clippy::too_many_arguments)]
+fn kerb_run(
+    d: &mut Fixture<'_, '_>,
+    span: [f64; 2],
+    kerb: f64,
+    height: f64,
+    stone: f64,
+    color: V3,
+    rng: &mut SeededRng,
+) -> Result<(), String> {
+    let joint = 0.006;
+    let stones = ((span[1] - span[0]) / stone).round().max(1.) as usize;
+    let long = (span[1] - span[0]) / stones as f64;
+    let (inner, top) = (kerb - joint / 2., -0.012);
+    let arris = 0.02_f64.min((height + top) * 0.4);
+    for i in 0..stones {
+        let left = span[0] + i as f64 * long;
+        let repeat = d.repeat("kerb");
+        profiled_strip(
+            &d.pen,
+            d.mesh,
+            "kerb",
+            &Strip {
+                span: [left + joint / 2., left + long - joint / 2.],
+                section: &[
+                    [0., -height],
+                    [inner, -height],
+                    [inner, top],
+                    [arris, top],
+                    [0., top - arris],
+                ],
+                omitted_edges: &[0],
+                miters: [None; 2],
+                setback: 0.,
+            },
+            &Tint::Color(shade(color, rng.float(0.62, 0.92))),
+            repeat,
+        )?;
+    }
+    Ok(())
+}
+
+/// `kowloon/pedestrian-avenue`: a paved street for people on foot, with a planted median down
+/// its middle: courses of large slabs breaking joint (every `bands`th course a darker band) on
+/// a bed, kerb stones where it meets the road, a raised planter of kerb stones round a bed of
+/// soil (its top `soilDepth` below the planter's, for grass or a lawn laid over it), a linear
+/// drain beside the planter on either side, backless benches against it and rows of bollards
+/// across its open ends. Anchor: the start of its near side (a building's wall line, say);
+/// it runs along +X for `length` and reaches `width` toward -Y, its top at z = 0 and the road
+/// `height` below its open ends and far side. Slots: `paving`, `kerb`, `soil`, `metal`,
+/// `timber`. Parameters: `length` (m, 2–80, 30), `width` (m, 2–40, 14), `height` (m, 0.05–0.5,
+/// 0.12), `slab` (m along, 0.2–3, 0.9) and `course` (m across, 0.2–3, 0.6), `bands` (0–40, 5;
+/// 0 none), `mouth`, `end` and `side` (kerbs at its start, end and far side, true),
+/// `medianWidth` (m, 0 for none, 0.8–10, 2.4), `medianOffset` (m from the near side to the
+/// median's middle, half the width), `medianStart` (m, 3) and `medianEnd` (m along, 3 m short
+/// of the end), `planterKerb` (m, 0.08–0.6, 0.2), `planterRise` (m above the paving,
+/// 0.05–1, 0.3), `soilDepth` (m below the planter's top, 0.02–1, 0.14), `drains` (true),
+/// `bollardSpacing` (m, 0 for none, 0.6–10, 1.6), `benches` (pairs, 0–40, 3), `benchFirst`
+/// (m along, where the median's first third starts, or a quarter of the length without a
+/// median) and `benchSpacing` (m, 0.5–80, 7), `color` (#a8a394), `seed` (stone shades).
+pub(super) fn pedestrian_avenue(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let length = a.bounded("length", 30., 2. ..=80.)?;
+    let width = a.bounded("width", 14., 2. ..=40.)?;
+    let height = a.bounded("height", 0.12, 0.05..=0.5)?;
+    let slab = a.bounded("slab", 0.9, 0.2..=3.)?;
+    let course = a.bounded("course", 0.6, 0.2..=3.)?;
+    let bands = a.integer("bands", 5, 0..=40)?;
+    let mouth = a.boolean("mouth", true)?;
+    let end = a.boolean("end", true)?;
+    let side = a.boolean("side", true)?;
+    let median_width = a.bounded("medianWidth", 2.4, 0. ..=10.)?;
+    let offset = a.number("medianOffset", width / 2.)?;
+    let median_start = a.number("medianStart", 3_f64.min(length / 4.))?;
+    let median_end = a.number("medianEnd", length - 3_f64.min(length / 4.))?;
+    let planter_kerb = a.bounded("planterKerb", 0.2, 0.08..=0.6)?;
+    let rise = a.bounded("planterRise", 0.3, 0.05..=1.)?;
+    let soil_depth = a.bounded("soilDepth", 0.14, 0.02..=1.)?;
+    let drains = a.boolean("drains", true)?;
+    let bollard_spacing = a.bounded("bollardSpacing", 1.6, 0. ..=10.)?;
+    let benches = a.integer("benches", 3, 0..=40)?;
+    let bench_spacing = a.bounded("benchSpacing", 7., 0.5..=80.)?;
+    let bench_first = a.number(
+        "benchFirst",
+        if median_width > 0. {
+            median_start + (median_end - median_start) / 3.
+        } else {
+            length / 4.
+        },
+    )?;
+    let color = a.color("color", "#a8a394")?;
+    let mut rng = a.rng()?;
+    a.finish()?;
+    let median = median_width > 0.;
+    if median {
+        if median_width < 0.8 || median_width < 2. * planter_kerb + 0.2 {
+            return Err(format!(
+                "{name}: medianWidth must be 0 or at least 0.8 and leave room inside its planter kerbs."
+            ));
+        }
+        if offset - median_width / 2. < 0.3 || offset + median_width / 2. > width - 0.3 {
+            return Err(format!(
+                "{name}: the median ({median_width} m about {offset} m) must stand 0.3 m inside the avenue's {width} m."
+            ));
+        }
+        if median_start < 0.
+            || median_end > length
+            || median_end - median_start < 2. * planter_kerb + 0.4
+        {
+            return Err(format!(
+                "{name}: medianStart and medianEnd must lie in 0..length, at least {} m apart.",
+                2. * planter_kerb + 0.4
+            ));
+        }
+    }
+    if soil_depth >= rise {
+        return Err(format!("{name}: soilDepth must be less than planterRise."));
+    }
+    if bollard_spacing > 0. && bollard_spacing < 0.6 {
+        return Err(format!("{name}: bollardSpacing must be 0 or 0.6..10."));
+    }
+    let (kerb, joint) = (0.14, 0.006);
+    // The paved field inside the kerbs, and the planter's outline (near side y_near, toward 0).
+    let (x0, x1) = (
+        if mouth { kerb } else { 0. },
+        length - if end { kerb } else { 0. },
+    );
+    let y0 = -width + if side { kerb } else { 0. };
+    let (y_near, y_far) = (-(offset - median_width / 2.), -(offset + median_width / 2.));
+    let under_median = |l: f64, r: f64, low: f64, high: f64| {
+        median && l >= median_start && r <= median_end && low >= y_far && high <= y_near
+    };
+    draw(cancelled, |mesh| {
+        {
+            let d = &mut on(mesh, room_pen("pedestrian-avenue", [0.; 3])?)?;
+            // The bed shows in the joints between the slabs, and as the avenue's near edge.
+            d.cuboid(
+                "paving",
+                [x0, y0, -height],
+                [x1, 0., -0.035],
+                shade(color, 0.55),
+                "d",
+            )?;
+            let rows = ((-y0) / course).round().max(1.) as usize;
+            let row = -y0 / rows as f64;
+            let columns = ((x1 - x0) / slab).round().max(1.) as usize;
+            let pitch = (x1 - x0) / columns as f64;
+            for r in 0..rows {
+                let (high, low) = (-(r as f64) * row, -((r + 1) as f64) * row);
+                let band = bands > 0 && r % bands == bands / 2;
+                let offset = if r % 2 == 1 { pitch / 2. } else { 0. };
+                let (mut left, mut c) = (x0, 0);
+                while left < x1 - 1e-6 {
+                    let right = if c == 0 && offset > 0. {
+                        left + offset
+                    } else {
+                        (left + pitch).min(x1)
+                    };
+                    let (l, rr) = (left, right);
+                    left = right;
+                    c += 1;
+                    if rr - l < 3. * joint || under_median(l, rr, low, high) {
+                        continue;
+                    }
+                    let sink = rng.float(0., 0.005);
+                    let tint = if band {
+                        shade(color, rng.float(0.5, 0.6))
+                    } else {
+                        shade(color, rng.float(0.74, 1.06))
+                    };
+                    d.cuboid(
+                        "paving",
+                        [l + joint / 2., low + joint / 2., -0.04],
+                        [rr - joint / 2., high - joint / 2., -sink],
+                        tint,
+                        "d",
+                    )?;
+                }
+            }
+            if median {
+                // The planter: kerb stones along both sides and across both ends, over soil.
+                let k = planter_kerb;
+                let pieces = ((median_end - median_start) / 1.).round().max(1.) as usize;
+                let piece = (median_end - median_start) / pieces as f64;
+                for (low, high) in [(y_near - k, y_near), (y_far, y_far + k)] {
+                    for i in 0..pieces {
+                        let l = median_start + i as f64 * piece;
+                        d.cuboid(
+                            "kerb",
+                            [l + joint / 2., low, -0.03],
+                            [l + piece - joint / 2., high, rise],
+                            shade(color, rng.float(0.78, 0.98)),
+                            "d",
+                        )?;
+                    }
+                }
+                for (l, r) in [
+                    (median_start, median_start + k),
+                    (median_end - k, median_end),
+                ] {
+                    d.cuboid(
+                        "kerb",
+                        [l, y_far + k + joint / 2., -0.03],
+                        [r, y_near - k - joint / 2., rise],
+                        shade(color, rng.float(0.78, 0.98)),
+                        "d",
+                    )?;
+                }
+                d.cuboid(
+                    "soil",
+                    [median_start + k, y_far + k, 0.],
+                    [median_end - k, y_near - k, rise - soil_depth],
+                    srgb("#4a3b2c"),
+                    "lrbfd",
+                )?;
+                if drains {
+                    // A slot drain 0.16 m wide, 0.8 m out from either kerb, under iron bars.
+                    let iron = srgb("#343632");
+                    let bars = ((median_end - median_start - 0.1) / 0.12).floor() as usize;
+                    for centre in [y_near + 0.8, y_far - 0.8] {
+                        d.cuboid(
+                            "metal",
+                            [median_start, centre - 0.08, -0.004],
+                            [median_end, centre + 0.08, 0.003],
+                            shade(iron, 0.7),
+                            "d",
+                        )?;
+                        for bar in 0..bars {
+                            let x = median_start + 0.05 + bar as f64 * 0.12;
+                            d.cuboid(
+                                "metal",
+                                [x, centre - 0.065, 0.003],
+                                [x + 0.035, centre + 0.065, 0.009],
+                                shade(iron, 1.25),
+                                "d",
+                            )?;
+                        }
+                    }
+                }
+            }
+            // Backless benches: stone plinths and three timber slats, their backs to the
+            // planter (or along the avenue's middle without one), a pair at each station.
+            let timber = srgb("#8a6a48");
+            let (near, far) = if median {
+                (y_near + 0.15, y_far - 0.15)
+            } else {
+                (-offset + 0.5, -offset - 0.5)
+            };
+            for i in 0..benches {
+                let at = bench_first + i as f64 * bench_spacing;
+                let (lo, hi) = if median {
+                    (median_start + 1., median_end - 1.)
+                } else {
+                    (x0 + 1., x1 - 1.)
+                };
+                if at < lo || at > hi {
+                    continue;
+                }
+                for (y_from, y_to) in [(near, near + 0.42), (far - 0.42, far)] {
+                    for leg in [at - 0.75, at + 0.6] {
+                        d.cuboid(
+                            "kerb",
+                            [leg, y_from + 0.04, -0.01],
+                            [leg + 0.15, y_to - 0.04, 0.4],
+                            shade(color, rng.float(0.8, 0.95)),
+                            "d",
+                        )?;
+                    }
+                    let slat = (y_to - y_from - 0.03) / 3.;
+                    for s in 0..3 {
+                        let y = y_from + s as f64 * (slat + 0.015);
+                        d.cuboid(
+                            "timber",
+                            [at - 0.9, y, 0.4],
+                            [at + 0.9, y + slat, 0.445],
+                            shade(timber, rng.float(0.8, 1.05)),
+                            "",
+                        )?;
+                    }
+                }
+            }
+            // Bollards across the open ends, keeping vehicles out.
+            if bollard_spacing > 0. && width > 1.2 {
+                let count = ((width - 1.2) / bollard_spacing).floor() as usize + 1;
+                let first = -(width - (count - 1) as f64 * bollard_spacing) / 2.;
+                let steel = srgb("#3d403b");
+                for (open, x) in [(mouth, 0.45), (end, length - 0.45)] {
+                    if !open {
+                        continue;
+                    }
+                    for b in 0..count {
+                        let y = first - b as f64 * bollard_spacing;
+                        if median
+                            && x >= median_start
+                            && x <= median_end
+                            && y >= y_far
+                            && y <= y_near
+                        {
+                            continue;
+                        }
+                        d.drum("metal", [x, y, -0.01], 0.075, 0.8, steel, 12)?;
+                        d.drum("metal", [x, y, 0.62], 0.078, 0.06, srgb("#c9c2a8"), 12)?;
+                        d.drum("metal", [x, y, 0.79], 0.085, 0.03, shade(steel, 0.8), 12)?;
+                    }
+                }
+            }
+        }
+        // Kerb stones where the avenue meets the road: across its start and end, along its far side.
+        let stone = slab * 1.6;
+        let base = room_pen("pedestrian-avenue", [0.; 3])?;
+        if mouth {
+            let d = &mut on(mesh, base.facing([0.; 3], [0., -1., 0.], [1., 0., 0.])?)?;
+            kerb_run(d, [0., width], kerb, height, stone, color, &mut rng)?;
+        }
+        if end {
+            let d = &mut on(
+                mesh,
+                base.facing([length, -width, 0.], [0., 1., 0.], [-1., 0., 0.])?,
+            )?;
+            kerb_run(d, [0., width], kerb, height, stone, color, &mut rng)?;
+        }
+        if side {
+            let d = &mut on(
+                mesh,
+                base.facing([0., -width, 0.], [1., 0., 0.], [0., 1., 0.])?,
+            )?;
+            kerb_run(d, [x0, x1], kerb, height, stone, color, &mut rng)?;
+        }
+        Ok(())
+    })
+}
+
 /// `kowloon/tile-deck`: a flat roof's paving of square tiles laid in patches of two colours
 /// (old terracotta and the grey of later repairs), with a few lifted or missing. Anchor: the
 /// centre of the deck at roof level; it spans `width` by `depth` and stands `thickness` high.

@@ -2344,3 +2344,45 @@ fn party_walls_and_stubs_weather_from_their_coping_courses_and_sills() {
                 .count()
     );
 }
+
+/// The highest point of the plinth meshes whose ID starts with `prefix`.
+fn plinth_top(item: &GeneratedItem, prefix: &str) -> f64 {
+    let transforms = item.geometry.world_transforms().unwrap();
+    let mut top = f64::NEG_INFINITY;
+    for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+        for index in &node.meshes {
+            let mesh = &item.geometry.meshes[*index];
+            if mesh.id.starts_with(prefix) && mesh.material_slot == "plinth" {
+                for p in &mesh.positions {
+                    top = top.max(matrix.point(*p)[2]);
+                }
+            }
+        }
+    }
+    top
+}
+
+#[test]
+fn a_plinth_is_planned_per_edge_and_on_the_corner() {
+    // By default every street edge and the corner share `plinth`; a plan sets each edge, and
+    // `cornerPlinth` the corner, as the reference shop house does (1 m fronts, a 1.5 m drum).
+    let planned = generate(
+        "kowloon-building.item.json",
+        &[
+            ("cornerStyle", json!("round")),
+            ("cut", json!(0.55)),
+            ("plinthPlans", json!([1.0, 0.6, 0, 0])),
+            ("cornerPlinth", json!(1.5)),
+        ],
+    );
+    assert!((plinth_top(&planned, "side-0/") - 1.0).abs() < 0.02);
+    assert!((plinth_top(&planned, "side-1/") - 0.6).abs() < 0.02);
+    assert!((plinth_top(&planned, "cornerRound-0/") - 1.5).abs() < 0.02);
+    assert_eq!(plinth_top(&planned, "side-2/"), f64::NEG_INFINITY);
+    let seeded = generate(
+        "kowloon-building.item.json",
+        &[("cornerStyle", json!("round")), ("cut", json!(0.55))],
+    );
+    assert!((plinth_top(&seeded, "side-1/") - 1.02).abs() < 0.02);
+    assert!((plinth_top(&seeded, "cornerRound-0/") - 1.02).abs() < 0.02);
+}

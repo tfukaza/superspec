@@ -74,7 +74,7 @@ export function melted(card: LeafCard, radius: number): { coverage: Float32Array
     cover[i] = on; tone[i] = data[i * 4 + 2] * on; nx[i] = data[i * 4] * on; ny[i] = data[i * 4 + 1] * on; hue[i] = data[i * 4 + 3];
   }
   const blur = (field: Float32Array) => {
-    let a = field, b = new Float32Array(n);
+    let a: Float32Array = field, b: Float32Array = new Float32Array(n);
     for (let pass = 0; pass < 3; pass++) for (const horizontal of [true, false]) {
       for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
         let sum = 0, count = 0;

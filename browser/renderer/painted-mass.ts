@@ -5,7 +5,29 @@ import { leafNormalMaterial, leafNormalTexture, smoothGeometry } from "./leaf-no
 import { contourFuzz } from "./contour-fuzz.ts";
 import { branchCardTexture, densityCards } from "./density-cards.ts";
 import { leafCardTextures } from "./foliage-plants.ts";
-import { programSun } from "./shade.ts";
+import { followPaintedFinishing, programSun } from "./shade.ts";
+
+/**
+ * The mass's palette (`FoliageMass.palette`) applied to every painted colour: turned about the grey axis by x radians,
+ * its saturation scaled by y and its value by z; the darker colours (fading out by the light ones) also scaled by
+ * `msGradeShade` and turned by w radians.
+ */
+const GRADE_GLSL = /* glsl */`
+uniform vec4 msGrade;
+uniform float msGradeShade;
+vec3 msGradeTurn(vec3 c, float a) {
+  const vec3 k = vec3(0.57735027);
+  return c * cos(a) + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cos(a));
+}
+vec3 msGradeColour(vec3 c) {
+  float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float dark = 1.0 - smoothstep(0.12, 0.45, luma);
+  c = msGradeTurn(c, msGrade.x + msGrade.w * dark);
+  float grey = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(grey), c, msGrade.y) * msGrade.z * mix(1.0, msGradeShade, dark);
+  return max(c, vec3(0.0));
+}
+`;
 
 /**
  * A plant painted as one mass (`FoliageMass`; docs/plans/tree-item-roadmap.md, milestone `painted-trees-milestone`):
@@ -64,8 +86,25 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
   // The whole plant as one blob: an ellipsoid a little wider than the core's bounds.
   const radii = geometry.boundingBox!.getSize(new THREE.Vector3()).multiplyScalar(0.55);
   const parts = [surface, fuzz, cards];
+  const palette = mass.palette ?? { hue: 0, saturation: 1, value: 1, shade: 1, shadeHue: 0 };
+  const grade = { value: new THREE.Vector4(palette.hue * Math.PI / 180, palette.saturation, palette.value, palette.shadeHue * Math.PI / 180) };
+  const shade = { value: palette.shade };
   for (const part of parts) {
-    const uniforms = (part.material as THREE.ShaderMaterial).uniforms;
+    const material = part.material as THREE.ShaderMaterial;
+    const uniforms = material.uniforms;
+    // Shadows: the parts cast as they are drawn, from the sun's view (cards face whatever camera draws them, so in the
+    // sun's shadow pass they face the sun), their leaves' cutout dappling the shadow. The depth pass runs their own
+    // shaders (a plain depth material would not stand the cards up), sharing their uniforms.
+    part.castShadow = true;
+    part.customDepthMaterial = new THREE.ShaderMaterial({ uniforms, vertexShader: material.vertexShader, fragmentShader: material.fragmentShader, side: material.side });
+    // The painted bands are display colours: not tone mapped (unless the scene's painted finishing asks for it).
+    followPaintedFinishing(material);
+    uniforms.msGrade = grade;
+    uniforms.msGradeShade = shade;
+    material.onBeforeCompile = shader => {
+      shader.fragmentShader = GRADE_GLSL + shader.fragmentShader.replaceAll("#include <colorspace_fragment>",
+        "gl_FragColor.rgb = msGradeColour(gl_FragColor.rgb);\n#include <colorspace_fragment>");
+    };
     // The scene's sun, shared, so the bands follow the lighting.
     uniforms.sun = programSun;
     if (uniforms.highlight) uniforms.highlight.value = s.highlight;

@@ -174,7 +174,7 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  */
 const kowloonSlots = { wall: "render-paint", "wall-round": "render-paint-round", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile", dado: "dado-tile",
   glass: "window-glass", pane: "room-dark", recess: "recess-plaster",
-  galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
+  galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "weathered-galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
   opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",
   tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
   // A sign's ground is worn and stained. Its lettering stays the shipped glyph sheet: bound to `sign-lettering` and

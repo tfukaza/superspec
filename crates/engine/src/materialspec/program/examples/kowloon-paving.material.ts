@@ -55,8 +55,11 @@ const soiled = mul(grime, min(add(add(mul(damp, 0.35), mul(skirt, 0.75)), mul(oi
 // Wet after rain: broad puddled patches that dry last in the low spots, darker and glossy, the water lying longest in
 // the joints beside them.
 // Larger near what the water runs off or collects against: the wall's foot, the kerb, a drain cover.
-const puddled = smoothstep(0.46, 0.56, add(add(mul(valueNoise(add(mul(at, 0.45), vec2(7.3, 2.2)), seed("wet")), 0.85), mul(damp, 0.15)), mul(skirt, 0.4)));
+const puddled = smoothstep(0.52, 0.62, add(add(mul(valueNoise(add(mul(at, 0.45), vec2(7.3, 2.2)), seed("wet")), 0.85), mul(damp, 0.15)), mul(skirt, 0.4)));
 const wetness = mul(wet, max(puddled, mul(joint, mul(0.7, smoothstep(0.35, 0.55, valueNoise(mul(at, 0.8), seed("wet")))))));
+// A few standing puddles, dark and nearly a mirror, where the ground sags: mostly at a wall's foot or a kerb.
+const sag = add(valueNoise(add(mul(at, 1.4), vec2(4.2, 1.3)), seed("puddle")), mul(skirt, 0.3));
+const puddle = mul(wet, smoothstep(0.82, 0.84, sag));
 
 export default defineMaterial({
   name: "Kowloon paving",
@@ -66,6 +69,7 @@ export default defineMaterial({
     layer({ id: "gum", mask: gumSpot, baseColor: vec3(0.035, 0.034, 0.03), roughness: 0.7 }),
     layer({ id: "joints", mask: joint, baseColor: vec3(0.055, 0.052, 0.042), roughness: 1, height: { add: -0.004 } }),
     layer({ id: "cracks", mask: crack, baseColor: vec3(0.03, 0.03, 0.025), roughness: 1, height: { add: -0.003 } }),
-    layer({ id: "wet", mask: mul(wetness, 0.9), baseColor: mul(faced, 0.55), roughness: 0.06 }),
+    layer({ id: "wet", mask: mul(wetness, 0.7), baseColor: mul(faced, 0.72), roughness: 0.08 }),
+    layer({ id: "puddle", mask: mul(puddle, 0.8), baseColor: mul(faced, 0.5), roughness: 0.03 }),
   ],
 });

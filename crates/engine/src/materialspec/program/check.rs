@@ -765,8 +765,10 @@ impl Checker<'_> {
                     {
                         self.external(plane, result, &expr.mark)?;
                     }
-                    if let ("zone_coord" | "zone_extent" | "zone_span", Some(Expression::Text(zone))) =
-                        (name.as_str(), args.first().map(|v| &v.kind))
+                    if let (
+                        "zone_coord" | "zone_extent" | "zone_span",
+                        Some(Expression::Text(zone)),
+                    ) = (name.as_str(), args.first().map(|v| &v.kind))
                     {
                         if !super::features::valid_feature_name(zone) {
                             return Err(self.program.diagnostic(
@@ -778,7 +780,9 @@ impl Checker<'_> {
                         if !self.zones.contains(zone) && self.zones.len() >= MAX_NAMED_QUERIES {
                             return Err(self.program.diagnostic(
                                 "MS_LIMIT",
-                                format!("A program queries zones of at most {MAX_NAMED_QUERIES} names."),
+                                format!(
+                                    "A program queries zones of at most {MAX_NAMED_QUERIES} names."
+                                ),
                                 &expr.mark,
                             ));
                         }

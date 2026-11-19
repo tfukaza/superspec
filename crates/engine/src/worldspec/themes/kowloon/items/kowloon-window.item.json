@@ -67,5 +67,11 @@
      "points": [["-width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"],
                 ["width / 2", "select(kind == 1, -0.001, select(kind == 3, -0.01, 0.01)) + select(recess > 0, 0, -0.035)", "height - select(kind == 2, 0.065, 0.045)"]],
      "zone": {"length": "height - 2 * select(kind == 2, 0.065, 0.045)", "depth": "select(kind == 1, 0.02, select(kind == 3, 0.03, 0.012))", "u0": "0 - width / 2"}}
-  ]
+  ],
+  "layers": {
+    "frame": [
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.6, "color": [0.22, 0.2, 0.16], "streakLength": 0.5, "period": 1.1, "variety": 0.6, "lip": 1, "lipDepth": 0.045}, "seed": 21, "follow": {"zone": "runoff-head"}},
+      {"entry": "kowloon-dust-streaks.material.ts", "parameters": {"strength": 1, "streakLength": 0.12, "period": 0.6, "film": 0.9, "filmDepth": 0.06, "color": [0.8, 0.78, 0.72]}, "seed": 22, "follow": {"zone": "runoff-head"}}
+    ]
+  }
 }

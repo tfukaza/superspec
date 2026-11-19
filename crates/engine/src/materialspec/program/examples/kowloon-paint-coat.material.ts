@@ -9,7 +9,7 @@
 // off in a sheet inside the outline: a ragged, crisp-edged patch through which the render beneath shows with its own
 // texture, ringed by a thin dark line of lifted paint. A slot that follows neither has none. The coat also thins to
 // the render along exposed arrises (`arrisWear`), broken along their length.
-import { defineLayer, param, smoothstep, step, floor, abs, min, hash, valueNoise, featureDistance, creaseDistance, select, lt, clamp, add, mul, sub, div, vec2, vec3, mix, seed, surface } from "@superspec/material/v1";
+import { defineLayer, param, smoothstep, step, floor, abs, min, max, hash, valueNoise, featureDistance, creaseDistance, select, lt, clamp, add, mul, sub, div, vec2, vec3, mix, seed, surface } from "@superspec/material/v1";
 import { fractal, domainWarp } from "./kowloon-noise.material";
 
 const color = param.vec3({ default: vec3(0.78, 0.71, 0.55), range: [0, 1], label: "Paint colour" });
@@ -20,6 +20,8 @@ const patches = param.scalar({ default: 0, range: [0, 1], label: "Repainted repa
 const unevenness = param.scalar({ default: 1, range: [0, 1], label: "Uneven tone" });
 const peelShare = param.scalar({ default: 0.6, range: [0, 1], label: "Peeled share of a peel frame" });
 const peelInset = param.scalar({ default: 0.05, range: [0.01, 0.3], unit: "m", label: "Peel frame inset" });
+const bare = param.vec3({ default: vec3(0.42, 0.41, 0.38), range: [0, 1], label: "Bare render tone" });
+const bareCover = param.scalar({ default: 0, range: [0, 1], label: "Bare render toned down" });
 const arrisWear = param.scalar({ default: 0, range: [0, 1], label: "Paint worn off the arrises" });
 
 const at = mul(vec2(surface.x, surface.y), patchScale);
@@ -68,7 +70,8 @@ const coat = mul(mul(mix(mul(color, sub(1, mul(0.14, unevenness))), color, smoot
 
 export default defineLayer({
   name: "Kowloon paint coat",
-  coverage: mul(mul(amount, intact), mul(sub(1, peeled), sub(1, worn))),
-  baseColor: mul(coat, mix(vec3(1), patchTone, patch)),
+  // Inside a peel the render shows through, toned down toward `bare` by `bareCover` so its own texture stays.
+  coverage: max(mul(mul(amount, intact), mul(sub(1, peeled), sub(1, worn))), mul(peeled, bareCover)),
+  baseColor: mix(mul(coat, mix(vec3(1), patchTone, patch)), bare, peeled),
   roughness: 0.82,
 });

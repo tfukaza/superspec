@@ -644,15 +644,69 @@ export class GpuBaker {
   }
 
   /** Builds the mip chain of rendered textures once, after every band is drawn. */
-  private mips(textures: THREE.Texture[]): void {
+  private mips(textures: THREE.Texture[], specs?: TargetSpec[]): void {
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    for (const texture of textures) {
+    textures.forEach((texture, index) => {
       const handle = (this.renderer.properties.get(texture) as { __webglTexture?: WebGLTexture }).__webglTexture;
-      if (!handle) continue;
+      if (!handle) return;
       this.renderer.state.bindTexture(gl.TEXTURE_2D, handle);
       gl.generateMipmap(gl.TEXTURE_2D);
-    }
+      const spec = specs?.[index];
+      if (spec?.coverage !== undefined && spec.type === THREE.UnsignedByteType && spec.format === THREE.RGBAFormat) {
+        this.preserveCoverage(handle, spec.width, spec.height, spec.coverage);
+      }
+    });
     this.renderer.state.unbindTexture();
+  }
+
+  private coverageFramebuffer?: WebGLFramebuffer;
+
+  /**
+   * Alpha-test coverage kept down a cutout's mip chain: box-filtered mips average a thin stroke's alpha below the cutoff,
+   * so lettering breaks up with distance. Each level's alpha is scaled so that the share of its texels at or above the
+   * cutoff is the full level's (the alpha of that rank among the level's texels is moved to the cutoff), its colors left
+   * as they are. Read back and written per level; only cutout maps pay for it.
+   */
+  private preserveCoverage(handle: WebGLTexture, width: number, height: number, cutoff: number): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    const framebuffer = this.coverageFramebuffer ??= gl.createFramebuffer()!;
+    this.renderer.state.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    const read = (level: number, w: number, h: number): Uint8Array => {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, handle, level);
+      const texels = new Uint8Array(w * h * 4);
+      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, texels);
+      return texels;
+    };
+    try {
+      const threshold = Math.max(1, Math.round(cutoff * 255));
+      const full = read(0, width, height);
+      let covered = 0;
+      for (let i = 3; i < full.length; i += 4) if (full[i] >= threshold) covered++;
+      const share = covered / (width * height);
+      if (share <= 0 || share >= 1) return;
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+      for (let level = 1; (width >> (level - 1)) > 1 || (height >> (level - 1)) > 1; level++) {
+        const w = Math.max(1, width >> level), h = Math.max(1, height >> level);
+        const texels = read(level, w, h);
+        const histogram = new Uint32Array(256);
+        for (let i = 3; i < texels.length; i += 4) histogram[texels[i]]++;
+        // The alpha at the full level's share of texels, counted from the most opaque.
+        const wanted = share * w * h;
+        let rank = 255, counted = histogram[255];
+        while (rank > 1 && counted < wanted) counted += histogram[--rank];
+        const scale = threshold / rank;
+        if (Math.abs(scale - 1) < 1e-3) continue;
+        for (let i = 3; i < texels.length; i += 4) texels[i] = Math.min(255, Math.round(texels[i] * scale));
+        this.renderer.state.bindTexture(gl.TEXTURE_2D, handle);
+        gl.texSubImage2D(gl.TEXTURE_2D, level, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, texels);
+      }
+    } finally {
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
+      this.renderer.state.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
   }
 
   private fieldTextures = new Map<string, THREE.DataTexture>();
@@ -1154,7 +1208,11 @@ export class GpuBaker {
   static atlasTarget(name: AtlasAttachment | "normal", width: number, height: number, layout: AtlasProgramLayout): TargetSpec {
     const spec: TargetSpec = { width, height, format: THREE.RGBAFormat, type: THREE.UnsignedByteType, colorSpace: THREE.NoColorSpace,
       filter: "mips", wrap: THREE.ClampToEdgeWrapping, anisotropy: MAP_ANISOTROPY, name: `gpu-atlas ${name}` };
-    if (name === "base") spec.colorSpace = THREE.SRGBColorSpace;
+    if (name === "base") {
+      spec.colorSpace = THREE.SRGBColorSpace;
+      // A cutout's opacity rides in the alpha: its mips keep the full level's coverage (`preserveCoverage`).
+      if (layout.cutout !== undefined) spec.coverage = layout.cutout;
+    }
     else if (name === "height") {
       // Read with texelFetch only. One channel unless the program's receiver_normal output rides beside the height.
       spec.type = THREE.FloatType; spec.filter = "nearest"; spec.anisotropy = undefined;
@@ -1613,8 +1671,11 @@ export class GpuBaker {
     if (stack.channels.emissive) attachments.push("emissive");
     if (stack.channels.normal_offset) attachments.push("offset");
     attachments.push(...own.attachments.filter(name => name.startsWith("live")));
-    // The composed maps store no opacity, so a layered slot is never a cutout or blended.
-    return { ...own, cutout: undefined, blend: undefined, key: `stack:${attachments.join("+")}:${own.key}`, attachments, orient: false, unsupported: own.unsupported ?? stackUnsupported(base, stack) ?? undefined };
+    // The composed base color map keeps the stack's opacity in its alpha where the stack has one (the base's, or a
+    // layer's that gives opacity): drawn as a cutout where the base declares a cutoff, else blended, as the base is.
+    const { cutout, blend } = stackOpacity(base, stack);
+    const drawn = cutout !== undefined ? `:cutout${cutout}` : blend ? ":blend" : "";
+    return { ...own, cutout, blend, key: `stack:${attachments.join("+")}${drawn}:${own.key}`, attachments, orient: false, unsupported: own.unsupported ?? stackUnsupported(base, stack) ?? undefined };
   }
 
   /**
@@ -1788,12 +1849,14 @@ export class GpuBaker {
     // The result: maps composed from the planes of the materials that last changed each channel, and the normals.
     const produced = (channel: string) => stack.channels[channel] && planes.get(stack.channels[channel])?.includes(channel) ? planeId(stack.channels[channel], channel) : undefined;
     const color = produced("base_color"), roughness = produced("roughness"), metalness = produced("metalness"), emissive = produced("emissive");
+    // The stack's opacity rides in the base color map's alpha (`stackOpacity`); without one the alpha is 1.
+    const opacity = produced("opacity");
     const offset = produced("normal_offset");
     let heightId = produced("height");
     if (!heightId) { fallbacks.add("height"); heightId = "fallback/height"; }
     const compose = this.composeOp(atlas);
-    after.push({ id: "base", key: `stack-compose:1:${atlas.layout.key}:base`, op: compose, output: 0, target: GpuBaker.atlasTarget("base", width, height, composite),
-      inputs: color ? { color } : {} });
+    after.push({ id: "base", key: `stack-compose:1:${atlas.layout.key}:base${opacity ? ":opacity" : ""}`, op: compose, output: 0, target: GpuBaker.atlasTarget("base", width, height, composite),
+      inputs: { ...(color ? { color } : {}), ...(opacity ? { opacity } : {}) } });
     after.push({ id: "properties", key: `stack-compose:1:${atlas.layout.key}:properties`, op: compose, output: 1, target: GpuBaker.atlasTarget("properties", width, height, composite),
       inputs: { ...(roughness ? { roughness } : {}), ...(metalness ? { metalness } : {}) } });
     if (emissive) after.push({ id: "emissive", key: `stack-compose:1:${atlas.layout.key}:emissive`, op: compose, output: 2, target: GpuBaker.atlasTarget("emissive", width, height, composite), inputs: { emissive } });
@@ -1907,7 +1970,7 @@ export class GpuBaker {
       draw: ({ node, output, inputs, rows }) => {
         const uniform = pass!.material.uniforms;
         uniform.msAtlas = { value: new THREE.Vector2(atlas.layout.width, atlas.layout.height) };
-        for (const [role, name] of [["color", "Color"], ["roughness", "Roughness"], ["metalness", "Metalness"], ["emissive", "Emissive"]]) {
+        for (const [role, name] of [["color", "Color"], ["opacity", "Opacity"], ["roughness", "Roughness"], ["metalness", "Metalness"], ["emissive", "Emissive"]]) {
           uniform[`ms${name}`] = { value: inputs[role]?.texture ?? this.blank() };
           uniform[`msHas${name}`] = { value: inputs[role] !== undefined };
         }
@@ -1983,15 +2046,27 @@ export class GpuBaker {
 }
 
 /**
+ * How a layered slot's composed maps are drawn: the stack has an opacity where its base or a layer gives one
+ * (`StackInput.channels.opacity`; a layer that gives no opacity leaves it as it is beneath). Then the base color map's
+ * alpha holds it, and the slot is a cutout at the base's cutoff where the base declares one, else blended. A stack
+ * without an opacity is opaque, its alpha 1.
+ */
+export function stackOpacity(base: MaterialShading, stack: StackInput): { cutout?: number; blend?: true } {
+  if (!stack.channels.opacity) return {};
+  const cutoff = base.shader.alphaCutoff;
+  return typeof cutoff === "number" ? { cutout: cutoff } : { blend: true };
+}
+
+/**
  * The planes a stack bake draws, by stack material (`stack.base`, `stack.<k>`): the channels something reads (each
  * channel of the result, and each a layer reads beneath it), in the order of the material's outputs, so a material's
- * plane program is the same text whoever makes it (`bakeStack`, `precompileStack`). The maps store no opacity, like
- * an atlas bake's, so it is drawn only for a layer that reads it.
+ * plane program is the same text whoever makes it (`bakeStack`, `precompileStack`). The opacity is drawn where the
+ * stack has one (`stackOpacity`): the composed base color map keeps it in its alpha.
  */
 function stackPlanes(base: MaterialShading, stack: StackInput): Map<string, string[]> {
   const wanted = new Map<string, Set<string>>();
   const want = (producer: string, channel: string) => { if (!wanted.has(producer)) wanted.set(producer, new Set()); wanted.get(producer)!.add(channel); };
-  for (const [channel, producer] of Object.entries(stack.channels)) if (STACK_CHANNELS.includes(channel) && channel !== "opacity") want(producer, channel);
+  for (const [channel, producer] of Object.entries(stack.channels)) if (STACK_CHANNELS.includes(channel)) want(producer, channel);
   for (const layer of stack.layers) for (const [input, producer] of Object.entries(layer.reads)) want(producer, input.slice("base.".length));
   const planes = new Map<string, string[]>();
   for (const [id, shading] of [["stack.base", base] as const, ...stack.layers.map(layer => [layer.id, layer.shading] as const)]) {

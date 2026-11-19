@@ -860,7 +860,14 @@ export class RustScene {
     const read = new Set(meshes.flatMap(mesh => ((mesh.material as THREE.Material).userData?.sceneFields as string[] | undefined) ?? []));
     if (!read.size) { delete this.host.dataset.sceneFields; return; }
     const named = new URLSearchParams(location.search).get("ground");
-    const ground = named ? meshes.find(mesh => mesh.name === named) : findGround(meshes);
+    // Grass reads the ground under its roots: where the scene has grass, the ground is the mesh it grows on.
+    const grass = new THREE.Box3();
+    for (const mesh of meshes) {
+      if (mesh.userData.foliage?.family !== "grass" || !(mesh as THREE.InstancedMesh).isInstancedMesh) continue;
+      (mesh as THREE.InstancedMesh).computeBoundingBox();
+      grass.union((mesh as THREE.InstancedMesh).boundingBox!.clone().applyMatrix4(mesh.matrixWorld));
+    }
+    const ground = named ? meshes.find(mesh => mesh.name === named) : findGround(meshes, grass.isEmpty() ? undefined : grass);
     const made = ground ? (this.groundFields ??= new GroundFields(this.renderer)).make(this.scene, [ground]) : null;
     // Foliage's boundary field is made from the same ground.
     this.foliage.invalidate();

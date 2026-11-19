@@ -220,14 +220,24 @@ export class GroundFields {
 /**
  * The ground receiver of a scene where none is named: the visible, non-instanced mesh with the largest plan area among
  * those that are flat (their height at most a quarter of their smaller plan side). Undefined without one.
+ *
+ * With `grass` (the plan bounds of the scene's grass), the ground is the mesh the grass grows on: the smallest flat mesh
+ * whose plan covers the grass and whose middle height is within 0.3 m of the grass's foot (a planter's soil or lawn, not
+ * the street's paving that runs under it, nor a planter's kerb). Without one, the widest.
  */
-export function findGround(meshes: THREE.Mesh[]): THREE.Mesh | undefined {
-  let best: THREE.Mesh | undefined, area = 0;
+export function findGround(meshes: THREE.Mesh[], grass?: THREE.Box3): THREE.Mesh | undefined {
+  let best: THREE.Mesh | undefined, area = 0, under: THREE.Mesh | undefined, fit = Infinity;
+  // Blades lean past the ground's rim by about their height.
+  const margin = 0.35;
   for (const mesh of meshes) {
     if (!mesh.visible || (mesh as THREE.InstancedMesh).isInstancedMesh) continue;
-    const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+    const box = new THREE.Box3().setFromObject(mesh), size = box.getSize(new THREE.Vector3());
     if (size.z > 0.25 * Math.min(size.x, size.y)) continue;
     if (size.x * size.y > area) { area = size.x * size.y; best = mesh; }
+    if (grass && box.min.x <= grass.min.x + margin && box.min.y <= grass.min.y + margin && box.max.x >= grass.max.x - margin
+      && box.max.y >= grass.max.y - margin && Math.abs(0.5 * (box.min.z + box.max.z) - grass.min.z) < 0.3 && size.x * size.y < fit) {
+      fit = size.x * size.y; under = mesh;
+    }
   }
-  return best;
+  return under ?? best;
 }

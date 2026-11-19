@@ -30,13 +30,14 @@ const depthIn = (outer: ScalarInput, inner: ScalarInput): Scalar =>
 const repairEdge = featureDistance("repair", reach);
 const repairDepth = depthIn(repairEdge, featureDistance("repairInner", reach));
 const ragged = mul(sub(valueNoise(mul(at, 60), seed("repair-edge")), 0.5), 0.006);
-const repaired = smoothstep(0.001, 0.004, add(repairDepth, ragged));
+// Only inside a frame: the ragged edge must not reach out over the open wall.
+const repaired = mul(smoothstep(0.001, 0.004, add(repairDepth, ragged)), smoothstep(0, 0.0005, repairDepth));
 // Its tone is one value over a patch (a slow field, read coarsely) and differs from patch to patch.
 const kind = valueNoise(mul(at, 0.31), seed("repair-kind"));
 const shade = valueNoise(add(mul(at, 0.37), vec2(5.1, 2.3)), seed("repair-shade"));
 const greyed = mix(color, add(mul(cement, 0.75), mul(color, 0.35)), mul(contrast, add(0.3, mul(0.6, smoothstep(0.3, 0.7, kind)))));
 const trowel = add(0.97, mul(0.06, valueNoise(mul(at, vec2(3, 26)), seed("repair-trowel"))));
-const repairColor = mul(mul(greyed, add(1, mul(mul(contrast, 0.5), sub(shade, 0.42)))), trowel);
+const repairColor = mul(mul(mul(greyed, 0.8), add(1, mul(mul(contrast, 0.22), sub(shade, 0.45)))), trowel);
 // The outline: a thin broken line on the edge itself, heavier along the lower edge of the tone field.
 const lineBreak = add(0.55, mul(0.45, smoothstep(0.3, 0.6, valueNoise(mul(at, 9), seed("repair-line")))));
 const repairLine = mul(mul(outline, sub(1, smoothstep(mul(outlineWidth, 0.3), outlineWidth, repairEdge))), mul(lineBreak, select(lt(repairEdge, sub(reach, 0.05)), 1, 0)));
@@ -49,5 +50,6 @@ export default defineLayer({
   name: "Kowloon repairs",
   coverage: min(cover, 1),
   baseColor: repairLook,
-  roughness: 0.8,
+  // Newer, a little smoother plaster.
+  roughness: 0.76,
 });

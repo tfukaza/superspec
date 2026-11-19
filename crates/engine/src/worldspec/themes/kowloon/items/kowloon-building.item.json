@@ -41,6 +41,8 @@
     "pavementDepth": {"type": "number", "default": 1.45, "min": 0.4, "max": 10, "unit": "m"},
     "kerbHeight": {"type": "number", "default": 0.15, "min": 0.02, "max": 0.5, "unit": "m"},
     "plinth": {"type": "number", "default": 1.02, "min": 0, "max": 2, "unit": "m"},
+    "plinthPlans": {"type": "grid", "default": []},
+    "cornerPlinth": {"type": "number", "default": -1, "min": -1, "max": 2, "unit": "m"},
     "glazing": {"type": "boolean", "default": true},
     "hoods": {"type": "boolean", "default": true},
     "shopDepth": {"type": "number", "default": 3.1, "min": 2.4, "max": 20, "unit": "m"},
@@ -156,7 +158,7 @@
                        "gateBars": {"parameter": "gateBars"}, "gateBacking": {"parameter": "gateBacking"}, "doorPanels": {"parameter": "doorPanels"},
                        "backDoorColor": {"parameter": "backDoorColor"}, "backDoorLouvres": {"parameter": "backDoorLouvres"},
                        "glazing": {"parameter": "glazing"}, "hoods": {"parameter": "hoods"},
-                       "plinth": {"expr": "select(e_street, plinth, 0)"}, "ledge": {"choose": [false, true], "by": "e_street"},
+                       "plinth": {"expr": "select(count(plinthPlans) > e, cell(plinthPlans, e), select(e_street, plinth, 0))"}, "ledge": {"choose": [false, true], "by": "e_street"},
                        "miterStart": {"expr": "select(e_street * e_previous_street, select(round > 0, select(e_previous_cut > 0, 0.0001, max(0, e_miter_start)), 0.4142), min(1, e_street + bandsAround))"}, "miterEnd": {"expr": "select(e_cut > 0, select(round > 0, 0.0001, 0.4142), min(1, e_street + bandsAround))"},
                        "copingFlush": {"choose": [false, true], "by": "round > 0"},
                        "arris": {"parameter": "arris"}, "arrisStart": {"expr": "select(e_previous_cut > 0, 0, clamp(e_miter_start, 0, 2))"}, "arrisEnd": {"expr": "select(e_cut > 0, 0, clamp(e_miter_end, 0, 2))"},
@@ -204,7 +206,7 @@
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"}, "seed": {"expr": "seed * 8 + 100 + c"},
                        "edge": 0.2, "windows": false, "groundShops": false, "downpipe": false, "riser": false,
                        "sill": {"parameter": "streetSill"}, "tileStrip": {"parameter": "cornerTiles"},
-                       "plinth": {"parameter": "plinth"}, "ledge": true, "miterStart": 0.4142, "miterEnd": 0.4142}},
+                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}, "ledge": true, "miterStart": 0.4142, "miterEnd": 0.4142}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_cdx", "c_cdy"]}
     },
     {
@@ -217,7 +219,7 @@
                        "floors": {"parameter": "floors"}, "storyHeight": {"parameter": "storyHeight"},
                        "groundHeight": {"parameter": "groundHeight"}, "parapet": {"parameter": "parapet"},
                        "sill": {"parameter": "streetSill"}, "tileStrip": {"parameter": "cornerTiles"},
-                       "plinth": {"parameter": "plinth"}}},
+                       "plinth": {"expr": "select(cornerPlinth >= 0, cornerPlinth, plinth)"}}},
       "placement": {"position": ["c_cx", "c_cy", 0], "along": ["c_dx", "c_dy"]}
     },
     {
@@ -400,8 +402,8 @@
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
-      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012}, "seed": 9},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85, "bareCover": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
+      {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.012, "halo": 0.32, "haloWidth": 0.14}, "seed": 9, "follow": {"opening": "opening-edge", "sill": "sill"}},
       {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 3.6, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
       {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 1.1, "color": [0.29, 0.26, 0.22], "streakLength": 1.4, "shift": 1.7, "period": 2.3, "variety": 0.4, "lip": 0.6}, "seed": 5, "follow": {"zone": ["runoff-coping", "runoff-sill", "runoff-top"]}}
     ]

@@ -29,6 +29,12 @@ export interface TargetSpec {
   filter: "mips" | "linear" | "nearest";
   wrap: THREE.Wrapping;
   anisotropy?: number;
+  /**
+   * For a mipped RGBA byte texture whose alpha a cutout tests at this cutoff: its mips keep the share of texels at or
+   * above the cutoff that the full level has (`GraphDevice.mips`), so thin strokes do not break up with distance. A
+   * node's key names its program's layout, which holds the cutoff.
+   */
+  coverage?: number;
   /** For inspection only; not part of any key. */
   name: string;
 }
@@ -111,8 +117,8 @@ export interface NodeSpec {
 export interface GraphDevice {
   /** Advances when the context is lost or restored: nodes of another generation no longer exist. */
   generation(): number;
-  /** Builds the mip chains of drawn textures. */
-  mips(textures: THREE.Texture[]): void;
+  /** Builds the mip chains of drawn textures; `specs` are their targets, in the same order. */
+  mips(textures: THREE.Texture[], specs?: TargetSpec[]): void;
   /** Waits for the GPU to finish drawing into a target (measurements only). */
   settle?(target: THREE.WebGLRenderTarget): void;
   /**
@@ -462,7 +468,7 @@ export class BakeGraph {
         const mipped = plans.filter(plan => plan.spec.target.filter === "mips");
         if (mipped.length) {
           const before = performance.now();
-          this.device.mips(mipped.map(plan => plan.node.texture));
+          this.device.mips(mipped.map(plan => plan.node.texture), mipped.map(plan => plan.spec.target));
           if (options.measure) this.device.settle?.(mipped[0].node.target);
           result.timings.mips += performance.now() - before;
         }

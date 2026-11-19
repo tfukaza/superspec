@@ -456,6 +456,98 @@ fn choices_and_dimensions_reach_the_fixture() {
     assert!((extent(&paved, 2) - 0.15).abs() < 0.007);
     let slots: Vec<&str> = paved.iter().map(|m| m.material_slot.as_str()).collect();
     assert_eq!(slots, ["paving", "kerb"]);
+    // A pedestrian avenue is as long and wide as asked, its road `height` below its top; its
+    // median planter stands `planterRise` above the paving with its soil `soilDepth` below
+    // that, no slab is laid under the planter, and bollards close its ends.
+    let avenue = generate(
+        &natives,
+        "kowloon/pedestrian-avenue",
+        &values(&[
+            ("length", json!(24)),
+            ("width", json!(12)),
+            ("height", json!(0.1)),
+            ("medianOffset", json!(5)),
+            ("medianWidth", json!(2)),
+            ("medianStart", json!(2)),
+            ("medianEnd", json!(22)),
+        ]),
+    )
+    .unwrap();
+    check("kowloon/pedestrian-avenue", &avenue);
+    assert!((extent(&avenue, 0) - 24.).abs() < 1e-6);
+    assert!((extent(&avenue, 1) - 12.).abs() < 1e-6);
+    let slot = |name: &str| -> Vec<[f64; 3]> {
+        avenue
+            .iter()
+            .filter(|m| m.material_slot == name)
+            .flat_map(|m| m.positions.clone())
+            .collect()
+    };
+    let slots: Vec<&str> = avenue.iter().map(|m| m.material_slot.as_str()).collect();
+    for name in ["paving", "kerb", "soil", "metal", "timber"] {
+        assert!(slots.contains(&name), "the avenue has {name}");
+    }
+    let low = avenue
+        .iter()
+        .flat_map(|m| &m.positions)
+        .map(|p| p[2])
+        .fold(f64::MAX, f64::min);
+    assert!((low + 0.1).abs() < 1e-6, "the road is {low} below");
+    let soil = slot("soil");
+    assert!(soil.iter().all(|p| (p[2] - 0.16).abs() < 1e-9));
+    let (soil_y0, soil_y1) = soil
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[1]), b.max(p[1])));
+    assert!((soil_y0 + 5.8).abs() < 1e-9 && (soil_y1 + 4.2).abs() < 1e-9);
+    let planter_top = slot("kerb")
+        .iter()
+        .filter(|p| p[1] > -6.01 && p[1] < -3.99 && p[0] > 2.5 && p[0] < 21.5)
+        .map(|p| p[2])
+        .fold(f64::MIN, f64::max);
+    assert!(
+        (planter_top - 0.3).abs() < 1e-9,
+        "the planter rises {planter_top}"
+    );
+    let mut slabs = 0;
+    for m in avenue.iter().filter(|m| m.material_slot == "paving") {
+        for corners in m.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| m.positions[corners[k] as usize]);
+            let centre = [0, 1].map(|k| (a[k] + b[k] + c[k]) / 3.);
+            if a[2] > -0.01 && b[2] > -0.01 && c[2] > -0.01 {
+                slabs += 1;
+                assert!(
+                    !(centre[0] > 3. && centre[0] < 21. && centre[1] > -5.9 && centre[1] < -4.1),
+                    "a slab's top at {centre:?} lies under the planter"
+                );
+            }
+        }
+    }
+    assert!(slabs > 600, "{slabs} slab top triangles");
+    let tall = slot("metal").iter().filter(|p| p[2] > 0.75).count();
+    assert!(tall > 0, "bollards stand at the ends");
+    let plain = generate(
+        &natives,
+        "kowloon/pedestrian-avenue",
+        &values(&[
+            ("medianWidth", json!(0)),
+            ("benches", json!(0)),
+            ("bollardSpacing", json!(0)),
+        ]),
+    )
+    .unwrap();
+    let plain_slots: Vec<&str> = plain.iter().map(|m| m.material_slot.as_str()).collect();
+    assert_eq!(plain_slots, ["paving", "kerb"]);
+    for refused in [
+        values(&[("medianWidth", json!(0.5))]),
+        values(&[("medianOffset", json!(13.5))]),
+        values(&[("medianStart", json!(20)), ("medianEnd", json!(10))]),
+        values(&[("soilDepth", json!(0.4))]),
+    ] {
+        assert!(
+            generate(&natives, "kowloon/pedestrian-avenue", &refused).is_err(),
+            "{refused:?} is refused"
+        );
+    }
     // A cornice is as long as its wall at its outer edge with square ends, and longer by its
     // projection at a mitred external corner.
     let square = generate(
