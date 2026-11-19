@@ -29,6 +29,40 @@ export function animeTreeLook(mass: FoliageMass): AnimeTreeLook | null {
   return (ANIME_TREE_LOOKS as readonly string[]).includes(look ?? "") ? look as AnimeTreeLook : null;
 }
 
+/**
+ * The grade of the lane trees (`LANE_PALETTE` in treespec_batches.rs), the one the ramp is drawn for: a mass's own grade
+ * (`FoliageMass.palette`) is applied relative to it, so a plant graded as the trees keeps the ramp as it is and the
+ * lane's groundcover (its value and shade lower) is darker and deeper in its shade.
+ */
+const RAMP_GRADE = { hue: -26, saturation: 0.66, value: 0.8, shade: 0.7, shadeHue: -34, contrast: 1.2, depth: 2 };
+/**
+ * Grades the ramp and the light of `uniforms` (`animeUniforms`) by `palette` against `RAMP_GRADE`, as the painted mass
+ * grades its colours (painted-mass.ts GRADE_GLSL): turned about the grey axis, saturation and value scaled, the darker
+ * colours scaled and turned by the shade's; the light's stretch by the contrast and its inside's darkening by the depth.
+ * A low plant (`low`), seen from above and lit mostly from there, has its light stretched a fifth more and lowered.
+ */
+function gradeRamp(uniforms: Record<string, THREE.IUniform>, palette: FoliageMass["palette"] | undefined, low: boolean): void {
+  const p = { ...RAMP_GRADE, ...palette }, degrees = Math.PI / 180;
+  const turn = (c: THREE.Vector3, a: number) => {
+    const k = new THREE.Vector3(1, 1, 1).normalize();
+    return c.clone().multiplyScalar(Math.cos(a)).add(k.clone().cross(c).multiplyScalar(Math.sin(a))).add(k.multiplyScalar(k.dot(c) * (1 - Math.cos(a))));
+  };
+  const luma = (c: THREE.Vector3) => 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+  for (const colour of uniforms.atRamp.value as THREE.Color[]) {
+    let c = new THREE.Vector3(colour.r, colour.g, colour.b);
+    const dark = 1 - THREE.MathUtils.smoothstep(luma(c), 0.12, 0.45);
+    c = turn(c, (p.hue - RAMP_GRADE.hue) * degrees + (p.shadeHue - RAMP_GRADE.shadeHue) * degrees * dark);
+    const grey = luma(c);
+    c = new THREE.Vector3(grey, grey, grey).lerp(c, p.saturation / RAMP_GRADE.saturation)
+      .multiplyScalar(p.value / RAMP_GRADE.value * THREE.MathUtils.lerp(1, p.shade / RAMP_GRADE.shade, dark));
+    colour.setRGB(Math.max(0, c.x), Math.max(0, c.y), Math.max(0, c.z));
+  }
+  (uniforms.atCurve.value as THREE.Vector4).x *= p.contrast / RAMP_GRADE.contrast * (low ? 1.2 : 1);
+  // ... and lowered a step: lit from above it would otherwise sit at the top of the ramp, paler than the trees.
+  if (low) (uniforms.atCurve.value as THREE.Vector4).y -= 0.2;
+  (uniforms.atLight.value as THREE.Vector4).y = Math.min(0.9, (uniforms.atLight.value as THREE.Vector4).y * p.depth / RAMP_GRADE.depth);
+}
+
 /** The height of the mass's twigs as placed: where they start and end, in the scene. */
 function reach(mass: FoliageMass, placement: THREE.Matrix4): { low: number; high: number } {
   let low = Infinity, high = -Infinity;
@@ -45,21 +79,18 @@ function reach(mass: FoliageMass, placement: THREE.Matrix4): { low: number; high
  */
 export function animeTree(mass: FoliageMass, placement: THREE.Matrix4, look: AnimeTreeLook, sun: THREE.IUniform<THREE.Vector3>, time: THREE.IUniform<number>): THREE.Mesh[] {
   const uniforms = animeUniforms(sun, time);
-  // The mass's grade darkens or lightens the ramp: its value against the lane trees' own (0.8), so the lane's darker
-  // groundcover is darker here too. (The rest of the grade belongs to the painted mass's own colours.)
-  const value = mass.palette && mass.palette.value !== 1 ? Math.min(1.15, Math.max(0.6, mass.palette.value / 0.8)) : 1;
-  for (const colour of uniforms.atRamp.value as THREE.Color[]) colour.multiplyScalar(value);
   const { low, high } = reach(mass, placement), scale = placement.getMaxScaleOnAxis();
   // A tree's crown is some 6 m high; a shrub's a meter or two; groundcover is many small plants (its field's cells are fine).
   const low_plant = mass.cell < 0.2, small = low_plant ? 0.5 : Math.min(1, Math.max(0.55, (high - low) / (5 * scale)));
+  gradeRamp(uniforms, mass.palette, low_plant || small < 0.7);
   const cluster = 0.85 * small;
   let parts: THREE.Mesh[];
   if (look === "leaves") {
-    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 1 : 3, tier: low_plant ? 0.25 : 0.6, under: 0.3 });
-    parts = [animeLeaves(crown, uniforms, { length: 0.19 * small, width: 0.36, whorl: low_plant ? 4 : 6, whorlMore: low_plant ? 2 : 3, glints: 0.5 })];
+    const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 1 : 3, tier: low_plant ? 0.25 : 0.6, under: 0.2 });
+    parts = [animeLeaves(crown, uniforms, { length: 0.19 * small, width: 0.36, whorl: low_plant ? 4 : 6, whorlMore: low_plant ? 2 : 3, glints: low_plant ? 0.25 : 0.5 })];
   } else if (look === "sprays") {
     const crown = analyseCrown(mass, placement, { spacing: low_plant ? 0.3 : 0.24 * small, clusterRadius: cluster, fill: low_plant ? 1 : 4, tier: low_plant ? 0.25 : 0.6, under: 0.3 });
-    parts = [animeSprays(stationCards(crown, 0.34 * small, 0.5), uniforms)];
+    parts = [animeSprays(stationCards(crown, 0.34 * small, low_plant ? 0.25 : 0.5), uniforms)];
   } else if (look === "shells") {
     const crown = analyseCrown(mass, placement, { spacing: 0.42 * small, clusterRadius: cluster });
     const cards = shellCards(crown, low_plant ? 8 : 30, 0.36 * small), random = generator(47);

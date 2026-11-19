@@ -224,6 +224,16 @@ export class AmbientOcclusion {
     // and leaves no halo round a small prop.
     this.contact = new GTAOPass(scene, camera, size.x, size.y);
     this.contactMask = this.prepare(this.contact, camera, excluded);
+    // It reads the depth, normals and foliage mask the broad pass drew just before it, the same view drawn the same way,
+    // rather than drawing the scene and its foliage again (a third of the frame's draw calls in the building scene). Its
+    // own targets are never drawn into, so they take no memory. (`?aoshare=off` draws them again, to compare.)
+    if (typeof location === "undefined" || new URLSearchParams(location.search).get("aoshare") !== "off") {
+      this.contact.setGBuffer(this.pass.depthTexture, this.pass.normalTexture);
+      const broad = (this.pass as unknown as { blendMaterial: THREE.ShaderMaterial }).blendMaterial.uniforms;
+      const close = (this.contact as unknown as { blendMaterial: THREE.ShaderMaterial }).blendMaterial.uniforms;
+      close.tFoliage = broad.tFoliage;
+      close.hasFoliage = broad.hasFoliage;
+    }
     this.composer.addPass(this.pass);
     this.composer.addPass(this.contact);
     this.camera = camera;

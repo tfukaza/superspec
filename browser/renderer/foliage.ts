@@ -551,6 +551,9 @@ export class FoliageView {
   /** The material of a foliage mesh with its recipe's program (null when the batch names none the scene has). */
   withProgram(mesh: THREE.InstancedMesh, program: FoliageProgram | undefined): THREE.Material {
     mesh.userData.foliageProgram = program;
+    // Bark of a plant drawn in an illustrated look keeps the look's own bark (anime-tree-bark.ts): the recipe's program
+    // arrives after it.
+    if (mesh.userData.animeBark) return mesh.material as THREE.Material;
     const look = mesh.userData.foliage as FoliageLook;
     return makeMaterial(look, drawnProfile(look, this.override), program, new Set(Object.keys(mesh.geometry.attributes)), this.shared, mesh.userData.foliageLevel);
   }
