@@ -5,7 +5,6 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
 import { SimplexNoise } from "three/examples/jsm/math/SimplexNoise.js";
 import { ContourPass, type ContourSource } from "./contours.ts";
-import { LitEdges } from "./lit-edges.ts";
 import type { AmbientOcclusionSettings, Contours } from "./lighting.ts";
 
 /** The lighting record's ambient occlusion values; whether the effect is on (`enabled`) is its host's decision. */
@@ -298,7 +297,6 @@ export class AmbientOcclusion {
     });
     untoned.mode.value = AmbientOcclusion.invertUntoned ? UNTONED_MODES.get(this.renderer.toneMapping) ?? 0 : 0;
     untoned.exposure.value = this.renderer.toneMappingExposure;
-    this.geometryDrawn = false;
     try { this.composer.render(); } finally {
       untoned.mode.value = 0;
       this.renderer.setClearColor(clear, alpha);
@@ -438,26 +436,16 @@ void main() {
     const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget;
       _renderOverride(renderer: THREE.WebGLRenderer, material: THREE.Material, target: THREE.WebGLRenderTarget, color: number, alpha: number): void;
       blendMaterial: THREE.ShaderMaterial };
-    if (!this.pass.enabled && !this.geometryDrawn) {
+    if (!this.pass.enabled) {
       internals._overrideVisibility();
       internals._renderOverride(this.renderer, this.pass.normalMaterial, internals.normalRenderTarget, 0x7777ff, 1.0);
       internals._restoreVisibility();
-      this.geometryDrawn = true;
     }
     return { depth: internals.normalRenderTarget.depthTexture!, normal: internals.normalRenderTarget.texture, foliage: this.foliageMask.texture,
       hasFoliage: internals.blendMaterial.uniforms.hasFoliage.value > 0 };
   }
 
   private contours?: ContourPass;
-  private geometryDrawn = false;
-  private litEdges?: LitEdges;
-
-  setLitEdges(sun: THREE.DirectionalLight | null): void {
-    if (this.litEdges) { this.litEdges.enabled = sun !== null; return; }
-    if (!sun) return;
-    this.litEdges = new LitEdges(this.camera, () => this.contourSource(), sun);
-    this.composer.insertPass(this.litEdges, this.composer.passes.indexOf(this.output));
-  }
   private readonly camera: THREE.Camera;
   private pixelRatio = 1;
 
@@ -501,7 +489,6 @@ void main() {
     this.pass.dispose();
     this.contact.dispose();
     this.contours?.dispose();
-    this.litEdges?.dispose();
     this.output.dispose();
     this.foliageMask.dispose();
     this.contactMask.dispose();

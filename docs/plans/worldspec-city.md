@@ -26,10 +26,6 @@ preview uses the shop-house material recipes for city receivers, the avenue
 median's planted groundcover, and the study's lighting and shadow settings.
 Mesh contours are off in the city preview.
 
-Sunlit corners of city geometry catch a narrow highlight. The pass reads geometric
-normals, depth and the sun's shadow map. Use `?edgeboost=off` to compare the city
-without it, or `?edgeboost=on` to try it on a standalone ItemSpec or material project.
-
 Add `?edgeblur=on` to the preview URL to soften strong color transitions
 within one device pixel. `edgethreshold` sets the minimum display-color
 difference on a scale from 0 to 1. The default is `0.12`.

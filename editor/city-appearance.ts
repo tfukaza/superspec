@@ -121,7 +121,7 @@ export class CityAppearance {
       const applied = await scene.apply(packet, current, false, decorate);
       if (applied) {
         scene.setBackdrop(city ? "#d2ccc4" : "#d5d7ce");
-        scene.setLighting(projectLighting(packet.manifest), packet.manifest.lighting, city);
+        scene.setLighting(projectLighting(packet.manifest), packet.manifest.lighting);
       }
       return applied;
     };

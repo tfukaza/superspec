@@ -321,8 +321,8 @@ export class RustScene {
    * on or off recompiles programs. `stated` is the record as the project states it, before its defaults were filled in
    * (see `SceneLighting.set`).
    */
-  setLighting(record: Lighting, stated?: unknown, city = false): void {
-    this.lights.set(record, stated, city);
+  setLighting(record: Lighting, stated?: unknown): void {
+    this.lights.set(record, stated);
     // Grass casts no shadow: its blades take the ground's shade at their roots (foliage.ts). A plant casts from its bark
     // and its canopy's shadow proxy (foliage-plants.ts).
     for (const mesh of this.models.children) {
