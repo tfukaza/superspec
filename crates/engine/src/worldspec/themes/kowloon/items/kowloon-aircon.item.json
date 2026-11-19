@@ -4,6 +4,8 @@
   "id": "kowloon-aircon",
   "parameters": {
     "split": {"type": "boolean", "default": false},
+    "lines": {"type": "boolean", "default": true},
+    "clearance": {"type": "number", "default": 1.6, "min": 0.3, "max": 10, "unit": "m"},
     "seed": {"type": "integer", "default": 0, "min": 0, "max": 100000000},
     "drop": {"type": "number", "default": 0.6, "min": 0, "max": 3, "unit": "m"},
     "width": {"type": "number", "default": 0.95, "min": 0.91, "max": 2, "unit": "m"},
@@ -20,10 +22,27 @@
       "when": "split",
       "generator": {"kind": "native", "name": "kowloon/condenser",
         "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "height"}, "seed": {"parameter": "seed"}}}
+    },
+    {
+      "id": "lines",
+      "when": "split * lines",
+      "generator": {"kind": "native", "name": "kowloon/conduit",
+        "parameters": {"rise": {"expr": "0.35 + 0.3 * random(seed, 2)"}, "run": {"expr": "0.16 + 0.1 * random(seed, 3)"}, "rise2": {"expr": "height + 0.7 + 0.5 * random(seed, 4)"},
+                       "radius": 0.014, "color": "#9b9985", "boxes": false}},
+      "placement": {"position": ["width / 2 + 0.1", 0, "height * 0.3 - 0.5"]}
+    },
+    {
+      "id": "hose",
+      "when": "lines",
+      "generator": {"kind": "native", "name": "kowloon/conduit",
+        "parameters": {"rise": {"expr": "min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)"}, "run": 0, "rise2": 0, "radius": 0.008, "color": "#cfcabb", "boxes": false}},
+      "placement": {"position": ["select(split, -width / 2 + 0.08, 0.2)", 0, "-(min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)) - select(split, 0.02, 0.1)"]}
     }
   ],
   "features": [
     {"name": "drip", "part": "unit", "points": [[-0.32, 0, 0], [0.32, 0, 0]], "width": 0.1},
-    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1}
+    {"name": "drip", "part": "condenser", "points": [["-width / 2", 0, 0], ["width / 2", 0, 0]], "width": 0.1},
+    {"name": "drip-above", "part": "unit", "points": [[-0.32, 0, 0.05], [0.32, 0, 0.05]]},
+    {"name": "drip-above", "part": "condenser", "points": [["-width / 2", 0, 0.05], ["width / 2", 0, 0.05]]}
   ]
 }

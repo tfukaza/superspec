@@ -5,26 +5,89 @@
   "parameters": {
     "width": {"type": "number", "default": 3.0, "min": 1.5, "max": 20, "unit": "m"},
     "height": {"type": "number", "default": 3.35, "min": 2.4, "max": 6, "unit": "m"},
-    "kind": {"type": "choice", "default": "shutter", "choices": ["shutter", "gate", "door", "shop", "service"]},
+    "kind": {"type": "choice", "default": "shutter", "choices": ["shutter", "gate", "door", "shop", "service", "open"]},
+    "trade": {"type": "choice", "default": "provisions", "choices": ["provisions", "grocer", "greengrocer", "hardware", "herbalist"]},
+    "depth": {"type": "number", "default": 3.1, "min": 2.4, "max": 20, "unit": "m"},
+    "stock": {"type": "boolean", "default": true},
+    "clutter": {"type": "boolean", "default": false},
     "seed": {"type": "integer", "default": 0, "min": 0, "max": 100000000},
     "signs": {"type": "boolean", "default": true},
     "awning": {"type": "boolean", "default": false},
+    "awningKind": {"type": "choice", "default": "awning", "choices": ["awning", "tarp", "striped"]},
     "awningColor": {"type": "color", "default": "#3f7f5f"},
-    "lamp": {"type": "boolean", "default": true}
+    "awningOverhang": {"type": "number", "default": -0.15, "min": -1, "max": 2, "unit": "m"},
+    "lamp": {"type": "boolean", "default": true},
+    "awningLower": {"type": "number", "default": 0, "min": 0, "max": 1.2, "unit": "m"},
+    "shutterColor": {"type": "color", "default": "#5a6f68"},
+    "doorColor": {"type": "color", "default": "#2f4f43"}
+  },
+  "derived": {
+    "open": "(kind == 5) * (width >= 1.9)",
+    "awningWidth": "width + awningOverhang * 2",
+    "awningZ": "height - 0.62 - awningLower"
   },
   "parts": [
     {
       "id": "bay",
+      "when": "1 - open",
       "generator": {"kind": "native", "name": "kowloon/ground-bay",
-        "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
-                       "seed": {"parameter": "seed"}, "signs": {"parameter": "signs"}}}
+        "parameters": {"kind": {"choose": ["shutter", "gate", "door", "shop", "service", "shutter"], "by": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+                       "seed": {"parameter": "seed"}, "signs": false, "shutter": {"parameter": "shutterColor"}, "frame": {"parameter": "doorColor"}}}
+    },
+    {
+      "id": "backing",
+      "when": "1 - open",
+      "generator": {"kind": "box", "size": ["width + 0.3", 0.02, "height - 0.4"]},
+      "placement": {"position": ["-(width + 0.3) / 2", 0.3, 0]},
+      "slots": {"side": "pane"}
+    },
+    {
+      "id": "room",
+      "when": "open",
+      "generator": {"kind": "native", "name": "kowloon/shop-room",
+        "parameters": {"trade": {"parameter": "trade"}, "width": {"parameter": "width"}, "height": {"expr": "height - 0.5"},
+                       "depth": {"parameter": "depth"}, "storey": {"expr": "height + 0.05"}, "seed": {"parameter": "seed"}}}
+    },
+    {
+      "id": "stock",
+      "when": "open * stock",
+      "generator": {"kind": "native", "name": "kowloon/street-stock",
+        "parameters": {"width": {"parameter": "width"}, "seed": {"parameter": "seed"}}}
+    },
+    {
+      "id": "clutter",
+      "when": "clutter * (1 - open) * (kind != 2) * (width >= 2.4)",
+      "generator": {"kind": "native", "name": "kowloon/street-stock",
+        "parameters": {"width": {"expr": "min(width * 0.55, 2.4)"}, "seed": {"expr": "seed + 5"}}},
+      "placement": {"position": ["select(random(seed, 22) < 0.5, -1, 1) * (width - min(width * 0.55, 2.4)) / 2", 0, 0]}
+    },
+    {
+      "id": "sign",
+      "when": "signs * (1 - awning) * (kind != 2) * (kind != 4)",
+      "generator": {"kind": "item", "entry": "kowloon-sign.item.json",
+        "parameters": {"mount": "flat", "width": {"expr": "min(width * 0.62, 2.6)"}, "height": 0.3,
+                       "scheme": {"choose": ["green", "red", "ivory", "blue", "black", "yellow"], "by": "random(seed, 21) * 6"},
+                       "horizontal": true, "seed": {"parameter": "seed"}}},
+      "placement": {"position": [0, 0, "height - 0.49"]}
     },
     {
       "id": "awning",
-      "when": "awning",
+      "when": "awning * (awningKind == 0)",
       "generator": {"kind": "native", "name": "kowloon/awning",
-        "parameters": {"width": {"expr": "width - 0.3"}, "depth": 0.85, "drop": 0.3, "color": {"parameter": "awningColor"}, "seed": {"parameter": "seed"}}},
-      "placement": {"position": [0, 0, "height - 0.62"]}
+        "parameters": {"width": {"derived": "awningWidth"}, "depth": 0.85, "drop": 0.3, "color": {"parameter": "awningColor"}, "seed": {"parameter": "seed"}}},
+      "placement": {"position": [0, 0, {"derived": "awningZ"}]}
+    },
+    {
+      "id": "tarp",
+      "when": "awning * (awningKind >= 1)",
+      "generator": {"kind": "native", "name": "kowloon/tarp",
+        "parameters": {"width": {"derived": "awningWidth"}, "depth": {"expr": "select(awningKind == 2, 1.5, 1.27)"}, "drop": {"expr": "select(awningKind == 2, 0.2, 0.46)"},
+                       "valance": {"expr": "select(awningKind == 2, 0.22, 0)"},
+                       "color": {"parameter": "awningColor"}, "hem": "#c9bca0",
+                       "stripes": {"choose": [false, true], "by": "awningKind - 1"}, "stripe": "#c9bca0", "stripe_width": 0.11,
+                       "poles": {"expr": "select(awningKind == 2, 0, 2)"}, "stand": {"derived": "awningZ"},
+                       "seed": {"parameter": "seed"}}},
+      "placement": {"position": [0, 0, {"derived": "awningZ"}]}
     },
     {
       "id": "lamp",
@@ -34,6 +97,9 @@
     }
   ],
   "features": [
-    {"name": "drip", "part": "awning", "points": [["-(width - 0.3) / 2", 0, "height - 0.62"], ["(width - 0.3) / 2", 0, "height - 0.62"]], "when": "awning"}
+    {"name": "drip", "part": "awning", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind == 0)"},
+    {"name": "drip", "part": "tarp", "points": [["-awningWidth / 2", 0, {"derived": "awningZ"}], ["awningWidth / 2", 0, {"derived": "awningZ"}]], "when": "awning * (awningKind >= 1)"},
+    {"name": "drip-above", "part": "awning", "points": [["-awningWidth / 2", 0, "height - 0.57"], ["awningWidth / 2", 0, "height - 0.57"]], "when": "awning * (awningKind == 0)"},
+    {"name": "drip-above", "part": "tarp", "points": [["-awningWidth / 2", 0, "height - 0.57"], ["awningWidth / 2", 0, "height - 0.57"]], "when": "awning * (awningKind >= 1)"}
   ]
 }

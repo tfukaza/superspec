@@ -65,7 +65,7 @@ scene renderer contract (UV0, identity texture transform, repeat/linear mipmappe
 sampling, supported PBR channels). An unsupported renderer feature must fail at
 that boundary rather than disappear from the imported artifact.
 
-Limits include 1 MiB definition text, 64 controls, 128 slots, 256 attachments,
+Limits include 1 MiB definition text, 128 controls, 128 slots, 256 attachments,
 32 MiB main GLB, 8 MiB GLB JSON, 64 MiB aggregate source/image bytes, 16 MiB per
 encoded image, 96 Mi pixels, 4096 nodes/primitives, 500000 local vertices and
 250000 source/placed triangles and 1000000 placed vertices. Images are validated before publication. Cancellation
@@ -159,7 +159,7 @@ with the control's value and range.
 which also has `%`, comparisons (`< <= > >= == !=`, giving 1 or 0), `clamp(x, low, high)`,
 `select(condition, a, b)` and `random(...)`: a value in [0, 1) hashed from the exact bits of
 its arguments (SplitMix64), the same on every platform. A boolean geometry control reads as 1
-or 0. `{name}` in a sub-item entry or a route's `from` attachment is replaced by the integer
+or 0, and a choice control as its index among its choices. `{name}` in a sub-item entry or a route's `from` attachment is replaced by the integer
 value of a copy index or derived value.
 
 **Repeats and conditions.** A part may `repeat` over up to three named axes

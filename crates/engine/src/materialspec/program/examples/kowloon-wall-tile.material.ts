@@ -1,0 +1,49 @@
+// Small glazed wall tiles as an old Kowloon facade wears them (the spandrels under a shop house's windows): every
+// tile a little off its neighbours in tone, a few replaced over the years with whatever was to hand, the glaze faded
+// in clouds, chips at the edges and a missing tile here and there showing the bedding, and joints black with dirt
+// that has crept onto the faces beside them and run down in streaks. Edge streaks under sills and fixtures are
+// layers over it (kowloon-grime-streaks).
+import {
+  defineMaterial, layer, param, tileAndGrout, rectangularGrid, vec2, vec3, add, sub, mul, mix, min, step, smoothstep,
+  hash, valueNoise, seed, surface,
+} from "@superspec/material/v1";
+
+const tileSize = param.scalar({ default: 0.1, range: [0.03, 0.6], unit: "m", label: "Tile size" });
+const jointWidth = param.scalar({ default: 0.006, range: [0.001, 0.03], unit: "m", label: "Joint width" });
+const glaze = param.vec3({ default: vec3(0.205, 0.283, 0.235), range: [0, 1], label: "Glaze colour" });
+const spare = param.vec3({ default: vec3(0.46, 0.45, 0.36), range: [0, 1], label: "Replacement glaze" });
+const replaced = param.scalar({ default: 0.05, range: [0, 1], label: "Replaced tiles" });
+const variation = param.scalar({ default: 0.22, range: [0, 0.6], label: "Tone variation" });
+const fade = param.scalar({ default: 0.3, range: [0, 1], label: "Fading" });
+const wear = param.scalar({ default: 0.22, range: [0, 0.6], label: "Chipped edges" });
+const missing = param.scalar({ default: 0.02, range: [0, 1], label: "Missing tiles" });
+const grime = param.scalar({ default: 0.6, range: [0, 1], label: "Grime" });
+const glazeRoughness = param.scalar({ default: 0.32, range: [0, 1], label: "Glaze roughness" });
+
+const size = vec2(tileSize, tileSize);
+const tiles = tileAndGrout({ size, groutWidth: jointWidth, chipAmount: wear, chipSize: 0.012, missingChance: missing });
+const grid = rectangularGrid({ size });
+
+// Each tile's own tone, and the odd one in another glaze.
+const tone = add(sub(1, variation), mul(variation, grid.random));
+const odd = step(sub(1, replaced), hash(grid.cell, seed("replaced")));
+const clouds = smoothstep(0.25, 0.8, valueNoise(mul(surface, 1.4), seed("glaze-fade")));
+const faced = mul(mix(glaze, spare, odd), tone);
+const faded = mix(faced, add(mul(faced, 0.6), vec3(0.19, 0.19, 0.17)), mul(fade, clouds));
+
+// Dirt: out of the joints onto the faces, in patches, and washed down in streaks.
+const beside = sub(1, smoothstep(0.002, mul(tileSize, 0.24), grid.sideDistance));
+const streaks = smoothstep(0.35, 0.8, valueNoise(mul(surface, vec2(9, 0.8)), seed("tile-streaks")));
+const patches = smoothstep(0.5, 0.8, valueNoise(add(mul(surface, 2.3), vec2(4.1, 9.7)), seed("tile-patches")));
+const film = mul(grime, min(add(add(mul(beside, add(0.3, mul(0.5, streaks))), mul(patches, 0.4)), mul(streaks, 0.22)), 0.85));
+
+export default defineMaterial({
+  name: "Kowloon wall tile",
+  base: { baseColor: faded, roughness: glazeRoughness, metalness: 0 },
+  layers: [
+    layer({ id: "film", mask: film, baseColor: vec3(0.085, 0.078, 0.062), roughness: 0.88 }),
+    layer({ id: "chips", mask: tiles.chip, baseColor: vec3(0.42, 0.39, 0.33), roughness: 0.8, height: { add: -0.0012 } }),
+    layer({ id: "bedding", mask: tiles.substrate, baseColor: vec3(0.3, 0.285, 0.25), roughness: 0.95 }),
+    layer({ id: "joints", mask: tiles.joint, baseColor: mix(vec3(0.16, 0.15, 0.13), vec3(0.03, 0.028, 0.024), grime), roughness: 0.95, height: { add: -0.0025 } }),
+  ],
+});

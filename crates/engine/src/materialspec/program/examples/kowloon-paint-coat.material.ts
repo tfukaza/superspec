@@ -3,13 +3,14 @@
 // patches of the surface beneath, which come in drifts of warped fractal noise on the part's
 // pattern anchor. It reads nothing of the receiver but its position, so a wall that is resized keeps
 // its patches where they were.
-import { defineLayer, param, smoothstep, add, mul, sub, vec2, vec3, mix, seed, surface } from "@superspec/material/v1";
+import { defineLayer, param, smoothstep, step, floor, abs, min, hash, valueNoise, add, mul, sub, div, vec2, vec3, mix, seed, surface } from "@superspec/material/v1";
 import { fractal, domainWarp } from "./kowloon-noise.material";
 
 const color = param.vec3({ default: vec3(0.78, 0.71, 0.55), range: [0, 1], label: "Paint colour" });
 const amount = param.scalar({ default: 1, range: [0, 1], label: "Paint amount" });
 const peeling = param.scalar({ default: 0.35, range: [0, 1], label: "Peeling" });
 const patchScale = param.scalar({ default: 2.4, range: [0.1, 8], unit: "1/m", label: "Patch frequency" });
+const patches = param.scalar({ default: 0, range: [0, 1], label: "Repainted repairs" });
 
 const at = mul(vec2(surface.x, surface.y), patchScale);
 const warped = add(at, mul(domainWarp(mul(at, 1.3), seed("paint-warp")), 0.5));
@@ -19,9 +20,25 @@ const threshold = sub(0.84, mul(peeling, 0.3));
 const intact = sub(1, smoothstep(threshold, add(threshold, 0.02), field));
 const mottle = fractal(add(mul(at, 3.1), vec2(3.7, 41.2)), seed("paint-mottle"));
 
+// Repainted repairs: where plaster was patched over the years the new paint never matched. Rectangles on a lattice
+// of 2.1 by 1.9 m bays, most bays holding one, each a little lighter, darker, cooler or warmer than the coat, with a
+// ragged brushed edge.
+const bay = vec2(2.1, 1.9);
+const cell = floor(div(vec2(surface.x, surface.y), bay));
+const within = sub(vec2(surface.x, surface.y), mul(cell, bay));
+const middle = add(vec2(0.7, 0.6), mul(vec2(hash(cell, seed("patch-x")), hash(cell, seed("patch-y"))), vec2(0.7, 0.7)));
+const halfSize = add(vec2(0.22, 0.18), mul(vec2(hash(cell, seed("patch-w")), hash(cell, seed("patch-h"))), vec2(0.42, 0.34)));
+const ragged = mul(sub(valueNoise(mul(vec2(surface.x, surface.y), 47), seed("patch-edge")), 0.5), 0.012);
+const inside = sub(halfSize, abs(sub(within, middle)));
+const patch = mul(mul(step(hash(cell, seed("patch-on")), mul(patches, 0.65)), smoothstep(0, 0.006, add(min(inside.x, inside.y), ragged))), intact);
+const shade = sub(hash(cell, seed("patch-shade")), 0.5);
+const warmth = sub(hash(cell, seed("patch-warmth")), 0.5);
+const patchTone = add(vec3(add(1, mul(shade, 0.22))), mul(vec3(0.05, 0.01, -0.05), warmth));
+const coat = mix(mul(color, 0.86), color, smoothstep(0.3, 0.7, mottle));
+
 export default defineLayer({
   name: "Kowloon paint coat",
   coverage: mul(amount, intact),
-  baseColor: mix(mul(color, 0.86), color, smoothstep(0.3, 0.7, mottle)),
+  baseColor: mul(coat, mix(vec3(1), patchTone, patch)),
   roughness: 0.82,
 });

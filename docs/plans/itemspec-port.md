@@ -45,6 +45,7 @@ generator documents its anchor and parameters; `tests/kowloon_items.rs` checks e
 | Ground floor | `entrance`, `ground-bay` (shutter, gate, door, shop, service) |
 | Roof | `water-tank`, `stair-hut`, `aerial`, `rooftop-shack`, `rooftop` (a whole roof's equipment) |
 | Signs | `sign`, `blade-sign`, `hung-sign` |
+| Street and facade details | `shop-room`, `street-stock`, `pavement`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
 | Shop interiors | `grocer-prop`, `shelving`, `counter`, `crate`, `bottle-crate`, `counter-scale`, `price-card`, `pendant-lamp`, `ceiling-fan`, `tube-light`, `wall-clock`, `calendar`, `hanging-scale`, `stool` |
 
 Not ported, because they need whole-facade or room planning state rather than parameters:
@@ -63,7 +64,8 @@ larger ones.
 | --- | --- | --- |
 | `kowloon-window` | a window in its opening, optional security bars; reports its `sill` | `kowloon/window`, `kowloon/security-bars` |
 | `kowloon-aircon` | a window unit or a split condenser; reports where it `drip`s | `kowloon/aircon`, `kowloon/condenser` |
-| `kowloon-shopfront` | a ground bay (shop, shutter, gate, door, service) with its signs, an awning, a lamp | `kowloon/ground-bay`, `kowloon/awning`, `kowloon/wall-lamp` |
+| `kowloon-sign` | a complete sign, usable alone: a lettered or panelled board on outriggers with fixing plates, braces and a tie rod (`board`), the seeded projecting signs (`blade`, `hung`) or a framed wall panel (`flat`); size, words, orientation, colour scheme, angle and reach are controls; reports its `top` edge and wall `fixing`s | `kowloon/board-sign`, `kowloon/blade-sign`, `kowloon/hung-sign`, `kowloon/sign` |
+| `kowloon-shopfront` | a ground bay (shop, shutter, gate, door, service, or an `open` shop room with its trade's stock inside and on the pavement) with a fascia sign, an awning (bracketed, a tarp on poles, or a striped canvas with a valance), a lamp | `kowloon/ground-bay`, `kowloon/shop-room`, `kowloon/street-stock`, `kowloon-sign`, `kowloon/awning`, `kowloon/tarp`, `kowloon/wall-lamp` |
 | `kowloon-floor` | one storey: a wall panel with a row of openings (each kept by `windowChance`), windows, AC units, vents, racks, plants, a band; grime under its top, sills and drips | panel, `kowloon-window`, `kowloon-aircon`, natives |
 | `kowloon-ground-floor` | the street storey: openings and shopfronts, a fascia; ground stain and moss | panel, `kowloon-shopfront` |
 | `kowloon-parapet` | parapet, coping, roof outlet; top grime | panel, box, `kowloon/roof-outlet` |
@@ -149,6 +151,65 @@ Four differences from the picture were then closed, and the sun turned to the ot
 Renders: `itemspec/shop-house-corner.png` (the lane's plants hidden, before these fixes),
 `itemspec/shop-house-lane.png` and `itemspec/shop-house-planned.png` (after them).
 
+### Props and details (2026-11-18)
+
+The reference picture's content that the first port left out, as generators and controls of the same
+items. Nothing is particular to the corner shop: the plan file names what goes where.
+
+- **Open shops.** A shopfront of kind `open` is a room behind the opening (`kowloon/shop-room`: floor,
+  ceiling, walls, the raised shutter's head, and its trade's furniture and goods: `provisions`, `grocer`,
+  `greengrocer`, `hardware` or `herbalist`) with stock on the pavement (`kowloon/street-stock`: stacked
+  crates of bottles and cartons, a wire rack, a sack truck). The provisions shop is the reference model's,
+  fitted to any room (`shop::provisions::furnish_fitted`). A ground floor's `shopSpans` place shops of any
+  width, `tradePlan` names their trades and `shopDepth` their depth; rooms of two street sides are not
+  kept apart at a corner, so a plan keeps them clear. The goods' meshes are in a `stock` slot of their own,
+  coloured per vertex: a project leaves it unbound (plain) rather than baking a material over thousands of
+  small pieces.
+- **Awnings.** `awningPlan` chooses `awning` (the bracketed household canvas), `tarp` (a sagging canvas on
+  two poles) or `striped` (the fitted canvas with stripes and a valance). `kowloon/awning` and
+  `kowloon/tarp` take `poles` and `stand`.
+- **Signs.** `kowloon-sign` (above) is the only sign a building places: its boards (`boardPlans`, whose
+  fifth column is now a scheme index: ivory, red, green, blue, yellow, black, white, and whose twelfth is a
+  number of coloured squares), its corner and street signs and each shopfront's fascia sign.
+- **Facade.** Floors are divided by a moulded string course (`kowloon/cornice`, mitred at the corners by
+  `miterStart` and `miterEnd`) in place of a box; the parapet has one at the roof line (`ledge`). Street
+  walls stand on a dark `plinth` (a slot of its own, 1.02 m). `pipePlan` stands drain pipes where a plan
+  says and `conduitPlan` clips conduits with junction boxes to the wall (`kowloon/conduit`; without a plan
+  `conduits` are seeded). `canopyPlan` (or `canopyChance`) puts corrugated hoods over window banks. Split
+  units have their refrigerant lines and every unit its drain hose.
+- **Balcony.** `balconyPlans` (per edge: from, to, depth, fan) sizes it; it has triangular brackets
+  beneath (`brackets`), the fan-shaped divider (`kowloon/anti-climb`), potted plants, and a door
+  (`doorsPlans`: `kowloon/balcony-door` in an opening of that storey's wall).
+- **Windows.** `kowloon/window` takes `bars` (glazing bars across each lower light) and `glazing` (false
+  leaves the panes out, so the sashes, curtains and the room show in depth).
+- **Roof.** `roofKit` (the default; `rooftop` remains for the seeded deck) is the reference's roof: the
+  stair hut with a cat ladder, a round tank on its stand, `aerials` (2) and a rail on the street parapets.
+- **Ground.** `pavement` lays a raised pavement along every street edge (`kowloon/pavement`: paving
+  stones breaking joint on a bed, kerb stones, an iron drain cover) round the cut corners, over a podium
+  under the footprint. The item's z = 0 is the pavement's top and the road is `kerbHeight` (0.15 m) below,
+  so a scene stands the building that much above its road.
+
+- **Bake allowance.** A storey's wall no longer has an inner face (its `back` group is not emitted: a
+  building's rooms draw their own walls, and windows show a dark pane), which took the reference building's
+  baked maps from 6.2 GiB, over the preview's 6 GiB allowance, to 5.0 GiB. A native generator leaves out
+  triangles without area, which a scene refuses as receivers (a striped canvas had some).
+- A back side's riser stands at the end away from a street corner.
+
+**A second plan.** `tests/studio/washroom-items/small-warehouse.json` builds the small three-storey
+warehouse of the second reference picture from the same building item: a 6 by 6 m box with square corners
+(`cut` 0), a roller shutter and a door over a tiled `dado`, a number plate (`plaquePlans`: flat signs),
+full window cages (`fullCages`) with a corrugated hood, three panelled boards (the `boardPlans` columns
+for squares and their two colours), a drain with a `hopper`, a tiled roof deck (`roofTiles`:
+`kowloon/tile-deck`, slot `roof-tile`), and large paving slabs on all four sides (`pavementAround`,
+`pavingStone`, `manholes`). `services: false` leaves the back sides without their riser and ducts. Further
+controls from the same round: `spandrelPlans` (which window banks have tiled spandrels), `awningLower`,
+`roofRailShare` (the rail covers part of each street parapet), `shutterColor` and `doorColor`, and the
+balcony's quarter fan (`kowloon/fan-divider`). String courses are thin (0.11 m proud).
+
+ItemSpec itself gained two things for this: a choice control reads as its index among its choices in
+expressions (so a `when` can test a kind), and an item may have 128 controls and a placed item a million
+triangles (the reference building has about 250 000).
+
 ### Runoff streaks
 
 The reference's grime is the Kowloon wall condition's runoff (`wall.rs`, `runoff_at` and `deposit_detail`): under
@@ -178,6 +239,33 @@ The earlier grey blobs were not grime at all. At production resolution most of t
 not fit the preview's 512 MiB of baked maps and stayed on the per-pixel look, which shows a layered slot's base alone:
 no paint, no grime. `?bakememory=<MiB>` (64 to 8192) raises the allowance; the building takes about 5.1 GiB at
 1024 px and 160 texels a meter, so `tests/item-facade-browser.mjs` asks for 6 GiB.
+
+### Surfaces, dirt and light (2026-11-18, pending review)
+
+The building's look is recipes and layers that any item can use; none is tied to this building.
+
+- **Layers** (`materialspec/program/examples`): `kowloon-wall-dirt` (rain-washed dirt, damp clouds, soot round
+  `opening-edge`s, and dirt `settled` on ledges and under them), `kowloon-soot-band` (the plinth's soot from a ground
+  line, with a ragged top and a haze above), `kowloon-rust-run` (a stain along a polyline the owner draws from a
+  fixing downward), `kowloon-notices` (paper notices from the poster sheet in frames the owner gives as `left`,
+  `right` and `bottom` edges: a texel is inside where its two side distances add up to the frame's width), and
+  repainted repairs in `kowloon-paint-coat` (`patches`).
+- **Which side of an edge.** A distance cannot say whether a texel is under an edge or above it, so streaks ringed the
+  ends of short edges and climbed the wall above a floor line. `kowloon-grime-streaks` now also follows a `guard`: the
+  same edge drawn 5 cm uphill. The two distances differ by the cosine of the angle off straight below, which keeps
+  streaks under their edge. The items draw `eave`/`eave-above`, `sill-above`, `drip-above` and `ledge-above`.
+- **Recipes**: `kowloon-wall-tile`, `kowloon-window-glass`, `kowloon-aircon` and `kowloon-poster-print` (catalog sheets
+  by the mesh's UVs, aged), `kowloon-canvas`, `kowloon-sign-board`, `kowloon-sign-lettering`, `kowloon-paving`,
+  `kowloon-asphalt`.
+- **Tints.** A baked look is drawn with the atlas's own geometry, which has no vertex colours, so a bound fixture lost
+  the paint its generator gave it. `?bakedtints=on` (`browser/renderer/scene-bake.ts`, off by default) carries the
+  tints over, triangle by triangle; the fixtures' materials are then pale and add only age.
+- **Limits.** The wall slot is at its eight layers. `kowloon/tarp`'s mesh has a triangle without a direction, which a
+  bound receiver refuses, so awning cloth stays unbound (plain tints). Lettering stays the shipped glyph sheet: baked
+  at 160 texels a meter its cutout breaks up. Notices are baked at the wall's density, so their print is soft.
+- **Light** (`tests/item-facade-browser.mjs`, the scene's global record only): a warm soft key from the front-left
+  (azimuth -42, elevation 50), ambient 0.75, ambient occlusion on (radius 0.85, intensity 3), a warm pale backdrop;
+  the `reference` view fills the frame (19.5 degree lens) and five detail views were added.
 
 ### The scene
 

@@ -524,7 +524,7 @@ impl ItemGeometry {
                 let mut mesh = source.clone();
                 triangles = triangles
                     .checked_add(mesh.indices.len() / 3)
-                    .filter(|n| *n <= 250_000)
+                    .filter(|n| *n <= 1_000_000)
                     .ok_or("Placed item triangle allowance exceeded.")?;
                 mesh.id = format!("{}/{}", node.id, mesh.id);
                 for position in &mut mesh.positions {
@@ -573,7 +573,7 @@ impl ItemGeometry {
                     .ok_or("Placed item vertex allowance exceeded.")?;
                 triangles = triangles
                     .checked_add(mesh.indices.len() / 3)
-                    .filter(|n| *n <= 250_000)
+                    .filter(|n| *n <= 1_000_000)
                     .ok_or("Placed item triangle allowance exceeded.")?;
                 for p in &mesh.positions {
                     let p = matrix.point(*p);

@@ -36,8 +36,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use superspec_geometry::{Matrix, V3};
 use superspec_types::rng::SeededRng;
 
+mod street;
+
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "1";
+const VERSION: &str = "2";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 
@@ -392,16 +394,32 @@ fn window(
         lower_pane_bars: None,
         timber_textured: a.boolean("textured", true)?,
     };
+    // `bars`: glazing bars across each lower light (0–6; default one, two on timber).
+    // `glazing`: false leaves the panes out, so the sashes, curtains and room show in depth.
+    let bars = a.integer("bars", 99, 0..=99)?;
+    let glazing = a.boolean("glazing", true)?;
+    let look = windows::Look {
+        lower_pane_bars: (bars <= 6)
+            .then(|| (1..=bars).map(|i| i as f64 / (bars + 1) as f64).collect()),
+        ..look
+    };
+    if bars > 6 && bars != 99 {
+        return Err(format!("{name}: bars must be a whole number in 0..6."));
+    }
     let mut rng = a.rng()?;
     a.finish()?;
-    draw(cancelled, |mesh| {
+    let mut output = draw(cancelled, |mesh| {
         windows::window_sized(
             &mut fixture(mesh, "window")?,
             [-width / 2., 0., width, height],
             &look,
             &mut rng,
         )
-    })
+    })?;
+    if !glazing {
+        output.meshes.retain(|mesh| mesh.material_slot != "glass");
+    }
+    Ok(output)
 }
 
 /// `kowloon/security-bars`: a welded security grille over an opening. Anchor: bottom-centre
@@ -553,14 +571,32 @@ fn downpipe(
     let height = a.number("height", 3.)?;
     let (radius, standoff, system) = pipe_options(&mut a)?;
     let straps = a.boolean("straps", true)?;
+    // `hopper`: a rainwater hopper box at the head of the pipe.
+    let hopper = a.boolean("hopper", false)?;
+    let color = a.color("color", "#3a3c3a")?;
     a.finish()?;
     let y = radius + standoff;
     draw(cancelled, |mesh| {
-        system.run(
-            &mut fixture(mesh, "downpipe")?,
-            &[[0., y, height], [0., y, 0.]],
-            straps.then_some(0.),
-        )
+        let d = &mut fixture(mesh, "downpipe")?;
+        system.run(d, &[[0., y, height], [0., y, 0.]], straps.then_some(0.))?;
+        if hopper {
+            let (half, deep) = (radius * 2.6, radius * 4.4);
+            d.cuboid(
+                "paint",
+                [-half, 0.005, height - 0.02],
+                [half, deep, height + radius * 4.],
+                color,
+                "b",
+            )?;
+            d.cuboid(
+                "paint",
+                [-half - 0.012, 0., height + radius * 4.],
+                [half + 0.012, deep + 0.012, height + radius * 4. + 0.02],
+                color,
+                "b",
+            )?;
+        }
+        Ok(())
     })
 }
 
@@ -616,6 +652,10 @@ fn balcony(
     let height = a.number("parapet_height", 0.85)?;
     let color = a.color("color", "#d6e4d4")?;
     let trim = a.color("trim", "#e6e2d6")?;
+    // `brackets`: m between the triangular concrete brackets under the slab at most; 0 for none.
+    let brackets = a.bounded("brackets", 0., 0. ..=20.)?;
+    // `upstand`: m of concrete upstand under a steel rail.
+    let upstand = a.bounded("upstand", 0.3, 0.05..=0.55)?;
     a.finish()?;
     let outline = [
         [-width / 2., 0., 0.],
@@ -631,8 +671,11 @@ fn balcony(
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "balcony")?;
         balconies::slab(d, &outline, -thickness, 0., color, "concrete")?;
+        if brackets > 0. {
+            street::brackets(d, width, depth, thickness, brackets, color)?;
+        }
         if parapet && rail == "steel" {
-            steel_rail(d, mesh_weathering(name), &outline, steel, trim)?;
+            steel_rail(d, mesh_weathering(name), &outline, steel, trim, upstand)?;
         } else if parapet {
             balconies::parapet(d, &outline, height, color, trim, &settings, "balcony")?;
         }
@@ -654,6 +697,7 @@ fn steel_rail(
     outline: &[V3; 4],
     steel: V3,
     cap: V3,
+    upstand: f64,
 ) -> Result<(), String> {
     let original = d.pen.clone();
     let path = [outline[0], outline[3], outline[2], outline[1]];
@@ -675,7 +719,7 @@ fn steel_rail(
                 .map(|&(next, _)| -(turn(tangent, next) / 2.).tan()),
         ];
         d.pen = original.facing(path[i], tangent, [-tangent[1], tangent[0], 0.])?;
-        d.cuboid("concrete", [0., -0.075, 0.], [length, 0., 0.3], cap, "")?;
+        d.cuboid("concrete", [0., -0.075, 0.], [length, 0., upstand], cap, "")?;
         d.pen = d.pen.with_weathering(
             d.mesh,
             settings.clone(),
@@ -699,7 +743,7 @@ fn steel_rail(
             let x = start + (end - start) * j as f64 / posts as f64;
             d.tube(
                 "metal",
-                &[[x, -0.035, 0.28], [x, -0.035, 1.11]],
+                &[[x, -0.035, upstand - 0.02], [x, -0.035, 1.11]],
                 0.026,
                 steel,
                 10,
@@ -740,14 +784,39 @@ fn board_sign(
     let anchor = a.number("anchor", 0.)?;
     let end_at = a.number("end", width)?;
     let age = a.number("age", 0.7)?;
+    // `scheme` names the ground and ink (and overrides `red`); `panels` replaces the lettering
+    // by that many coloured squares down (or along) the board, in `panel` and, for its second
+    // half, `panel2`; `ties` adds a tie rod from the wall above to each board's far end.
+    let scheme = a.optional_text("scheme")?;
+    let panels = a.integer("panels", 0, 0..=24)?;
+    let panel_colors = [a.color("panel", "#d2a23a")?, a.color("panel2", "#d2a23a")?];
+    let ties = a.boolean("ties", true)?;
     let key = a.seed()?;
     a.finish()?;
-    let ivory = srgb("#dfcfaa");
-    let oxblood = srgb("#793f32");
-    let (ground, ink) = if red {
-        (oxblood, ivory)
+    let scheme = scheme.unwrap_or_else(|| if red { "red" } else { "ivory" }.to_owned());
+    let (ground, ink) = match scheme.as_str() {
+        "red" => ("#793f32", "#dfcfaa"),
+        "ivory" => ("#dfcfaa", "#793f32"),
+        "green" => ("#2f5a48", "#e9d9a8"),
+        "blue" => ("#2c4a6e", "#e8e2d0"),
+        "yellow" => ("#d2a23a", "#4a1d17"),
+        "black" => ("#1f1d1b", "#d9b65a"),
+        "white" => ("#dcd8cc", "#8a4a2c"),
+        _ => {
+            return Err(format!(
+                "{name}: scheme must be one of red, ivory, green, blue, yellow, black, white."
+            ));
+        }
+    };
+    let (ground, ink) = (srgb(ground), srgb(ink));
+    let text = if text.is_empty() && panels == 0 {
+        signs::copy::invent(
+            &mut SeededRng::from_text(&format!("{key}/business")),
+            &Default::default(),
+        )?
+        .name
     } else {
-        (ivory, oxblood)
+        text
     };
     let hardware = panel::Hardware {
         slot: "metal".into(),
@@ -762,7 +831,7 @@ fn board_sign(
         // standing `reach` out from the wall.
         let pen = root.facing([0., reach, 0.], [cos, sin, 0.], [-sin, cos, 0.])?;
         panel::draw(
-            &mut on(mesh, pen)?,
+            &mut on(mesh, pen.clone())?,
             &panel::Design {
                 width,
                 height,
@@ -772,18 +841,22 @@ fn board_sign(
                 ground,
                 border: Some(ink),
                 stack: panel::Stack::Down,
-                blocks: vec![panel::Block {
-                    text: text.clone(),
-                    face: Face::Kai,
-                    direction: if horizontal {
-                        Direction::Ltr
-                    } else {
-                        Direction::Ttb
-                    },
-                    ink,
-                    share: 1.,
-                    shadow: None,
-                }],
+                blocks: if panels > 0 {
+                    vec![]
+                } else {
+                    vec![panel::Block {
+                        text: text.clone(),
+                        face: Face::Kai,
+                        direction: if horizontal {
+                            Direction::Ltr
+                        } else {
+                            Direction::Ttb
+                        },
+                        ink,
+                        share: 1.,
+                        shadow: None,
+                    }]
+                },
                 age,
                 phase: SeededRng::from_text(&key).float(0., 100.),
             },
@@ -791,7 +864,61 @@ fn board_sign(
             &hardware,
             &settings,
         )?;
+        if panels > 0 {
+            // Enamelled squares riveted to both faces, evenly spaced along the board.
+            let face = &mut on(mesh, pen)?;
+            let long = if horizontal { width } else { height };
+            let across = if horizontal { height } else { width };
+            let pitch = (long - 0.16) / panels as f64;
+            let side = (pitch - 0.07).min(across - 0.2).max(0.05);
+            for i in 0..panels {
+                let centre = long - 0.08 - (i as f64 + 0.5) * pitch;
+                let color = panel_colors[usize::from(i * 2 >= panels)];
+                let (x, z) = if horizontal {
+                    (long - centre, across / 2.)
+                } else {
+                    (across / 2., centre)
+                };
+                face.cuboid(
+                    "paint",
+                    [x - side / 2., -0.051, z - side / 2.],
+                    [x + side / 2., 0.006, z + side / 2.],
+                    color,
+                    "",
+                )?;
+            }
+        }
         let d = &mut on(mesh, root)?;
+        // A fixing plate where each outrigger meets the wall.
+        for z in [0.12, height - 0.12] {
+            d.cuboid(
+                "metal",
+                [anchor - 0.06, 0., z - 0.08],
+                [anchor + 0.06, 0.012, z + 0.08],
+                hardware.tint,
+                "b",
+            )?;
+        }
+        if ties {
+            let far = if angle != 0. {
+                [width * cos, reach + width * sin, height - 0.12]
+            } else {
+                [end_at, reach, height - 0.12]
+            };
+            let fixing = [
+                anchor,
+                0.012,
+                height + 0.35 + 0.25 * (far[0] - anchor).abs().min(2.),
+            ];
+            d.tube("metal", &[fixing, far], 0.006, hardware.tint, 6)?;
+            d.cuboid(
+                "metal",
+                [fixing[0] - 0.04, 0., fixing[2] - 0.04],
+                [fixing[0] + 0.04, 0.012, fixing[2] + 0.04],
+                hardware.tint,
+                "b",
+            )?;
+        }
         for z in [0.12, height - 0.12] {
             if angle != 0. {
                 let end = [width * cos, reach + width * sin, z];
@@ -1042,10 +1169,26 @@ fn awning(
         base: a.color("color", "#3f7f5f")?,
         hem: a.color("hem", "#e8dfc0")?,
     };
+    // `poles`: steel poles under the front edge, standing on the ground `stand` m below the
+    // anchor (both 0 for none).
+    let poles = a.integer("poles", 0, 0..=16)?;
+    let stand = a.bounded("stand", 0., 0. ..=20.)?;
     let key = a.seed()?;
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::awning(&mut fixture(mesh, "awning")?, envelope, &style, &key, None)
+        let d = &mut fixture(mesh, "awning")?;
+        household::awning(d, envelope, &style, &key, None)?;
+        if poles > 0 && stand > envelope.drop {
+            street::poles(
+                d,
+                [envelope.x0, envelope.x1],
+                envelope.depth,
+                -envelope.drop,
+                -stand,
+                poles,
+            )?;
+        }
+        Ok(())
     })
 }
 
@@ -1071,18 +1214,33 @@ fn tarp(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         color: a.color("stripe", "#d8a030")?,
         width: a.number("stripe_width", 0.24)?,
     };
+    // `poles` and `stand`: as for `kowloon/awning`.
+    let poles = a.integer("poles", 0, 0..=16)?;
+    let stand = a.bounded("stand", 0., 0. ..=20.)?;
     let key = a.seed()?;
     a.finish()?;
     draw(cancelled, |mesh| {
+        let d = &mut fixture(mesh, "tarp")?;
         tarps::canvas(
-            &mut fixture(mesh, "tarp")?,
+            d,
             envelope,
             tint,
             hem,
             &key,
             None,
             stripes.then_some(pattern),
-        )
+        )?;
+        if poles > 0 && stand > envelope.drop {
+            street::poles(
+                d,
+                [envelope.x0, envelope.x1],
+                envelope.depth,
+                -envelope.drop,
+                -stand,
+                poles,
+            )?;
+        }
+        Ok(())
     })
 }
 
@@ -1551,7 +1709,11 @@ fn sign(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
     let ground_color = a.color("ground", "#0d4a3a")?;
     let border = a.color("border", "#d9b380")?;
     let bordered = a.boolean("bordered", true)?;
-    let text = a.optional_text("text")?;
+    // `invent`: an empty `text` takes the seeded business name instead of omitting the block.
+    let invent = a.boolean("invent", false)?;
+    let text = a
+        .optional_text("text")?
+        .filter(|text| !(invent && text.is_empty()));
     let subtitle = a.optional_text("subtitle")?;
     let face = a.choice(
         "face",
@@ -2086,6 +2248,24 @@ pub fn meshes(mesh: &Mesh<'_>) -> Result<Vec<ItemMesh>, String> {
             )
             .ok_or("Unknown surface.")?;
         let slot = surface.slot.clone();
+        // A sliver without area (a canvas fold pinched shut, a mitre closed to a point) has no
+        // direction to map a material along; a receiver of one is refused, so it is left out.
+        let [a, b, c] = [0, 1, 2].map(|k| {
+            let p = mesh.vertices[corners[k] as usize].position;
+            [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
+        });
+        let (u, v) = (
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        let cross = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
+        if cross.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-9 {
+            continue;
+        }
         let (target, remap) = groups.entry(slot.clone()).or_insert_with(|| {
             order.push(slot.clone());
             (
@@ -2175,6 +2355,16 @@ impl Natives {
             ("kowloon/calendar", calendar),
             ("kowloon/hanging-scale", hanging_scale),
             ("kowloon/stool", stool),
+            ("kowloon/shop-room", street::shop_room),
+            ("kowloon/street-stock", street::street_stock),
+            ("kowloon/pavement", street::pavement),
+            ("kowloon/cornice", street::cornice),
+            ("kowloon/fan-divider", street::fan_divider),
+            ("kowloon/tile-deck", street::tile_deck),
+            ("kowloon/conduit", street::conduit),
+            ("kowloon/balcony-door", street::balcony_door),
+            ("kowloon/rail", street::rail),
+            ("kowloon/ladder", street::ladder),
         ];
         Self {
             generators: registered.iter().copied().collect(),

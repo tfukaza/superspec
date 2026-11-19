@@ -31,6 +31,8 @@ pub enum Trade {
     Hardware,
     Herbalist,
     ReferenceProvisions,
+    /// The provisions shop fitted to its room, whatever its size.
+    Provisions,
 }
 impl Trade {
     pub fn name(self) -> &'static str {
@@ -41,6 +43,7 @@ impl Trade {
             Self::Hardware => "hardware",
             Self::Herbalist => "herbalist",
             Self::ReferenceProvisions => "reference-provisions",
+            Self::Provisions => "provisions",
         }
     }
     fn interior(self, rng: &mut SeededRng) -> Interior {
@@ -50,14 +53,14 @@ impl Trade {
             Self::Roast => roast::interior(rng),
             Self::Hardware => hardware::interior(rng),
             Self::Herbalist => herbalist::interior(rng),
-            Self::ReferenceProvisions => provisions::interior(),
+            Self::ReferenceProvisions | Self::Provisions => provisions::interior(),
         }
     }
     fn display(self) -> Option<display::Trade> {
         match self {
             Self::Grocer => Some(display::Trade::Grocer),
             Self::Greengrocer => Some(display::Trade::Greengrocer),
-            Self::Roast | Self::ReferenceProvisions => None,
+            Self::Roast | Self::ReferenceProvisions | Self::Provisions => None,
             Self::Hardware => Some(display::Trade::Hardware),
             Self::Herbalist => Some(display::Trade::Herbalist),
         }
@@ -336,6 +339,7 @@ pub fn draw(d: &mut Fixture<'_, '_>, r: &Request<'_>) -> Result<Vec<Proposal>, S
         Trade::Hardware => hardware::furnish(inside, &room),
         Trade::Herbalist => herbalist::furnish(inside, &room),
         Trade::ReferenceProvisions => provisions::furnish(inside, &room),
+        Trade::Provisions => provisions::furnish_fitted(inside, &room),
     }?;
     super::room_details::services(inside, &room)?;
     if tiled {

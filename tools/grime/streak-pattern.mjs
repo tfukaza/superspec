@@ -58,15 +58,20 @@ for (let row = 0; row < height; row++) {
     const strength = 0.2 + 0.8 * streak;
     const reach = 0.3 + (LONGEST - 0.3) * strength * periodic(u, 2.1, 1.3, 71);
     const streaked = strength * Math.max(1 - drop / reach, 0) ** 1.4;
-    const beneath = 0.55 * Math.exp(-drop / 0.1);
-    const stain = Math.min(streaked + beneath, 1);
+    // Narrow runs of their own, where water finds a notch in the edge: a few per meter, some of them long.
+    const notch = smoothstep(0.62, 0.86, periodic(u, 9.5, 2.2, 97)) * (0.55 + 0.45 * periodic(u, 4.3, 6.1, 113));
+    const notchReach = 0.35 + (LONGEST - 0.35) * periodic(u, 6.7, 5.1, 131) ** 1.5;
+    const run = notch * Math.max(1 - drop / notchReach, 0) ** 1.1;
+    // The lip under the edge is broken: heavy in places, almost clean in others, never a ruled line.
+    const lip = (0.12 + 0.6 * smoothstep(0.25, 0.8, periodic(u, 5.3, 9.3, 211))) * Math.exp(-drop / (0.04 + 0.12 * periodic(u, 2.9, 11.7, 223)));
+    const stain = Math.min(Math.max(streaked, run) + lip, 1);
     // The deposit's detail: fine streaks that wander a little, broken patches and a grain.
     const wander = (periodic(u, 3.1, drop * 1.4, 419) - 0.5) * 0.06;
     const fine = fractal(u + wander, drop, 17, 2.3, 3, 421);
     const broken = fractal(u, drop, 13, 11, 2, 423);
     const grain = noise(u / PERIOD * Math.round(PERIOD * 71), drop * 67, Math.round(PERIOD * 71), 431);
     const detail = 0.12 + 0.62 * smoothstep(0.36, 0.68, fine) + 0.18 * broken + 0.08 * grain;
-    const coverage = Math.min(stain * 0.85 * detail * 1.6, 1);
+    const coverage = Math.min(stain * 0.85 * detail * 2.3, 1);
     png.data.set([255, 255, 255, Math.round(coverage * 255)], (row * width + column) * 4);
   }
 }

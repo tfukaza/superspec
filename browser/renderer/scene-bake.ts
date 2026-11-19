@@ -200,6 +200,49 @@ const SETTLE_MS = 160;
  */
 const SCENE_BAKE_BYTES = SCENE_MAP_BYTES;
 const NO_TOTALS = { compileMs: 0, drawMs: 0, fieldMs: 0, drawn: 0, reused: 0, nodesDrawn: 0, nodesReused: 0 };
+/**
+ * `?bakedtints=on`: a baked look is multiplied by the vertex tints of the mesh it replaces, as the unbaked mesh is. A
+ * generated fixture carries its paint there (an awning's stripes, a cage's colour, a sign's ground), which the atlas
+ * geometry of a baked look does not have. Off unless asked for: a model whose meshes carry display colours that its
+ * materials were not made to be multiplied by keeps the picture it had.
+ */
+const BAKED_TINTS = typeof location !== "undefined" && new URLSearchParams(location.search).get("bakedtints") === "on";
+
+/**
+ * Gives a baked look's geometry (`display`, three unshared vertices a triangle) the vertex tints of the geometry the
+ * mesh came with (`source`), matched triangle by triangle on corner positions; a triangle the atlas cut (a face on a
+ * pattern anchor's lattice) takes the tint of a source vertex at each corner's position, or white. Says whether the
+ * source has any tint at all; without one the look's geometry is left as it was.
+ */
+function carryTints(source: THREE.BufferGeometry, display: THREE.BufferGeometry): boolean {
+  const tints = source.getAttribute("color"), from = source.getAttribute("position"), to = display.getAttribute("position");
+  if (!tints || !from || !to || tints.itemSize < 3) return false;
+  let tinted = false;
+  for (let vertex = 0; vertex < tints.count && !tinted; vertex++) tinted = tints.getX(vertex) < 0.999 || tints.getY(vertex) < 0.999 || tints.getZ(vertex) < 0.999;
+  if (!tinted) return false;
+  const key = (attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, vertex: number) =>
+    `${Math.round(attribute.getX(vertex) * 2e3)},${Math.round(attribute.getY(vertex) * 2e3)},${Math.round(attribute.getZ(vertex) * 2e3)}`;
+  // A triangle is named by its corners in their winding order, from the least: the two faces of a thin sheet (a sign's
+  // front and back) lie on the same corners and may differ in tint.
+  const wound = (keys: string[]) => { const first = keys.indexOf([...keys].sort()[0]); return [0, 1, 2].map(k => keys[(first + k) % 3]).join("|"); };
+  const index = source.getIndex(), corners = index ? index.count : from.count;
+  const triangles = new Map<string, { keys: string[]; vertices: number[] }>(), anywhere = new Map<string, number>();
+  for (let corner = 0; corner + 2 < corners; corner += 3) {
+    const vertices = [0, 1, 2].map(k => index ? index.getX(corner + k) : corner + k), keys = vertices.map(vertex => key(from, vertex));
+    triangles.set(wound(keys), { keys, vertices });
+    keys.forEach((name, k) => { if (!anywhere.has(name)) anywhere.set(name, vertices[k]); });
+  }
+  const colors = new Float32Array(to.count * 3).fill(1);
+  for (let corner = 0; corner + 2 < to.count; corner += 3) {
+    const keys = [0, 1, 2].map(k => key(to, corner + k)), match = triangles.get(wound(keys));
+    keys.forEach((name, k) => {
+      const vertex = match ? match.vertices[match.keys.indexOf(name)] : anywhere.get(name);
+      if (vertex !== undefined) colors.set([tints.getX(vertex), tints.getY(vertex), tints.getZ(vertex)], (corner + k) * 3);
+    });
+  }
+  display.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  return true;
+}
 
 export class SceneBaker {
   private current?: Run;
@@ -240,6 +283,8 @@ export class SceneBaker {
     for (const entry of fresh) {
       entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout);
       shareInstanceAttributes(entry.shaderGeometry, entry.display);
+      // An instanced batch is tinted per instance, not per vertex.
+      if (BAKED_TINTS && !(entry.target.mesh as THREE.InstancedMesh).isInstancedMesh && carryTints(entry.shaderGeometry, entry.display)) entry.material.vertexColors = true;
     }
     run.materials = this.host.compile(fresh.map(entry => ({ mesh: entry.target.mesh, geometry: entry.display!, material: entry.material! }))).catch(() => {});
     const settled = new Promise<void>(resolve => {

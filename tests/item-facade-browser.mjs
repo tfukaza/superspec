@@ -23,7 +23,7 @@ const choice = process.env.MODEL ?? "side";
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
 const { project } = buildProject(Number(process.env.RESOLUTION ?? 1024), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
-// The whole building is GPU-baked within BAKE_MEMORY MiB (default 6144; it takes about 5.1 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
+// The whole building is GPU-baked within BAKE_MEMORY MiB (default 7680; with its weathering layers it takes about 6.5 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
 // per-pixel look, which shows a layered slot's base alone (no paint or grime).
 // Only the building (and the lane's paving and trees) is drawn; ROOM=1 brings back the washroom items and the grass patch.
 // BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
@@ -48,13 +48,18 @@ await new Promise(done => server.listen(0, "127.0.0.1", done));
 
 const browser = await launchBrowser();
 try {
-  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 } });
+  // SCALE: device pixels per CSS pixel (default 1), for sharper pictures of small details.
+  const page = await browser.newPage({ viewport: { width: 1400, height: 1000 }, deviceScaleFactor: Number(process.env.SCALE ?? 1) });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=off&bakememory=${process.env.BAKE_MEMORY ?? 6144}`);
+  // Errors are reported; CONSOLE=1 reports everything the page says (a bake that never starts usually says why).
+  page.on("console", message => { if (message.type() === "error" || process.env.CONSOLE === "1") errors.push(`${message.type()}: ${message.text()}`.slice(0, 600)); });
+  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?gpuprobe&ao=${process.env.AO ?? "on"}&bakedtints=${process.env.TINTS ?? "on"}&bakememory=${process.env.BAKE_MEMORY ?? 7680}`);
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "ready", {}, { timeout: 600000 });
-  await page.locator("#open-project").setInputFiles({ name: "washroom-facade.studio.json", mimeType: "application/json", buffer: Buffer.from(text) });
+  // The project is handed over as a file: a building with its images can pass the 50 MB an in-memory upload may hold.
+  const projectFile = resolve(out, "washroom-facade.studio.json");
+  await writeFile(projectFile, text);
+  await page.locator("#open-project").setInputFiles(projectFile);
   try {
     await page.waitForFunction(() => ["ready", "error"].includes(document.querySelector("#status")?.dataset.state)
       && (document.querySelector("#status")?.dataset.state === "error" || JSON.parse(document.querySelector("#viewport").dataset.sceneBake ?? "null")?.state === "baked"), {}, { timeout: Number(process.env.BAKE_TIMEOUT ?? 900000) });
@@ -62,6 +67,9 @@ try {
     const state = await page.evaluate(() => ({ status: document.querySelector("#status")?.textContent, state: document.querySelector("#status")?.dataset.state,
       diagnostics: [...document.querySelectorAll("#diagnostics button")].map(button => button.textContent) }));
     if (state.state !== "ready") { console.log(`Not ready: ${JSON.stringify(state)}\n${errors.slice(0, 8).join("\n")}`); process.exitCode = 1; }
+    // A bake that never finished (the wait above then timed out) says what it was waiting for.
+    const [bake, fallback] = await page.evaluate(() => [document.querySelector("#viewport").dataset.sceneBake ?? "", document.querySelector("#viewport").dataset.sceneBakeFallback ?? ""]);
+    if (JSON.parse(bake || "null")?.state !== "baked") console.log(`Bake unfinished: ${bake.slice(0, 3000)}\n${fallback && `No GPU bake: ${fallback.slice(0, 2000)}\n`}${JSON.stringify(state).slice(0, 3000)}\n${errors.filter(line => !/warning X\d+/.test(line)).slice(-25).join("\n")}`);
   }
   if (!process.exitCode) {
     await waitForFrames(page, 6);
@@ -75,29 +83,39 @@ try {
     // the sun, then LIGHT_SUN, a JSON object merged the same way (nested objects merge: {"shadow":{"softness":0.05}}).
     // The record is the scene's global lighting (docs/plans/lighting-settings.md); nothing here is a material setting.
     const softSun = {
-      intensity: 1.8,
+      intensity: 2, color: [1, 0.9, 0.77],
       shadow: {
         // A wide, soft edge that widens with the distance to what casts it.
-        softness: 0.08, spread: 0.14, maxSoftness: 0.45,
+        softness: 0.06, spread: 0.11, maxSoftness: 0.4,
         // A light shade with only a slight cool cast, as in the reference picture, faintly mottled (broad, gentle
         // patches about 1.5 m across) with a slight wobble to its edge.
-        darkness: 0.12, tintStrength: 0.25, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
-        noise: { scale: 1.5, edge: 0.04, amount: 0.1, seed: 7 },
+        darkness: 0.2, tintStrength: 0.2, tint: [0.05, 0.2, 0.8], tintAlt: [0.06, 0.18, 0.78], wrap: 0.5,
+        noise: { scale: 1.5, edge: 0.04, amount: 0.08, seed: 7 },
       },
     };
-    const lit = await page.evaluate(({ sun, soft, extra, keep }) => {
+    // The rest of the same global record (exposure, tone mapping, ambient and environment light, ambient occlusion):
+    // `softScene`, then LIGHT_SCENE, a JSON object merged over it the same way.
+    // An overcast day: more light from the sky than from the sun, and ambient occlusion wide and strong enough to
+    // darken under ledges, awnings and the balcony (AO=off, in the page's address, leaves it out).
+    const softScene = {
+      ambient: { sky: [1, 0.98, 0.95], ground: [0.3, 0.28, 0.24], intensity: 0.75 },
+      ambientOcclusion: { enabled: true, radius: 0.85, intensity: 3, thickness: 0.5 },
+    };
+    const lit = await page.evaluate(({ sun, soft, extra, keep, scene }) => {
       const s = window.__scene, record = JSON.parse(document.querySelector("#viewport").dataset.lighting), light = record.lights[0];
       const before = JSON.stringify(light);
       if (keep) return { before };
       const merge = (target, source) => { for (const [key, value] of Object.entries(source)) target[key] = value && typeof value === "object" && !Array.isArray(value) ? merge(target[key] ?? {}, value) : value; return target; };
       if (sun) { const [az, el] = sun.split(",").map(v => Number(v) * Math.PI / 180); light.direction = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)]; }
       else light.direction = [-light.direction[0], -light.direction[1], light.direction[2]];
-      merge(light, soft); merge(light, extra);
+      merge(light, soft); merge(light, extra); merge(record, scene);
       s.setLighting(record); s.renderer.shadowMap.needsUpdate = true; s.invalidate?.();
-      return { before, after: JSON.stringify(light) };
-    }, { sun: process.env.SUN ?? "-25,55", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep" });
+      window.__facadeLighting = record;
+      return { before, after: JSON.stringify(light), scene: JSON.stringify({ ...record, lights: undefined }) };
+    }, { sun: process.env.SUN ?? "-42,50", soft: softSun, extra: JSON.parse(process.env.LIGHT_SUN ?? "{}"), keep: process.env.LIGHT === "keep",
+      scene: { ...softScene, ...JSON.parse(process.env.LIGHT_SCENE ?? "{}") } });
     console.log(`sun before ${lit.before}`);
-    if (lit.after) console.log(`sun after  ${lit.after}`);
+    if (lit.after) console.log(`sun after  ${lit.after}\nscene ${lit.scene}`);
     await waitForFrames(page, 6);
     const info = await page.evaluate(id => {
       const s = window.__scene, T = window.__three, box = new T.Box3();
@@ -106,6 +124,21 @@ try {
       return { meshes, min: box.min.toArray(), max: box.max.toArray() };
     }, facade.id);
     console.log(`facade: ${info.meshes} meshes, ${info.min.map(v => v.toFixed(2))} to ${info.max.map(v => v.toFixed(2))}`);
+    // SLOTS=1 lists the building's meshes by the last part of their names (a native fixture's mesh is named after its
+    // slot), with how many there are and their mean vertex colour: what a material bound to that slot is multiplied by.
+    if (process.env.SLOTS === "1") {
+      const slots = await page.evaluate(id => {
+        const groups = {};
+        for (const m of window.__scene.models.children) {
+          if (!m.name.startsWith(`${id}/`)) continue;
+          const key = m.name.split("/").slice(-2).join("/"), color = m.geometry.getAttribute("color"), group = groups[key] ??= { meshes: 0, vertices: 0, sum: [0, 0, 0], sample: m.name };
+          group.meshes++;
+          if (color) for (let i = 0; i < color.count; i++) { group.vertices++; group.sum[0] += color.getX(i); group.sum[1] += color.getY(i); group.sum[2] += color.getZ(i); }
+        }
+        return Object.entries(groups).map(([key, g]) => `${key}: ${g.meshes} meshes, colour ${g.sum.map(v => (v / Math.max(1, g.vertices)).toFixed(2))} (${g.sample})`);
+      }, facade.id);
+      console.log(slots.join("\n"));
+    }
     const [x0, y0, z0] = info.min, [x1, y1, z1] = info.max;
     const cy = (y0 + y1) / 2, cz = (z0 + z1) / 2, front = x1;
     // The reference picture's camera: at the cut corner, 22 degrees off the front's normal toward the side, 8 above the
@@ -113,7 +146,7 @@ try {
     const azimuth = 22 * Math.PI / 180, elevation = 8 * Math.PI / 180, distance = 62;
     const views = {
       reference: { position: [(x0 + front) / 2 + distance * Math.cos(elevation) * Math.cos(azimuth), cy + distance * Math.cos(elevation) * Math.sin(azimuth), 7.4 + distance * Math.sin(elevation)],
-        target: [(x0 + front) / 2, cy, 7.4], fov: 26, bare: true },
+        target: [(x0 + front) / 2, cy, 7.4], fov: 19.5, bare: true },
       // Square on, from the lane.
       front: { position: [front + 30, cy, cz], target: [front, cy, cz] },
       // At an angle from down the lane, to see the fixtures and riser stand off the wall.
@@ -124,9 +157,33 @@ try {
       corner: { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5] },
       // The same without the lane's plants, to compare the building alone.
       "corner-bare": { position: [front + 13, y1 + 11, 10.5], target: [(x0 + front) / 2, (y0 + y1) / 2, 5.5], bare: true },
+      // Details, without the plants: the corner's foot and the pavement, the balcony and what hangs under it, the signs
+      // on the corner, a storey of windows and fixtures, and the shops from the street.
+      base: { position: [front + 4.2, y1 + 3.6, 1.7], target: [front - 0.3, y1 - 0.6, 0.85], bare: true },
+      balcony: { position: [front + 6.5, cy - 3, 5.4], target: [front - 0.2, cy + 0.5, 3.7], bare: true },
+      signs: { position: [front + 6.5, y1 + 5, 8.2], target: [front - 0.6, y1 - 0.4, 7.2], bare: true },
+      storey: { position: [front + 6.5, cy + 0.6, 8.3], target: [front, cy + 0.6, 8.1], bare: true },
+      shops: { position: [front + 8, cy + 1, 1.75], target: [front, cy - 0.3, 1.9], bare: true },
     };
+    // Only the picture: the page's panels over the viewport are hidden (CHROME=1 keeps them).
+    if (process.env.CHROME !== "1") await page.evaluate(() => {
+      const canvas = document.querySelector("#viewport canvas");
+      for (const element of document.querySelectorAll("body *")) if (element !== canvas && !element.contains(canvas)) element.style.visibility = "hidden";
+    });
+    // A warm pale backdrop, as the reference picture's (BACKDROP=<css colour>, or "keep" for the studio's own).
+    if (process.env.BACKDROP !== "keep") await page.evaluate(color => {
+      const s = window.__scene, T = window.__three;
+      if (s.scene?.background?.isColor) s.scene.background.set(color); else if (s.scene) s.scene.background = new T.Color(color);
+      s.renderer.setClearColor?.(color); s.invalidate?.();
+    }, process.env.BACKDROP ?? "#d2ccc4");
     for (const [name, view] of Object.entries(views)) {
-      await page.evaluate(view => { const s = window.__scene; for (const m of s.models.children) if (m.userData.foliage) m.visible = !view.bare; s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
+      // A view with the plants is drawn without ambient occlusion: the occlusion pass draws depth with one plain material,
+      // which does not stand the canopy's leaf cards up as their own shaders do, so the building's creases would be
+      // darkened through the trees. (Still the scene's global setting, per picture.)
+      await page.evaluate(view => { const s = window.__scene;
+        const record = window.__facadeLighting;
+        if (record?.ambientOcclusion && record.ambientOcclusion.enabled !== !!view.bare) { record.ambientOcclusion.enabled = !!view.bare; s.setLighting(record); }
+        (s.scene ?? s.models).traverse(m => { if (m.userData?.foliage) { m.visible = !view.bare; if (m.userData.source) m.userData.source.visible = !view.bare; } }); s.defaultFov ??= s.camera.fov; s.camera.fov = view.fov ?? s.defaultFov; s.camera.updateProjectionMatrix(); s.camera.position.fromArray(view.position); s.controls.target.fromArray(view.target); s.controls.update(); s.draw(); }, view);
       await waitForFrames(page, 6);
       await writeFile(resolve(out, `${name}.png`), await page.locator("#viewport canvas").screenshot({ timeout: 300000 }));
     }

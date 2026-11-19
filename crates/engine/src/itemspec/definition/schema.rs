@@ -669,6 +669,20 @@ pub(super) fn bounded_name(name: &str) -> bool {
 }
 
 impl Parameter {
+    /// A control's value as an expression reads it: a number, a boolean as 1 or 0, and a
+    /// choice as its index among the control's choices.
+    fn number(&self, value: &Value) -> Option<f64> {
+        value
+            .as_f64()
+            .or_else(|| value.as_bool().map(f64::from))
+            .or_else(|| {
+                (self.kind == ParameterType::Choice)
+                    .then(|| value.as_str())
+                    .flatten()
+                    .and_then(|text| self.choices.iter().position(|choice| choice == text))
+                    .map(|index| index as f64)
+            })
+    }
     fn accepts(&self, value: &Value) -> bool {
         match self.kind {
             ParameterType::Number | ParameterType::Integer => {
@@ -790,7 +804,7 @@ impl ItemDefinition {
                 "Item ID must be a bounded nonempty identifier.",
             ));
         }
-        if self.parameters.len() > 64 || self.slots.len() > 128 || self.attachments.len() > 256 {
+        if self.parameters.len() > 128 || self.slots.len() > 128 || self.attachments.len() > 256 {
             return Err(fail(
                 &self.source,
                 "/",
@@ -992,9 +1006,7 @@ impl ItemDefinition {
                         // A boolean control reads as 1 or 0, as in inline expressions.
                         self.values
                             .get(&used)
-                            .and_then(|value| {
-                                value.as_f64().or_else(|| value.as_bool().map(f64::from))
-                            })
+                            .and_then(|value| parameter.number(value))
                             .ok_or_else(|| error(format!("Parameter {used} is not numeric.")))?
                     } else {
                         return Err(error(format!("Unknown name {used}.")));
@@ -1129,9 +1141,8 @@ impl ItemDefinition {
                 let value = values
                     .get(name)
                     .ok_or_else(|| missing(format!("Missing parameter {name}.")))?;
-                value
-                    .as_f64()
-                    .or_else(|| value.as_bool().map(f64::from))
+                parameter
+                    .number(value)
                     .ok_or_else(|| missing(format!("Parameter {name} is not numeric.")))
             })
             .map_err(failure)

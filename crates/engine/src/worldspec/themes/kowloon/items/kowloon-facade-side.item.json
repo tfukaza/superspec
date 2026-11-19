@@ -4,7 +4,7 @@
   "id": "kowloon-facade-side",
   "parameters": {
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
-    "paint": {"type": "color", "default": "#e6d6b0"},
+    "paint": {"type": "color", "default": "#b0a696"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.3, "max": 30, "unit": "m"},
     "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
@@ -25,8 +25,36 @@
     "spansPlan": {"type": "grid", "default": []},
     "windowsPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "window", "barred"]},
     "fixturesPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "aircon", "split", "cage", "rack", "plants"]},
-    "shopPlan": {"type": "grid", "default": [], "choices": ["auto", "shop", "shutter", "gate", "door", "service"]},
-    "awningPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "awning"]},
+    "shopPlan": {"type": "grid", "default": [], "choices": ["auto", "shop", "shutter", "gate", "door", "service", "open"]},
+    "awningPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "awning", "tarp", "striped"]},
+    "tradePlan": {"type": "grid", "default": [], "choices": ["auto", "provisions", "grocer", "greengrocer", "hardware", "herbalist"]},
+    "shopSpans": {"type": "grid", "default": []},
+    "shopDepth": {"type": "number", "default": 3.1, "min": 2.4, "max": 20, "unit": "m"},
+    "shopSigns": {"type": "boolean", "default": true},
+    "dado": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "awningLower": {"type": "number", "default": 0, "min": 0, "max": 1.2, "unit": "m"},
+    "spandrelsPlan": {"type": "grid", "default": []},
+    "fullCages": {"type": "boolean", "default": false},
+    "shutterColor": {"type": "color", "default": "#5a6f68"},
+    "doorColor": {"type": "color", "default": "#2f4f43"},
+    "doorsPlan": {"type": "grid", "default": []},
+    "canopiesPlan": {"type": "grid", "default": []},
+    "canopyChance": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "pipePlan": {"type": "grid", "default": []},
+    "conduitPlan": {"type": "grid", "default": []},
+    "conduits": {"type": "integer", "default": 0, "min": 0, "max": 6},
+    "glazing": {"type": "boolean", "default": true},
+    "hoods": {"type": "boolean", "default": true},
+    "plinth": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "ledge": {"type": "boolean", "default": false},
+    "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "balconyFrom": {"type": "number", "default": 0.6, "min": 0, "max": 40, "unit": "m"},
+    "balconyTo": {"type": "number", "default": -0.6, "min": -40, "max": 40, "unit": "m"},
+    "balconyDepth": {"type": "number", "default": 0.85, "min": 0.3, "max": 3, "unit": "m"},
+    "balconyBrackets": {"type": "number", "default": 1.85, "min": 0, "max": 20, "unit": "m"},
+    "balconyFan": {"type": "number", "default": -1, "min": -1, "max": 40, "unit": "m"},
+    "balconyPlants": {"type": "boolean", "default": true},
     "balcony": {"type": "boolean", "default": false},
     "balconyRail": {"type": "choice", "default": "steel", "choices": ["parapet", "steel"]},
     "tileBands": {"type": "boolean", "default": false},
@@ -56,6 +84,7 @@
     "uppers": "floors - upper",
     "height": "base + uppers * storyHeight",
     "bays": "max(1, floor((width - edge * 2) / bayWidth))",
+    "balconyEnd": "select(balconyTo > 0, balconyTo, width + balconyTo)",
     "pipeX": "select(riserRight, edge / 2, width - edge / 2)",
     "riserX": "select(riserRight, width - edge / 2, edge / 2)"
   },
@@ -67,6 +96,9 @@
         "parameters": {"u0": {"parameter": "u0"},"width": {"parameter": "width"}, "height": {"parameter": "groundHeight"}, "thickness": {"parameter": "thickness"},
                        "shopWidth": {"parameter": "shopWidth"}, "awningChance": {"parameter": "awningChance"}, "seed": {"parameter": "seed"},
                        "shopPlan": {"parameter": "shopPlan"}, "awningPlan": {"parameter": "awningPlan"},
+                       "tradePlan": {"parameter": "tradePlan"}, "shopSpans": {"parameter": "shopSpans"}, "shopDepth": {"parameter": "shopDepth"},
+                       "signs": {"parameter": "shopSigns"}, "plinth": {"parameter": "plinth"}, "dado": {"parameter": "dado"}, "awningLower": {"parameter": "awningLower"},
+                       "shutterColor": {"parameter": "shutterColor"}, "doorColor": {"parameter": "doorColor"},
                        "paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}}
     },
     {
@@ -81,7 +113,7 @@
                        "windowKind": {"parameter": "windowKind"}, "frame": {"parameter": "frame"},
                        "airconChance": {"expr": "airconChance * 0.6"}, "condenserChance": {"expr": "condenserChance * 0.6"},
                        "barsChance": {"expr": "min(1, barsChance * 1.8)"}, "ventChance": {"parameter": "ventChance"},
-                       "rackChance": 0, "plantChance": 0, "band": false}}
+                       "rackChance": 0, "plantChance": 0, "band": false, "glazing": {"parameter": "glazing"}, "hoods": {"parameter": "hoods"}, "plinth": {"parameter": "plinth"}, "dado": {"parameter": "dado"}}}
     },
     {
       "id": "floor",
@@ -96,24 +128,65 @@
                        "airconChance": {"parameter": "airconChance"}, "condenserChance": {"parameter": "condenserChance"},
                        "barsChance": {"expr": "select((j == 0) * groundShops, barsChance, 0)"}, "ventChance": {"parameter": "ventChance"},
                        "rackChance": {"parameter": "rackChance"}, "plantChance": {"parameter": "plantChance"},
-                       "tileBands": {"parameter": "tileBands"}, "cageChance": {"expr": "select(j == 1, cageChance, cageChance * 0.3)"},
-                       "band": {"parameter": "bands"}}},
+                       "tileBands": {"parameter": "tileBands"}, "spandrelPlan": {"element": "spandrelsPlan", "at": "j + 1"}, "cageFull": {"parameter": "fullCages"}, "cageChance": {"expr": "select(j == 1, cageChance, cageChance * 0.3)"},
+                       "doorPlan": {"element": "doorsPlan", "at": "j + 1"}, "canopyPlan": {"element": "canopiesPlan", "at": "j + 1"}, "canopyChance": {"parameter": "canopyChance"}, "glazing": {"parameter": "glazing"}, "hoods": {"parameter": "hoods"},
+                       "miterStart": {"parameter": "miterStart"}, "miterEnd": {"parameter": "miterEnd"},
+                       "band": {"choose": [false, true], "by": "bands * (1 - (j == 0) * groundShops)"}}},
       "placement": {"position": [0, 0, "base + j * storyHeight"]}
     },
     {
       "id": "parapet",
       "generator": {"kind": "item", "entry": "kowloon-parapet.item.json",
         "parameters": {"u0": {"parameter": "u0"}, "z0": {"derived": "height"},"paint": {"parameter": "paint"}, "peeling": {"parameter": "peeling"},"width": {"parameter": "width"}, "thickness": {"parameter": "thickness"}, "height": {"parameter": "parapet"},
-                       "outlet": {"parameter": "downpipe"}, "outletX": {"derived": "pipeX"}}},
+                       "outlet": {"parameter": "downpipe"}, "outletX": {"derived": "pipeX"},
+                       "ledge": {"parameter": "ledge"}, "miterStart": {"parameter": "miterStart"}, "miterEnd": {"parameter": "miterEnd"}}},
       "placement": {"position": [0, 0, {"derived": "height"}]}
     },
     {
       "id": "balcony",
       "when": "balcony * (uppers >= 1) * (width >= 3)",
       "generator": {"kind": "native", "name": "kowloon/balcony",
-        "parameters": {"width": {"expr": "width - 1.2"}, "depth": 0.85, "thickness": 0.14, "parapet": true, "parapet_height": 0.95,
+        "parameters": {"width": {"expr": "balconyEnd - balconyFrom"}, "depth": {"parameter": "balconyDepth"}, "thickness": 0.27, "parapet": true, "parapet_height": 0.95,
+                       "brackets": {"parameter": "balconyBrackets"}, "color": "#ffffff", "upstand": 0.465,
                        "rail": {"parameter": "balconyRail"}, "rail_color": {"parameter": "frame"}}},
-      "placement": {"position": ["width / 2", 0, {"derived": "base"}]}
+      "placement": {"position": ["(balconyFrom + balconyEnd) / 2", 0, {"derived": "base"}]}
+    },
+    {
+      "id": "balconyFan",
+      "when": "balcony * (uppers >= 1) * (width >= 3) * (balconyFan >= 0)",
+      "generator": {"kind": "native", "name": "kowloon/fan-divider",
+        "parameters": {"reach": {"expr": "balconyDepth - 0.08"}, "height": 1.6, "color": {"parameter": "frame"}}},
+      "placement": {"position": [{"parameter": "balconyFan"}, 0, "base + 0.02"]}
+    },
+    {
+      "id": "balconyPlants",
+      "when": "balcony * (uppers >= 1) * (width >= 3) * balconyPlants * (balconyEnd - balconyFrom >= 3)",
+      "generator": {"kind": "native", "name": "kowloon/plants",
+        "parameters": {"width": 1.7, "offset": {"expr": "balconyDepth - 0.26"}, "seed": {"expr": "seed * 1000 + 77"}}},
+      "placement": {"position": ["balconyFrom + 1 + (balconyEnd - balconyFrom - 2) * (0.35 + 0.5 * random(seed, 21))", 0, "base + 0.01"]}
+    },
+    {
+      "id": "drain",
+      "repeat": [{"name": "k", "count": "count(pipePlan)"}],
+      "generator": {"kind": "native", "name": "kowloon/downpipe",
+        "parameters": {"height": {"expr": "height - 0.1"}, "radius": 0.043, "color": "#8f8a7c", "sides": 12, "hopper": true}},
+      "placement": {"position": ["cell(pipePlan, k)", 0, 0.02]}
+    },
+    {
+      "id": "conduit",
+      "repeat": [{"name": "k", "count": "count(conduitPlan)"}],
+      "generator": {"kind": "native", "name": "kowloon/conduit",
+        "parameters": {"rise": {"expr": "cell(conduitPlan, k, 2)"}, "run": {"expr": "cell(conduitPlan, k, 3)"}, "rise2": {"expr": "cell(conduitPlan, k, 4)"}}},
+      "placement": {"position": ["cell(conduitPlan, k, 0)", 0, "cell(conduitPlan, k, 1)"]}
+    },
+    {
+      "id": "wiring",
+      "repeat": [{"name": "k", "count": {"parameter": "conduits"}}],
+      "when": "count(conduitPlan) == 0",
+      "generator": {"kind": "native", "name": "kowloon/conduit",
+        "parameters": {"rise": {"expr": "base - 0.5 - 0.1 * k"}, "run": {"expr": "select(random(seed, k, 23) < 0.5, -1, 1) * min(bayWidth * (1 + floor(random(seed, k, 24) * 2)), width / 3)"},
+                       "rise2": {"expr": "height - base + 0.3 - 0.4 * random(seed, k, 25)"}}},
+      "placement": {"position": ["width * (0.35 + 0.3 * random(seed, k, 22))", 0, 0.2]}
     },
     {
       "id": "backDoor",
@@ -128,13 +201,13 @@
       "repeat": [{"name": "k", "count": "max(0, bays - 1)"}],
       "when": "(pipes > 0) * (random(seed, k, 12) < pipes / max(1, bays - 1))",
       "generator": {"kind": "native", "name": "kowloon/downpipe",
-        "parameters": {"height": {"expr": "height + 0.2"}, "radius": {"choose": [0.04, 0.05, 0.065], "by": "random(seed, k, 15) * 3"}}},
+        "parameters": {"height": {"expr": "height + 0.2"}, "radius": {"choose": [0.04, 0.05, 0.065], "by": "random(seed, k, 15) * 3"}, "color": "#8f8a7c"}},
       "placement": {"position": ["(width - bays * bayWidth) / 2 + (k + 1) * bayWidth + 0.25", 0, 0]}
     },
     {
       "id": "downpipe",
       "when": "downpipe",
-      "generator": {"kind": "native", "name": "kowloon/downpipe", "parameters": {"height": {"expr": "height + 0.3"}}},
+      "generator": {"kind": "native", "name": "kowloon/downpipe", "parameters": {"height": {"expr": "height + 0.3"}, "color": "#8f8a7c"}},
       "placement": {"position": [{"derived": "pipeX"}, 0, 0]}
     },
     {
@@ -162,6 +235,16 @@
         "parameters": {"height": {"expr": "clamp(uppers * storyHeight - 1.6, 3, 20)"}}},
       "placement": {"position": ["(width - bays * bayWidth) / 2 + (k + 1) * bayWidth", 0, "base + 0.4"]}
     }
+  ],
+  "features": [
+    {"name": "ledge", "part": "balcony", "points": [["balconyFrom", "-balconyDepth", "base + 0.46"], ["balconyEnd", "-balconyDepth", "base + 0.46"]],
+     "when": "balcony * (uppers >= 1) * (width >= 3)"},
+    {"name": "ledge-above", "part": "balcony", "points": [["balconyFrom", "-balconyDepth", "base + 0.51"], ["balconyEnd", "-balconyDepth", "base + 0.51"]],
+     "when": "balcony * (uppers >= 1) * (width >= 3)"},
+    {"name": "rust", "part": "drain-{k}", "repeat": {"name": "k", "count": "count(pipePlan)"},
+     "points": [["cell(pipePlan, k) + 0.045", -0.008, "base + 1.1 + 1.5 * random(seed, k, 41)"], ["cell(pipePlan, k) + 0.05 + 0.03 * random(seed, k, 42)", -0.008, "base + 0.5 + 1.5 * random(seed, k, 41) - 0.5 * random(seed, k, 43)"]]},
+    {"name": "rust", "part": "drain-{k}", "repeat": {"name": "k", "count": "count(pipePlan)"},
+     "points": [["cell(pipePlan, k) - 0.045", -0.008, "base + 4.2 + 1.4 * random(seed, k, 44)"], ["cell(pipePlan, k) - 0.05 - 0.03 * random(seed, k, 45)", -0.008, "base + 3.5 + 1.4 * random(seed, k, 44) - 0.5 * random(seed, k, 46)"]]}
   ],
   "attachments": [
     {"name": "base-left", "position": [0, 0, 0], "direction": [0, -1, 0]},

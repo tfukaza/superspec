@@ -172,11 +172,18 @@ const kowloonDefinitions = Object.fromEntries(readdirSync(kowloonItems).filter(n
  * render is the anchored concrete, an intrinsic base: their grime, ground stain and moss are the weathering layers the
  * items declare on their `wall` slot.
  */
-const kowloonSlots = { wall: "render-paint", trim: "concrete-slab", concrete: "concrete-slab", frame: "frame-green", tile: "tile", glass: "glass", pane: "glass",
-  galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "flat-steel", "vent-edge": "flat-steel",
-  opening: "openings", "interior-lit": "openings", aircon: "enamel", paint: "enamel", sheet: "enamel", posters: "enamel",
-  tarp: "canvas", "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
-  rust: "rusted-pipe" };
+const kowloonSlots = { wall: "render-paint", plinth: "render-paint", trim: "render-paint", concrete: "render-paint", frame: "frame-green", tile: "facade-tile",
+  glass: "window-glass", pane: "room-dark",
+  galvanized: "galvanized", "vent-metal": "galvanized", "brushed-metal": "galvanized", steel: "flat-steel", metal: "aged-metal", "vent-edge": "flat-steel",
+  opening: "openings", "interior-lit": "openings", aircon: "aircon-casing", paint: "aged-paint", sheet: "aged-sheet", posters: "poster-print",
+  // `tarp` (awning and tarpaulin cloth) wants "canvas", but stays plain for now: the `kowloon/tarp` mesh has a triangle
+  // without a direction, which a bound receiver's layout refuses ("Receiver has a degenerate direction"), and one
+  // refused receiver leaves the whole scene without its baked looks.
+  "balcony-cloth": "canvas", "balcony-plants": "leaves", "shop-timber": "bench-wood", timber: "bench-wood",
+  // A sign's lettering stays the shipped glyph sheet (crisp at any size); its ground is worn and stained.
+  rust: "rusted-pipe", board: "sign-board",
+  // The pavement's stones and kerb, and the plastered walls inside an open shop (tinted per vertex).
+  paving: "paving", kerb: "kerb", interior: "concrete-slab" };
 export const facade = {
   id: "facade",
   entry: "kowloon-facade-side.item.json",
@@ -196,7 +203,8 @@ export const building = {
   id: "building",
   entry: "kowloon-building.item.json",
   parameters: {},
-  transform: placed([0, 1, 0], [-1, 0, 0], [0, 0, 1], [-4.5, -6.8, 0]),
+  // Raised by its kerb (`kerbHeight`, 0.15 m): the item's z = 0 is its pavement's top, and the lane is the road.
+  transform: placed([0, 1, 0], [-1, 0, 0], [0, 0, 1], [-4.5, -6.8, 0.15]),
 };
 
 /**

@@ -69,6 +69,24 @@ fn check(name: &str, meshes: &[ItemMesh]) {
             m.id
         );
         assert!(!m.material_slot.is_empty(), "{name}/{} slot", m.id);
+        // A scene refuses a receiver with a triangle that has no area to map a material over.
+        for corners in m.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| m.positions[corners[k] as usize]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let cross = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            assert!(
+                cross.iter().map(|x| x * x).sum::<f64>().sqrt() >= 1e-9,
+                "{name}/{} has a triangle without area",
+                m.id
+            );
+        }
         assert!(
             m.positions
                 .iter()
@@ -260,6 +278,135 @@ fn choices_and_dimensions_reach_the_fixture() {
             "{name} stands out from the wall"
         );
     }
+    // An open shop is as wide as its opening and lies behind the wall, to its depth; its
+    // stock stands on the pavement in front, within the frontage.
+    let room = generate(
+        &natives,
+        "kowloon/shop-room",
+        &values(&[("width", json!(6)), ("depth", json!(3.1))]),
+    )
+    .unwrap();
+    check("shop-room", &room);
+    // (its shutter's guides stand 6 cm onto the piers at either side).
+    assert!(
+        (extent(&room, 0) - 6.12).abs() < 0.05,
+        "{}",
+        extent(&room, 0)
+    );
+    let back = room
+        .iter()
+        .flat_map(|m| &m.positions)
+        .map(|p| p[1])
+        .fold(f64::MIN, f64::max);
+    assert!((back - 3.1).abs() < 0.01, "the room is {back} m deep");
+    for trade in [
+        "provisions",
+        "grocer",
+        "greengrocer",
+        "hardware",
+        "herbalist",
+    ] {
+        let stocked = generate(
+            &natives,
+            "kowloon/shop-room",
+            &values(&[("trade", json!(trade)), ("width", json!(2.6))]),
+        )
+        .unwrap_or_else(|e| panic!("{trade}: {e}"));
+        let triangles: usize = stocked.iter().map(|m| m.indices.len() / 3).sum();
+        assert!(
+            triangles > 2000,
+            "{trade} is furnished: {triangles} triangles"
+        );
+    }
+    let stock = generate(
+        &natives,
+        "kowloon/street-stock",
+        &values(&[("width", json!(6))]),
+    )
+    .unwrap();
+    assert!(extent(&stock, 0) <= 6. && extent(&stock, 0) > 4.);
+    // (the rack by the jamb stands 8 cm into the threshold).
+    assert!(
+        stock
+            .iter()
+            .flat_map(|m| &m.positions)
+            .all(|p| p[1] <= 0.09 && p[1] > -1.1)
+    );
+    // A pavement lies in front of its wall, as long as it and its extensions, its top at 0
+    // and the road its kerb height below.
+    let paved = generate(
+        &natives,
+        "kowloon/pavement",
+        &values(&[
+            ("length", json!(8)),
+            ("depth", json!(1.5)),
+            ("height", json!(0.15)),
+            ("after", json!(1.5)),
+            ("drain", json!(false)),
+        ]),
+    )
+    .unwrap();
+    assert!((extent(&paved, 0) - 9.5).abs() < 0.02);
+    assert!((extent(&paved, 1) - 1.5).abs() < 0.02);
+    // (each stone has settled by up to 6 mm).
+    assert!((extent(&paved, 2) - 0.15).abs() < 0.007);
+    let slots: Vec<&str> = paved.iter().map(|m| m.material_slot.as_str()).collect();
+    assert_eq!(slots, ["paving", "kerb"]);
+    // A cornice is as long as its wall at its outer edge with square ends, and longer by its
+    // projection at a mitred external corner.
+    let square = generate(
+        &natives,
+        "kowloon/cornice",
+        &values(&[("length", json!(4))]),
+    )
+    .unwrap();
+    let mitred = generate(
+        &natives,
+        "kowloon/cornice",
+        &values(&[("length", json!(4)), ("miterEnd", json!(1))]),
+    )
+    .unwrap();
+    assert!((extent(&square, 0) - 4.).abs() < 1e-6);
+    assert!(
+        (extent(&mitred, 0) - 4.11).abs() < 0.02,
+        "{}",
+        extent(&mitred, 0)
+    );
+    // A conduit climbs, runs and climbs again; a ladder and a rail are as tall and long as asked.
+    let conduit = generate(
+        &natives,
+        "kowloon/conduit",
+        &values(&[
+            ("rise", json!(2)),
+            ("run", json!(-1.5)),
+            ("rise2", json!(3)),
+        ]),
+    )
+    .unwrap();
+    assert!((extent(&conduit, 2) - 5.).abs() < 0.15 && (extent(&conduit, 0) - 1.5).abs() < 0.15);
+    let rail = generate(&natives, "kowloon/rail", &values(&[("length", json!(5))])).unwrap();
+    assert!((extent(&rail, 0) - 5.).abs() < 0.1);
+    // Awning poles reach the ground below the canvas.
+    let poled = generate(
+        &natives,
+        "kowloon/tarp",
+        &values(&[("poles", json!(2)), ("stand", json!(2.7))]),
+    )
+    .unwrap();
+    let low = poled
+        .iter()
+        .flat_map(|m| &m.positions)
+        .map(|p| p[2])
+        .fold(f64::MAX, f64::min);
+    assert!((low + 2.7).abs() < 1e-6, "poles stand at {low}");
+    // A window without glazing draws no glass; glazing bars add frame.
+    let open = generate(
+        &natives,
+        "kowloon/window",
+        &values(&[("glazing", json!(false))]),
+    )
+    .unwrap();
+    assert!(open.iter().all(|m| m.material_slot != "glass"));
     // Unbaked weathering receivers keep their recorded paint.
     let red = generate(
         &natives,

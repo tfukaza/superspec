@@ -81,6 +81,34 @@ fn expressions_compare_choose_and_hash() {
 }
 
 #[test]
+fn a_choice_control_reads_as_its_index_in_expressions() {
+    // `shape` is box (0), slab (1) or post (2): its index keeps one part and sizes another.
+    let top = json!({"format":"itemspec","version":2,"id":"choice",
+        "parameters":{"shape":{"type":"choice","default":"slab","choices":["box","slab","post"]}},
+        "derived":{"tall":"select(shape == 2, 3, 1)"},
+        "parts":[{"id":"body","generator":{"kind":"box","size":[1,1,{"derived":"tall"}]}},
+                 {"id":"cap","when":"shape == 1","generator":{"kind":"box","size":[1,1,0.1]},
+                  "placement":{"position":[0,0,"1 + shape"]}}]});
+    let files = BTreeMap::new();
+    let ids = |item: &GeneratedItem| -> Vec<String> {
+        item.geometry.parts.iter().map(|p| p.id.clone()).collect()
+    };
+    let slab = build(&top, &files).unwrap();
+    assert_eq!(ids(&slab), ["body", "cap"]);
+    // The cap stands at 1 + 1 and is 0.1 thick.
+    assert_eq!(slab.geometry.bounds[1][2], 2.1);
+    let post = build_with(
+        &top,
+        &files,
+        [("shape".to_owned(), json!("post"))].into(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(ids(&post), ["body"]);
+    assert_eq!(post.geometry.bounds[1][2], 3.);
+}
+
+#[test]
 fn a_sub_item_is_placed_with_its_arguments_slots_and_attachments() {
     let files = library(&[("cube.item.json", cube("cube", 1.))]);
     let top = json!({"format":"itemspec","version":2,"id":"stack",

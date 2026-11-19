@@ -4,7 +4,7 @@
   "id": "kowloon-ground-floor",
   "parameters": {
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
-    "paint": {"type": "color", "default": "#e6d6b0"},
+    "paint": {"type": "color", "default": "#b0a696"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 2, "max": 40, "unit": "m"},
     "height": {"type": "number", "default": 3.35, "min": 2.6, "max": 6, "unit": "m"},
@@ -13,11 +13,21 @@
     "shopWidth": {"type": "number", "default": 3.0, "min": 1.6, "max": 12, "unit": "m"},
     "seed": {"type": "integer", "default": 1, "min": 0, "max": 100000},
     "awningChance": {"type": "number", "default": 0.4, "min": 0, "max": 1},
-    "shopPlan": {"type": "grid", "default": [], "choices": ["auto", "shop", "shutter", "gate", "door", "service"]},
-    "awningPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "awning"]}
+    "shopPlan": {"type": "grid", "default": [], "choices": ["auto", "shop", "shutter", "gate", "door", "service", "open"]},
+    "awningPlan": {"type": "grid", "default": [], "choices": ["auto", "none", "awning", "tarp", "striped"]},
+    "tradePlan": {"type": "grid", "default": [], "choices": ["auto", "provisions", "grocer", "greengrocer", "hardware", "herbalist"]},
+    "shopSpans": {"type": "grid", "default": []},
+    "shopDepth": {"type": "number", "default": 3.1, "min": 2.4, "max": 20, "unit": "m"},
+    "signs": {"type": "boolean", "default": true},
+    "plinth": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "dado": {"type": "number", "default": 0, "min": 0, "max": 2, "unit": "m"},
+    "awningLower": {"type": "number", "default": 0, "min": 0, "max": 1.2, "unit": "m"},
+    "shutterColor": {"type": "color", "default": "#5a6f68"},
+    "doorColor": {"type": "color", "default": "#2f4f43"}
   },
   "derived": {
-    "shops": "max(1, floor((width - edge * 2) / shopWidth))",
+    "spans": "count(shopSpans)",
+    "shops": "select(spans > 0, spans, max(1, floor((width - edge * 2) / shopWidth)))",
     "pitch": "(width - edge * 2) / shops"
   },
   "parts": [
@@ -31,24 +41,54 @@
         "patternAnchor": ["-u0", 0],
         "openings": [
           {"id": "shop", "repeat": {"name": "i", "count": {"derived": "shops"}},
-           "width": "pitch - 0.3", "height": "height - 0.5",
-           "u": {"from": "start", "offset": "edge + i * pitch + 0.15"}, "v": {"from": "start", "offset": 0.02}}
+           "width": "(select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15)) - (select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))", "height": "height - 0.5",
+           "u": {"from": "start", "offset": "select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)"}, "v": {"from": "start", "offset": 0.02}}
         ]
       },
-      "slots": {"front": "wall", "back": "wall", "edge": "wall", "reveal": "wall"}
+      "slots": {"front": "wall", "edge": "wall", "reveal": "wall"}
     },
     {
       "id": "shop",
       "repeat": [{"name": "i", "count": {"derived": "shops"}}],
       "generator": {"kind": "item", "entry": "kowloon-shopfront.item.json",
-        "parameters": {"width": {"expr": "pitch - 0.3"}, "height": {"expr": "height - 0.05"},
-                       "kind": {"choose": ["shop", "shutter", "gate", "shop", "door", "shutter", "shop", "shutter", "gate", "door", "service"],
-                                "by": "select(cell(shopPlan, i) == 0, random(seed, i, 5) * 6, 5 + cell(shopPlan, i))"},
-                       "awning": {"choose": [false, true], "by": "select(cell(awningPlan, i) == 0, random(seed, i, 6) < awningChance, cell(awningPlan, i) == 2)"},
-                       "awningColor": {"choose": ["#3f7f5f", "#9a3b2e", "#2f5f8a", "#c79a3a"], "by": "random(seed, i, 7) * 4"},
+        "parameters": {"width": {"expr": "(select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15)) - (select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))"}, "height": {"expr": "height - 0.05"},
+                       "kind": {"choose": ["open", "shutter", "gate", "shop", "door", "shutter", "shop", "gate", "shop", "shutter", "gate", "door", "service", "open"],
+                                "by": "select(cell(shopPlan, i) == 0, random(seed, i, 5) * 8, 7 + cell(shopPlan, i))"},
+                       "trade": {"choose": ["provisions", "grocer", "greengrocer", "hardware", "herbalist"], "by": "select(cell(tradePlan, i) == 0, random(seed, i, 9) * 5, cell(tradePlan, i) - 1)"},
+                       "depth": {"parameter": "shopDepth"}, "signs": {"parameter": "signs"}, "awningLower": {"parameter": "awningLower"}, "shutterColor": {"parameter": "shutterColor"}, "doorColor": {"parameter": "doorColor"},
+                       "awning": {"choose": [false, true], "by": "select(cell(awningPlan, i) == 0, random(seed, i, 6) < awningChance, cell(awningPlan, i) >= 2)"},
+                       "awningKind": {"choose": ["awning", "awning", "awning", "tarp", "striped", "awning"], "by": "select(cell(awningPlan, i) == 0, 3 + random(seed, i, 8) * 3, cell(awningPlan, i))"},
+                       "awningOverhang": {"expr": "select(floor(select(cell(awningPlan, i) == 0, 3 + random(seed, i, 8) * 3, cell(awningPlan, i))) == 5, -0.15, select(cell(awningPlan, i) == 2, -0.15, 0.1))"},
+                       "clutter": {"choose": [false, true], "by": "random(seed, i, 10) < 0.2"},
+                       "awningColor": {"choose": ["#6b6f5c", "#778778", "#6b6f5c", "#8a8f7a", "#9a5a4a"], "by": "select(floor(select(cell(awningPlan, i) == 0, 3 + random(seed, i, 8) * 3, cell(awningPlan, i))) == 4, 4, random(seed, i, 7) * 4)"},
                        "lamp": {"choose": [false, true], "by": "i + 1 < shops"},
                        "seed": {"expr": "seed * 1000 + i"}}},
-      "placement": {"position": ["edge + i * pitch + pitch / 2", 0, 0]}
+      "placement": {"position": ["((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) + (select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15))) / 2", 0, 0]}
+    },
+    {
+      "id": "plinth",
+      "repeat": [{"name": "i", "count": "shops + 1"}],
+      "when": "(plinth > 0) * ((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) > 0.05)",
+      "generator": {"kind": "box", "size": ["(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", 0.018, {"parameter": "plinth"}]},
+      "placement": {"position": ["select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))", -0.018, 0]},
+      "slots": {"side": "plinth", "top": "plinth", "bottom": "plinth"}
+    },
+    {
+      "id": "dado",
+      "repeat": [{"name": "i", "count": "shops + 1"}],
+      "when": "(dado > 0) * ((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) > 0.05)",
+      "generator": {"kind": "box", "size": ["(select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))", 0.015, {"parameter": "dado"}]},
+      "placement": {"position": ["select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))", -0.015, 0]},
+      "slots": {"side": "tile"}
+    },
+    {
+      "id": "meters",
+      "repeat": [{"name": "i", "count": {"derived": "shops"}}],
+      "when": "(i > 0) * (random(seed, i, 12) < 0.6) * ((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) - (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)) >= 0.34)",
+      "generator": {"kind": "native", "name": "kowloon/meter-bank",
+        "parameters": {"count": {"expr": "clamp(floor(((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) - (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) / 0.33), 1, 1 + floor(random(seed, i, 13) * 3))"},
+                       "seed": {"expr": "seed * 1000 + 500 + i"}}},
+      "placement": {"position": ["((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) + (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) / 2", 0, 1.47]}
     },
     {
       "id": "fascia",
@@ -57,13 +97,35 @@
       "slots": {"side": "trim", "top": "trim", "bottom": "trim"}
     }
   ],
+  "features": [
+    {"name": "pavement", "part": "wall", "points": [[0, 0, 0], [{"parameter": "width"}, 0, 0]]},
+    {"name": "eave", "part": "wall", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
+    {"name": "eave-above", "part": "wall", "points": [[0, 0, "height + 0.05"], [{"parameter": "width"}, 0, "height + 0.05"]]},
+    {"name": "notice-left", "part": "wall", "repeat": {"name": "i", "count": "shops + 1"},
+     "when": "(((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) >= 0.38) * (random(seed, i, 21) < 0.85)",
+     "points": [["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 - 0.15", 0, "1.25 + 0.45 * random(seed, i, 22)"],
+                ["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 - 0.15", 0, "1.7 + 0.45 * random(seed, i, 22)"]]},
+    {"name": "notice-right", "part": "wall", "repeat": {"name": "i", "count": "shops + 1"},
+     "when": "(((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) >= 0.38) * (random(seed, i, 21) < 0.85)",
+     "points": [["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 + 0.15", 0, "1.25 + 0.45 * random(seed, i, 22)"],
+                ["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 + 0.15", 0, "1.7 + 0.45 * random(seed, i, 22)"]]},
+    {"name": "notice-bottom", "part": "wall", "repeat": {"name": "i", "count": "shops + 1"},
+     "when": "(((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) - (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) >= 0.38) * (random(seed, i, 21) < 0.85)",
+     "points": [["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 - 0.15", 0, "1.25 + 0.45 * random(seed, i, 22)"],
+                ["((select(i == shops, width, select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))) + (select(i == 0, 0, select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)))) / 2 + 0.15", 0, "1.25 + 0.45 * random(seed, i, 22)"]]}
+  ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-ground-stain.material.ts", "parameters": {"dampness": 0.6}, "seed": 2},
-      {"entry": "kowloon-moss.material.ts", "parameters": {"dampness": 0.5}, "seed": 4},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85}, "seed": 3, "follow": {"source": "top"}},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85, "streakLength": 1.4, "shift": 2.7}, "seed": 7, "follow": {"source": "drip"}}
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
+      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.155], "period": 2.2}, "seed": 3, "follow": {"source": "eave", "guard": "eave-above"}},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "streakLength": 1.5, "shift": 2.7, "period": 2.3, "color": [0.33, 0.27, 0.2]}, "seed": 7, "follow": {"source": "drip", "guard": "drip-above"}},
+      {"entry": "kowloon-soot-band.material.ts", "parameters": {"reach": 1.02}, "seed": 2, "follow": {"base": "pavement"}},
+      {"entry": "kowloon-notices.material.ts", "parameters": {"size": 0.3, "aspect": 1.5, "fading": 0.22, "grime": 0.35}, "seed": 6, "follow": {"left": "notice-left", "right": "notice-right", "bottom": "notice-bottom"}}
+    ],
+    "plinth": [
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": [0.062, 0.06, 0.054], "peeling": 0.12}, "seed": 1},
+      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9}
     ]
   }
 }

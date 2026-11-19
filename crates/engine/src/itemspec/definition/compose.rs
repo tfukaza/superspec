@@ -119,12 +119,12 @@ pub(super) fn arguments(
     derived: &Derived,
     pointer: &str,
 ) -> Result<Values, ItemDiagnostic> {
-    if arguments.len() > 64 {
+    if arguments.len() > 128 {
         return Err(fail(
             &definition.source,
             pointer,
             "ITEM_LIMIT",
-            "A part passes at most 64 parameters.",
+            "A part passes at most 128 parameters.",
         ));
     }
     let mut result = Values::new();

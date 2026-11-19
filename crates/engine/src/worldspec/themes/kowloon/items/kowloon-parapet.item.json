@@ -5,13 +5,16 @@
   "parameters": {
     "z0": {"type": "number", "default": 0, "min": 0, "max": 200, "unit": "m"},
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
-    "paint": {"type": "color", "default": "#e6d6b0"},
+    "paint": {"type": "color", "default": "#b0a696"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
     "width": {"type": "number", "default": 9, "min": 0.3, "max": 40, "unit": "m"},
     "thickness": {"type": "number", "default": 0.25, "min": 0.1, "max": 0.6, "unit": "m"},
     "height": {"type": "number", "default": 0.95, "min": 0.3, "max": 2, "unit": "m"},
     "outlet": {"type": "boolean", "default": false},
-    "outletX": {"type": "number", "default": 0.45, "min": 0, "max": 40, "unit": "m"}
+    "outletX": {"type": "number", "default": 0.45, "min": 0, "max": 40, "unit": "m"},
+    "ledge": {"type": "boolean", "default": false},
+    "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4}
   },
   "parts": [
     {
@@ -27,6 +30,13 @@
       "slots": {"side": "trim", "top": "trim", "bottom": "trim"}
     },
     {
+      "id": "ledge",
+      "when": "ledge",
+      "generator": {"kind": "native", "name": "kowloon/cornice",
+        "parameters": {"length": {"parameter": "width"}, "color": "#ffffff", "miterStart": {"parameter": "miterStart"}, "miterEnd": {"parameter": "miterEnd"}}},
+      "slots": {"concrete": "trim"}
+    },
+    {
       "id": "outlet",
       "when": "outlet",
       "generator": {"kind": "native", "name": "kowloon/roof-outlet", "parameters": {}},
@@ -34,12 +44,16 @@
     }
   ],
   "features": [
-    {"name": "drip", "part": "outlet", "points": [["outletX - 0.14", 0, 0.1], ["outletX + 0.14", 0, 0.1]], "when": "outlet"}
+    {"name": "drip", "part": "outlet", "points": [["outletX - 0.14", 0, 0.1], ["outletX + 0.14", 0, 0.1]], "when": "outlet"},
+    {"name": "drip-above", "part": "outlet", "points": [["outletX - 0.14", 0, 0.15], ["outletX + 0.14", 0, 0.15]], "when": "outlet"},
+    {"name": "eave", "part": "parapet", "points": [[0, 0, {"parameter": "height"}], [{"parameter": "width"}, 0, {"parameter": "height"}]]},
+    {"name": "eave-above", "part": "parapet", "points": [[0, 0, "height + 0.05"], [{"parameter": "width"}, 0, "height + 0.05"]]}
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}}, "seed": 1},
-      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.85}, "seed": 3, "follow": {"source": "top"}}
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.8, "patchScale": 1.5}, "seed": 1},
+      {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 1, "clouds": 0.75, "soot": 0.2}, "seed": 9},
+      {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 2, "color": [0.2, 0.18, 0.155], "period": 2.2}, "seed": 3, "follow": {"source": "eave", "guard": "eave-above"}}
     ]
   }
 }
