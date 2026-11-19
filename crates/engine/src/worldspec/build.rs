@@ -41,6 +41,14 @@ pub(crate) trait ThemeAdapter {
     ) -> Result<(), Diagnostic> {
         Ok(())
     }
+    /// Append theme-owned visual items after architectural resources are complete.
+    fn place_items(
+        &self,
+        _physical: &PhysicalBuild<'_>,
+        scene: Scene,
+    ) -> Result<Scene, Diagnostic> {
+        Ok(scene)
+    }
     fn fallback_source(&self) -> Option<&Node> {
         None
     }
@@ -118,6 +126,9 @@ pub(crate) fn compile_prepared(
     scene.manifest.success = true;
     scene.manifest.vertex_count = scene.positions.len() / 3;
     scene.manifest.index_count = scene.indices.len();
+    if visual {
+        scene = theme.place_items(&physical, scene)?;
+    }
     observe("complete");
     physical.check_cancelled()?;
     Ok(scene)

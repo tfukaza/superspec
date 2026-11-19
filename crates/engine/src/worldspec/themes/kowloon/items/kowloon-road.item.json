@@ -1,0 +1,35 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-road",
+  "parameters": {
+    "length": {
+      "type": "number",
+      "default": 32,
+      "unit": "m"
+    },
+    "width": {
+      "type": "number",
+      "default": 7.3,
+      "unit": "m"
+    }
+  },
+  "parts": [
+    {
+      "id": "road",
+      "generator": {
+        "kind": "native",
+        "name": "kowloon/road",
+        "parameters": {
+          "length": {
+            "parameter": "length"
+          },
+          "width": {
+            "parameter": "width"
+          }
+        }
+      }
+    }
+  ],
+  "collision": "none"
+}

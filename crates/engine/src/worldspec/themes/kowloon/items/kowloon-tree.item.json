@@ -1,0 +1,17 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-tree",
+  "parameters": {},
+  "parts": [
+    {
+      "id": "tree",
+      "generator": {
+        "kind": "native",
+        "name": "kowloon/street-tree",
+        "parameters": {}
+      }
+    }
+  ],
+  "collision": "none"
+}

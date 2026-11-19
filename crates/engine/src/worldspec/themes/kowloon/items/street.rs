@@ -2527,3 +2527,67 @@ pub(super) fn poles(
     }
     Ok(())
 }
+
+/// A carriageway segment with its near corner at the wearing surface.
+pub(super) fn road(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut a = Arguments::new(name, values);
+    let length = a.bounded("length", 32., 0.1..=200.)?;
+    let width = a.bounded("width", 7.3, 0.1..=50.)?;
+    a.finish()?;
+    draw(cancelled, |mesh| {
+        on(mesh, room_pen("road", [0.; 3])?)?.cuboid(
+            "asphalt",
+            [0., -width, -0.1],
+            [length, 0., 0.],
+            srgb("#545453"),
+            "",
+        )
+    })
+}
+
+/// Static street-tree item, using TreeSpec's trunk, branches and backing canopy.
+pub(super) fn street_tree(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    use crate::{itemspec::definition::ItemMesh, treespec::tree};
+    Arguments::new(name, values).finish()?;
+    let def = tree::parse(
+        "street.tree.json",
+        include_str!("../../../../treespec/fixtures/street.tree.json"),
+    )
+    .map_err(|e| e.to_string())?;
+    let tree = tree::generate(&def, cancelled).map_err(|e| e.to_string())?;
+    let lod = &tree.lods[1];
+    let crown = lod
+        .hull_mesh
+        .ok_or("Street tree requires a backing canopy.")?;
+    let mut meshes = vec![];
+    for i in [Some(lod.trunk), lod.branches, Some(crown)]
+        .into_iter()
+        .flatten()
+    {
+        let m = &tree.meshes[i];
+        let tint = srgb(if i == crown { "#618246" } else { "#766857" });
+        meshes.push(ItemMesh {
+            id: m.id.clone(),
+            positions: m.positions.clone(),
+            normals: m.normals.clone(),
+            uvs: m.uvs.clone(),
+            indices: m.indices.clone(),
+            colors: vec![[tint[0], tint[1], tint[2], 1.]; m.positions.len()],
+            material_slot: m.material_slot.clone(),
+            additional_uvs: Default::default(),
+            tangents: vec![],
+        });
+    }
+    Ok(NativeOutput {
+        meshes,
+        attachments: vec![],
+    })
+}

@@ -1,0 +1,17 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-lamp",
+  "parameters": {},
+  "parts": [
+    {
+      "id": "lamp",
+      "generator": {
+        "kind": "native",
+        "name": "kowloon/street-lamp",
+        "parameters": {}
+      }
+    }
+  ],
+  "collision": "none"
+}

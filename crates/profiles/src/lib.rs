@@ -1,4 +1,5 @@
 //! Shipped AML profiles selected by product hosts, separate from generic source admission.
+pub mod city;
 pub mod kowloon;
 
 use std::sync::OnceLock;
@@ -7,7 +8,9 @@ use superspec_aml::{architecture::Document, diagnostic::Diagnostic, extensions::
 /// The native and browser products support the existing Kowloon source vocabulary.
 pub fn default_registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
-    REGISTRY.get_or_init(|| Registry::new(&[&kowloon::EXTENSION]).expect("shipped AML profile"))
+    REGISTRY.get_or_init(|| {
+        Registry::new(&[&kowloon::EXTENSION, &city::EXTENSION]).expect("shipped AML profile")
+    })
 }
 
 /// Admits a source with the same shipped profile used by compilation and asset discovery.

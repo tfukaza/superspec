@@ -1120,9 +1120,28 @@
       <xs:attribute name="wall-materials" type="xs:string"/>
     </xs:complexType>
   </xs:element>
+  <xs:complexType name="cityPlacement">
+    <xs:attribute name="id" type="xs:string" use="required"/>
+    <xs:attribute name="position" type="xs:string" use="required"/>
+    <xs:attribute name="heading" type="xs:double"/>
+    <xs:attribute name="count" type="xs:positiveInteger"/>
+    <xs:attribute name="step" type="xs:string"/>
+  </xs:complexType>
+  <xs:complexType name="cityStrip"><xs:complexContent><xs:extension base="cityPlacement">
+    <xs:attribute name="length" type="xs:double"/><xs:attribute name="width" type="xs:double"/>
+  </xs:extension></xs:complexContent></xs:complexType>
+  <xs:element name="city"><xs:complexType><xs:choice minOccurs="0" maxOccurs="unbounded">
+    <xs:element name="road" type="cityStrip"/><xs:element name="avenue" type="cityStrip"/>
+    <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlacement"/>
+    <xs:element name="lamp" type="cityPlacement"/>
+    <xs:element name="building"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="floors" type="xs:positiveInteger"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
+  </xs:choice></xs:complexType></xs:element>
   <xs:element name="architecture">
     <xs:complexType>
       <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element ref="city"/>
         <xs:element ref="dressing"/>
         <xs:element ref="coordinate-frame"/>
         <xs:element ref="datum"/>

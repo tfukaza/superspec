@@ -1,0 +1,35 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-sidewalk",
+  "parameters": {
+    "length": {
+      "type": "number",
+      "default": 32,
+      "unit": "m"
+    },
+    "width": {
+      "type": "number",
+      "default": 1.45,
+      "unit": "m"
+    }
+  },
+  "parts": [
+    {
+      "id": "sidewalk",
+      "generator": {
+        "kind": "native",
+        "name": "kowloon/pavement",
+        "parameters": {
+          "length": {
+            "parameter": "length"
+          },
+          "depth": {
+            "parameter": "width"
+          }
+        }
+      }
+    }
+  ],
+  "collision": "none"
+}

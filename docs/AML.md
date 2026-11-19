@@ -289,3 +289,39 @@ The [phase 5 cutover record](../../levelspec/docs/reviews/aml-phase5.md) records
 export/lighting checks, independent reviews, and remaining acceptance limits.
 
 Paper wall decals can be authored as `<poster>` children of `<dressing>`, independently of wall finish recipes. See [poster placement and the shared atlas](DRESSING.md#paper-posters-on-walls).
+
+## City layouts
+
+A top-level `<city>` places reusable ItemSpec props with the shipped Kowloon
+profile. Open the [corner avenue compiler fixture](../crates/engine/src/worldspec/fixtures/corner-avenue.aml)
+in the AML editor or run `superspec preview crates/engine/src/worldspec/fixtures/corner-avenue.aml`.
+
+```xml
+<architecture version="1" id="promenade">
+  <city>
+    <avenue id="paving" position="0 0 0.105" length="32" width="8.2"/>
+    <tree id="median" position="4.5 -4.1 0.315" count="4" step="7 0 0"/>
+  </city>
+</architecture>
+```
+
+Each placement requires a unique source `id` and a world-space XYZ `position`.
+Optional `heading` rotates the local axes counterclockwise about +Z in degrees.
+For a row, `count` includes the first placement and `step` is the world-space XYZ
+displacement between neighbors. A layout may expand to 1,024 placements per
+document, subject to the scene geometry limits.
+
+| Element | Local anchor and controls |
+| --- | --- |
+| `building` | Corner building footprint origin at pavement height. Optional `floors` selects 2–12 storeys. |
+| `road` | Near starting corner at road surface. `length` extends along +X and `width` toward −Y. |
+| `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
+| `avenue` | Starting corner at paving height. A pedestrian strip extends along +X, with its median halfway across its `width` toward −Y. Accepts `length` and `width`. |
+| `tree` | Trunk foot, using a static TreeSpec trunk, branch and canopy mesh. |
+| `lamp` | Post foot, with the arm pointing toward local −Y. |
+
+These theme props contribute visual geometry. Author AML slabs, walls or collision
+proxies independently where the layout requires walking surfaces or obstructions.
+The existing `<dressing><building host="…"/></dressing>` continues to dress an
+architectural host. The [WorldSpec city plan](plans/worldspec-city.md) records
+the placement and rendering scope.

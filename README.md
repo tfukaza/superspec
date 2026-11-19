@@ -56,6 +56,8 @@ Both editors save reusable source projects and export through the shared Rust
 engine. `superspec-studio check|scene|glb` consumes those projects natively
 (and `inspect|edit|sdk|catalog` expose TypeScript recipe tooling to agents);
 WorldSpec can place their saved items and bind their saved materials.
+The AML editor also opens the [corner avenue layout](crates/engine/src/worldspec/fixtures/corner-avenue.aml).
+Its [city vocabulary](docs/AML.md#city-layouts) places buildings, road and sidewalk segments, trees and lamps.
 
 ## Ownership and distribution
 

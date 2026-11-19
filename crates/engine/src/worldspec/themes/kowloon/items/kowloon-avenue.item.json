@@ -1,0 +1,44 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-avenue",
+  "parameters": {
+    "length": {
+      "type": "number",
+      "default": 32,
+      "unit": "m"
+    },
+    "width": {
+      "type": "number",
+      "default": 8.2,
+      "unit": "m"
+    }
+  },
+  "parts": [
+    {
+      "id": "avenue",
+      "generator": {
+        "kind": "native",
+        "name": "kowloon/pedestrian-avenue",
+        "parameters": {
+          "length": {
+            "parameter": "length"
+          },
+          "width": {
+            "parameter": "width"
+          },
+          "medianWidth": 1.7,
+          "planterRise": 0.35,
+          "height": 0.105,
+          "slab": 0.75,
+          "course": 0.75,
+          "stagger": false,
+          "bands": 0,
+          "benches": 0,
+          "seed": 7
+        }
+      }
+    }
+  ],
+  "collision": "none"
+}

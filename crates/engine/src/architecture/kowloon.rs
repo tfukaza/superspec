@@ -143,6 +143,24 @@ impl ThemeAdapter for Kowloon<'_> {
         )?;
         Ok(())
     }
+    fn place_items(&self, physical: &PhysicalBuild<'_>, scene: Scene) -> Result<Scene, Diagnostic> {
+        use crate::worldspec::{city, themes::kowloon::city as catalog};
+        let placements = physical
+            .compiler
+            .resolution
+            .document
+            .metadata
+            .iter()
+            .filter(|node| node.kind == "city")
+            .flat_map(|city| &city.children);
+        city::place(
+            scene,
+            placements,
+            catalog::request,
+            &catalog::asset,
+            physical.compiler.cancelled,
+        )
+    }
     fn fallback_source(&self) -> Option<&Node> {
         self.source.as_ref()
     }
