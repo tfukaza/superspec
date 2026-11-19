@@ -925,10 +925,14 @@ fn write_lane_plants() {
             .collect()
     };
     let middle = avenue["median"]["offset"].as_f64().unwrap();
-    // LANE_TREE=street: the street tree (`street.tree.json`: a clear bole forking into rising
-    // limbs under a full crown) in the birch's stead, each station its own seed and size, its
-    // twigs kept within 2.9 m of the trunk and above 3.2 m (the avenue is
-    // narrow); LANE_LOOK names the look that draws every tree's mass (`FoliageMass::look`).
+    // The lane's plants are drawn in the illustrated `leaves` look (`FoliageMass::look`; the
+    // groundcover in `sprays`, a tenth of the triangles for a bed seen from above): every leaf a
+    // shape of its own on the twigs. The trees are the street tree (`street.tree.json`: a clear
+    // bole forking into rising limbs under a full crown), each station its own seed and size, its
+    // twigs kept within 2.9 m of the trunk and above 3.2 m (the avenue is narrow).
+    // LANE_LOOK=painted draws them all as painted masses instead, the trees as the birches above
+    // with their painted settings; any other LANE_LOOK names the look of every plant. LANE_TREE
+    // (street or birch) picks the tree whatever the look.
     let street = |station: usize| {
         let mut definition = scaled(
             tree::parse(
@@ -952,19 +956,28 @@ fn write_lane_plants() {
         }
         (definition, superspec_types::batch::FoliageMass::default())
     };
-    let tree_look = std::env::var("LANE_LOOK").unwrap_or_default();
+    let asked = std::env::var("LANE_LOOK").unwrap_or_else(|_| "leaves".into());
+    let plant_look = if asked == "painted" {
+        String::new()
+    } else {
+        asked
+    };
+    let street_tree =
+        std::env::var("LANE_TREE").map_or(!plant_look.is_empty(), |tree| tree == "street");
     let mut row = vec![];
     for (i, along) in stations("trees").into_iter().enumerate() {
-        let (definition, mut mass) = if std::env::var("LANE_TREE").as_deref() == Ok("street") {
+        let (definition, mut mass) = if street_tree {
             street(i)
         } else {
             birch([1.08, 1.0][i % 2])
         };
-        mass.look = tree_look.clone();
+        mass.look = plant_look.clone();
         row.push(((definition, mass), avenue_point(&avenue, along, middle)));
     }
     for along in stations("shrubs") {
-        row.push((shrub.clone(), avenue_point(&avenue, along, middle)));
+        let (definition, mut mass) = shrub.clone();
+        mass.look = plant_look.clone();
+        row.push(((definition, mass), avenue_point(&avenue, along, middle)));
     }
     for (index, ((definition, mass), at)) in row.into_iter().enumerate() {
         use superspec_types::batch::FoliageFamily;
@@ -1016,7 +1029,16 @@ fn write_lane_plants() {
         );
         all.extend(levels);
     }
-    all.push(groundcover(&avenue, &look, &height));
+    let mut bed = groundcover(&avenue, &look, &height);
+    if !plant_look.is_empty() {
+        let mass = bed.batch.foliage.as_mut().unwrap().mass.as_mut().unwrap();
+        mass.look = if plant_look == "leaves" {
+            "sprays".into()
+        } else {
+            plant_look.clone()
+        };
+    }
+    all.push(bed);
     let mut scene = Scene::empty(1, "test");
     for FoliageBatch { batch, mesh } in &all {
         scene.add_batch(batch, mesh).unwrap();
