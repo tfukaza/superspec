@@ -25,6 +25,8 @@ const radius = param.scalar({ default: 0.014, range: [0.002, 0.05], unit: "m", l
 const jointClear = param.scalar({ default: 0.06, range: [0.005, 0.5], unit: "m", label: "Clear of a joint" });
 const halo = param.scalar({ default: 0, range: [0, 1], label: "Grime round openings" });
 const haloWidth = param.scalar({ default: 0.12, range: [0.02, 0.5], unit: "m", label: "Opening grime width" });
+const fixtureHalo = param.scalar({ default: 0, range: [0, 1], label: "Grime behind fixtures" });
+const fixtureWidth = param.scalar({ default: 0.3, range: [0.02, 1], unit: "m", label: "Fixture grime width" });
 const edgeAngle = param.scalar({ default: 35, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
 
 const limit = add(mul(inkWidth, 1.6), footprint);
@@ -48,7 +50,13 @@ const toSill = featureDistance("sill", 0.6);
 const low = sub(1, smoothstep(0.05, 0.45, toSill));
 const reach = mul(haloWidth, add(add(0.6, mul(0.6, valueNoise(mul(at, 3.3), seed("halo-reach")))), mul(low, 1.4)));
 const ring = mul(mul(halo, sub(1, smoothstep(mul(reach, 0.15), reach, toOpening))), add(0.55, mul(0.45, low)));
-const ink = max(mul(mul(mul(inkStrength, max(beside, corner)), broken), grain), mul(ring, grain));
+// Behind a fixture that stands off the wall (a duct, followed as `fixture`: the line on the wall behind it), a broad
+// soft band of dirt, and heavier where it is fixed (`fixing`: its brackets' feet and where it enters the wall).
+const toFixture = featureDistance("fixture", add(fixtureWidth, 0.2));
+const toFixing = featureDistance("fixing", 0.3);
+const fixtureBand = mul(mul(fixtureHalo, sub(1, smoothstep(mul(fixtureWidth, 0.35), fixtureWidth, toFixture))), add(0.5, mul(0.5, valueNoise(mul(at, vec2(2.3, 0.7)), seed("fixture-band")))));
+const fixingSpot = mul(fixtureHalo, sub(1, smoothstep(0.03, 0.2, toFixing)));
+const ink = max(max(mul(mul(mul(inkStrength, max(beside, corner)), broken), grain), mul(ring, grain)), mul(min(max(mul(fixtureBand, 0.55), fixingSpot), 1), grain));
 
 // The arris itself: worn paler and smoother, with chips where it is not.
 const chips = smoothstep(0.55, 0.72, valueNoise(add(mul(at, 23), vec2(9.4, 1.6)), seed("ink-chips")));

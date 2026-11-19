@@ -669,7 +669,8 @@ fn kerb_run(
 /// 0.05–1, 0.3), `soilDepth` (m below the planter's top, 0.02–1, 0.14), `drains` (true),
 /// `bollardSpacing` (m, 0 for none, 0.6–10, 1.6), `benches` (pairs, 0–40, 3), `benchFirst`
 /// (m along, where the median's first third starts, or a quarter of the length without a
-/// median) and `benchSpacing` (m, 0.5–80, 7), `color` (#a8a394), `seed` (stone shades).
+/// median) and `benchSpacing` (m, 0.5–80, 7), `bins` (a litter bin past the ends of each bench
+/// station, false) and `binColor` (#c2672e), `color` (#a8a394), `seed` (stone shades).
 pub(super) fn pedestrian_avenue(
     name: &str,
     values: &Values,
@@ -704,6 +705,10 @@ pub(super) fn pedestrian_avenue(
             length / 4.
         },
     )?;
+    // `bins`: a litter bin past either end of each bench station, one on each side (false),
+    // painted `binColor` (#c2672e) under a steel lid.
+    let bins = a.boolean("bins", false)?;
+    let bin_color = a.color("binColor", "#c2672e")?;
     let color = a.color("color", "#a8a394")?;
     let mut rng = a.rng()?;
     a.finish()?;
@@ -941,6 +946,310 @@ pub(super) fn pedestrian_avenue(
                 base.facing([0., -width, 0.], [1., 0., 0.], [0., 1., 0.])?,
             )?;
             kerb_run(d, [x0, x1], kerb, height, stone, color, &mut rng)?;
+        }
+        if bins {
+            let (near, far) = if median {
+                (y_near + 0.4, y_far - 0.4)
+            } else {
+                (-offset + 0.75, -offset - 0.75)
+            };
+            let (lo, hi) = if median {
+                (median_start + 1., median_end - 1.)
+            } else {
+                (x0 + 1., x1 - 1.)
+            };
+            for i in 0..benches {
+                let at = bench_first + i as f64 * bench_spacing;
+                if at < lo || at > hi {
+                    continue;
+                }
+                for (x, y) in [(at - 1.35, near), (at + 1.35, far)] {
+                    if x < x0 + 0.4 || x > x1 - 0.4 {
+                        continue;
+                    }
+                    let d = &mut on(mesh, base.moved([x, y, 0.])?)?;
+                    litter_bin(d, bin_color)?;
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+/// A round litter bin standing on z = 0 at the frame's origin: a slightly flared body in
+/// `tint` with a dark band round its mouths, under a domed steel lid (slot `metal`).
+fn litter_bin(d: &mut Fixture<'_, '_>, tint: V3) -> Result<(), String> {
+    use std::f64::consts::TAU;
+    let steel = srgb("#8d918b");
+    swept(
+        d,
+        "metal",
+        0.,
+        &[[0.2, -0.01], [0.22, 0.8]],
+        [0., TAU],
+        16,
+        false,
+        tint,
+    )?;
+    swept(
+        d,
+        "metal",
+        0.,
+        &[[0.226, 0.6], [0.226, 0.7]],
+        [0., TAU],
+        16,
+        false,
+        srgb("#2b2b28"),
+    )?;
+    swept(
+        d,
+        "metal",
+        0.,
+        &[[0.22, 0.8], [0.24, 0.8], [0.24, 0.86], [0.07, 0.95]],
+        [0., TAU],
+        16,
+        false,
+        steel,
+    )?;
+    d.drum("metal", [0., 0., 0.94], 0.075, 0.03, shade(steel, 0.8), 12)
+}
+
+/// `kowloon/street-lamp`: a street lamp on a tapered steel pole: a base plate under a cast
+/// collar, the pole with its number plate, and at its head either a swan-neck arm with a
+/// shallow luminaire (`arm`) or a four-sided lantern under a pyramid roof (`lantern`), and
+/// optionally a pair of banner brackets with a banner hung between them. Anchor: the pole's
+/// foot; an arm reaches toward -Y and the banner hangs toward +X. Slots: `metal` (tinted per
+/// vertex), `lamp` (the luminaire's diffuser or the lantern's glass, pale, for a material
+/// that makes it glow) and `banner` (with `banner`). Parameters: `style` (`arm` |
+/// `lantern`, `arm`), `height` (m to the pole's head, 2.5–14; 6 for an arm, 3.6 for a
+/// lantern), `reach` (m of the arm, 0.3–3, 1.3), `arms` (1–2, 1: two reach either way),
+/// `banner` (false), `color` (#3d4842), `light` (#f2ead2), `bannerColor` (#a3352c).
+pub(super) fn street_lamp(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    use std::f64::consts::{FRAC_PI_4, TAU};
+    let mut a = Arguments::new(name, values);
+    let lantern = match a.text("style", "arm")?.as_str() {
+        "arm" => false,
+        "lantern" => true,
+        _ => return Err(format!("{name}: style must be one of arm, lantern.")),
+    };
+    let height = a.bounded("height", if lantern { 3.6 } else { 6. }, 2.5..=14.)?;
+    let reach = a.bounded("reach", 1.3, 0.3..=3.)?;
+    let arms = a.integer("arms", 1, 1..=2)?;
+    let banner = a.boolean("banner", false)?;
+    let color = a.color("color", "#3d4842")?;
+    let light = a.color("light", "#f2ead2")?;
+    let cloth = a.color("bannerColor", "#a3352c")?;
+    a.finish()?;
+    if banner && height < 3.4 {
+        return Err(format!("{name}: a banner needs a pole 3.4 m tall or more."));
+    }
+    let dark = shade(color, 0.75);
+    draw(cancelled, |mesh| {
+        let d = &mut on(mesh, room_pen("street-lamp", [0.; 3])?)?;
+        let round = |d: &mut Fixture<'_, '_>, slot: &str, profile: &[[f64; 2]], tint: V3| {
+            swept(d, slot, 0., profile, [0., TAU], 16, false, tint)
+        };
+        // The base plate with its four bolts, and the cast collar the pole rises from.
+        d.cuboid("metal", [-0.2, -0.2, 0.], [0.2, 0.2, 0.025], dark, "d")?;
+        for (x, y) in [(-0.15, -0.15), (0.15, -0.15), (0.15, 0.15), (-0.15, 0.15)] {
+            d.drum("metal", [x, y, 0.025], 0.016, 0.03, shade(dark, 0.8), 6)?;
+        }
+        round(
+            d,
+            "metal",
+            &[
+                [0.15, 0.025],
+                [0.15, 0.09],
+                [0.12, 0.13],
+                [0.11, 0.62],
+                [0.13, 0.66],
+                [0.13, 0.7],
+                [0.085, 0.76],
+            ],
+            color,
+        )?;
+        // The pole tapers from the collar to its head.
+        let (foot, head) = (0.08, 0.05);
+        round(d, "metal", &[[foot, 0.7], [head, height]], color)?;
+        // A number plate at eye height on the pole's back.
+        let plate = foot + (head - foot) * (2.32 - 0.7) / (height - 0.7);
+        d.cuboid(
+            "metal",
+            [-0.05, plate - 0.004, 2.1],
+            [0.05, plate + 0.008, 2.32],
+            srgb("#d8cc8a"),
+            "",
+        )?;
+        if banner {
+            // Two brackets toward +X and a banner hung between them.
+            let (low, high) = (height - 2.6, height - 0.6);
+            for z in [low, high] {
+                d.tube("metal", &[[0., 0., z], [0.72, 0., z]], 0.016, dark, 6)?;
+                d.drum("metal", [0.72, 0., z - 0.02], 0.022, 0.04, dark, 6)?;
+            }
+            d.pen.sheet(
+                d.mesh,
+                "banner",
+                &[
+                    [0.1, 0., low + 0.04],
+                    [0.66, 0., low + 0.04],
+                    [0.66, 0., high - 0.03],
+                    [0.1, 0., high - 0.03],
+                ],
+                &Tint::Color(cloth),
+                &Tint::Color(shade(cloth, 0.9)),
+                1.,
+            )?;
+        }
+        if lantern {
+            // A ring at the pole's head carries the lantern: glass tapering out to its
+            // shoulder, a pyramid roof over it and a finial.
+            let square = |d: &mut Fixture<'_, '_>, slot: &str, profile: &[[f64; 2]], tint: V3| {
+                swept(
+                    d,
+                    slot,
+                    0.,
+                    profile,
+                    [FRAC_PI_4, FRAC_PI_4 + TAU],
+                    4,
+                    false,
+                    tint,
+                )
+            };
+            round(
+                d,
+                "metal",
+                &[
+                    [head, height],
+                    [0.09, height],
+                    [0.09, height + 0.06],
+                    [head, height + 0.1],
+                ],
+                dark,
+            )?;
+            square(
+                d,
+                "metal",
+                &[
+                    [0.05, height + 0.1],
+                    [0.17, height + 0.1],
+                    [0.17, height + 0.14],
+                    [0.14, height + 0.14],
+                ],
+                dark,
+            )?;
+            square(
+                d,
+                "lamp",
+                &[[0.15, height + 0.14], [0.23, height + 0.62]],
+                light,
+            )?;
+            // Corner bars up the glass's edges.
+            for k in 0..4 {
+                let angle = FRAC_PI_4 + k as f64 * TAU / 4.;
+                let at = |r: f64, z: f64| {
+                    [
+                        r * superspec_geometry::math::sin(angle),
+                        -r * superspec_geometry::math::cos(angle),
+                        z,
+                    ]
+                };
+                d.tube(
+                    "metal",
+                    &[at(0.16, height + 0.14), at(0.24, height + 0.62)],
+                    0.012,
+                    dark,
+                    5,
+                )?;
+            }
+            square(
+                d,
+                "metal",
+                &[
+                    [0.22, height + 0.62],
+                    [0.29, height + 0.64],
+                    [0.29, height + 0.68],
+                    [0.04, height + 0.88],
+                ],
+                dark,
+            )?;
+            d.drum("metal", [0., 0., height + 0.86], 0.03, 0.08, dark, 8)?;
+            return Ok(());
+        }
+        // A cap on the pole's head, and swan-neck arms: up out of the head and over to
+        // horizontal at their reach, with a brace beneath, each holding a shallow luminaire.
+        d.drum(
+            "metal",
+            [0., 0., height - 0.04],
+            head + 0.012,
+            0.06,
+            dark,
+            12,
+        )?;
+        let rise = 0.45_f64.min(reach * 0.6);
+        for side in [-1., 1.].into_iter().take(arms) {
+            let curve = |t: f64| -> V3 {
+                let s = 1. - t;
+                // A quadratic Bezier from the head, up, then out along Y.
+                let y = side * reach * t * t;
+                let z = height - 0.15 + 2. * s * t * (rise + 0.15) + t * t * (rise + 0.15);
+                [0., y, z]
+            };
+            let path: Vec<V3> = (0..=12).map(|k| curve(k as f64 / 12.)).collect();
+            d.tube("metal", &path, 0.032, color, 10)?;
+            let mid = curve(0.55);
+            d.tube(
+                "metal",
+                &[[0., 0., height - 0.9], [0., mid[1] * 0.85, mid[2] - 0.06]],
+                0.014,
+                color,
+                6,
+            )?;
+            // A scroll under the brace: a small ring.
+            let ring: Vec<V3> = (0..=12)
+                .map(|k| {
+                    let angle = k as f64 / 12. * TAU;
+                    [
+                        0.,
+                        side * (0.14 + 0.08 * superspec_geometry::math::cos(angle)),
+                        height - 0.55 + 0.08 * superspec_geometry::math::sin(angle),
+                    ]
+                })
+                .collect();
+            d.tube("metal", &ring, 0.01, color, 5)?;
+            // The luminaire: a housing that runs on past the arm's end, its diffuser below.
+            let end = curve(1.);
+            let (y0, y1) = if side < 0. {
+                (end[1] - 0.55, end[1] + 0.12)
+            } else {
+                (end[1] - 0.12, end[1] + 0.55)
+            };
+            let z = end[2];
+            d.cuboid(
+                "metal",
+                [-0.17, y0, z - 0.06],
+                [0.17, y1, z + 0.05],
+                color,
+                "",
+            )?;
+            d.cuboid(
+                "metal",
+                [-0.12, y0 + 0.06, z + 0.05],
+                [0.12, y1 - 0.06, z + 0.09],
+                shade(color, 1.1),
+                "d",
+            )?;
+            d.cuboid(
+                "lamp",
+                [-0.14, y0 + 0.03, z - 0.1],
+                [0.14, y1 - 0.03, z - 0.06],
+                light,
+                "u",
+            )?;
         }
         Ok(())
     })

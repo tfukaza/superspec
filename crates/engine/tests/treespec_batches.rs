@@ -395,11 +395,15 @@ fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefini
 /// The lane plants' grade of the painted colours (`write_lane_plants`).
 const LANE_PALETTE: superspec_types::batch::FoliagePalette =
     superspec_types::batch::FoliagePalette {
-        hue: -8.,
-        saturation: 0.78,
+        // Matched to the sunny avenue concept's foliage: its shade, mid and lit values about
+        // #2c362b, #424c39 and #7f8358 (a muted olive, warm in the light, deep in the shade).
+        hue: -24.,
+        saturation: 0.62,
         value: 0.95,
-        shade: 0.85,
-        shade_hue: -6.,
+        shade: 0.62,
+        shade_hue: -34.,
+        contrast: 1.5,
+        depth: 1.8,
     };
 
 /// A plant's painted mass (roadmap milestone `painted-trees-milestone`), in the plant's own space
@@ -598,8 +602,8 @@ fn avenue_point(avenue: &serde_json::Value, along: f64, across: f64) -> [f64; 2]
     [0, 1].map(|k| v("origin", k) + along * v("along", k) + across * v("across", k))
 }
 
-/// The grass of the avenue's median: cells of about 15 cm over the soil inside its planter
-/// kerbs, a few centimeters above the soil and rolling by a few, below the kerbs' top.
+/// The ground of the avenue's median planting: cells of about 15 cm over the planter's soil
+/// inside its kerbs, a few centimeters above it and rolling by a few, below the kerbs' top.
 fn lane_ground() -> GroundMesh {
     let avenue = avenue();
     let m = |key: &str| avenue["median"][key].as_f64().unwrap();
@@ -648,10 +652,136 @@ fn lane_ground() -> GroundMesh {
     ground
 }
 
+/// The lane groundcover's grade: the trees' (`LANE_PALETTE`), a little darker, as the planting
+/// sits low in the planter.
+const GROUNDCOVER_PALETTE: superspec_types::batch::FoliagePalette =
+    superspec_types::batch::FoliagePalette {
+        value: 0.85,
+        ..LANE_PALETTE
+    };
+
+/// The median's planting: dense, low mounds of groundcover between its planter kerbs, painted
+/// as one mass made of the leaf sites and twigs of many small shrubs (each its own seed and
+/// size, on a staggered row about 0.6 m apart). It is carried by an invisible box over the
+/// planter, a `shadow` batch (drawn at every level, casting nothing for a mass), so the planting
+/// is culled and drawn as one.
+fn groundcover(
+    avenue: &serde_json::Value,
+    look: &superspec_model::batches::Foliage,
+    height: &dyn Fn(f64, f64) -> f64,
+) -> FoliageBatch {
+    use superspec_types::batch::{FoliageFamily, FoliageMass};
+    let m = |key: &str| avenue["median"][key].as_f64().unwrap();
+    let inset = m("kerb") + 0.12;
+    let along = [m("start") + inset, m("end") - inset];
+    let across = [
+        m("offset") - m("width") / 2. + inset,
+        m("offset") + m("width") / 2. - inset,
+    ];
+    let [bx, by] = avenue_point(avenue, along[0], across[0]);
+    let base = [bx, by, height(bx, by)];
+    let shrub = tree::parse(
+        "shrub.tree.json",
+        include_str!("../src/treespec/fixtures/shrub.tree.json"),
+    )
+    .unwrap();
+    let spacing = 0.6;
+    let rows = ((across[1] - across[0]) / spacing).floor() as usize + 1;
+    let (mut sites, mut twigs) = (vec![], vec![]);
+    let mut k = 0u64;
+    let mut station = along[0];
+    while station <= along[1] {
+        for row in 0..rows {
+            k += 1;
+            // A stable jitter in [-0.5, 0.5) per mound and purpose.
+            let jitter = |n: u64| {
+                ((k.wrapping_mul(2_654_435_761) ^ n.wrapping_mul(40_503)) % 1000) as f64 / 1000.
+                    - 0.5
+            };
+            let s = station + 0.5 * spacing * (row % 2) as f64 + 0.3 * spacing * jitter(1);
+            if s > along[1] {
+                continue;
+            }
+            let t = if rows == 1 {
+                0.5 * (across[0] + across[1])
+            } else {
+                across[0] + (across[1] - across[0]) * row as f64 / (rows - 1) as f64
+            } + 0.2 * spacing * jitter(2);
+            let mut definition = scaled(shrub.clone(), 0.4 + 0.15 * (jitter(3) + 0.5));
+            definition.seed = shrub.seed + k;
+            let plant = tree::generate(&definition, &|| false).unwrap();
+            let mass = painted_mass(&definition, &plant);
+            let [x, y] = avenue_point(avenue, s, t);
+            let o = [x - base[0], y - base[1], height(x, y) - 0.04 - base[2]];
+            sites.extend(
+                mass.sites
+                    .iter()
+                    .map(|[a, b, c, size]| [a + o[0], b + o[1], c + o[2], *size]),
+            );
+            twigs.extend(mass.twigs.into_iter().map(|twig| {
+                twig.into_iter()
+                    .map(|p| [p[0] + o[0], p[1] + o[1], p[2] + o[2]])
+                    .collect::<Vec<_>>()
+            }));
+        }
+        station += spacing;
+    }
+    // The carrier: the shrub's shadow proxy batch with its mesh replaced by the box around the
+    // planting's sites.
+    let template = tree::generate(&shrub, &|| false).unwrap();
+    let mut carrier = batches::tree_levels(&template, base, look)
+        .unwrap()
+        .into_iter()
+        .find(|level| level.batch.foliage.as_ref().unwrap().family == FoliageFamily::Shadow)
+        .expect("the shrub has a shadow proxy");
+    let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for site in &sites {
+        for axis in 0..3 {
+            low[axis] = low[axis].min(site[axis] - 0.2);
+            high[axis] = high[axis].max(site[axis] + 0.2);
+        }
+    }
+    let corner = |i: usize| {
+        [
+            if i & 1 == 0 { low[0] } else { high[0] },
+            if i & 2 == 0 { low[1] } else { high[1] },
+            if i & 4 == 0 { low[2] } else { high[2] },
+        ]
+    };
+    carrier.mesh = superspec_model::instances::LocalMesh {
+        positions: (0..8).map(corner).collect(),
+        normals: vec![[0., 0., 1.]; 8],
+        uvs: vec![[0., 0.]; 8],
+        colors: vec![[1.; 3]; 8],
+        indices: vec![
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4,
+            6, 1, 3, 5, 3, 7, 5,
+        ],
+        tangents: vec![],
+    };
+    carrier.batch.vertex_scalars.clear();
+    carrier.batch.vertex_vectors.clear();
+    carrier.batch.id = "lane-groundcover/shadow".into();
+    carrier.batch.object_id = "lane-groundcover".into();
+    let foliage = carrier.batch.foliage.as_mut().unwrap();
+    foliage.patch = "lane-groundcover".into();
+    foliage.mass = Some(FoliageMass {
+        sites,
+        twigs,
+        radius: 0.32,
+        cell: 0.12,
+        level: 0.55,
+        card_keep: 0.7,
+        palette: GROUNDCOVER_PALETTE,
+    });
+    carrier
+}
+
 /// Writes the lane's plants (`lane-plants.json` in `TREESPEC_OUTPUT`, default
-/// `generated/verification/treespec`): the median grass of `lane_ground`, grown as the washroom
-/// lawn's grass, and the avenue's birches and shrubs, painted as the milestone's trees (each a
-/// `FoliageMass`), standing in a row on the median along the Kowloon building's right side.
+/// `generated/verification/treespec`): the median's soil (`lane_ground`) and its planting, the
+/// avenue's birches and shrubs painted as the milestone's trees (each a `FoliageMass`) standing
+/// in a row on the median along the Kowloon building's right side, and the dense groundcover
+/// around them (`groundcover`).
 /// `tests/studio/washroom-items/build.mjs` adds them with the building (`LANE=1`).
 #[test]
 #[ignore = "writes the lane plants for the item building picture"]
@@ -661,28 +791,9 @@ fn write_lane_plants() {
         PathBuf::from,
     );
     std::fs::create_dir_all(&out).unwrap();
+    // The median's soil (the planting's ground): no grass on it, the groundcover below covers it.
     let ground = lane_ground();
-    let patch = grass::generate(
-        &lawn_definition(),
-        &GrassSite {
-            ground: ground.clone(),
-            mask: DensityMask::Uniform,
-        },
-        &|| false,
-    )
-    .unwrap();
-    let grass_look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
-        "family": "grass", "patch": "lane", "far": 40, "material": "painted-grass",
-        "rejection": { "boundary": 0, "fill": 1, "grazing": 0, "grazingKeep": 0 },
-        // The tips' lit highlight muted to the scene, as the trees' palette (`LANE_PALETTE`).
-        "tip": { "highlight": [0.5, 0.57, 0.3], "amount": 0.25 },
-    }))
-    .unwrap();
-    let mut all = batches::grass_levels(&patch, [0.; 3], &grass_look, None).unwrap();
-    for level in &mut all {
-        level.batch.id = level.batch.id.replacen(&patch.id, "lane", 1);
-        level.batch.object_id = "lane".into();
-    }
+    let mut all: Vec<FoliageBatch> = vec![];
     let look: superspec_model::batches::Foliage = serde_json::from_value(serde_json::json!({
         "family": "leaves", "patch": "plant", "far": 60, "material": "painted-canopy",
         "wind": { "azimuth": 30, "angle": 2.5, "scale": 6, "speed": 0.8, "bias": 0.7, "flutter": 9 },
@@ -756,9 +867,8 @@ fn write_lane_plants() {
         use superspec_types::batch::FoliageFamily;
         let plant = tree::generate(&definition, &|| false).unwrap();
         let base = [at[0], at[1], height(at[0], at[1]) - 0.02];
-        // Beside the weathered building (warm grey plaster, dull sage tile, faded awnings) the
-        // greens are graded down: less saturated and a little darker, warmer, the shade side a
-        // deeper teal-olive, so the lime highlights become a soft yellow-green.
+        // Beside the weathered building the greens are graded to the avenue concept's
+        // (`LANE_PALETTE`): a muted olive, darker, with deep shade and warm, restrained lights.
         let painted = superspec_types::batch::FoliageMass {
             level: mass.level,
             card_keep: mass.card_keep,
@@ -793,6 +903,7 @@ fn write_lane_plants() {
         );
         all.extend(levels);
     }
+    all.push(groundcover(&avenue, &look, &height));
     let mut scene = Scene::empty(1, "test");
     for FoliageBatch { batch, mesh } in &all {
         scene.add_batch(batch, mesh).unwrap();

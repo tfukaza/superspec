@@ -28,5 +28,16 @@
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "bracket": "steel", "bolt": "steel", "end": "galvanized"}
     }
-  ]
+  ],
+  "features": [
+    {"name": "fixture", "part": "run", "reach": "item", "within": 1, "points": [[0, 0, 0], ["direction * length", 0, 0]]},
+    {"name": "fixing", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((length - 1.2) / 1.6) + 1)"}, "points": [["direction * (0.6 + k * 1.6)", 0, -0.05], ["direction * (0.6 + k * 1.6)", 0, 0.05]]},
+    {"name": "rust", "part": "run", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((length - 1.2) / 1.6) + 1)"}, "points": [["direction * (0.6 + k * 1.6) - 0.03", 0, -0.03], ["direction * (0.6 + k * 1.6) + 0.03", 0, -0.03]], "zone": {"length": 0.5}},
+    {"name": "drip", "part": "run", "reach": "item", "within": 1, "points": [[0, 0, "-depth / 2"], ["direction * length", 0, "-depth / 2"]], "zone": {"length": 1}}
+  ],
+  "layers": {
+    "galvanized": [
+      {"entry": "kowloon-underside-grime.material.ts", "parameters": {"facing": 0.3}, "seed": 41, "follow": {"fixture": "fixture"}}
+    ]
+  }
 }

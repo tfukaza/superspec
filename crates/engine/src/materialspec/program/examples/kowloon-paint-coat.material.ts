@@ -20,7 +20,7 @@ const patches = param.scalar({ default: 0, range: [0, 1], label: "Repainted repa
 const unevenness = param.scalar({ default: 1, range: [0, 1], label: "Uneven tone" });
 const peelShare = param.scalar({ default: 0.6, range: [0, 1], label: "Peeled share of a peel frame" });
 const peelInset = param.scalar({ default: 0.05, range: [0.01, 0.3], unit: "m", label: "Peel frame inset" });
-const bare = param.vec3({ default: vec3(0.42, 0.41, 0.38), range: [0, 1], label: "Bare render tone" });
+const bare = param.vec3({ default: vec3(0.2, 0.195, 0.18), range: [0, 1], label: "Bare render tone" });
 const bareCover = param.scalar({ default: 0, range: [0, 1], label: "Bare render toned down" });
 const arrisWear = param.scalar({ default: 0, range: [0, 1], label: "Paint worn off the arrises" });
 

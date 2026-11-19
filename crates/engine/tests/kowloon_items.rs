@@ -548,6 +548,105 @@ fn choices_and_dimensions_reach_the_fixture() {
             "{refused:?} is refused"
         );
     }
+    // Litter bins stand past the ends of each bench station, one on either side of the
+    // planter, about 0.97 m tall.
+    let binned = generate(
+        &natives,
+        "kowloon/pedestrian-avenue",
+        &values(&[
+            ("length", json!(24)),
+            ("width", json!(12)),
+            ("medianOffset", json!(5)),
+            ("medianWidth", json!(2)),
+            ("medianStart", json!(2)),
+            ("medianEnd", json!(22)),
+            ("benches", json!(2)),
+            ("benchFirst", json!(8)),
+            ("bins", json!(true)),
+        ]),
+    )
+    .unwrap();
+    check("kowloon/pedestrian-avenue", &binned);
+    let lids: Vec<[f64; 3]> = binned
+        .iter()
+        .filter(|m| m.material_slot == "metal")
+        .flat_map(|m| m.positions.clone())
+        .filter(|p| p[2] > 0.9 && p[2] < 1.)
+        .collect();
+    for (x, y) in [(6.65, -3.6), (9.35, -6.4), (13.65, -3.6), (16.35, -6.4)] {
+        assert!(
+            lids.iter()
+                .any(|p| (p[0] - x).abs() < 0.1 && (p[1] - y).abs() < 0.1),
+            "a bin stands at {x}, {y}"
+        );
+    }
+    assert!(lids.iter().all(|p| p[2] <= 0.971));
+    // A street lamp: a pole `height` tall whose swan-neck arm reaches toward -Y and holds the
+    // luminaire's diffuser (`lamp`) under its housing; a lantern's glass stands on the pole's
+    // head; a banner hangs on brackets toward +X; two arms reach either way.
+    let lamp = generate(&natives, "kowloon/street-lamp", &Values::new()).unwrap();
+    check("kowloon/street-lamp", &lamp);
+    let slots: Vec<&str> = lamp.iter().map(|m| m.material_slot.as_str()).collect();
+    assert_eq!(slots, ["metal", "lamp"]);
+    let vertices: usize = lamp.iter().map(|m| m.positions.len()).sum();
+    assert!(vertices < 20_000, "{vertices} vertices");
+    let bounds = |meshes: &[ItemMesh], slot: &str, k: usize| {
+        meshes
+            .iter()
+            .filter(|m| slot.is_empty() || m.material_slot == slot)
+            .flat_map(|m| &m.positions)
+            .fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p[k]), b.max(p[k])))
+    };
+    let (low, high) = bounds(&lamp, "", 2);
+    assert!(
+        low.abs() < 1e-9 && high > 6.4 && high < 6.6,
+        "{low}..{high}"
+    );
+    let (near, far) = bounds(&lamp, "", 1);
+    assert!((near + 1.85).abs() < 1e-6 && far < 0.25, "{near}..{far}");
+    let (glass_low, glass_high) = bounds(&lamp, "lamp", 2);
+    assert!(glass_low > 6.2 && glass_high < 6.45);
+    let (glass_near, _) = bounds(&lamp, "lamp", 1);
+    assert!(glass_near < -1.7);
+    let double = generate(
+        &natives,
+        "kowloon/street-lamp",
+        &values(&[
+            ("arms", json!(2)),
+            ("reach", json!(1)),
+            ("height", json!(8)),
+        ]),
+    )
+    .unwrap();
+    let (near, far) = bounds(&double, "", 1);
+    assert!((near + 1.55).abs() < 1e-6 && (far - 1.55).abs() < 1e-6);
+    let lantern = generate(
+        &natives,
+        "kowloon/street-lamp",
+        &values(&[
+            ("style", json!("lantern")),
+            ("banner", json!(true)),
+            ("height", json!(4)),
+        ]),
+    )
+    .unwrap();
+    check("kowloon/street-lamp", &lantern);
+    let slots: Vec<&str> = lantern.iter().map(|m| m.material_slot.as_str()).collect();
+    assert_eq!(slots, ["metal", "banner", "lamp"]);
+    let (glass_low, glass_high) = bounds(&lantern, "lamp", 2);
+    assert!((glass_low - 4.14).abs() < 1e-9 && (glass_high - 4.62).abs() < 1e-9);
+    let (banner_x0, banner_x1) = bounds(&lantern, "banner", 0);
+    assert!(banner_x0 > 0.05 && banner_x1 < 0.75);
+    for refused in [
+        values(&[("style", json!("cobra"))]),
+        values(&[("banner", json!(true)), ("height", json!(3))]),
+        values(&[("arms", json!(3))]),
+    ] {
+        assert!(
+            generate(&natives, "kowloon/street-lamp", &refused).is_err(),
+            "{refused:?} is refused"
+        );
+    }
     // A cornice is as long as its wall at its outer edge with square ends, and longer by its
     // projection at a mitred external corner.
     let square = generate(

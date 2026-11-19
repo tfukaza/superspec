@@ -97,12 +97,14 @@ export function buildMaterials({ weathering = true } = {}) {
  */
 const anchoredConcrete = "kowloon-concrete-anchored.material.ts";
 /** The weathering layer recipes the Kowloon items name, and the base they go over. */
-export const kowloonLayerModules = [anchoredConcrete, "kowloon-ground.material.ts", "kowloon-paint-coat.material.ts", "kowloon-runoff.material.ts", "kowloon-grime-streaks.material.ts", "kowloon-top-grime.material.ts", "kowloon-ground-stain.material.ts", "kowloon-moss.material.ts",
-  "kowloon-wall-dirt.material.ts", "kowloon-soot-band.material.ts", "kowloon-notices.material.ts", "kowloon-rust-run.material.ts", "kowloon-repairs.material.ts", "kowloon-foot-wear.material.ts", "kowloon-dust-streaks.material.ts",
+// (The ground stain, moss, runoff, top grime and crease-edge recipes the items once named are left out: no item names
+// them now, and a project holds at most 64 modules.)
+export const kowloonLayerModules = [anchoredConcrete, "kowloon-paint-coat.material.ts", "kowloon-grime-streaks.material.ts",
+  "kowloon-wall-dirt.material.ts", "kowloon-soot-band.material.ts", "kowloon-notices.material.ts", "kowloon-rust-run.material.ts", "kowloon-repairs.material.ts", "kowloon-foot-wear.material.ts", "kowloon-dust-streaks.material.ts", "kowloon-underside-grime.material.ts",
   // The fixtures' own recipes: glazing, wall tiles, air conditioner casings and awning canvas; the street's paving and asphalt.
   "kowloon-window-glass.material.ts", "kowloon-wall-tile.material.ts", "kowloon-aircon.material.ts", "kowloon-canvas.material.ts",
   "kowloon-paving.material.ts", "kowloon-asphalt.material.ts", "kowloon-poster-print.material.ts",
-  "kowloon-concrete-edges.material.ts", "kowloon-edge-ink.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts", "kowloon-tube-light.material.ts"];
+  "kowloon-edge-ink.material.ts", "kowloon-sign-board.material.ts", "kowloon-sign-lettering.material.ts", "kowloon-tube-light.material.ts"];
 function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
@@ -139,6 +141,10 @@ function facadeMaterials() {
     { id: "shop-floor", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, fractures: 0.3, stone: [0.62, 0.61, 0.58], variation: 0.04, grime: 0.25, spots: 0.25 }, seed: 4, meshes: [] },
     // Street-weathered galvanized sheet (a roof tank's shell): a neutral dull grey, not the washroom duct's blue-grey.
     { id: "weathered-galvanized", entry: steel, parameters: { substrate: [0.42, 0.41, 0.38], metalness: 0.5, roughness: 0.62, edgeRust: 0.7, surfaceRust: 0.35, rainRust: 0.85 }, seed: 7, meshes: [] },
+    // The building's ducts and their fittings: galvanized sheet gone dull, rust spread over it in spots and a faint bloom,
+    // more toward the foot of each section, and only a little at the seams (the washroom's item steel paints a full band
+    // at every joint, which on a duct reads as a brown ring).
+    { id: "duct-galvanized", entry: steel, parameters: { substrate: [0.46, 0.47, 0.46], metalness: 0.6, roughness: 0.5, edgeRust: 0.35, surfaceRust: 0.45, rainRust: 0.75 }, seed: 13, meshes: [] },
     { id: "aged-paint", entry: steel, parameters: { ...plain, substrate: [0.8, 0.79, 0.75], metalness: 0.1, roughness: 0.72, edgeRust: 0.92, surfaceRust: 0.38, rainRust: 0.6 }, seed: 7, meshes: [] },
     { id: "aged-sheet", entry: steel, parameters: { ...plain, substrate: [0.78, 0.78, 0.76], metalness: 0.4, roughness: 0.6, edgeRust: 0.8, surfaceRust: 0.35, rainRust: 0.7 }, seed: 7, meshes: [] },
     { id: "aged-metal", entry: steel, parameters: { ...plain, substrate: [0.72, 0.72, 0.7], metalness: 0.35, roughness: 0.6, edgeRust: 0.9, surfaceRust: 0.4, rainRust: 0.9 }, seed: 5, meshes: [] },
@@ -146,7 +152,7 @@ function facadeMaterials() {
     { id: "canvas", entry: "kowloon-canvas.material.ts", parameters: { clothA: [0.86, 0.85, 0.82], clothB: [0.86, 0.85, 0.82], striped: 0, bleaching: 0, soil: 0.4, wallRuns: 1 }, seed: 7, meshes: [] },
     // The street: flagged pavement and its kerb (their stones shaded by tints), and the asphalt beyond.
     // (The pavement item lays its own stones, so the recipe's flags are made too large to show: one stone a receiver.)
-    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.5, 0.49], variation: 0.05, grime: 1, wet: 0.6 }, seed: 7, meshes: [] },
+    { id: "paving", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.36, 0.365, 0.37], variation: 0.06, grime: 1, wet: 0.75 }, seed: 7, meshes: [] },
     { id: "kerb", entry: "kowloon-paving.material.ts", parameters: { flag: [3, 3], stagger: 0, jointWidth: 0.002, cracked: 0, stone: [0.5, 0.49, 0.46], variation: 0.05, spots: 0.3, grime: 0.9 }, seed: 9, meshes: [] },
     { id: "asphalt", entry: "kowloon-asphalt.material.ts", parameters: { binder: [0.105, 0.105, 0.1], cracks: 0, patches: 0.1, wearing: 0.12, stains: 0.12 }, seed: 7, meshes: [] },
     { id: "leaves", entry: steel, parameters: { ...plain, substrate: [0.08, 0.22, 0.06], metalness: 0, roughness: 0.75, edgeRust: 0, surfaceRust: 0, rainRust: 0 }, seed: 7, meshes: [] },
@@ -167,11 +173,31 @@ export function pedestrianAvenue({ origin, along, across, length, width, height,
     parts: [{ id: "avenue", generator: { kind: "native", name: "kowloon/pedestrian-avenue", parameters: {
       length, width, height, medianOffset: median.offset, medianWidth: median.width, medianStart: median.start, medianEnd: median.end,
       planterKerb: median.kerb, planterRise: median.rise, soilDepth: median.soil,
-      // A pair of benches against the planter beside each shrub.
-      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, seed: 7 } } }] };
+      // A pair of benches against the planter beside each shrub, with a litter bin past their ends.
+      benches: shrubs.count, benchFirst: shrubs.first, benchSpacing: shrubs.spacing, bins: true, seed: 7 } } }] };
   const transform = [[along[0], along[1], 0], [-across[0], -across[1], 0], [0, 0, 1], origin];
   const far = Math.max(...[0, length].flatMap(s => [0, width].map(t => origin[1] + along[1] * s + across[1] * t)));
   return { definition, transform, far };
+}
+
+/**
+ * The avenue's street lamps (`lamps` of an avenue record): one `kowloon/street-lamp` part a post, in scene coordinates
+ * (the item stands untransformed), each row's arms reaching toward the avenue's middle; the row nearer the building
+ * carries a banner on its posts. A lamp's arm reaches along its -Y, so its X runs `across` turned a quarter clockwise.
+ */
+export function avenueLamps({ origin, along, across, width, lamps }) {
+  const parts = [];
+  for (const [row, offset] of lamps.offsets.entries()) {
+    const inward = offset < width / 2 ? 1 : -1;
+    for (let i = 0; i < lamps.count; i++) {
+      const s = lamps.first + i * lamps.spacing;
+      const at = [0, 1].map(k => +(origin[k] + along[k] * s + across[k] * offset).toFixed(4));
+      parts.push({ id: `lamp-${row}-${i}`, generator: { kind: "native", name: "kowloon/street-lamp", parameters: {
+        height: lamps.height, reach: lamps.reach, banner: inward > 0 } },
+        placement: { position: [...at, origin[2]], along: [-across[1] * inward, across[0] * inward] } });
+    }
+  }
+  return { format: "itemspec", version: 2, id: "avenue-lamps", parts };
 }
 
 /**
@@ -232,8 +258,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     batchList = buildBatches().map(batch => ({ ...batch, mesh: template, instances: batch.instances.slice(16) }));
   }
   // `lane` (a TreeSpec document, `lane-plants.json`): the front street's road between the room and the building, and the
-  // pedestrian avenue along the building's right side (`avenue.json`), with the painted grass on its median and the
-  // trees and shrubs standing in a row on it. The grass is the median's planting, so it always comes with the avenue.
+  // pedestrian avenue along the building's right side (`avenue.json`), with its median planted: trees and shrubs in a
+  // row and dense groundcover around them, so the planting always comes with the avenue.
   if (lane) {
     for (const name of [...lawnMaterials, ...treeMaterials].map(material => material.entry)) {
       modules[name] = readFileSync(resolve(here, "../washroom/materials", name), "utf8");
@@ -247,21 +273,68 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
         : { paving: "concrete-slab", kerb: "concrete-slab", soil: "concrete-slab", metal: "flat-steel", timber: "bench-wood" },
       // Its slabs, kerbs and soil are shaded per vertex: a coarse bake of the large paving keeps the allowance for the building.
       slotDensities: { paving: 48, kerb: 96, soil: 24, metal: 96, timber: 128 } });
-    // The road: a thin slab with a rounded rim, so its open edge does not read as a thick floating block. It runs on past
-    // the avenue's mouth (3 m beyond its far side), and under the avenue.
-    const roadFrom = -9.5, roadTo = Math.max(5.5, far + 3);
-    const paving = { format: "itemspec", version: 2, id: "lane-paving",
-      parts: [{ id: "paving", generator: { kind: "box", size: [13, +(roadTo - roadFrom).toFixed(3), 0.06], bevel: 0.025, bevelSegments: 2 }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
-    modules["items/lane-paving.item.json"] = JSON.stringify(paving, null, 2) + "\n";
-    scene.push({ id: "paving", kind: "item", entry: "items/lane-paving.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-13.6, roadFrom, -0.06]], slots: { concrete: withFacade ? "asphalt" : "concrete-slab" } });
-    // Beside the building the median's lawn takes the washroom lawn's grade muted to the scene, as the trees' palette is
-    // (`LANE_PALETTE` in treespec_batches.rs): its bands about 0.6 as saturated and 0.85 as light, the meadow tint halved.
-    // Its grass takes the lawn's colour under each root (`ground.color`), at every level.
-    const mutedLawn = withFacade ? { band0: [0.19, 0.28, 0.12], band1: [0.25, 0.37, 0.11], band2: [0.28, 0.41, 0.15], band3: [0.35, 0.48, 0.18],
-      band4: [0.42, 0.56, 0.22], meadowAmount: 0.15 } : {};
+    // Street lamps in two rows along the avenue (`lamps` of `avenue.json`).
+    modules["items/avenue-lamps.item.json"] = JSON.stringify(avenueLamps(avenue), null, 2) + "\n";
+    scene.push({ id: "lamps", kind: "item", entry: "items/avenue-lamps.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
+      slots: withFacade ? { metal: "aged-metal", lamp: "tube-light", banner: "canvas" } : { metal: "flat-steel", lamp: "flat-steel", banner: "bench-wood" },
+      slotDensities: { metal: 128, lamp: 96, banner: 160 } });
+    // The road: thin slabs with a rounded rim, so an open edge does not read as a thick floating block. Without the room
+    // the front street is a whole street: its carriageway runs far out both ways along the building's front, 7.3 m from
+    // the near kerb (the avenue's start) to a far kerb and a 4 m pavement of its own; with the room it stops short of
+    // the room's slab. The yard under and behind the building runs on past the avenue's mouth (3 m beyond its far side).
+    const kerbLine = avenue.origin[0], farKerb = room ? null : kerbLine + 7.3;
+    const roadFrom = -9.5, roadTo = Math.max(5.5, far + 3), wall = -4.5;
+    const slab = (id, [x0, x1], [y0, y1]) => {
+      const definition = { format: "itemspec", version: 2, id,
+        parts: [{ id: "paving", generator: { kind: "box", size: [+(x1 - x0).toFixed(3), +(y1 - y0).toFixed(3), 0.06], bevel: 0.025, bevelSegments: 2 }, slots: { side: "concrete", top: "concrete", bottom: "concrete" } }] };
+      modules[`items/${id}.item.json`] = JSON.stringify(definition, null, 2) + "\n";
+      scene.push({ id, kind: "item", entry: `items/${id}.item.json`, parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [x0, y0, -0.06]],
+        slots: { concrete: withFacade ? "asphalt" : "concrete-slab" }, slotDensities: { concrete: 64 } });
+    };
+    if (farKerb === null) slab("lane-paving", [-13.6, -0.6], [roadFrom, roadTo]);
+    else {
+      slab("lane-paving", [-13.6, wall], [roadFrom, roadTo]);
+      slab("lane-road", [wall, farKerb], [-60, 50]);
+      // The far pavement faces the building across the road: its kerb on the far kerb line, its stones running from +y
+      // to -y (the pavement runs along its +X, its kerb toward its -Y).
+      const farPavement = { format: "itemspec", version: 2, id: "far-pavement",
+        parts: [{ id: "pavement", generator: { kind: "native", name: "kowloon/pavement", parameters: { length: 100, after: 10, depth: 4, height: 0.15, drain: true, manhole: true, seed: 11 } } }] };
+      modules["items/far-pavement.item.json"] = JSON.stringify(farPavement, null, 2) + "\n";
+      scene.push({ id: "far-pavement", kind: "item", entry: "items/far-pavement.item.json", parameters: {}, transform: [[0, -1, 0], [1, 0, 0], [0, 0, 1], [farKerb + 4, 50, 0.15]],
+        slots: withFacade ? { paving: "paving", kerb: "kerb", metal: "aged-metal" } : { paving: "concrete-slab", kerb: "concrete-slab", metal: "flat-steel" },
+        slotDensities: { paving: 48, kerb: 96, metal: 96 } });
+    }
+    // Past the building's back the avenue's near side is closed by a neighbour: a two-storey slice of an adjoining
+    // building (`kowloon/party`, a stub) along the avenue's near edge, its windows toward the avenue, from just past
+    // the building's own back neighbour (1.47 m deep at the reference seed) to beyond the avenue's end. Its back shows
+    // from 2 m up; a plain wall closes it below.
+    if (withFacade && process.env.NEIGHBOUR !== "0") {
+      const length = 24, depth = 1.84353; // the stub's depth at seed 41 (its front's distance from its back).
+      // Painted and weathered as the building's own party stubs are: the building's wall layers, over runoff zones
+      // hung below the stub's tops, courses and sills (both read from the building's definition).
+      const buildingItem = JSON.parse(building.definitions["kowloon-building.item.json"]);
+      const party = buildingItem.parts.find(part => part.id === "party");
+      const zones = (party?.zones ?? []).map(({ u0, length, ...zone }) => ({ ...zone, length: typeof length === "number" ? length : 3 }));
+      const neighbour = { format: "itemspec", version: 2, id: "avenue-neighbour", parameters: { paint: { ...buildingItem.parameters.paint, default: "#b0a590" } }, ...(buildingItem.layers?.wall ? { layers: { wall: buildingItem.layers.wall } } : {}), parts: [
+        { id: "stub", ...(zones.length ? { zones } : {}), generator: { kind: "native", name: "kowloon/party", parameters: { kind: "stub", length, own: 2, top: 2, units: 0.3, bars: 0.2, cables: 1, seed: 41 } } },
+        { id: "back", generator: { kind: "box", size: [length + 0.14, 0.2, 2.1] }, slots: { side: "wall", top: "wall", bottom: "wall" }, placement: { position: [-0.07, 0.01, 0] } }] };
+      modules["items/avenue-neighbour.item.json"] = JSON.stringify(neighbour, null, 2) + "\n";
+      scene.push({ id: "neighbour", kind: "item", entry: "items/avenue-neighbour.item.json", parameters: {},
+        transform: [[-1, 0, 0], [0, -1, 0], [0, 0, 1], [wall - 7 - 1.49, avenue.origin[1] - 0.01 - depth, 0]], slots: building.slots,
+        slotDensities: { wall: 64, trim: 64 } });
+    }
+    // The median is planted with groundcover (`lane-groundcover`, a painted mass), not grass: under it the lawn recipe is
+    // the planting's dark soil and leaf litter (a deep olive-brown), so what shows between the mounds reads as shade, not
+    // a bright strip; with a deeper, less blue shade.
+    const mutedLawn = withFacade ? { band0: [0.06, 0.06, 0.04], band1: [0.09, 0.09, 0.06], band2: [0.11, 0.11, 0.07], band3: [0.13, 0.14, 0.08],
+      band4: [0.16, 0.18, 0.09], darkPatches: 0.6, meadowAmount: 0.1 } : {};
+    const mutedShade = withFacade ? { shadeTint: [0.24, 0.31, 0.4] } : {};
     materials.push(...lawnMaterials.map(material => ({ ...material, seed: 7, meshes: material.meshes.map(() => "lane/node/0/mesh/0/primitive/0"),
-      ...(material.id === "painted-lawn" ? { parameters: { ...material.parameters, ...mutedLawn } } : {}) })),
-      ...treeMaterials.map(material => ({ ...material, seed: 7 })));
+      parameters: { ...material.parameters, ...mutedShade, ...(material.id === "painted-lawn" ? mutedLawn : {}) } })),
+      // The bark a grey-brown with a near-neutral shade, not the washroom's warm brown under a blue shade (which reads
+      // mauve beside the plaster).
+      ...treeMaterials.map(material => ({ ...material, seed: 7, ...(withFacade && material.id === "painted-bark"
+        ? { parameters: { light: [0.34, 0.31, 0.26], dark: [0.17, 0.15, 0.12], shadeTint: [0.56, 0.58, 0.64] } } : {}) })));
     batchList = [...(batchList ?? []), ...lane.batches];
   }
   const project = {

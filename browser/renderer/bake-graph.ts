@@ -30,9 +30,9 @@ export interface TargetSpec {
   wrap: THREE.Wrapping;
   anisotropy?: number;
   /**
-   * For a mipped RGBA byte texture whose alpha a cutout tests at this cutoff: its mips keep the share of texels at or
-   * above the cutoff that the full level has (`GraphDevice.mips`), so thin strokes do not break up with distance. A
-   * node's key names its program's layout, which holds the cutoff.
+   * For a mipped RGBA byte texture whose alpha a cutout tests at this cutoff: its mips keep every stroke that passes
+   * the cutoff (`GraphDevice.mips`), so thin strokes do not break up with distance. A node's key names its program's
+   * layout, which holds the cutoff.
    */
   coverage?: number;
   /** For inspection only; not part of any key. */

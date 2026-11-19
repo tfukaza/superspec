@@ -86,7 +86,7 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
   // The whole plant as one blob: an ellipsoid a little wider than the core's bounds.
   const radii = geometry.boundingBox!.getSize(new THREE.Vector3()).multiplyScalar(0.55);
   const parts = [surface, fuzz, cards];
-  const palette = mass.palette ?? { hue: 0, saturation: 1, value: 1, shade: 1, shadeHue: 0 };
+  const palette = mass.palette ?? { hue: 0, saturation: 1, value: 1, shade: 1, shadeHue: 0, contrast: 1, depth: 1 };
   const grade = { value: new THREE.Vector4(palette.hue * Math.PI / 180, palette.saturation, palette.value, palette.shadeHue * Math.PI / 180) };
   const shade = { value: palette.shade };
   for (const part of parts) {
@@ -110,7 +110,9 @@ export function paintedMass(mass: FoliageMass, placement: THREE.Matrix4): THREE.
     if (uniforms.highlight) uniforms.highlight.value = s.highlight;
     Object.assign(uniforms, {
       msMacroCentre: { value: centre.clone() }, msMacroRadii: { value: radii.clone() }, msMacroWeight: { value: s.macro },
-      msContrast: { value: s.contrast }, msOcclusion: { value: s.occlusion }, msMacroShade: { value: s.macroShade },
+      // The palette's contrast and depth scale the milestone's light stretch, inner darkening and shade-side shift.
+      msContrast: { value: s.contrast * (palette.contrast ?? 1) }, msOcclusion: { value: s.occlusion * (palette.depth ?? 1) },
+      msMacroShade: { value: s.macroShade * (palette.depth ?? 1) },
     });
     // Built where they stand: no picking, and never culled by stale bounds.
     part.raycast = () => {};

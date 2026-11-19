@@ -70,8 +70,20 @@
       "slots": {"body": "galvanized", "end": "galvanized"}
     }
   ],
+  "features": [
+    {"name": "fixture", "part": "riser", "reach": "item", "within": 1, "points": [[0, 0, "base - 0.36"], [0, 0, "top + 0.35"]]},
+    {"name": "fixing", "part": "riser", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((top - base - 1.6) / storyHeight) + 1)"}, "points": [[-0.06, 0, "base + 0.8 + k * storyHeight"], [0.06, 0, "base + 0.8 + k * storyHeight"]]},
+    {"name": "rust", "part": "riser", "reach": "item", "within": 1, "repeat": {"name": "k", "count": "max(1, floor((top - base - 1.6) / storyHeight) + 1)"}, "points": [[-0.03, 0, "base + 0.8 + k * storyHeight - 0.02"], [0.03, 0, "base + 0.8 + k * storyHeight - 0.02"]], "zone": {"length": 0.55}},
+    {"name": "fixing", "part": "riser", "reach": "item", "within": 1, "repeat": {"name": "j", "count": {"parameter": "floors"}}, "when": "branches", "points": [["width * 0.2 - 0.14", 0, "firstFloor + j * storyHeight + storyHeight - 0.45"], ["width * 0.2 + 0.14", 0, "firstFloor + j * storyHeight + storyHeight - 0.45"]]},
+    {"name": "rust", "part": "riser", "reach": "item", "within": 1, "repeat": {"name": "j", "count": {"parameter": "floors"}}, "when": "branches", "points": [["width * 0.2 - 0.1", 0, "firstFloor + j * storyHeight + storyHeight - 0.45 - depth * 0.3"], ["width * 0.2 + 0.1", 0, "firstFloor + j * storyHeight + storyHeight - 0.45 - depth * 0.3"]], "zone": {"length": 0.7}}
+  ],
   "slots": {},
   "attachments": [
     {"name": "foot", "position": [0, "-standoff", "base - 0.36"], "direction": [0, 0, -1]}
-  ]
+  ],
+  "layers": {
+    "galvanized": [
+      {"entry": "kowloon-underside-grime.material.ts", "parameters": {"facing": 0.3}, "seed": 41, "follow": {"fixture": "fixture"}}
+    ]
+  }
 }

@@ -231,7 +231,10 @@ impl Default for FoliageMass {
 /// turns it about the grey axis (degrees, -180 to 180), `saturation` scales its distance from
 /// its grey (0 to 2), `value` scales it (0 to 2). `shade` (0 to 2) scales the darker colours
 /// alone, fading out toward the light ones, and `shadeHue` (degrees) turns them alone, so the
-/// shade side can go deeper and toward another hue than the light.
+/// shade side can go deeper and toward another hue than the light. Before the grade, `contrast`
+/// (0 to 3) scales how far the light is stretched across the painted bands, and `depth` (0 to 3)
+/// how much the plant's shade side and its inside darken, both as multiples of the renderer's own
+/// (the milestone's).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct FoliagePalette {
@@ -240,6 +243,8 @@ pub struct FoliagePalette {
     pub value: f64,
     pub shade: f64,
     pub shade_hue: f64,
+    pub contrast: f64,
+    pub depth: f64,
 }
 impl Default for FoliagePalette {
     fn default() -> Self {
@@ -249,6 +254,8 @@ impl Default for FoliagePalette {
             value: 1.,
             shade: 1.,
             shade_hue: 0.,
+            contrast: 1.,
+            depth: 1.,
         }
     }
 }
@@ -522,6 +529,8 @@ impl Foliage {
             within(mass.palette.value, 0., 2., "mass palette value")?;
             within(mass.palette.shade, 0., 2., "mass palette shade")?;
             within(mass.palette.shade_hue, -180., 180., "mass palette shadeHue")?;
+            within(mass.palette.contrast, 0., 3., "mass palette contrast")?;
+            within(mass.palette.depth, 0., 3., "mass palette depth")?;
             if mass.sites.is_empty() || mass.sites.len() > MAX_MASS_SITES {
                 return Err(format!(
                     "A painted mass needs 1 to {MAX_MASS_SITES} leaf cluster sites."

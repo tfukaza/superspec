@@ -45,7 +45,7 @@ generator documents its anchor and parameters; `tests/kowloon_items.rs` checks e
 | Ground floor | `entrance`, `ground-bay` (shutter, gate, door, shop, service) |
 | Roof | `water-tank`, `stair-hut`, `aerial`, `rooftop-shack`, `rooftop` (a whole roof's equipment) |
 | Signs | `sign`, `blade-sign`, `hung-sign` |
-| Street and facade details | `shop-room`, `street-stock`, `pavement`, `pedestrian-avenue`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
+| Street and facade details | `shop-room`, `street-stock`, `pavement`, `pedestrian-avenue`, `street-lamp`, `cornice`, `conduit`, `balcony-door`, `rail`, `ladder` |
 | Shop interiors | `grocer-prop`, `shelving`, `counter`, `crate`, `bottle-crate`, `counter-scale`, `price-card`, `pendant-lamp`, `ceiling-fan`, `tube-light`, `wall-clock`, `calendar`, `hanging-scale`, `stool` |
 
 Not ported, because they need whole-facade or room planning state rather than parameters:
@@ -359,9 +359,13 @@ The building's look is recipes and layers that any item can use; none is tied to
   was measured on world x + y, which is constant across a sign turned 45 degrees; the sign, poster, air conditioner,
   ink and dirt recipes read `surface` instead.
 - **Cutouts at a distance; layered opacity.** Box-filtered mips averaged a thin stroke's alpha below the cutoff, so
-  lettering broke up with distance. A cutout's GPU-baked base colour map now keeps its coverage down the mip chain
-  (`TargetSpec.coverage`, `GpuBaker.preserveCoverage`: each level's alpha is scaled so the share of texels at or above
-  the cutoff is the full level's). A layered slot keeps its stack's opacity (the base's, or a layer's that gives one) in
+  lettering broke up with distance (scaling each level's alpha to keep the full level's share above the cutoff did not
+  help: the thick strokes kept the share while the thin ones vanished). A cutout's GPU-baked base colour map now makes
+  its own mips (`TargetSpec.coverage`, `GpuBaker.preserveCoverage`): a texel any of whose children passes the cutoff
+  passes too (three quarters of the way from the cutoff to its most opaque child, `KEEP_STROKE`), so strokes stay, at
+  most a texel of that level bolder, and colours are alpha-weighted so nothing transparent bleeds in. (The child's own
+  alpha made dense characters run together; raising the alpha by mip level in the shader filled the board's worn
+  ground in.) A layered slot keeps its stack's opacity (the base's, or a layer's that gives one) in
   its composed base colour map's alpha and is drawn as the base says, a cutout or blended (MaterialSpec program README,
   layered slots), so glass and lettering can take weathering layers.
 - **Repairs.** `kowloon-repairs` draws hard-edged repair panels and crisp peel patches only inside frames the owner
@@ -391,7 +395,12 @@ beside it. The washroom lawn's painted grass fills the median, and birches stand
 it, 7 m apart, with a shrub between each two. `tests/studio/washroom-items/avenue.json` is the
 one source of the avenue's line, median and stations, read by both `build.mjs` and
 `write_lane_plants`. The avenue's top is 4.5 cm below the building's pavement, which stands over
-it with its kerb stones as an edging. `tests/item-facade-browser.mjs` (`MODEL=building`,
+it with its kerb stones as an edging. Litter bins stand past the benches' ends, and two rows of
+`kowloon/street-lamp` posts (swan-neck arms reaching toward the median, banners on the row by
+the building; `lamps` in `avenue.json`) line its outer edges. Without the washroom the front
+street is a whole street: a 7.3 m carriageway running out of the pictures both ways, a far kerb
+and a 4 m `kowloon/pavement` across it. Past the building's back a two-storey `kowloon/party`
+stub closes the avenue's near side as a neighbour's frontage. `tests/item-facade-browser.mjs` (`MODEL=building`,
 `BUILDING_PARAMETERS`, `RESOLUTION`, default 1024, and `TEXELS`, default 256 per meter) pictures
 it in the built studio. The earlier low concrete detail came from baking at 256 pixels per
 receiver, about 21 per meter on a 12 m wall.

@@ -18,17 +18,18 @@ await mkdir(out, { recursive: true });
 // MODEL=building pictures the whole building generated from its footprint (the reference shop house by default;
 // BUILDING_PARAMETERS overrides its controls) instead of the one side.
 const choice = process.env.MODEL ?? "side";
-// LANE=1 adds the paved lane with its grass patch and trees (write it first:
+// LANE=1 adds the road and the pedestrian avenue with its median's grass, trees and shrubs (write them first:
 //   cargo test --release -p superspec-engine --test treespec_batches -- --ignored write_lane_plants).
 const lane = process.env.LANE === "1" ? JSON.parse(await readFile(resolve("generated/verification/treespec/lane-plants.json"), "utf8")) : null;
 // RESOLUTION (default 2048) bounds every receiver's atlas: at 1024 a storey wall of 10 m or more cannot reach TEXELS
 // (160 a metre) and is baked at about 100, which shows its streaks in bands at close range; 2048 costs about 0.6 GiB more
 // of baked maps on screen.
-const { project } = buildProject(Number(process.env.RESOLUTION ?? 2048), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1", grass: process.env.ROOM === "1" });
+const { project } = buildProject(Number(process.env.RESOLUTION ?? 2048), Number(process.env.TEXELS ?? 160), { facade: choice === "side" ? true : choice, lane, room: process.env.ROOM === "1" });
 const facade = project.models.find(model => model.id === (choice === "side" ? "facade" : "building"));
 // The whole building is GPU-baked within BAKE_MEMORY MiB (default 4096; with its weathering layers it takes about 2.2 GiB at 1024 px and 160 texels a meter): beyond the allowance a mesh stays on the
 // per-pixel look, which shows a layered slot's base alone (no paint or grime).
-// Only the building (and the lane's paving and trees) is drawn; ROOM=1 brings back the washroom items and the grass patch.
+// Only the building, the road and the avenue (with its median's grass and plants) are drawn; ROOM=1 brings back the
+// washroom items.
 // BUILDING_PARAMETERS is JSON, or a .json file of it (tests/studio/washroom-items/reference-shop-house.json is the
 // reference picture's plan); keys starting with "/" are comments.
 const overrides = process.env.BUILDING_PARAMETERS?.endsWith(".json") ? await readFile(resolve(process.env.BUILDING_PARAMETERS), "utf8") : process.env.BUILDING_PARAMETERS;

@@ -2950,6 +2950,7 @@ impl Natives {
             ("kowloon/pavement", street::pavement),
             ("kowloon/pavement-corner", street::pavement_corner),
             ("kowloon/pedestrian-avenue", street::pedestrian_avenue),
+            ("kowloon/street-lamp", street::street_lamp),
             ("kowloon/cornice", street::cornice),
             ("kowloon/fan-divider", street::fan_divider),
             ("kowloon/tile-deck", street::tile_deck),

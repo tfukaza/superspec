@@ -682,6 +682,7 @@ export class SceneBaker {
     material.roughnessMap = material.metalnessMap = standIn.data;
     if (program.attachments.includes("emissive")) { material.emissiveMap = standIn.data; material.emissive.set(0xffffff); }
     // A cutout program's opacity is in its base color map's alpha: the look is drawn where it reaches the cutoff.
+    // (Its map's mips keep thin strokes: `GpuBaker.preserveCoverage`.)
     if (program.cutout !== undefined) { material.alphaTest = program.cutout; material.alphaToCoverage = true; }
     // A program with an opacity of its own (glass) is drawn blended over what stands behind it, after the opaque meshes.
     if (program.blend) { material.transparent = true; material.depthWrite = false; }

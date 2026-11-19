@@ -49,6 +49,12 @@ export const NODE_FLOOR_BYTES = 16 * 1024;
  * rounded to 1/255, which shows (see docs/plans/item-building-performance.md), so it is not the default.
  */
 const LIVE_BYTES = typeof location !== "undefined" && new URLSearchParams(location.search).get("livebits") === "8";
+/**
+ * Where a cutout's mip texel lies between the cutoff and its most opaque child when any child passes it
+ * (`GpuBaker.preserveCoverage`): 1 keeps the child's alpha (dense characters ran together at a distance), 0.5 still
+ * broke the thinnest strokes up.
+ */
+const KEEP_STROKE = 0.75;
 /** Attachments of an atlas bake that only its normals pass reads. */
 const INTERMEDIATE_ATTACHMENTS: ReadonlySet<string> = new Set(["height", "offset"]);
 /** Bumped when the bake's output for the same inputs changes; part of every cache key. */
@@ -662,46 +668,47 @@ export class GpuBaker {
   private coverageFramebuffer?: WebGLFramebuffer;
 
   /**
-   * Alpha-test coverage kept down a cutout's mip chain: box-filtered mips average a thin stroke's alpha below the cutoff,
-   * so lettering breaks up with distance. Each level's alpha is scaled so that the share of its texels at or above the
-   * cutoff is the full level's (the alpha of that rank among the level's texels is moved to the cutoff), its colors left
-   * as they are. Read back and written per level; only cutout maps pay for it.
+   * A cutout's mip chain that keeps its strokes: box-filtered mips average a stroke thinner than a texel of the level
+   * below the cutoff, so lettering broke up with distance (its share of texels above the cutoff stayed the same, the
+   * thick strokes keeping it while the thin ones vanished). Each level is made here from the one above it: where any of
+   * a texel's four children passes the cutoff, its alpha is at least `KEEP_STROKE` of the way from the cutoff to the
+   * most opaque child, so the stroke stays (at most a texel of that level bolder), else their mean; its color is the children's mean
+   * weighted by their alpha, so no transparent texel's color bleeds into a stroke. Only cutout maps pay for it.
    */
   private preserveCoverage(handle: WebGLTexture, width: number, height: number, cutoff: number): void {
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     const framebuffer = this.coverageFramebuffer ??= gl.createFramebuffer()!;
     this.renderer.state.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    const read = (level: number, w: number, h: number): Uint8Array => {
-      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, handle, level);
-      const texels = new Uint8Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, texels);
-      return texels;
-    };
     try {
-      const threshold = Math.max(1, Math.round(cutoff * 255));
-      const full = read(0, width, height);
-      let covered = 0;
-      for (let i = 3; i < full.length; i += 4) if (full[i] >= threshold) covered++;
-      const share = covered / (width * height);
-      if (share <= 0 || share >= 1) return;
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, handle, 0);
+      let above = new Uint8Array(width * height * 4);
+      gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, above);
+      const threshold = cutoff * 255;
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-      for (let level = 1; (width >> (level - 1)) > 1 || (height >> (level - 1)) > 1; level++) {
-        const w = Math.max(1, width >> level), h = Math.max(1, height >> level);
-        const texels = read(level, w, h);
-        const histogram = new Uint32Array(256);
-        for (let i = 3; i < texels.length; i += 4) histogram[texels[i]]++;
-        // The alpha at the full level's share of texels, counted from the most opaque.
-        const wanted = share * w * h;
-        let rank = 255, counted = histogram[255];
-        while (rank > 1 && counted < wanted) counted += histogram[--rank];
-        const scale = threshold / rank;
-        if (Math.abs(scale - 1) < 1e-3) continue;
-        for (let i = 3; i < texels.length; i += 4) texels[i] = Math.min(255, Math.round(texels[i] * scale));
-        this.renderer.state.bindTexture(gl.TEXTURE_2D, handle);
+      this.renderer.state.bindTexture(gl.TEXTURE_2D, handle);
+      let [aw, ah] = [width, height];
+      for (let level = 1; aw > 1 || ah > 1; level++) {
+        const w = Math.max(1, aw >> 1), h = Math.max(1, ah >> 1);
+        const texels = new Uint8Array(w * h * 4);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+          let alphaSum = 0, most = 0, count = 0;
+          const color = [0, 0, 0], plain = [0, 0, 0];
+          for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const cx = Math.min(aw - 1, 2 * x + dx), cy = Math.min(ah - 1, 2 * y + dy), at = (cy * aw + cx) * 4, alpha = above[at + 3];
+            for (let c = 0; c < 3; c++) { color[c] += above[at + c] * alpha; plain[c] += above[at + c]; }
+            alphaSum += alpha; most = Math.max(most, alpha); count++;
+          }
+          const mean = alphaSum / count;
+          const alpha = most >= threshold ? Math.max(mean, threshold + (most - threshold) * KEEP_STROKE) : mean;
+          const at = (y * w + x) * 4;
+          for (let c = 0; c < 3; c++) texels[at + c] = Math.round(alphaSum > 0 ? color[c] / alphaSum : plain[c] / count);
+          texels[at + 3] = Math.round(alpha);
+        }
         gl.texSubImage2D(gl.TEXTURE_2D, level, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, texels);
+        above = texels; aw = w; ah = h;
       }
     } finally {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
@@ -1097,7 +1104,7 @@ export class GpuBaker {
    */
   readonly graph = new BakeGraph({
     generation: () => this.generation,
-    mips: textures => this.mips(textures),
+    mips: (textures, specs) => this.mips(textures, specs),
     settle: target => this.settle(target),
     yield: issued => this.afterBand(issued),
     batch: draws => {

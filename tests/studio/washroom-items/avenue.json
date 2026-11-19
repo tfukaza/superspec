@@ -12,5 +12,7 @@
   "median": { "offset": 7, "width": 2.4, "start": 2.5, "end": 28.5, "kerb": 0.2, "rise": 0.3, "soil": 0.14 },
   "/trees": "Stations along the median's middle: `count` of them, from `first`, `spacing` apart. Shrubs stand between the trees, and a pair of benches beside the planter at each shrub.",
   "trees": { "first": 4.5, "spacing": 7, "count": 4 },
-  "shrubs": { "first": 8, "spacing": 7, "count": 3 }
+  "shrubs": { "first": 8, "spacing": 7, "count": 3 },
+  "/lamps": "kowloon/street-lamp posts in two rows, `offsets` across (one row a little in from either outer edge), at `count` stations from `first`, `spacing` apart; each arm reaches `reach` toward the avenue's middle. build.mjs places them; the tree batches do not read them.",
+  "lamps": { "first": 1.5, "spacing": 7, "count": 5, "offsets": [3.2, 12.8], "height": 6, "reach": 1.3 }
 }

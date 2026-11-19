@@ -191,6 +191,7 @@ function fixedNoise(size = 64): THREE.DataTexture {
 export class AmbientOcclusion {
   private readonly composer: EffectComposer;
   private readonly pass: GTAOPass;
+  private readonly contact: GTAOPass;
   /** Whether materials that are not tone mapped are kept so (see `untoned`); off only to compare pictures with it. */
   static invertUntoned = true;
 
@@ -212,56 +213,14 @@ export class AmbientOcclusion {
     this.composer = new EffectComposer(renderer, target);
     this.composer.addPass(new RenderPass(scene, camera));
     this.pass = new GTAOPass(scene, camera, size.x, size.y);
-    // Both faces of a thin part write depth and a normal, as the scene's materials draw them.
-    // The denoise turns its sample pattern by a noise texture the pass draws from Math.random() when it is made, so
-    // two runs of one scene differed in a fifth or more of their pixels. A fixed texture makes pictures comparable.
-    const denoise = this.pass as unknown as { pdNoiseTexture: THREE.Texture; pdMaterial: THREE.ShaderMaterial };
-    denoise.pdNoiseTexture.dispose();
-    denoise.pdNoiseTexture = fixedNoise();
-    denoise.pdMaterial.uniforms.tNoise.value = denoise.pdNoiseTexture;
-    this.pass.normalMaterial.side = THREE.DoubleSide;
-    faceNormals(this.pass.normalMaterial);
-    const internals = this.pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget; blendMaterial: THREE.ShaderMaterial };
-    const hide = internals._overrideVisibility.bind(this.pass), restore = internals._restoreVisibility.bind(this.pass);
-    let hidden: THREE.Object3D[] = [], leaves: THREE.Object3D[] = [];
-    // Foliage is drawn by shaders of its own (leaf cards stood up and bent in their vertex shaders), which the pass's one
-    // override material does not run: drawn with it, a canopy's cards lie where their raw vertices are and darken the
-    // building through the tree. So foliage is left out of the depth and normals (it casts no occlusion), and drawn
-    // instead, with its own materials, into a mask against that depth: where a leaf is in front, the image is not
-    // darkened (it receives none either).
-    internals._overrideVisibility = () => {
-      hide();
-      hidden = excluded().filter(object => object.visible);
-      leaves = [];
-      scene.traverse(object => { if (object.visible && (object as THREE.Mesh).isMesh && object.userData.foliage) leaves.push(object); });
-      for (const object of [...hidden, ...leaves]) object.visible = false;
-    };
-    internals._restoreVisibility = () => {
-      for (const object of hidden) object.visible = true;
-      for (const object of leaves) object.visible = true;
-      this.drawFoliageMask(leaves, camera, internals.normalRenderTarget);
-      hidden = []; leaves = [];
-      restore();
-    };
-    // The blend leaves the image as it is where the mask holds a leaf.
-    const blend = internals.blendMaterial;
-    blend.uniforms.tFoliage = { value: this.foliageMask.texture };
-    blend.uniforms.hasFoliage = { value: 0 };
-    blend.fragmentShader = `
-uniform float intensity;
-uniform sampler2D tDiffuse;
-uniform sampler2D tFoliage;
-uniform float hasFoliage;
-varying vec2 vUv;
-void main() {
-  vec4 texel = texture2D( tDiffuse, vUv );
-  float leaf = hasFoliage * texture2D( tFoliage, vUv ).a;
-  gl_FragColor = vec4( mix( mix( vec3( 1. ), texel.rgb, intensity ), vec3( 1. ), leaf ), texel.a );
-}`;
-    blend.needsUpdate = true;
-    const resize = this.pass.setSize.bind(this.pass);
-    this.pass.setSize = (width: number, height: number) => { resize(width, height); this.foliageMask.setSize(width, height); };
-    this.composer.addPass(this.pass);
+    this.foliageMask = this.prepare(this.pass, camera, excluded);
+    // A second, short-range pass for contact: where a duct, a pipe or a sill meets a wall the broad pass (its radius
+    // tuned for the large forms) spreads its few samples too widely to darken the narrow strip between them. Its radius
+    // and thickness are a fraction of the record's, so it only darkens creases and contact lines a few centimetres wide
+    // and leaves no halo round a small prop.
+    this.contact = new GTAOPass(scene, camera, size.x, size.y);
+    this.contactMask = this.prepare(this.contact, camera, excluded);    this.composer.addPass(this.pass);
+    this.composer.addPass(this.contact);
     this.output = new ShaderPass(OUTPUT);
     this.composer.addPass(this.output);
     this.set(parameters);
@@ -296,19 +255,78 @@ void main() {
     }
   }
 
-  /** Where foliage is the nearest surface, in its alpha (see the constructor). */
-  private readonly foliageMask = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false });
+  /** Where foliage is the nearest surface, in its alpha, for each pass (see `prepare`). */
+  private readonly foliageMask: THREE.WebGLRenderTarget;
+  private readonly contactMask: THREE.WebGLRenderTarget;
 
   /**
-   * Draws `leaves` with their own materials into the foliage mask, depth-tested (not written) against the depth the
-   * occlusion pass drew without them, so only leaves in front of what the occlusion sees mark it. The shadow maps are
-   * not redrawn for this draw (it shows only the leaves); nothing else of the renderer's state is changed.
+   * Sets an occlusion pass up for this view, and returns its foliage mask:
+   * - The denoise turns its sample pattern by a noise texture the pass draws from Math.random() when it is made, so two
+   *   runs of one scene differed in a fifth or more of their pixels. A fixed texture makes pictures comparable.
+   * - Both faces of a thin part write depth and a normal, as the scene's materials draw them, and the normals are the
+   *   faces the camera sees (`faceNormals`).
+   * - Foliage is drawn by shaders of its own (leaf cards stood up and bent in their vertex shaders), which the pass's one
+   *   override material does not run: drawn with it, a canopy's cards lie where their raw vertices are and darken the
+   *   building through the tree. So foliage is left out of the depth and normals (it casts no occlusion), and drawn
+   *   instead, with its own materials, into a mask against that depth: where a leaf is in front, the image is not
+   *   darkened (it receives none either).
    */
-  private drawFoliageMask(leaves: THREE.Object3D[], camera: THREE.Camera, depth: THREE.WebGLRenderTarget): void {
-    const blend = (this.pass as unknown as { blendMaterial: THREE.ShaderMaterial }).blendMaterial;
+  private prepare(pass: GTAOPass, camera: THREE.Camera, excluded: () => THREE.Object3D[]): THREE.WebGLRenderTarget {
+    const mask = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false });
+    const denoise = pass as unknown as { pdNoiseTexture: THREE.Texture; pdMaterial: THREE.ShaderMaterial };
+    denoise.pdNoiseTexture.dispose();
+    denoise.pdNoiseTexture = fixedNoise();
+    denoise.pdMaterial.uniforms.tNoise.value = denoise.pdNoiseTexture;
+    pass.normalMaterial.side = THREE.DoubleSide;
+    faceNormals(pass.normalMaterial);
+    const internals = pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget; blendMaterial: THREE.ShaderMaterial };
+    const hide = internals._overrideVisibility.bind(pass), restore = internals._restoreVisibility.bind(pass);
+    let hidden: THREE.Object3D[] = [], leaves: THREE.Object3D[] = [];
+    const scene = this.scene;
+    internals._overrideVisibility = () => {
+      hide();
+      hidden = excluded().filter(object => object.visible);
+      leaves = [];
+      scene.traverse(object => { if (object.visible && (object as THREE.Mesh).isMesh && object.userData.foliage) leaves.push(object); });
+      for (const object of [...hidden, ...leaves]) object.visible = false;
+    };
+    internals._restoreVisibility = () => {
+      for (const object of hidden) object.visible = true;
+      for (const object of leaves) object.visible = true;
+      this.drawFoliageMask(pass, mask, leaves, camera, internals.normalRenderTarget);
+      hidden = []; leaves = [];
+      restore();
+    };
+    // The blend leaves the image as it is where the mask holds a leaf.
+    const blend = internals.blendMaterial;
+    blend.uniforms.tFoliage = { value: mask.texture };
+    blend.uniforms.hasFoliage = { value: 0 };
+    blend.fragmentShader = `
+uniform float intensity;
+uniform sampler2D tDiffuse;
+uniform sampler2D tFoliage;
+uniform float hasFoliage;
+varying vec2 vUv;
+void main() {
+  vec4 texel = texture2D( tDiffuse, vUv );
+  float leaf = hasFoliage * texture2D( tFoliage, vUv ).a;
+  gl_FragColor = vec4( mix( mix( vec3( 1. ), texel.rgb, intensity ), vec3( 1. ), leaf ), texel.a );
+}`;
+    blend.needsUpdate = true;
+    const resize = pass.setSize.bind(pass);
+    pass.setSize = (width: number, height: number) => { resize(width, height); mask.setSize(width, height); };
+    return mask;
+  }
+
+  /**
+   * Draws `leaves` with their own materials into a pass's foliage mask, depth-tested (not written) against the depth the
+   * pass drew without them, so only leaves in front of what the occlusion sees mark it. The shadow maps are not redrawn
+   * for this draw (it shows only the leaves); nothing else of the renderer's state is changed.
+   */
+  private drawFoliageMask(pass: GTAOPass, mask: THREE.WebGLRenderTarget, leaves: THREE.Object3D[], camera: THREE.Camera, depth: THREE.WebGLRenderTarget): void {
+    const blend = (pass as unknown as { blendMaterial: THREE.ShaderMaterial }).blendMaterial;
     blend.uniforms.hasFoliage.value = leaves.length ? 1 : 0;
     if (!leaves.length || !depth.depthTexture) return;
-    const mask = this.foliageMask;
     if (mask.depthTexture !== depth.depthTexture) {
       mask.dispose();
       mask.depthBuffer = true;
@@ -360,6 +378,11 @@ void main() {
     // Up to 1 the intensity is how much of the occlusion is blended in; above it, the occlusion itself is deepened
     // (raised to that power), which darkens creases and leaves open surfaces, where it is 1, as they are.
     this.pass.blendIntensity = Math.min(1, parameters.intensity);
+    // The contact term: a fifth of the radius (at most 15 cm) and of the thickness, blended a little lighter.
+    this.contact.updateGtaoMaterial({ radius: Math.min(0.15, parameters.radius * 0.2), thickness: Math.min(0.08, parameters.thickness * 0.25),
+      distanceExponent: 1, distanceFallOff: 0, scale: Math.max(1, parameters.intensity), samples: 16, screenSpaceRadius: false });
+    this.contact.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 4, radiusExponent: 2, rings: 2, samples: 16 });
+    this.contact.blendIntensity = Math.min(1, parameters.intensity) * 0.75;
   }
 
   setSize(width: number, height: number, pixelRatio: number): void {
@@ -376,7 +399,9 @@ void main() {
 
   dispose(): void {
     this.pass.dispose();
+    this.contact.dispose();
     this.foliageMask.dispose();
+    this.contactMask.dispose();
     this.composer.dispose();
   }
 }
