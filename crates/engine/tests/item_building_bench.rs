@@ -95,6 +95,27 @@ fn bench_building_project() {
             .project_layouts(project, revision, &asset, &|| false)
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         let layout = started.elapsed().as_secs_f64() * 1e3;
+        // A host that wants both prepares the project once: the same description, layouts and scene.
+        let started = Instant::now();
+        let prepared = session
+            .prepare_project(project, revision, &asset, &|| false)
+            .unwrap_or_else(|errors| panic!("{errors:?}"));
+        let together = session.shade_prepared(&prepared, &|| false).unwrap();
+        let laid = session.layouts_prepared(&prepared, &|| false).unwrap();
+        let once = started.elapsed().as_secs_f64() * 1e3;
+        assert!(
+            together == shaded.metadata,
+            "{label}: a prepared project is described otherwise"
+        );
+        assert!(
+            laid.records == layouts.records,
+            "{label}: a prepared project is laid out otherwise"
+        );
+        assert!(
+            prepared.scene.packet() == shaded.scene(revision as u32).unwrap().packet(),
+            "{label}: a prepared project's scene is another"
+        );
+        println!("{label}: prepared once, described and laid out in {once:.0} ms");
         let texels: usize = layouts.receivers.iter().map(|r| r.width * r.height).sum();
         let records: Vec<u8> = layouts
             .records

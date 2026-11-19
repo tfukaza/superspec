@@ -993,18 +993,36 @@ impl Session {
                 "Only version 2 material projects have a shader preview.".into(),
             ));
         }
-        self.begin_authoring(revision, &project.entry)?;
-        // Item models bind their slots' meshes to materials and name their features.
-        let resolved = self.resolve_items(project, assets, cancelled)?;
-        let items = resolved.as_ref().map(|resolved| &resolved.metadata);
-        let project = resolved
-            .as_ref()
-            .map_or(project, |resolved| &resolved.project);
+        let prepared = self.prepare_project(project, revision, assets, cancelled)?;
+        let metadata = self.shade_prepared(&prepared, cancelled)?;
+        Ok(ProjectOutput {
+            model: prepared.model,
+            metadata,
+        })
+    }
+
+    /// [`Session::shade_project`]'s description of a prepared project
+    /// ([`Session::prepare_project`]); the composed models are the prepared project's.
+    pub fn shade_prepared(
+        &mut self,
+        prepared: &super::PreparedProject,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, Vec<Diagnostic>> {
+        let super::PreparedProject {
+            project,
+            items,
+            scene,
+            transforms,
+            touching,
+            ..
+        } = prepared;
+        let items = items.as_ref();
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
-        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
-        let scene = model
-            .scene_cancellable(revision as u32, cancelled)
-            .map_err(&fail)?;
+        if project.schema_version != 2 || project.kind != "material" {
+            return Err(fail(
+                "Only version 2 material projects have a shader preview.".into(),
+            ));
+        }
         let visible: BTreeSet<&str> = scene
             .manifest
             .meshes
@@ -1014,8 +1032,6 @@ impl Session {
             .collect();
         let mut materials = serde_json::Map::new();
         let mut meshes = serde_json::Map::new();
-        // Made for the first receiver whose material queries its features.
-        let touching = std::cell::OnceCell::new();
         for assignment in &project.materials {
             let source = project.modules.get(&assignment.entry).ok_or_else(|| {
                 fail(format!(
@@ -1107,7 +1123,7 @@ impl Session {
                     assignment.id
                 )));
             }
-            for mut receiver in receivers(&scene, &ids, &transforms) {
+            for mut receiver in receivers(scene, &ids, transforms) {
                 if cancelled() {
                     return Err(fail("Project authoring cancelled.".into()));
                 }
@@ -1121,8 +1137,8 @@ impl Session {
                 }
                 if wants_features || layer_queries.iter().any(|(derived, _, _)| *derived) {
                     receiver.contacts = touching
-                        .get_or_init(|| ContactScene::new(&scene))
-                        .contacts(&scene, &receiver);
+                        .get_or_init(|| ContactScene::new(scene))
+                        .contacts(scene, &receiver);
                 }
                 let named = project.features.get(&receiver.id).map(Vec::as_slice);
                 let features = if wants_features {
@@ -1168,7 +1184,7 @@ impl Session {
             metadata["items"] = serde_json::Value::Object(items.clone());
             metadata["bindings"] = bindings(project);
         }
-        Ok(ProjectOutput { model, metadata })
+        Ok(metadata)
     }
 }
 
