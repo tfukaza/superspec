@@ -359,14 +359,34 @@ pub(super) fn resolve(
         "Bend segments",
     )?;
     let bend_radius = context.scalar(&definition.bend_radius, &format!("{pointer}/bendRadius"))?;
-    if !(2..=128).contains(&definition.points.len()) {
+    use super::schema::{RoutePoints, Scalar};
+    let supplied;
+    let vertices = match &definition.points {
+        RoutePoints::Inline(points) => points,
+        RoutePoints::Parameter(reference) => {
+            let coordinates = context
+                .parameters
+                .get(&reference.parameter)
+                .ok_or_else(|| route_error("/points", "Unknown route point parameter.".into()))?;
+            let coordinates: Vec<V3> =
+                serde_json::from_value(coordinates.clone()).map_err(|_| {
+                    route_error("/points", "Expected a list of XYZ route points.".into())
+                })?;
+            supplied = coordinates
+                .into_iter()
+                .map(|p| p.map(Scalar::Number))
+                .collect();
+            &supplied
+        }
+    };
+    if !(2..=128).contains(&vertices.len()) {
         return Err(route_error(
             "/points",
             "A route has from 2 to 128 points.".into(),
         ));
     }
-    let mut points = Vec::with_capacity(definition.points.len());
-    for (index, point) in definition.points.iter().enumerate() {
+    let mut points = Vec::with_capacity(vertices.len());
+    for (index, point) in vertices.iter().enumerate() {
         let mut resolved = origin;
         for axis in 0..3 {
             resolved[axis] +=
@@ -446,6 +466,29 @@ pub(super) fn resolve(
         points: vec![0.; points.len()],
         ..Path::default()
     };
+    let supports: Vec<V3> = match &definition.supports {
+        None => vec![],
+        Some(reference) => serde_json::from_value(
+            context
+                .parameters
+                .get(&reference.parameter)
+                .cloned()
+                .unwrap_or_default(),
+        )
+        .map_err(|_| {
+            route_error(
+                "/supports",
+                "Expected XYZ offsets to mounting faces.".into(),
+            )
+        })?,
+    };
+    if !supports.is_empty() && supports.len() != runs.len() {
+        return Err(route_error(
+            "/supports",
+            "Supply one mounting offset for each segment.".into(),
+        ));
+    }
+    let mut mounts = Vec::new();
     for (index, &(direction, span)) in runs.iter().enumerate() {
         let used = corners[index].map_or(0., |c| c.0) + corners[index + 1].map_or(0., |c| c.0);
         let straight = span - used;
@@ -459,6 +502,45 @@ pub(super) fn resolve(
             ));
         }
         if straight > 1e-9 {
+            if let Some(offset) = supports.get(index).filter(|offset| **offset != [0.; 3]) {
+                let reach = length(*offset);
+                if !(0.001..=10.).contains(&reach) || dot(direction, *offset).abs() > 1e-5 {
+                    return Err(route_error(
+                        "/supports",
+                        "Mounting offsets must be perpendicular to the segment and at most 10 m."
+                            .into(),
+                    ));
+                }
+                let normal = scale(*offset, 1. / reach);
+                let skin = section.support([dot(normal, station.a), dot(normal, station.b)]);
+                if reach < skin + 2. * DEFAULT_BRACKET_THICKNESS {
+                    return Err(route_error(
+                        "/supports",
+                        "Mounting face leaves insufficient room for its plate.".into(),
+                    ));
+                }
+                if straight >= 0.25 {
+                    let count = (straight / 1.8).ceil() as usize;
+                    if count > 256 - mounts.len() {
+                        return Err(route_error(
+                            "/supports",
+                            "A route has at most 256 fittings.".into(),
+                        ));
+                    }
+                    for i in 0..count {
+                        mounts.push(Fitting {
+                            id: format!("mount-{index}-{i}"),
+                            station: station.s + straight * (i as f64 + 0.5) / count as f64,
+                            shape: FittingShape::Bracket {
+                                reach,
+                                direction: normal,
+                                width: 0.055,
+                                thickness: DEFAULT_BRACKET_THICKNESS,
+                            },
+                        });
+                    }
+                }
+            }
             let element = Element {
                 start: station,
                 length: straight,
@@ -504,7 +586,7 @@ pub(super) fn resolve(
         bend_segments,
         up,
         capped,
-        fittings: Vec::new(),
+        fittings: mounts,
         path,
     };
     if definition.fittings.len() > 256 {
@@ -515,6 +597,7 @@ pub(super) fn resolve(
         ));
     }
     let mut ids = BTreeSet::from(["start".to_owned(), "end".to_owned()]);
+    ids.extend(route.fittings.iter().map(|mount| mount.id.clone()));
     for (index, fitting) in definition.fittings.iter().enumerate() {
         let pointer = format!("{pointer}/fittings/{index}");
         let stations = stations(context, fitting.at(), &route.path, &format!("{pointer}/at"))?;
@@ -543,6 +626,9 @@ pub(super) fn resolve(
             let resolved = Fitting { id, station, shape };
             let half = resolved.half(&route.section);
             if !route.path.straight(station - half, station + half) {
+                if repeated && definition.omit_unfittable_repeats {
+                    continue;
+                }
                 return Err(context.fail(
                     &pointer,
                     "ITEM_FITTING",

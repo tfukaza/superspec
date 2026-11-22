@@ -8,6 +8,43 @@ import { Mesh, add, cross, dot, mul, unit, writeGlb } from "./geometry.mjs";
 
 const X = [1, 0, 0], Y = [0, 1, 0], Z = [0, 0, 1];
 
+const clerestory = { left: 0.54, right: 1.99, sill: 1.26, head: 2.12 };
+
+/** The daylight wall has an open center with concrete jambs, sill and head. */
+function daylightWall(wall) {
+  const { left, right, sill, head } = clerestory;
+  const xs = [0, left, right, 2.3], zs = [0, sill, head, 2.5];
+  const solid = (column, row) => column >= 0 && column < 3 && row >= 0 && row < 3 && !(column === 1 && row === 1);
+  const outside = -0.4, inside = 0;
+  for (let column = 0; column < 3; column++) for (let row = 0; row < 3; row++) {
+    if (!solid(column, row)) continue;
+    const [a, b] = xs.slice(column, column + 2), [c, d] = zs.slice(row, row + 2);
+    for (const y of [outside, inside]) {
+      wall.quad([a, y, c], [b, y, c], [b, y, d], [a, y, d], y === inside ? Y : mul(Y, -1));
+    }
+    for (const step of [-1, 1]) {
+      if (!solid(column + step, row)) {
+        const x = step < 0 ? a : b;
+        wall.quad([x, outside, c], [x, inside, c], [x, inside, d], [x, outside, d], mul(X, step));
+      }
+      if (!solid(column, row + step)) {
+        const z = step < 0 ? c : d;
+        wall.quad([a, outside, z], [b, outside, z], [b, inside, z], [a, inside, z], mul(Z, step));
+      }
+    }
+  }
+}
+
+/** An unglazed steel frame divides the opening into three lights. */
+function daylightFrame(steel) {
+  const { left, right, sill, head } = clerestory;
+  const depth = -0.06, face = 0.005, width = 0.035;
+  for (const z of [sill, head - width]) steel.box([left, depth, z], [right, face, z + width]);
+  for (const x of [left, left + (right - left) / 3, right - (right - left) / 3, right - width]) {
+    steel.box([x, depth, sill + width], [x + width, face, head - width]);
+  }
+}
+
 /** A wall bracket: an arm leaving the wall at `origin`, a leg down the wall and a brace between. */
 function bracket(mesh, origin, out, along, reach, drop, width = 0.04, thickness = 0.006) {
   const down = mul(Z, -1);
@@ -112,15 +149,18 @@ export function lawnGround(mesh, ground) {
 
 /**
  * `batches: false` leaves out the bolt template, for the scene as it was before it had instanced batches. `lawn` (a
- * TreeSpec lawn document) adds its ground as the mesh `lawn`, last, so every other mesh keeps its place.
+ * TreeSpec lawn document) adds its ground as the mesh `lawn`, last. `daylight` raises the bench wall, with an open
+ * clerestory and a shallow soffit above the bench.
  */
-export function buildMeshes({ batches = true, lawn = null } = {}) {
+export function buildMeshes({ batches = true, lawn = null, daylight = false } = {}) {
   const meshes = [];
   const mesh = (name, color) => { const created = new Mesh(name, color); meshes.push(created); return created; };
 
   mesh("slab", [0.5, 0.48, 0.45]).box([-0.4, -0.55, -0.2], [2.45, 2.45, 0]);
   mesh("wall-tall", [0.52, 0.5, 0.47]).box([-0.25, -0.4, 0], [0, 2.3, 2.6]);
-  mesh("wall-low", [0.52, 0.5, 0.47]).box([0, -0.4, 0], [2.3, 0, 1.2]);
+  const returnWall = mesh("wall-low", [0.52, 0.5, 0.47]);
+  if (daylight) daylightWall(returnWall);
+  else returnWall.box([0, -0.4, 0], [2.3, 0, 1.2]);
 
   // Tile: a panel on the tall wall, a worn remnant below it and a patch of floor.
   mesh("tiles-wall", [0.55, 0.7, 0.62])
@@ -135,6 +175,7 @@ export function buildMeshes({ batches = true, lawn = null } = {}) {
   const steel = mesh("brackets", [0.4, 0.4, 0.4]);
   for (const x of [0.7, 1.6]) bracket(steel, [x, 0, 0.425], Y, X, 0.46, 0.33);
   for (const y of [0.5, 1.15]) bracket(steel, [0, y, 1.97], X, Y, 0.4, 0.25);
+  if (daylight) daylightFrame(steel);
 
   // Galvanized duct: a run along the tall wall, an elbow down onto the low wall, and the vent box.
   const duct = mesh("duct", [0.6, 0.62, 0.63]);
@@ -171,6 +212,12 @@ export function buildMeshes({ batches = true, lawn = null } = {}) {
   for (let barIndex = -3; barIndex <= 3; barIndex++) {
     const offset = barIndex * 0.022, reach = Math.sqrt(0.085 ** 2 - offset ** 2);
     drain.box([1.2 - reach, 1.25 + offset - 0.006, 0.005], [1.2 + reach, 1.25 + offset + 0.006, 0.011]);
+  }
+
+  // A shallow soffit shades the bench and leaves the rest of the room open for inspection.
+  if (daylight) {
+    const soffit = mesh("soffit", [0.52, 0.5, 0.47]);
+    soffit.box([0, -0.4, 2.5], [2.3, 0.8, 2.6]);
   }
 
   // Turn the layout to face the camera: (x, y) becomes (y, -x).

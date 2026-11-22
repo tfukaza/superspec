@@ -42,3 +42,8 @@
 .lighting-fields [aria-invalid=true] { border-color: #e07a5f; }
 #lighting-status { display: block; font-size: 11px; line-height: 1.5; color: #edb19a; margin: 4px 0 8px; }
 #lighting-status:empty { display: none; }
+
+.preview-graphics { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.preview-graphics .graphics-control-row { padding: 4px 8px; border: 1px solid #5b6b5b; border-radius: 5px; background: #1b2c23e8; color: #e4eade; }
+.preview-graphics .graphics-control-row > label select { width: auto; padding: 4px; }
+.preview-graphics .graphics-profile-error:not([hidden]) { padding: 6px 8px; border-radius: 4px; background: #39251d; font-size: 11px; }

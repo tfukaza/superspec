@@ -11,6 +11,7 @@ name = "superspec"
 path = "src/main.rs"
 
 [dependencies]
+tiny_http = "=0.12.0"
 superspec-profiles = { path = "../profiles" }
 superspec-catalog = { path = "../catalog" }
 superspec-aml = { path = "../aml" }

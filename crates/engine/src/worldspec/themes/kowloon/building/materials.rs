@@ -228,6 +228,7 @@ impl Appearance {
                 market_trays: self.textured("market-trays"),
             },
             restaurant: shop::roast::Assets {
+                hero_props: self.textured("market-hero-props"),
                 food: self.textured("restaurant-food"),
                 metal: self.textured("kitchen-metal"),
                 surfaces: self.textured("restaurant-surfaces"),

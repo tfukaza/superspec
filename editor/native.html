@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><title>SuperSpec native viewer</title></head>
+<body><header><strong>SuperSpec</strong><nav aria-label="Editors"><a href="./material.html">Material</a> · <a href="./item.html">Item</a> · <a href="./index.html">World</a></nav><label>Open scene or project <input id="file" type="file" accept=".packet,.scene,.json,.zip"></label><button id="export" disabled>Export GLB</button><button id="walk" disabled>Walk</button><output id="status" role="status">Open a compiled scene packet or a saved Studio project.</output></header>
+<main class="file-preview"><section class="preview"><div id="viewport" aria-label="Three-dimensional scene"></div><div class="caption"><strong id="title"></strong><span id="selection"></span><pre id="diagnostics" aria-live="polite"></pre></div></section></main>
+<script type="module" src="./native-entry.ts"></script></body></html>

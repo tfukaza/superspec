@@ -11,11 +11,16 @@ use std::{
 };
 use superspec_model::composition::WorldModel;
 
+const MAX_WORLD_ITEM_PLACEMENTS: usize = 1024;
+const MAX_WORLD_MATERIAL_ASSIGNMENTS: usize = 256;
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct World {
     pub items: Vec<Placement>,
     pub materials: Vec<Assignment>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub material_lods: crate::materialspec::program::MaterialLodSources,
     pub theme_presets: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
     pub project_presets: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
 }
@@ -61,7 +66,10 @@ pub fn build_model(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<WorldModel, Vec<Diagnostic>> {
     let fail = |message: String| vec![Diagnostic::message(source_name, message)];
-    if world.items.len() > 1024 || world.materials.len() > 256 {
+    crate::materialspec::program::check_lod_owners(&world.material_lods, modules).map_err(&fail)?;
+    if world.items.len() > MAX_WORLD_ITEM_PLACEMENTS
+        || world.materials.len() > MAX_WORLD_MATERIAL_ASSIGNMENTS
+    {
         return Err(fail("World authoring placement allowance exceeded.".into()));
     }
     if cancelled() {
@@ -114,6 +122,7 @@ pub fn build_model(
             kind: "item".into(),
             entry: placement.entry.clone(),
             source: text.clone(),
+            material_lods: world.material_lods.clone(),
             modules: modules.clone(),
             parameters,
             resolution,
@@ -129,10 +138,7 @@ pub fn build_model(
         for (id, matrix) in receiver_transforms {
             transforms.insert(format!("{prefix}{id}"), matrix);
         }
-        for instance in &mut output.model.instances {
-            instance.id = format!("{prefix}{}", instance.id);
-            instance.object_id = format!("item/{}", placement.id);
-        }
+        output.model.place_under(&format!("item/{}", placement.id));
         model.append(output.model).map_err(&fail)?;
     }
     for assignment in &world.materials {
@@ -202,6 +208,7 @@ pub fn build_model(
             kind: "material".into(),
             entry: assignment.entry.clone(),
             source: source.clone(),
+            material_lods: world.material_lods.clone(),
             modules: modules.clone(),
             parameters: assignment.parameters.clone(),
             seed: assignment.seed,

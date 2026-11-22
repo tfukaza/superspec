@@ -189,7 +189,7 @@ changes: geometry, collision and the other channels are untouched.
 
 ### Live renderer operations
 
-`live: [modulateDiffuse({ factor, mask }), grazingFalloff({ from, to, mask }), scaleSpecular({ factor, mask }), lightFloor({ red, green, blue, mask, from, to }), filterEnvironment({ roughness, spread }), bandLuminance({ spacing, softness, mask, brightSoftness, liftRed, liftGreen, liftBlue })]`.
+`live: [modulateDiffuse({ factor, mask }), grazingFalloff({ from, to, mask }), scaleSpecular({ factor, mask }), lightFloor({ red, green, blue, mask, from, to }), filterEnvironment({ roughness, spread }), virtualSky({ intensity, verticals, radial }), bandLuminance({ spacing, softness, mask, brightSoftness, liftRed, liftGreen, liftBlue })]`.
 Each operation's arguments are fields. The sample evaluator never runs them; the renderer does.
 
 **At bake time**, every argument field is evaluated per texel and stored in the baked
@@ -209,7 +209,7 @@ material's `live` record:
 Texture arguments name glTF textures. Renderers without support ignore the extras and show
 the baked PBR material.
 
-**In Material Studio**, the Three.js viewer executes all six operations in the material's
+**In Material Studio**, the Three.js viewer executes these operations in the material's
 shader:
 
 | Operation | Effect |
@@ -219,6 +219,8 @@ shader:
 | `scaleSpecular` | Scales blended specular color by the masked change from 1 to `factor`. Positive changes use 12% of the authored gain, weighted by sun facing and shadow visibility. Reductions apply at full strength. The resulting color is capped at 1. |
 | `lightFloor` | Adds linear radiance `(red, green, blue)` times `mask`; when `from` and `to` differ the mask also ramps with the view-facing cosine, as in the study's silhouette floor. An operation may appear more than once. |
 | `filterEnvironment` | Reflects nine environment taps spread `spread` radians around the reflection at `roughness`, keeping the mean of the quadrant with the lowest luminance variance (a directional Kuwahara filter). A spread of zero is the ordinary reflection. |
+| `virtualSky` | Adds material-local indirect specular radiance from a procedural studio with three short softboxes spaced 120° apart. The boxes reflect on upward-facing surfaces. `intensity` scales the effect and `verticals` controls the boxes. The optional `radial` strength adds a view-dependent reflection from a shared, painterly sky texture. Use a centered radial UV chart for spun metal. The default strength is zero. |
+| `kuwahara({})` | Applies a screen-space Kuwahara filter to shaded color, including lighting and reflections. The filter samples only pixels of the same visible material, and operates before tone mapping. |
 | `bandLuminance` | Steps reflected luminance into bands `spacing` apart in square-root luminance, with transitions `softness` wide (as a fraction of a band), blended in by `mask`. Optional `brightSoftness` takes over for bands whose middle is between 0.60 and 0.95, and `liftRed`/`liftGreen`/`liftBlue` brighten bands below 0.42 (fading out by 0.87): the study's painted values. |
 ## Kowloon ports
 
@@ -503,3 +505,9 @@ CLI takes `--profile preview|production`; a bundle may set `"profile"` itself.
   (11 meshes, 8 materials, all but one from the shipped recipes) in the built Studio and reports its load time.
 - `npm run test:material:browser` compares native and Chromium/Wasm bytes for the `.ms`,
   TypeScript and Kowloon fixtures.
+
+### Reusable edge finishes
+
+The `chippedShoulder` group accepts an edge distance in metres, a fracture field, width, amount, grain and depth. Its `height` output drives baked normals. Its `coverage` output can independently polish or roughen each chip. The Kowloon concrete and rusted-steel recipes share this group. Concrete keeps its existing fracture and grit fields. Rusted steel exposes chip depth, coverage and polish.
+
+The live `edgeGlint` operation accepts an edge mask, alignment threshold, transition feather, normal pull, specular gain and diffuse gain. It evaluates the sun–eye half-vector at render time. The base PBR response still uses the surface normal. The additional sun lobe uses the adjusted normal, visibility and the surrounding specular color. The `virtualSky` operation accepts optional linear `red`, `green` and `blue` multipliers, each defaulting to one.

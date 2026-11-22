@@ -1,5 +1,6 @@
 //! Ordered scene deltas. Reuse is established by exact buffers, independent of hash collisions.
 use crate::Scene;
+mod masses;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, hash_map::DefaultHasher},
@@ -11,6 +12,12 @@ use std::{
 struct Header<'a> {
     manifest: &'a crate::Manifest,
     base_revision: Option<u32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    retained_scene: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    batch_spans: Option<[[usize; 2]; 9]>,
+    #[serde(skip_serializing_if = "<[[usize; 2]]>::is_empty")]
+    foliage_mass_refs: &'a [[usize; 2]],
     meshes: Vec<Option<usize>>,
     assets: Vec<Option<usize>>,
 }
@@ -48,6 +55,24 @@ fn hash(bytes: &[u8]) -> u64 {
 }
 
 pub fn encode(scene: &Scene, previous: Option<&Scene>) -> Vec<u8> {
+    encode_for_preview(scene, previous, false)
+}
+
+/// Hosts that retain batch buffers can request only the changed span of each numeric channel.
+pub fn encode_for_preview(
+    scene: &Scene,
+    previous: Option<&Scene>,
+    sparse_batches: bool,
+) -> Vec<u8> {
+    encode_incremental(scene, previous, sparse_batches, &[])
+}
+
+fn encode_incremental(
+    scene: &Scene,
+    previous: Option<&Scene>,
+    sparse_batches: bool,
+    mass_refs: &[[usize; 2]],
+) -> Vec<u8> {
     let meshes = if let Some(old) = previous {
         let ids = old
             .manifest
@@ -100,12 +125,89 @@ pub fn encode(scene: &Scene, previous: Option<&Scene>) -> Vec<u8> {
             })
         })
         .collect::<Vec<_>>();
-    let header = Header {
-        manifest: &scene.manifest,
-        base_revision: previous.map(|s| s.manifest.revision),
-        meshes,
-        assets,
+    write(
+        scene,
+        Header {
+            manifest: &scene.manifest,
+            base_revision: previous.map(|s| s.manifest.revision),
+            retained_scene: false,
+            foliage_mass_refs: mass_refs,
+            batch_spans: previous
+                .filter(|old| {
+                    sparse_batches
+                        && !scene.batches.is_empty()
+                        && old.batches.counts() == scene.batches.counts()
+                })
+                .map(|old| scene.batches.changed_spans(&old.batches)),
+            meshes,
+            assets,
+        },
+    )
+}
+
+/// The producer retained this scene in place and changed only its document metadata and source ranges.
+pub fn encode_retained(scene: &Scene, base_revision: u32) -> Vec<u8> {
+    encode_retained_for_preview(scene, base_revision, false)
+}
+
+pub fn encode_retained_for_preview(
+    scene: &Scene,
+    base_revision: u32,
+    sparse_batches: bool,
+) -> Vec<u8> {
+    encode_same(scene, base_revision, sparse_batches, &[])
+}
+
+fn encode_same(
+    scene: &Scene,
+    base_revision: u32,
+    sparse_batches: bool,
+    mass_refs: &[[usize; 2]],
+) -> Vec<u8> {
+    write(
+        scene,
+        Header {
+            manifest: &scene.manifest,
+            base_revision: Some(base_revision),
+            retained_scene: true,
+            foliage_mass_refs: mass_refs,
+            batch_spans: (sparse_batches && !scene.batches.is_empty()).then_some([[0; 2]; 9]),
+            meshes: (0..scene.manifest.meshes.len()).map(Some).collect(),
+            assets: (0..scene.manifest.assets.len()).map(Some).collect(),
+        },
+    )
+}
+
+/// A known metadata edit retains the source buffers in place. Other updates compare the
+/// newly compiled scene to the client's exact last accepted revision.
+pub enum PreviewBase<'a> {
+    Compare(Option<&'a Scene>),
+    Retained(u32),
+}
+
+/// The foliage payload is omitted only for explicitly capable clients. Its model remains
+/// complete and can subsequently serve a standalone packet or legacy client.
+pub fn encode_preview(
+    scene: &mut Scene,
+    base: PreviewBase<'_>,
+    batch_spans: bool,
+    foliage_refs: bool,
+) -> Vec<u8> {
+    let refs = if foliage_refs {
+        masses::references(scene, &base)
+    } else {
+        vec![]
     };
+    let mask = masses::Omitted::new(scene, &refs);
+    match base {
+        PreviewBase::Compare(previous) => {
+            encode_incremental(mask.scene(), previous, batch_spans, &refs)
+        }
+        PreviewBase::Retained(revision) => encode_same(mask.scene(), revision, batch_spans, &refs),
+    }
+}
+
+fn write(scene: &Scene, header: Header<'_>) -> Vec<u8> {
     let mut json = serde_json::to_vec(&header).expect("finite scene update");
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
@@ -136,8 +238,11 @@ pub fn encode(scene: &Scene, previous: Option<&Scene>) -> Vec<u8> {
             bytes.extend_from_slice(&scene.asset_bytes[a.byte_start..a.byte_start + a.byte_length]);
         }
     }
-    // Instanced batches are small beside what they draw and are sent whole with every update,
-    // after everything else (as `Scene::packet` lays them out).
-    scene.batches.write(&mut bytes);
+    // Batch data follows the asset payload. Legacy clients and standalone updates receive every channel.
+    if let Some(spans) = header.batch_spans {
+        scene.batches.write_spans(&mut bytes, spans);
+    } else {
+        scene.batches.write(&mut bytes);
+    }
     bytes
 }

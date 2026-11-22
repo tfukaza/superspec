@@ -1,0 +1,25 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-service-duct",
+  "parameters": {
+    "points": {"type":"grid","default":[[0,0,0],[0,0,2.4],[3.5,0,2.4]]},
+    "supports": {"type":"grid","default":[]},
+    "width": {"type":"number","default":0.32,"min":0.08,"max":1.2,"unit":"m"},
+    "height": {"type":"number","default":0.22,"min":0.08,"max":1.2,"unit":"m"}
+  },
+  "parts": [{
+    "id": "run",
+    "generator": {
+      "kind": "route",
+      "points": {"parameter":"points"},
+      "supports": {"parameter":"supports"},
+      "section": {"kind":"rect","width":"width","height":"height"},
+      "bendRadius": "max(width,height) * 0.85",
+      "segments": 16, "bendSegments": 8, "capped": true,
+      "omitUnfittableRepeats": true,
+      "fittings": [{"kind":"flange","id":"seam","at":{"every":1.1},"overhang":0.018,"thickness":0.025,"bolts":4}]
+    },
+    "slots": {"body":"skin","end":"skin","fitting":"hardware","bolt":"hardware","bracket":"hardware"}
+  }],
+  "slots": {"skin":{"entry":"builtin:galvanized-duct"},"hardware":{"entry":"builtin:metal"}},
+  "collision": "none"
+}

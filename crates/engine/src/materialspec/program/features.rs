@@ -787,6 +787,13 @@ impl NamedFeatures {
     /// Polylines of one name are one set, in the order given. Names follow the rule for external
     /// inputs (at most 64 letters, digits, `.`, `_` or `-`); points are finite.
     pub fn new(named: &[NamedFeature]) -> Result<Self, String> {
+        Self::prepare(named, true)
+    }
+    /// Admit the same names, segments and zones without building sampling grids for a chart-only consumer.
+    pub fn validate(named: &[NamedFeature]) -> Result<(), String> {
+        Self::prepare(named, false).map(drop)
+    }
+    fn prepare(named: &[NamedFeature], index: bool) -> Result<Self, String> {
         let mut by_name: BTreeMap<&str, Vec<Feature>> = BTreeMap::new();
         let mut segments = 0usize;
         for feature in named {
@@ -808,21 +815,21 @@ impl NamedFeatures {
                 ));
             }
             let set = by_name.entry(&feature.name).or_default();
-            let ends = feature.points.iter().skip(1).chain(
-                feature
+            let closed = feature.closed && feature.points.len() > 2;
+            segments += feature.points.len().saturating_sub(1) + usize::from(closed);
+            if index {
+                let ends = feature
                     .points
-                    .first()
-                    .filter(|_| feature.closed && feature.points.len() > 2),
-            );
-            for (start, end) in feature.points.iter().zip(ends) {
-                set.push(Feature {
+                    .iter()
+                    .skip(1)
+                    .chain(feature.points.first().filter(|_| closed));
+                set.extend(feature.points.iter().zip(ends).map(|(start, end)| Feature {
                     start: *start,
                     end: *end,
                     kind: FeatureKind::Named,
                     angle: 0.,
                     normal: None,
-                });
-                segments += 1;
+                }));
             }
             if segments > MAX_NAMED_SEGMENTS {
                 return Err(format!(
@@ -834,6 +841,10 @@ impl NamedFeatures {
             return Err(format!(
                 "A receiver's features have at most {MAX_FEATURE_NAMES} names."
             ));
+        }
+        if !index {
+            super::zones::validate_zones(named, segments)?;
+            return Ok(Self::default());
         }
         Ok(Self {
             sets: by_name

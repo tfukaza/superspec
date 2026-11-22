@@ -182,6 +182,7 @@ pub fn check_reference_open_facades() {
                                 },
                             restaurant:
                                 superspec_engine::worldspec::themes::kowloon::shop::roast::Assets {
+                                    hero_props: false,
                                     food: true,
                                     metal: false,
                                     surfaces: true,

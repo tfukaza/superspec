@@ -68,7 +68,7 @@ try {
   // Steel and concrete retain their respective live operations in the viewer.
   const live = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.liveOperations ?? "{}"));
   for (const mesh of ["steel/crate", "steel/post"]) {
-    assert.deepEqual(live[mesh], ["modulateDiffuse", "grazingFalloff", "scaleSpecular", "filterEnvironment", "bandLuminance"], `live operations on ${mesh}`);
+    assert.deepEqual(live[mesh], ["modulateDiffuse", "grazingFalloff", "scaleSpecular", "filterEnvironment", "bandLuminance", "edgeGlint"], `live operations on ${mesh}`);
   }
   for (const mesh of ["yard/wall", "yard/slab"])
     assert.deepEqual(live[mesh], ["grazingFalloff", "scaleSpecular"]);

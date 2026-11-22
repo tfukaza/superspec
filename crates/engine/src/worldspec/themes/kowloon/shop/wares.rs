@@ -294,6 +294,132 @@ pub fn bucket(d: &mut Fixture<'_, '_>, at: V3, r: f64, h: f64, tint: V3) -> Resu
         4,
     )
 }
+pub fn detailed_bucket(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    r: f64,
+    h: f64,
+    tint: V3,
+) -> Result<(), String> {
+    check(d, at, &[r, h])?;
+    // Trace the foot, stacking rib and rolled mouth, then return down the
+    // inside wall to the shallow fillet at the bottom.
+    let section = [
+        (0.72, 0.000, 0.88),
+        (0.74, 0.014, 0.97),
+        (0.74, 0.037, 0.95),
+        (0.73, 0.045, 1.00),
+        (0.93, 0.778, 0.95),
+        (0.96, 0.786, 1.08),
+        (0.97, 0.799, 1.05),
+        (0.96, 0.812, 1.00),
+        (0.95, 0.815, 1.00),
+        (0.99, 0.951, 0.95),
+        (1.025, 0.950, 0.94),
+        (1.048, 0.961, 1.03),
+        (1.050, 0.984, 1.10),
+        (1.038, 0.997, 1.13),
+        (1.000, 1.000, 1.08),
+        (0.977, 0.988, 0.96),
+        (0.971, 0.966, 0.90),
+        (0.714, 0.085, 0.90),
+        (0.694, 0.065, 0.91),
+        (0.65, 0.058, 0.92),
+    ];
+    let profile = section.map(|(radius, height, _)| [radius * r, height * h]);
+    let colors = section.map(|(_, _, value)| shade(tint, value));
+    let sides = 72;
+    lathe(d, "paint", at, &profile, &colors, sides)?;
+    d.disc(
+        "paint",
+        at,
+        r * 0.72,
+        [0., 0., -1.],
+        shade(tint, 0.88),
+        sides,
+    )?;
+    d.disc(
+        "paint",
+        add(at, [0., 0., h * 0.058]),
+        r * 0.65,
+        [0., 0., 1.],
+        shade(tint, 0.92),
+        sides,
+    )?;
+
+    // Each boss seats against the sloping wall. Its base embeds in the
+    // plastic and its capped outer face supports the metal pivot pin.
+    let pivot = h * 0.89;
+    let slope = (0.99 - 0.95) * r / ((0.951 - 0.815) * h);
+    let normal_x = 1. / hypot(1., slope);
+    let wall_radius = r * 0.95 + slope * (pivot - 0.815 * h);
+    for sign in [-1., 1.] {
+        let axis = [sign * normal_x, 0., -slope * normal_x];
+        let seat = |offset: f64| {
+            add(
+                at,
+                [
+                    sign * wall_radius + axis[0] * offset * r,
+                    0.,
+                    pivot + axis[2] * offset * r,
+                ],
+            )
+        };
+        let housing = [-0.009, 0.003, 0.018, 0.034, 0.042].map(seat);
+        let housing_radii = [0.117, 0.117, 0.112, 0.091, 0.078].map(|k| k * r);
+        let molded = shade(tint, 1.04);
+        limb(d, "paint", &housing, &housing_radii, molded, 32)?;
+        d.disc("paint", seat(0.042), r * 0.078, axis, molded, 32)?;
+        let pin = [0.041, 0.051, 0.068, 0.077, 0.080].map(seat);
+        let pin_radii = [0.043, 0.053, 0.052, 0.039, 0.027].map(|k| k * r);
+        limb(d, "metal", &pin, &pin_radii, steel(), 24)?;
+        d.disc("metal", seat(0.080), r * 0.027, axis, steel(), 24)?;
+    }
+    let bail = |angle: f64| {
+        add(
+            at,
+            [
+                r * 1.031 * cos(angle),
+                -r * 0.985 * sin(angle),
+                pivot - h * 0.248 * sin(angle),
+            ],
+        )
+    };
+    let path: [V3; 49] = std::array::from_fn(|i| bail(PI * i as f64 / 48.));
+    limb(
+        d,
+        "metal",
+        &path,
+        &[r * 0.017; 49],
+        shade(steel(), 0.88),
+        10,
+    )?;
+    // A crowned sleeve with eased shoulders slips over the continuous wire.
+    let grip_profile = [
+        (0.368, 0.016),
+        (0.369, 0.027),
+        (0.372, 0.038),
+        (0.378, 0.045),
+        (0.387, 0.048),
+        (0.402, 0.048),
+        (0.420, 0.046),
+        (0.445, 0.045),
+        (0.470, 0.045),
+        (0.500, 0.046),
+        (0.530, 0.045),
+        (0.555, 0.045),
+        (0.580, 0.046),
+        (0.598, 0.048),
+        (0.613, 0.048),
+        (0.622, 0.045),
+        (0.628, 0.038),
+        (0.631, 0.027),
+        (0.632, 0.016),
+    ];
+    let grip = grip_profile.map(|(fraction, _)| bail(PI * fraction));
+    let radii = grip_profile.map(|(_, radius)| radius * r);
+    limb(d, "paint", &grip, &radii, srgb("#4d514c"), 16)
+}
 pub fn basin(d: &mut Fixture<'_, '_>, at: V3, r: f64, tint: V3) -> Result<(), String> {
     check(d, at, &[r])?;
     lathe(

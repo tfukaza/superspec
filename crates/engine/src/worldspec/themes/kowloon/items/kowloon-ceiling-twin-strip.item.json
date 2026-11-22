@@ -1,0 +1,31 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-ceiling-twin-strip",
+  "parameters": {"length": {"type": "number", "unit": "m", "min": 0.4, "max": 2.4, "default": 1.2}, "enclosed": {"type": "boolean", "default": false}},
+  "parts": [
+    {
+      "id": "luminaire",
+      "generator": {"kind": "native", "name": "kowloon/twin-strip-housing", "parameters": {"length": {"parameter": "length"}, "enclosed": {"parameter": "enclosed"}}},
+      "slots": {"case": "enamel", "reflector": "enamel", "hardware": "aluminum", "insulator": "ceramic", "cover": "prism", "seal": "gasket", "end": "ivory", "clip": "zinc"}
+    },
+    {
+      "id": "lamp", "repeat": [{"name": "row", "count": "select(enclosed, 0, 2)"}],
+      "generator": {
+        "kind": "route", "section": {"kind": "round", "radius": 0.016}, "segments": 24,
+        "points": [["0.030 - length / 2", 0, 0], ["length / 2 - 0.030", 0, 0]], "up": [0, 0, 1]
+      },
+      "placement": {"position": [0, "(row - 0.5) * 0.136", -0.099]},
+      "slots": {"body": "diffuser"}
+    }
+  ],
+  "slots": {
+    "ivory": {"entry": "builtin:batten-ivory"},
+    "ceramic": {"entry": "builtin:ceramic"},
+    "zinc": {"entry": "builtin:cabinet-zinc"},
+    "prism": {"entry": "builtin:batten-opal-glass"},
+    "gasket": {"entry": "builtin:wall-cable"},
+    "diffuser": {"entry": "builtin:opal-diffuser"},
+    "enamel": {"entry": "builtin:fixture-enamel"},
+    "aluminum": {"entry": "builtin:brushed-metal"}
+  },
+  "collision": "none"
+}

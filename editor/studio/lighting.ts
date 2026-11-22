@@ -59,7 +59,7 @@ const CONTROLS: Control[] = [
   { id: "lighting-shadow-tint-strength", label: "Tint strength", group: "Sun shadow", kind: "number", min: 0, max: 1, step: 0.02, sun: true,
     read: lighting => sun(lighting).shadow.tintStrength,
     write: (lighting, value) => { sun(lighting).shadow.tintStrength = Number(value); } },
-  { id: "lighting-noise-amount", label: "Noise amount", group: "Sun shadow", kind: "number", min: 0, max: 1, step: 0.05, sun: true,
+  { id: "lighting-noise-amount", label: "Noise amount", group: "Sun shadow", kind: "number", min: 0, max: 1, step: 0.005, sun: true,
     read: lighting => sun(lighting).shadow.noise.amount,
     write: (lighting, value) => { sun(lighting).shadow.noise.amount = Number(value); } },
   { id: "lighting-noise-scale", label: "Noise scale (m)", group: "Sun shadow", kind: "number", min: 0.01, max: 100, step: 0.1, sun: true,

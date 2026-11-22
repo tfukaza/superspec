@@ -40,7 +40,7 @@ export interface TargetSpec {
 }
 
 const targetSignature = (spec: TargetSpec): string =>
-  `${spec.width}x${spec.height}:${spec.format}:${spec.type}:${spec.colorSpace}:${spec.filter}:${spec.wrap}:${spec.anisotropy ?? 1}`;
+  `${spec.width}x${spec.height}:${spec.format}:${spec.type}:${spec.colorSpace}:${spec.filter}:${spec.wrap}:${spec.anisotropy ?? 1}:${spec.coverage ?? ""}`;
 
 /** GPU memory of a target, mips included. */
 export function targetBytes(spec: TargetSpec): number {
@@ -63,6 +63,8 @@ export interface GraphNode {
   readonly generation: number;
   /** True until the node has been drawn completely once (an operation that does not cover its target clears it first). */
   fresh: boolean;
+  /** This content is a reusable source patch for different receivers. */
+  stock?: boolean;
 }
 
 /** One draw of a node: all of it, or a band of rows (framebuffer rows, the lowest first). */
@@ -111,6 +113,8 @@ export interface NodeSpec {
    * holds what is wanted.
    */
   transient?: boolean;
+  /** Prefer keeping this source patch across receiver edits, within the same cache allowance. */
+  stock?: boolean;
 }
 
 /** What needs the WebGL context. */
@@ -135,7 +139,7 @@ export interface BandWork { op: NodeOp; texels: number }
 
 export interface GraphLimits {
   /**
-   * The memory the nodes kept after their last user may take together, least recently used dropped first. Memory is
+   * The memory the nodes kept after their last user may take together, with LRU eviction within each pool. Memory is
    * the bound, not a count: a scene of many small receivers and one of a few large ones keep the same amount.
    */
   idleBytes: number;
@@ -206,15 +210,23 @@ type Choice = { spec: NodeSpec; want: string } & ({ kind: "held"; node: GraphNod
 export class BakeGraph {
   /** Complete nodes by resolved key: those in use and those kept idle. */
   private readonly complete = new Map<string, GraphNode>();
-  /** Complete nodes without a user, least recently used first. */
+  /** Idle receiver outputs and shared source patches, least recently used first in each. */
   private readonly idle = new Set<GraphNode>();
+  private readonly idleStock = new Set<GraphNode>();
+  private idleCharge = 0;
+  private stockCharge = 0;
+  private readonly nodeFloor: number;
   /** Nodes drawn and nodes answered from held textures since the graph was made (diagnostics). */
-  readonly totals = { drawn: 0, reused: 0 };
+  readonly totals = { drawn: 0, reused: 0, stockTexelsDrawn: 0, stockTexelsReused: 0 };
   private readonly device: GraphDevice;
   private readonly limits: GraphLimits;
 
   // (Plain fields, not parameter properties: the scheduling tests run this file under Node's type stripping.)
-  constructor(device: GraphDevice, limits: GraphLimits = { idleBytes: 128 * 1024 * 1024 }) { this.device = device; this.limits = limits; }
+  constructor(device: GraphDevice, limits: GraphLimits = { idleBytes: 128 * 1024 * 1024 }) {
+    this.device = device;
+    this.limits = limits;
+    this.nodeFloor = limits.nodeFloorBytes ?? 0;
+  }
 
   /** The resolved key of every node: its own key, its target's format and its inputs' resolved keys. */
   static resolve(specs: NodeSpec[]): Map<string, string> {
@@ -295,7 +307,14 @@ export class BakeGraph {
   private retain(node: GraphNode): void {
     const used = this.usedBytes();
     if (node.users++ === 0 && node.generation === this.used.generation) this.used.bytes = used + node.bytes;
-    this.idle.delete(node);
+    this.removeIdle(node);
+  }
+
+  private removeIdle(node: GraphNode): void {
+    const charge = Math.max(node.bytes, this.nodeFloor);
+    if (this.idleStock.delete(node)) this.stockCharge -= charge;
+    else if (!this.idle.delete(node)) return;
+    this.idleCharge -= charge;
   }
 
   /** Gives up one use of a node: a complete one without users waits for another, an incomplete one is freed. */
@@ -308,21 +327,24 @@ export class BakeGraph {
       node.target.dispose();
       return;
     }
-    this.idle.delete(node); this.idle.add(node);
+    const charge = Math.max(node.bytes, this.nodeFloor);
+    if (node.stock) {
+      this.idleStock.add(node);
+      this.stockCharge += charge;
+    } else this.idle.add(node);
+    this.idleCharge += charge;
     this.trim();
   }
 
-  /** Drops nodes without a user, least recently used first, until what is kept is within the limits with `coming` more bytes in use. */
+  /** Under pressure, reserve at most half the available idle budget for source patches shared across edits. */
   private trim(coming = 0): void {
-    const floor = this.limits.nodeFloorBytes ?? 0;
-    const charged = (kept: GraphNode) => Math.max(kept.bytes, floor);
-    const room = (this.limits.totalBytes ?? Infinity) - this.usedBytes() - coming;
-    let bytes = 0;
-    for (const kept of this.idle) bytes += charged(kept);
-    for (const kept of [...this.idle]) {
-      if (this.idle.size <= (this.limits.idleNodes ?? Infinity) && bytes <= this.limits.idleBytes && bytes <= room) break;
-      bytes -= charged(kept);
-      this.idle.delete(kept); this.complete.delete(kept.key);
+    const room = Math.max(0, Math.min(this.limits.idleBytes, (this.limits.totalBytes ?? Infinity) - this.usedBytes() - coming));
+    const count = Math.max(0, this.limits.idleNodes ?? Infinity);
+    while (this.idleCharge > room || this.idle.size + this.idleStock.size > count) {
+      const dropStock = !this.idle.size || this.stockCharge > room / 2 || this.idleStock.size > Math.ceil(count / 2);
+      const kept = (dropStock ? this.idleStock : this.idle).values().next().value!;
+      this.removeIdle(kept);
+      if (this.complete.get(kept.key) === kept) this.complete.delete(kept.key);
       kept.target.dispose();
     }
   }
@@ -349,17 +371,21 @@ export class BakeGraph {
   stats(): { nodes: number; bytes: number; idle: number; idleBytes: number } {
     let idleBytes = 0, bytes = 0;
     for (const node of this.idle) idleBytes += node.bytes;
+    for (const node of this.idleStock) idleBytes += node.bytes;
     for (const node of this.complete.values()) bytes += node.bytes;
-    return { nodes: this.complete.size, bytes, idle: this.idle.size, idleBytes };
+    return { nodes: this.complete.size, bytes, idle: this.idle.size + this.idleStock.size, idleBytes };
   }
 
   /** The context went away with every texture: nothing is kept (and nothing can be freed). */
-  forget(): void { this.complete.clear(); this.idle.clear(); }
+  forget(): void { this.complete.clear(); this.idle.clear(); this.idleStock.clear(); this.idleCharge = this.stockCharge = 0; }
 
   /** Frees the idle nodes; nodes still in use are their instances' to release. */
   dispose(): void {
-    for (const node of this.idle) { this.complete.delete(node.key); node.target.dispose(); }
-    this.idle.clear();
+    for (const pool of [this.idle, this.idleStock]) {
+      for (const node of pool) { this.complete.delete(node.key); node.target.dispose(); }
+      pool.clear();
+    }
+    this.idleCharge = this.stockCharge = 0;
   }
 
   /**
@@ -400,6 +426,7 @@ export class BakeGraph {
       for (const choice of choices) {
         if (choice.kind === "fresh") { freshBytes += targetBytes(choice.spec.target); continue; }
         this.retain(choice.node); staged.set(choice.spec.id, choice.node);
+        if (choice.kind === "held" && choice.spec.stock) choice.node.stock = true;
         if (choice.kind === "held") result.reused++;
       }
       if (freshBytes) {
@@ -473,7 +500,7 @@ export class BakeGraph {
           result.timings.mips += performance.now() - before;
         }
         for (const plan of plans) {
-          plan.node.key = plan.want; plan.node.fresh = false;
+          plan.node.key = plan.want; plan.node.fresh = false; plan.node.stock = plan.spec.stock;
           this.complete.set(plan.want, plan.node);
           pending.delete(plan.spec.id);
           result.drawn.push(plan.spec.id);
@@ -484,6 +511,11 @@ export class BakeGraph {
     } catch (error) { undo(); throw error; }
     this.release(previous);
     this.totals.drawn += result.drawn.length; this.totals.reused += result.reused;
+    for (const { spec, kind } of choices) if (spec.stock) {
+      const texels = spec.target.width * spec.target.height;
+      if (kind === "held") this.totals.stockTexelsReused += texels;
+      else this.totals.stockTexelsDrawn += texels;
+    }
     // The instance holds what the bake is for; its intermediates are kept as nodes without a user are.
     const transient = new Set(specs.filter(spec => spec.transient).map(spec => spec.id));
     const held = new Map([...staged].filter(([id]) => !transient.has(id)));

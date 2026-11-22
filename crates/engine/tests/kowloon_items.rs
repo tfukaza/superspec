@@ -319,6 +319,51 @@ fn open_shops_and_street_stock_stay_light() {
 }
 
 #[test]
+fn detailed_provisions_keep_their_stock_and_hero_atlases() {
+    let natives = Natives::new();
+    let room = generate(
+        &natives,
+        "kowloon/shop-room",
+        &values(&[
+            ("trade", json!("provisions")),
+            ("width", json!(4)),
+            ("catalogStock", json!(true)),
+        ]),
+    )
+    .unwrap();
+    check("detailed provisions room", &room);
+    assert!(
+        room.iter()
+            .any(|mesh| mesh.material_slot == "grocer-props" && mesh.indices.len() > 300)
+    );
+    let hanging: Vec<_> = room
+        .iter()
+        .filter(|mesh| mesh.material_slot == "snack-packet")
+        .flat_map(|mesh| &mesh.positions)
+        .collect();
+    assert!(hanging.iter().any(|point| point[0] < -1.55));
+    assert!(hanging.iter().any(|point| point[0] > 1.55));
+    assert!(hanging.iter().all(|point| point[0].abs() > 1.55));
+
+    let street = generate(
+        &natives,
+        "kowloon/street-stock",
+        &values(&[("width", json!(4)), ("catalogStock", json!(true))]),
+    )
+    .unwrap();
+    check("detailed provisions frontage", &street);
+    let hero = street
+        .iter()
+        .find(|mesh| mesh.material_slot == "market-hero-props")
+        .expect("detailed doorway props keep their baked atlas");
+    // The two placements straddle the entrance and retain the short shop aisle.
+    let west = hero.positions.iter().filter(|point| point[0] < 0.);
+    let east = hero.positions.iter().filter(|point| point[0] > 0.);
+    assert!(west.count() > 300 && east.count() > 300);
+    assert!(hero.positions.iter().all(|p| p[0].abs() > 0.18));
+}
+
+#[test]
 fn choices_and_dimensions_reach_the_fixture() {
     let natives = Natives::new();
     let extent = |meshes: &[ItemMesh], axis: usize| {
@@ -2328,6 +2373,87 @@ fn the_riser_duct_can_stand_close_on_bolted_brackets_and_reports_its_wall_fixing
                     && (-0.017..=-0.013).contains(&p[1])
             }),
             "no plate under {a:?}–{b:?}"
+        );
+    }
+}
+
+#[test]
+fn bulkhead_lens_sits_inside_an_oval_rebate_and_beneath_its_guard() {
+    let name = "kowloon/ceiling-bulkhead";
+    let meshes = generate(&Natives::new(), name, &Values::new()).unwrap();
+    check(name, &meshes);
+    let casting = slot_points(&meshes, "casting");
+    let optic = slot_points(&meshes, "lens");
+    let guard = slot_points(&meshes, "guard");
+    let shoulder = slot_points(&meshes, "rim");
+    let physical_radius = |p: &[f64; 3]| (p[0] / 1.36).hypot(p[1]);
+    let radii: Vec<_> = shoulder.iter().map(physical_radius).collect();
+    assert!(
+        radii.iter().copied().fold(f64::MIN, f64::max)
+            - radii.iter().copied().fold(f64::MAX, f64::min)
+            > 0.025
+    );
+    for mesh in meshes.iter().filter(|m| {
+        matches!(
+            m.material_slot.as_str(),
+            "rim" | "spun-body" | "casting" | "gasket-return"
+        )
+    }) {
+        for (p, uv) in mesh.positions.iter().zip(&mesh.uvs) {
+            let u = uv[0] - 0.5;
+            let v = uv[1] - 0.5;
+            let alignment = ((p[0] / 1.36) * u + p[1] * v) / (physical_radius(p) * u.hypot(v));
+            assert!(
+                alignment > 0.999,
+                "machined chart must follow the oval angle"
+            );
+        }
+        for tri in mesh.indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|i| mesh.uvs[tri[i] as usize]);
+            assert!(((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).abs() > 1e-7);
+        }
+    }
+    for axis in [0, 1] {
+        assert!(highest(&optic, axis) < highest(&shoulder, axis));
+        assert!(highest(&shoulder, axis) < highest(&casting, axis));
+    }
+    assert!((highest(&optic, 0) / highest(&optic, 1) - 1.36).abs() < 1e-5);
+    assert!(highest(&guard, 2) > highest(&optic, 2) + 0.02);
+    assert!(lowest(&slot_points(&meshes, "seal"), 2).abs() < 1e-7);
+    assert!(lowest(&optic, 2) < highest(&shoulder, 2));
+    assert!(highest(&slot_points(&meshes, "fastener"), 0) > highest(&casting, 0));
+}
+
+#[test]
+fn utility_cabinet_forms_fit_the_host_and_recess_the_instrument() {
+    let native = Natives::new();
+    let name = "kowloon/utility-cabinet";
+    for (seed, height) in [(22, 0.88), (67, 0.67), (2147483647, 0.67)] {
+        let meshes = generate(&native, name, &values(&[("seed", json!(seed))])).unwrap();
+        check(name, &meshes);
+        let all: Vec<_> = meshes.iter().flat_map(|m| &m.positions).copied().collect();
+        assert!(lowest(&all, 0) >= -0.49 && highest(&all, 0) <= 0.49);
+        assert!((highest(&all, 1)).abs() < 1e-7 && lowest(&all, 1) >= -0.25);
+        assert!(lowest(&all, 2) >= -0.43 && (highest(&all, 2) - height).abs() < 1e-6);
+        let meter = slot_points(&meshes, "meter");
+        let glass = slot_points(&meshes, "glazing");
+        assert!(highest(&glass, 1) < lowest(&meter, 1) - 0.015);
+        assert_eq!(slot_points(&meshes, "tag").len(), 8);
+        let tag_row = if seed % 2 == 0 { 0.25 } else { 0. };
+        for uv in meshes
+            .iter()
+            .filter(|m| m.material_slot == "tag")
+            .flat_map(|m| &m.uvs)
+        {
+            assert!(
+                uv[1] > tag_row && uv[1] < tag_row + 0.25,
+                "the inspection slip and identifier must match the cabinet"
+            );
+        }
+        assert!(lowest(&slot_points(&meshes, "conduit"), 2) < -0.25);
+        assert_eq!(
+            fingerprint(&meshes),
+            fingerprint(&generate(&native, name, &values(&[("seed", json!(seed))])).unwrap())
         );
     }
 }

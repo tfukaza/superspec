@@ -2,6 +2,7 @@ import { CityAppearance } from "./city-appearance.ts";
 import "./style.css";
 import { decodePacket } from "../browser/model/packet.ts";
 import { RustScene } from "../browser/renderer/scene.ts";
+import { connectAuthoringGraphics } from "./graphics-controls.ts";
 
 interface PreviewStatus {
   session: string;
@@ -23,6 +24,7 @@ window.addEventListener("pagehide", () => cityAppearance.close(), { once: true }
 const scene = new RustScene(viewport, mesh => {
   selection.textContent = mesh ? `${mesh.id} · source ${mesh.source.line}:${mesh.source.column}` : "Click a model to inspect its source.";
 });
+connectAuthoringGraphics(output, scene);
 document.querySelector("#walk")!.addEventListener("click", () => scene.toggleWalk());
 viewport.addEventListener("walkstatus", event => { selection.textContent = (event as CustomEvent<string>).detail; });
 const walkHelper = document.querySelector<HTMLSelectElement>("#walk-helper")!;

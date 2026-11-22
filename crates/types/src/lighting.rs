@@ -161,6 +161,34 @@ pub struct AmbientOcclusion {
     pub intensity: f64,
     /// How thick surfaces are taken to be behind what the camera sees, meters.
     pub thickness: f64,
+    /// How the occlusion is found. Written only when it is not the default.
+    #[serde(skip_serializing_if = "OcclusionMethod::is_default")]
+    pub method: OcclusionMethod,
+    /// The share of the sun shadow's hue (its tint at its `tintStrength`) the occlusion takes, 0
+    /// (neutral gray) to 1. Written only when it is not 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tint: f64,
+}
+
+/// How a renderer finds ambient occlusion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OcclusionMethod {
+    /// Ground-truth horizon occlusion from depth and normals, denoised, with a short-range
+    /// contact term; it darkens the scene before tone mapping. Above 1, `intensity` deepens creases.
+    #[default]
+    Gtao,
+    /// Horizons searched in eight jittered directions of the depth alone, with a quadratic falloff
+    /// over `radius` plus `thickness`, applied to the tone-mapped image so that bright lit ground
+    /// keeps its contact shading. `intensity` scales the darkening, which is at most 0.8. A game
+    /// renderer can draw it from the depth it already has, so a level looks the same there.
+    Horizon,
+}
+
+impl OcclusionMethod {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,6 +328,8 @@ impl Default for AmbientOcclusion {
             radius: 0.35,
             intensity: 2.0,
             thickness: 0.5,
+            method: OcclusionMethod::default(),
+            tint: 0.0,
         }
     }
 }
@@ -344,8 +374,8 @@ impl Default for ShadowNoise {
     fn default() -> Self {
         Self {
             scale: 1.1,
-            edge: 0.07,
-            amount: 0.6,
+            edge: 0.004,
+            amount: 0.015,
             seed: 7,
         }
     }
@@ -443,6 +473,7 @@ impl Lighting {
             0.01,
             10.0,
         );
+        check.range("ambientOcclusion.tint", occlusion.tint, 0.0, 1.0);
         if self.lights.len() > MAX_LIGHTS {
             check.fail(
                 "lights",

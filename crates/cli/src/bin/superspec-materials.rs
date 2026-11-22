@@ -16,6 +16,8 @@ mod atlas;
 mod bags;
 #[path = "materials/clean_stock.rs"]
 mod clean_stock;
+#[path = "materials/data_textures.rs"]
+mod data_textures;
 #[path = "materials/kit.rs"]
 mod kit;
 #[path = "materials/liquor_meshes.rs"]
@@ -121,7 +123,7 @@ fn kit_textures(output: &Path, args: &[std::ffi::OsString]) -> Result<(), String
 
 const USAGE: &str = "\
 Usage: superspec-materials RECIPE INPUTS OUTPUT
-  site-textures | kowloon-prop-textures | kitchen-metal | brushed-metal  NEW_DIRECTORY
+  site-textures | kowloon-prop-textures | kitchen-metal | brushed-metal | fixture-finishes | grille-frame | casement-finishes  NEW_DIRECTORY
   kowloon-kit-textures  NEW_DIRECTORY [TEXTURE ...] [--fonts DIRECTORY] [--extra CHARACTERS] [--extend LETTERING_PNG]
   concrete  SOURCE_A SOURCE_B NEW_DIRECTORY
   vent-metal | restaurant-tiles | shop-timber  SOURCE_PNG NEW_DIRECTORY
@@ -133,11 +135,15 @@ Usage: superspec-materials RECIPE INPUTS OUTPUT
   extract-glb-maps  SOURCE_GLB ASSET_NAME OUTPUT_DIRECTORY
   bag-clusters | prepare-liquor-meshes | finish-liquor-meshes | apple-pile  SOURCE_JSON OUTPUT_JSON
   repair-snack-packet  SOURCE_PNG ASPECT_RATIO NEW_DIRECTORY
+  encode-city-data-textures  MANIFEST_JSON
   resize-stock-texture  SOURCE_IMAGE MAX_EDGE OUTPUT_PNG";
 
 fn run() -> Result<(), String> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match args.as_slice() {
+        [name, manifest] if name == "encode-city-data-textures" => {
+            data_textures::run(Path::new(manifest))
+        }
         [name, source, asset, output] if name == "extract-glb-maps" => atlas::extract_maps(
             Path::new(source),
             asset.to_str().ok_or("Invalid asset name.")?,
@@ -214,6 +220,18 @@ fn run() -> Result<(), String> {
                 name == "pack-restaurant-food",
             )
         }
+        [name, output] if name == "grille-frame" => publish(
+            Path::new(output),
+            superspec_engine::worldspec::themes::kowloon::authoring::grille_frame::bake()?,
+        ),
+        [name, output] if name == "casement-finishes" => publish(
+            Path::new(output),
+            superspec_engine::worldspec::themes::kowloon::authoring::casement_finishes::bake()?,
+        ),
+        [name, output] if name == "fixture-finishes" => publish(
+            Path::new(output),
+            superspec_engine::worldspec::themes::kowloon::authoring::fixture_finishes::bake()?,
+        ),
         [name, output] if name == "brushed-metal" => {
             brushed_metal().write(Path::new(output), "brushed-metal")
         }

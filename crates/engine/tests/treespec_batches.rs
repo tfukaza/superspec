@@ -208,9 +208,11 @@ fn a_grass_patch_and_a_shrub_become_valid_batches_that_place_what_was_generated(
         scene.add_batch(batch, mesh).unwrap();
     }
     superspec_model::batches::check(&scene).unwrap();
+    scene.project_foliage_lods().unwrap();
     let document = serde_json::json!({ "batches": batches::project_document(&all) });
     let mut again = Scene::empty(1, "test");
     superspec_model::batches::add_project(&mut again, &document).unwrap();
+    assert_eq!(scene.manifest.geometry_lods, again.manifest.geometry_lods);
     assert_eq!(again.manifest.batches.len(), scene.manifest.batches.len());
     assert_eq!(
         again.batches.attributes.len(),
@@ -304,10 +306,31 @@ fn a_plant_becomes_a_batch_per_part_and_level_with_its_family() {
         scene.add_batch(batch, mesh).unwrap();
     }
     superspec_model::batches::check(&scene).unwrap();
+    scene.project_foliage_lods().unwrap();
+    let group = &scene.manifest.geometry_lods[0];
+    assert_eq!(
+        group
+            .levels
+            .iter()
+            .map(|level| level.distance)
+            .collect::<Vec<_>>(),
+        plant
+            .lods
+            .iter()
+            .map(|level| level.distance)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        group.levels.iter().flat_map(|level| &level.batches).count(),
+        all.iter()
+            .filter(|b| family(b) != FoliageFamily::Shadow)
+            .count()
+    );
     let document = serde_json::json!({ "batches": batches::project_document(&all) });
     let mut again = Scene::empty(1, "test");
     superspec_model::batches::add_project(&mut again, &document).unwrap();
     assert_eq!(again.manifest.batches.len(), all.len());
+    assert_eq!(scene.manifest.geometry_lods, again.manifest.geometry_lods);
     assert_eq!(again.manifest.batches[0].foliage, all[0].batch.foliage);
 
     // The document states every number as the single that is delivered, in the fewest digits that

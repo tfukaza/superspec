@@ -41,10 +41,10 @@ const HELP: &str = concat!(
     "  bake <file.aml> --out <directory> [--blender <executable>] [--samples <n>] [--json]\n",
     "  game-export <file.aml> --out <directory> [--json]\n",
     "  scene <file.aml|file.xml> (binary LSP3 stdout)\n",
-    "  glb <file.aml|file.xml> [--collision] [--no-uv] [--textures ktx2|png] (binary GLB stdout)\n",
+    "  glb <file.aml|file.xml> [--collision] [--no-uv] [--textures ktx2|png | --portable] (binary GLB stdout)\n",
     "  validate <file.aml|file.xml> [--json]\n",
     "  benchmark <file.aml|file.xml> [--edit <changed.aml>]... [--jobs <1-16>] [--json]\n",
-    "  build <file.aml|file.xml> --out <directory> [--no-uv] [--textures ktx2|png] [--blender <executable>] [--json]\n",
+    "  build <file.aml|file.xml> --out <directory> [--no-uv] [--textures ktx2|png | --portable] [--blender <executable>] [--json]\n",
     "    [--quake-palette <palette.lmp>] [--qbsp <executable>] [--vis <executable>] [--light <executable>]\n",
     "    [--jobs <1-16>]\n",
     "  preview <file.aml|file.xml> [--ui <prebuilt-directory>] [--port <0-65535>]\n",
@@ -120,10 +120,28 @@ struct Arguments {
     output: Option<PathBuf>,
     no_uv: bool,
     textures: superspec_export::Textures,
+    instancing: superspec_export::Instancing,
     blender: Option<PathBuf>,
     quake: Option<external::QuakeOptions>,
     edits: Vec<PathBuf>,
     workers: usize,
+}
+
+impl Arguments {
+    fn gltf_options(&self) -> superspec_export::Options<'static> {
+        use superspec_export::{Options, Purpose};
+        Options {
+            purpose: if self.collision {
+                Purpose::Collision
+            } else {
+                Purpose::Visual
+            },
+            textures: self.textures,
+            instancing: self.instancing,
+            cancelled: &cancelled,
+            ..Options::default()
+        }
+    }
 }
 
 fn arguments(values: &[OsString]) -> Result<Arguments, String> {
@@ -162,6 +180,7 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
     let mut output = None;
     let mut no_uv = false;
     let mut textures = None;
+    let mut portable = false;
     let mut blender = None;
     let mut quake_palette = None;
     let mut quake_tools = std::collections::BTreeMap::new();
@@ -258,6 +277,13 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
             });
             continue;
         }
+        if !positional && value == "--portable" {
+            if !matches!(command, "build" | "glb") || portable {
+                return Err("--portable is supported once, on build or glb.".into());
+            }
+            portable = true;
+            continue;
+        }
         if !positional && value == "--blender" {
             if command != "build" || blender.is_some() {
                 return Err("--blender is supported once, on build only.".into());
@@ -305,18 +331,26 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
     if command == "build" && output.is_none() {
         return Err("Build requires --out <directory>.".into());
     }
-    // Exports default to KTX2 textures, except where Blender (which cannot import them) reads the
-    // GLB.
+    if portable && textures == Some(superspec_export::Textures::Ktx2) {
+        return Err(
+            "--portable uses PNG/JPEG images and cannot be combined with --textures ktx2.".into(),
+        );
+    }
     if blender.is_some() && textures == Some(superspec_export::Textures::Ktx2) {
         return Err(
             "Blender cannot import KTX2 textures; use --textures png with --blender.".into(),
         );
     }
-    let textures = textures.unwrap_or(if blender.is_some() {
+    let textures = textures.unwrap_or(if portable || blender.is_some() {
         superspec_export::Textures::Png
     } else {
         superspec_export::Textures::Ktx2
     });
+    let instancing = if portable {
+        superspec_export::Instancing::Nodes
+    } else {
+        superspec_export::Instancing::Extension
+    };
     if quake_palette.is_none() && !quake_tools.is_empty() {
         return Err("Quake tool options require --quake-palette.".into());
     }
@@ -345,6 +379,7 @@ fn arguments(values: &[OsString]) -> Result<Arguments, String> {
         output,
         no_uv,
         textures,
+        instancing,
         blender,
         quake,
         edits,
@@ -480,10 +515,9 @@ fn execute(arguments: &Arguments) -> CommandResult {
                 match build::publish(
                     &scene,
                     &output,
-                    arguments.textures,
+                    &arguments.gltf_options(),
                     arguments.blender.as_deref(),
                     arguments.quake.as_ref(),
-                    &cancelled,
                 ) {
                     Ok(artifacts) => {
                         result.artifacts = artifacts;
@@ -626,15 +660,7 @@ fn run() -> ExitCode {
                         };
                         let result = compile(&source, 0, &|name| assets::read(parent, name));
                         if arguments.command == "glb" {
-                            let options = superspec_export::Options {
-                                purpose: if arguments.collision {
-                                    superspec_export::Purpose::Collision
-                                } else {
-                                    superspec_export::Purpose::Visual
-                                },
-                                textures: arguments.textures,
-                                ..Default::default()
-                            };
+                            let options = arguments.gltf_options();
                             return match result.map_err(|e| e.to_string()).and_then(|mut scene| {
                                 superspec_engine::validation::audit(&mut scene, &cancelled)?;
                                 if !scene.manifest.success {

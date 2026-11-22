@@ -8,6 +8,16 @@ use std::collections::BTreeMap;
 
 pub use superspec_catalog::{image_name, images, material};
 
+/// Read a declaration after registration has checked the reserved namespace.
+/// Catalog recipes can carry structured renderer operations beyond AML attributes.
+pub fn registered_material(node: &Node) -> Result<Material, Diagnostic> {
+    if node.id.starts_with("builtin:") {
+        material(&node.id).ok_or_else(|| node.fail("AML_MATERIAL", "Unknown builtin material."))
+    } else {
+        Material::read(node)
+    }
+}
+
 fn attribute_name(key: &str) -> String {
     let mut name = String::new();
     for c in key.chars() {

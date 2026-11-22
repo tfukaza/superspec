@@ -12,7 +12,7 @@ use super::{
     furniture::{self, Shelf},
     goods,
     grocer_props::{self, Options},
-    restaurant_fittings as kitchen, restaurant_food as food, restaurant_oven,
+    hero_props, restaurant_fittings as kitchen, restaurant_food as food, restaurant_oven,
     restaurant_surfaces::{self, Settings},
     restaurant_work_details as details,
     room::{self, Interior, Room},
@@ -24,12 +24,17 @@ use superspec_geometry::{
     math::{cos, sin},
 };
 use superspec_types::rng::SeededRng;
+#[path = "roast_dining.rs"]
+mod dining;
+#[path = "roast_props.rs"]
+mod service;
 #[derive(Clone, Copy)]
 pub struct Assets {
     pub food: bool,
     pub metal: bool,
     pub surfaces: bool,
     pub tiles: bool,
+    pub hero_props: bool,
 }
 fn on<'a, 'c>(d: &'a mut Fixture<'_, 'c>, pen: Pen) -> Fixture<'a, 'c> {
     Fixture {
@@ -61,6 +66,21 @@ fn prop(
         },
     )
     .map(|_| ())
+}
+
+fn stool(
+    d: &mut Fixture<'_, '_>,
+    room: &Room<'_>,
+    at: V3,
+    size: V3,
+    yaw: f64,
+    detailed: bool,
+) -> Result<(), String> {
+    if detailed {
+        hero_props::wooden_stool(d, at, size, yaw)
+    } else {
+        prop(d, room, "shop-stool-detailed", at, size, yaw)
+    }
 }
 fn pantry(
     d: &mut Fixture<'_, '_>,
@@ -97,15 +117,18 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
     room.validate()?;
     d.mesh.check_work(0)?;
     let (width, depth, h) = (room.width, room.depth, room.height);
-    let dining = width >= 4.4 && depth >= 5.2;
-    let w = if dining {
+    let deep_dining = width >= 4.4 && depth >= 5.2;
+    let compact_dining = assets.hero_props && !deep_dining && width >= 3.70 && depth >= 3.0;
+    let w = if deep_dining {
         (width - 2.05).min(2.45)
+    } else if compact_dining {
+        (width - 1.56).min(2.42)
     } else {
         width
     };
     let mut layout = room.stream("layout")?;
     let mut pen = d.pen.clone();
-    if layout.chance(0.5) && !dining {
+    if layout.chance(0.5) && !deep_dining && !compact_dining {
         pen = pen.facing([w, 0., 0.], [-1., 0., 0.], [0., 1., 0.])?;
         pen.mirrored = !pen.mirrored;
     }
@@ -147,7 +170,15 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
     } else {
         0.08
     };
-    let end = w - if w < 2.3 { 0.56 } else { 0.72 };
+    // The compact bay has a separate aisle, so the counter can use its
+    // kitchen width instead of taking another gap out of the prep run.
+    let end = w - if compact_dining {
+        0.08
+    } else if w < 2.3 {
+        0.56
+    } else {
+        0.72
+    };
     let bench_width = end - 0.06;
     let bench = root.moved([0.06, counter_y, 0.])?;
     let top = kitchen::counter(
@@ -163,20 +194,26 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
         room.kit.settings().timber.textured,
         settings,
     )?;
-    let (register_x, register_y, scale) = if bench_width >= 1.7 {
-        (bench_width - 0.02, 0.50, 1.)
+    // Both layouts keep checkout on the same work surface. Narrow counters
+    // retain the compact register to leave room for preparation.
+    let checkout = bench.into_part(&format!("{}/checkout/register", root.part))?;
+    if bench_width >= 1.7 {
+        let scale = forms::rotated(&checkout, [bench_width - 0.18, 0.403, top], 2, -0.09)?;
+        service::dial_scale(&mut on(d, scale), repeat)?;
+        service::prep_tools(
+            &mut on(d, bench.clone()),
+            [chop_x + 0.27, 0.486, top],
+            repeat,
+        )?;
     } else {
-        (0.225, 0.39, 0.65)
-    };
-    let register = bench
-        .into_part(&format!("{}/checkout/register", root.part))?
-        .facing([register_x, register_y, top], [-1., 0., 0.], [0., -1., 0.])?;
-    super::checkout::draw(
-        &mut on(d, register),
-        [0.; 3],
-        scale,
-        room.assets.shop_register,
-    )?;
+        let register = checkout.facing([0.225, 0.39, top], [-1., 0., 0.], [0., -1., 0.])?;
+        super::checkout::draw(
+            &mut on(d, register),
+            [0.; 3],
+            0.65,
+            room.assets.shop_register,
+        )?;
+    }
     let mut stock = room.stream("counter-stock")?;
     if bench_width >= 1.7 {
         kitchen::condiment_group(
@@ -185,16 +222,9 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
             &mut stock,
             room.assets.grocer_props,
         )?;
-        kitchen::takeaway_stack(&mut on(d, bench.clone()), [0.53, 0.42, top], &mut stock)?;
-        if bench_width >= 2.3 {
-            prop(
-                &mut on(d, bench.clone()),
-                room,
-                "counter-scale",
-                [0.92, 0.4, top],
-                [0.28, 0.26, 0.32],
-                -0.1,
-            )?;
+        service::takeaway_stack(&mut on(d, bench.clone()), [0.53, 0.42, top], &mut stock)?;
+        if bench_width >= 2.3 || compact_dining {
+            service::sauce_station(&mut on(d, bench.clone()), [0.88, 0.435, top])?;
         }
     }
     let mut x = if bench_width >= 1.7 { 0.48 } else { 0.20 };
@@ -208,28 +238,37 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
         )?;
         let tray = &mut on(d, tray);
         if index % 3 == 2 {
-            kitchen::sauce_tray(tray, [0.; 3], repeat)?;
+            service::sauce_tray(tray, repeat)?;
         } else {
-            let floor = kitchen::meat_tray(tray, [0.; 3], [0.34, 0.24], repeat)?;
+            let floor = service::meat_tray(tray, repeat)?;
             let variation = stock.float(0.9, 1.);
-            food::sliced_meat(
-                tray,
-                [0., 0., floor],
-                [0.30 * variation, 0.20 * variation, 0.075],
-                assets.food,
-            )?;
+            match index % 4 {
+                0 => food::sliced_roast(
+                    tray,
+                    [0., 0., floor],
+                    [0.30 * variation, 0.20 * variation, 0.075],
+                    assets.food,
+                )?,
+                1 => {
+                    food::sliced_roast(
+                        tray,
+                        [-0.054, 0.014, floor],
+                        [0.15 * variation, 0.16, 0.045],
+                        assets.food,
+                    )?;
+                    service::roasted_joint(tray, 0.060, floor)?;
+                }
+                _ => {
+                    service::sliced_fan(tray, [-0.067, -0.032, floor], -0.22)?;
+                    service::sliced_fan(tray, [0.065, 0.019, floor], 0.14)?;
+                }
+            }
         }
         x += 0.38;
         index += 1;
     }
     if bench_width < 1.7 {
-        kitchen::bowl_stack(
-            &mut on(d, bench.clone()),
-            [0.16, 0.41, top],
-            3,
-            0.075,
-            srgb("#385c7a"),
-        )?;
+        service::bowl_stack(&mut on(d, bench.clone()), [0.16, 0.41, top], 3)?;
     }
     let rail_z = (h - 0.22).min(1.98);
     let rail_y = counter_y + 0.30;
@@ -338,14 +377,7 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
             0.008,
             [0.88, 0.90, 0.91],
         )?;
-        wares::pot(
-            steel,
-            [0.29, 0.3, hob.z],
-            0.18,
-            0.28,
-            galvanized(),
-            Some(srgb("#795231")),
-        )?;
+        service::stock_pot(steel, [0.29, 0.3, hob.z], 0.18, 0.28, true, repeat)?;
         if stove_width >= 1.25 {
             forms::lathe(
                 steel,
@@ -356,28 +388,26 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
                 10,
                 None,
             )?;
-            wares::wok(
+            service::wok(
                 &mut on(d, stove.clone()),
                 [0.82, 0.3, hob.z + 0.05],
                 0.22,
-                srgb("#353430"),
+                repeat,
             )?;
         }
         if stove_width >= 1.95 {
-            wares::pot(
+            service::stock_pot(
                 &mut on(d, metal.clone()),
                 [stove_width - 0.28, 0.27, hob.z],
                 0.15,
                 0.18,
-                galvanized(),
-                None,
+                false,
+                repeat,
             )?;
-            kitchen::bowl_stack(
+            service::bowl_stack(
                 &mut on(d, stove.clone()),
                 [stove_width - 0.70, 0.28, hob.z],
                 5,
-                0.075,
-                srgb("#385c7a"),
             )?;
         }
         details::order_slips(
@@ -387,6 +417,9 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
             &mut room.stream("orders")?,
             repeat,
         )?;
+        if compact_dining {
+            service::wall_utensils(d, [1.14, depth - 0.062, 1.46], repeat)?;
+        }
         details::chopstick_cup(
             &mut on(d, stove),
             [(stove_width - 0.10).min(0.57), 0.43, hob.z],
@@ -473,25 +506,36 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
             -0.07,
         )?;
         let yaw = supplies.float(-0.2, 0.2);
-        let size = grocer_props::size("shop-stool", [0.36, 0.36, 0.46])?;
+        let requested = [0.36, 0.36, 0.46];
+        let size = if assets.hero_props {
+            requested
+        } else {
+            grocer_props::size("shop-stool-detailed", requested)?
+        };
         let stool_depth = sin(yaw).abs() * size[0] + cos(yaw) * size[1];
         let box_depth = 0.42 * sin(0.045) + 0.34 * cos(0.045);
-        if depth - 1.25 - 1.12 > (stool_depth + box_depth) / 2. + 0.04 {
-            prop(
+        if !compact_dining && depth - 1.25 - 1.12 > (stool_depth + box_depth) / 2. + 0.04 {
+            stool(
                 d,
                 room,
-                "shop-stool",
                 [w - 0.28, 1.12, 0.],
-                [0.36, 0.36, 0.46],
+                requested,
                 yaw,
+                assets.hero_props,
             )?;
         }
     }
-    wares::bucket(d, [w - 0.2, 0.3, 0.], 0.13, 0.23, srgb("#2d7885"))?;
+    let bucket = [if compact_dining { width } else { w } - 0.2, 0.3, 0.];
+    if assets.hero_props {
+        hero_props::bucket(d, bucket, 0.13, 0.23, -0.30)?;
+    } else {
+        wares::detailed_bucket(d, bucket, 0.13, 0.23, srgb("#2d7885"))?;
+    }
     if depth >= 2.7 {
         restaurant_oven::gas_cylinder(d, [w - 0.25, depth - 0.89, 0.], &mut rng)?;
     }
-    restaurant_surfaces::tiles(d, [w, 1.5], depth - 0.003, 317, true, settings)?;
+    let wall_width = if compact_dining { width } else { w };
+    restaurant_surfaces::tiles(d, [wall_width, 1.5], depth - 0.003, 317, true, settings)?;
     restaurant_surfaces::tiles(
         &mut on(d, room.left_wall(&root, 0., 0.)?),
         [depth, 1.5],
@@ -511,26 +555,16 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
     if room.assets.posters && h >= 2.35 {
         let mut rng = room.stream("posters")?;
         let wall = root.into_part(&format!("{}/posters", root.part))?.facing(
-            [w - 0.006, 0., 0.],
+            [wall_width - 0.006, 0., 0.],
             [0., -1., 0.],
             [-1., 0., 0.],
         )?;
-        for (design, width, position, turn, seed) in [
-            ("roast-menu", 0.34, [-0.94, 0., 1.91], 2., "menu"),
-            ("calendar", 0.25, [-1.55, 0., 1.92], 3., "calendar"),
+        for (menu, width, position, turn) in [
+            (true, 0.34, [-0.94, 0., 1.91], 2.),
+            (false, 0.25, [-1.55, 0., 1.92], 3.),
         ] {
-            posters::draw(
-                &mut on(d, wall.moved(position)?),
-                &posters::Options {
-                    design: design.into(),
-                    width,
-                    rotation: rng.float(-turn, turn),
-                    layer: 0,
-                    wear: 0.3,
-                    seed: Some(format!("{}/{seed}", room.key)),
-                },
-                true,
-            )?;
+            let pen = forms::rotated(&wall, position, 1, rng.float(-turn, turn).to_radians())?;
+            service::paper_card(&mut on(d, pen), width, menu)?;
         }
         let left = root.into_part(&format!("{}/posters", root.part))?.facing(
             [0.006, 0.43, 1.71],
@@ -550,19 +584,52 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Resu
             true,
         )?;
     }
-    if dining {
-        dining_tables(d, room)?;
+    if deep_dining {
+        dining_tables(d, room, assets.hero_props)?;
     }
-    let kitchen = Room { width: w, ..*room };
+    if compact_dining {
+        compact_tables(d, room, assets)?;
+    }
+    let amenity_room = Room {
+        width: wall_width,
+        ..*room
+    };
     room::amenities(
         d,
-        &kitchen,
+        &amenity_room,
         0.9_f64.min(depth - 1.9),
         (depth >= 3.).then_some(1.2),
     )
 }
 
-fn dining_tables(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
+fn compact_tables(d: &mut Fixture<'_, '_>, room: &Room<'_>, assets: Assets) -> Result<(), String> {
+    let width = 0.55;
+    let depth = 0.45;
+    let x = room.width - width - 0.07;
+    for (index, y) in [0.97, 2.09].into_iter().enumerate() {
+        let table = d
+            .pen
+            .into_part(&format!("{}/dining/table-{index}", d.pen.part))?
+            .moved([x, y, 0.])?;
+        dining::table(&mut on(d, table), width, depth, index, assets.food)?;
+        for (side, offset) in [(-1., -0.18), (1., depth + 0.18)] {
+            let pen = d
+                .pen
+                .into_part(&format!("{}/dining/seat-{index}-{side}", d.pen.part))?;
+            stool(
+                &mut on(d, pen),
+                room,
+                [x + width / 2., y + offset, 0.],
+                [0.30, 0.30, 0.43],
+                side * 0.055,
+                assets.hero_props,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn dining_tables(d: &mut Fixture<'_, '_>, room: &Room<'_>, detailed: bool) -> Result<(), String> {
     let mut y = 1.2;
     let mut index = 0;
     let wood = srgb("#746149");
@@ -610,13 +677,13 @@ fn dining_tables(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String>
             room.assets.grocer_props,
         )?;
         for py in [y + 0.16, y + 1.29] {
-            prop(
+            stool(
                 d,
                 room,
-                "shop-stool",
                 [room.width - 0.455, py, 0.],
                 [0.32, 0.32, 0.45],
                 0.,
+                detailed,
             )?;
         }
         index += 1;

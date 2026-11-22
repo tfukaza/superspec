@@ -9,6 +9,16 @@ pub enum AlphaMode {
     Blend,
 }
 
+/// An authored lower-detail surface on the same geometry and UV layout.
+/// Coverage is the fraction of viewport height below which it replaces the
+/// preceding material. Variants are ordered from near to far.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterialLod {
+    pub screen_coverage: f64,
+    pub material: Box<Material>,
+}
+
 /// Renderer-neutral PBR material. Colors are sRGB; scalar data textures are linear.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -55,6 +65,8 @@ pub struct Material {
     /// it shows. Exported in `extras.materialSpec.program`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub program: Option<LiveProgram>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub lods: Vec<MaterialLod>,
 }
 
 /// How a material is drawn: `lit` by the scene's lights, or `painted`, whose program's color
@@ -208,6 +220,7 @@ impl Default for Material {
             live: Vec::new(),
             shading: None,
             program: None,
+            lods: Vec::new(),
         }
     }
 }
@@ -247,6 +260,29 @@ impl Material {
     /// Validates renderer-neutral data supplied by either AML or procedural material producers.
     pub fn validate(&self) -> Result<(), String> {
         let material = self;
+        let mut last = 1.0;
+        let mut ids = std::collections::BTreeSet::from([self.id.as_str()]);
+        let allowed = crate::limits::MAX_MATERIAL_LOD_ALTERNATIVES;
+        if self.lods.len() > allowed {
+            return Err(format!(
+                "Material {} exceeds {allowed} LOD alternatives.",
+                self.id
+            ));
+        }
+        for lod in &self.lods {
+            if !(lod.screen_coverage > 0. && lod.screen_coverage < last)
+                || lod.material.id.is_empty()
+                || !ids.insert(&lod.material.id)
+                || !lod.material.lods.is_empty()
+            {
+                return Err(format!(
+                    "Invalid material LOD for {}: expected distinct, flat alternatives with descending screen coverage.",
+                    self.id
+                ));
+            }
+            last = lod.screen_coverage;
+            lod.material.validate()?;
+        }
         let error = |message: &str| message.to_owned();
         if [
             Some(material.repeat),
@@ -372,6 +408,7 @@ impl Material {
                     LiveArgument::Constant { .. } => None,
                 })
         }))
+        .chain(self.lods.iter().flat_map(|lod| lod.material.companions()))
         .collect()
     }
 }

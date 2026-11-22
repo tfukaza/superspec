@@ -23,6 +23,7 @@ impl<'a> PhysicalBuild<'a> {
         cancelled: &'a (dyn Fn() -> bool + Sync),
     ) -> Result<(Self, Scene), Diagnostic> {
         let resolution = Resolution::new(prepared.document)?;
+        let window_openings = windows::opening_references(&resolution)?;
         let compiler = Compiler {
             cancelled,
             validate_image,
@@ -37,6 +38,8 @@ impl<'a> PhysicalBuild<'a> {
             wall_paths: BTreeMap::new(),
             wall_offsets: BTreeMap::new(),
             wall_silhouettes: BTreeMap::new(),
+            window_openings,
+            window_fits: BTreeMap::new(),
             flights: BTreeMap::new(),
             volumes: vec![],
             authored: vec![],
@@ -122,12 +125,20 @@ impl<'a> PhysicalBuild<'a> {
             Ok(())
         }
     }
+    pub(crate) fn publish_material_assets(
+        &self,
+        scene: &mut Scene,
+        source: Option<&Node>,
+    ) -> Result<(), Diagnostic> {
+        self.compiler.load_material_assets(scene, source)
+    }
+
     pub(crate) fn publish_assets(
         &self,
         scene: &mut Scene,
         fallback_source: Option<&Node>,
     ) -> Result<(), Diagnostic> {
-        self.compiler.load_material_assets(scene, fallback_source)?;
+        self.publish_material_assets(scene, fallback_source)?;
         scene.manifest.openings = self
             .compiler
             .resolution

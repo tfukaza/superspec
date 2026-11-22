@@ -36,13 +36,21 @@ use std::{collections::BTreeMap, sync::Arc};
 use superspec_geometry::{Matrix, V3};
 use superspec_types::rng::SeededRng;
 
+mod bulkhead;
+mod meshes;
+pub use meshes::meshes;
+mod cabinet;
 mod cloth;
+mod extraction_grille;
 mod hardware;
 mod party;
+mod passage_lamp;
+mod procedural_wall;
 mod street;
+mod weeds;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "12";
+const VERSION: &str = "13";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 /// The default `weight` of a fixture's small hardware (clips, straps, brackets, bolts, lines):
@@ -2764,7 +2772,7 @@ fn hung_sign(
     projecting(name, values, cancelled, signs::mounts::hung_sign)
 }
 
-const GROCER_PROPS: [&str; 17] = [
+const GROCER_PROPS: [&str; 18] = [
     "rice-sack",
     "egg-basket",
     "garlic-braid",
@@ -2775,6 +2783,7 @@ const GROCER_PROPS: [&str; 17] = [
     "tea-carton",
     "tissue-roll",
     "shop-stool",
+    "shop-stool-detailed",
     "shop-counter",
     "drinks-cooler",
     "seasoning-jar",
@@ -2788,6 +2797,7 @@ const GROCER_PROPS: [&str; 17] = [
 /// size (room frame). Anchor: the model's own grocer anchor at the origin (its footprint
 /// rests on z = 0). Parameters: `model` (one of rice-sack, egg-basket, garlic-braid,
 /// counter-scale, bottle-crate, drink-bottle, food-tin, tea-carton, tissue-roll, shop-stool,
+/// shop-stool-detailed,
 /// shop-counter, drinks-cooler, seasoning-jar, dry-goods-bag, bottle-load, produce-crate,
 /// stock-box; `rice-sack`), `width` (m, 0.75), `depth` (m, 0.65), `height` (m, 0.8),
 /// `yaw` (radians, 0), `variant` (label variant, 1–4, 1), `tint` (#ffffff), `textured`
@@ -3061,6 +3071,24 @@ fn tube_light(
     })
 }
 
+/// Pressed reflector and control gear for a surface-mounted twin fluorescent strip.
+fn twin_strip_housing(
+    name: &str,
+    values: &Values,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<NativeOutput, String> {
+    let mut args = Arguments::new(name, values);
+    let length = args.number("length", 1.2)?;
+    let enclosed = args.boolean("enclosed", false)?;
+    args.finish()?;
+    draw(cancelled, |mesh| {
+        shop::fittings::twin_strip_housing(
+            &mut on(mesh, room_pen("luminaire", [0.; 3])?)?,
+            length,
+            enclosed,
+        )
+    })
+}
 /// `kowloon/wall-clock`: a seeded wall clock (room frame). Anchor: the centre of the dial
 /// on the wall plane; it faces -Y. Parameters: `seed`.
 fn wall_clock(
@@ -3137,77 +3165,6 @@ fn stool(
     })
 }
 
-/// Splits a render mesh into one ItemSpec mesh per material slot, in first-use order.
-/// Vertex tints become vertex colors.
-pub fn meshes(mesh: &Mesh<'_>) -> Result<Vec<ItemMesh>, String> {
-    let mut order: Vec<String> = vec![];
-    let mut groups: BTreeMap<String, (ItemMesh, BTreeMap<u32, u32>)> = BTreeMap::new();
-    for (triangle, corners) in mesh.indices.chunks_exact(3).enumerate() {
-        let surface = mesh
-            .surfaces
-            .get(
-                *mesh
-                    .triangle_surfaces
-                    .get(triangle)
-                    .ok_or("Unassigned triangle.")?,
-            )
-            .ok_or("Unknown surface.")?;
-        let slot = surface.slot.clone();
-        // A sliver without area (a canvas fold pinched shut, a mitre closed to a point) has no
-        // direction to map a material along; a receiver of one is refused, so it is left out.
-        let [a, b, c] = [0, 1, 2].map(|k| {
-            let p = mesh.vertices[corners[k] as usize].position;
-            [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]
-        });
-        let (u, v) = (
-            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
-        );
-        let cross = [
-            u[1] * v[2] - u[2] * v[1],
-            u[2] * v[0] - u[0] * v[2],
-            u[0] * v[1] - u[1] * v[0],
-        ];
-        if cross.iter().map(|x| x * x).sum::<f64>().sqrt() < 1e-9 {
-            continue;
-        }
-        let (target, remap) = groups.entry(slot.clone()).or_insert_with(|| {
-            order.push(slot.clone());
-            (
-                ItemMesh {
-                    id: slot.clone(),
-                    positions: vec![],
-                    normals: vec![],
-                    uvs: vec![],
-                    additional_uvs: BTreeMap::new(),
-                    colors: vec![],
-                    tangents: vec![],
-                    indices: vec![],
-                    material_slot: slot.clone(),
-                },
-                BTreeMap::new(),
-            )
-        });
-        for &corner in corners {
-            let index = *remap.entry(corner).or_insert_with(|| {
-                let vertex = mesh.vertices[corner as usize];
-                target.positions.push(vertex.position);
-                target.normals.push(vertex.normal);
-                target.uvs.push(vertex.uv);
-                target
-                    .colors
-                    .push([vertex.color[0], vertex.color[1], vertex.color[2], 1.]);
-                target.positions.len() as u32 - 1
-            });
-            target.indices.push(index);
-        }
-    }
-    Ok(order
-        .into_iter()
-        .filter_map(|slot| groups.remove(&slot).map(|(mesh, _)| mesh))
-        .collect())
-}
-
 impl Natives {
     pub fn new() -> Self {
         let registered: &[(&'static str, Generate)] = &[
@@ -3233,6 +3190,10 @@ impl Natives {
             ("kowloon/tarp", tarp),
             ("kowloon/board-sign", board_sign),
             ("kowloon/wall-lamp", wall_lamp),
+            ("kowloon/ceiling-bulkhead", bulkhead::bulkhead),
+            ("kowloon/wall-extraction-grille", extraction_grille::grille),
+            ("kowloon/passage-sign-lamp", passage_lamp::sign_lamp),
+            ("kowloon/utility-cabinet", cabinet::cabinet),
             ("kowloon/meter-bank", meter_bank),
             ("kowloon/roller-shutter", roller_shutter),
             ("kowloon/entrance", entrance),
@@ -3257,6 +3218,7 @@ impl Natives {
             ("kowloon/pendant-lamp", pendant_lamp),
             ("kowloon/ceiling-fan", ceiling_fan),
             ("kowloon/tube-light", tube_light),
+            ("kowloon/twin-strip-housing", twin_strip_housing),
             ("kowloon/wall-clock", wall_clock),
             ("kowloon/calendar", calendar),
             ("kowloon/hanging-scale", hanging_scale),
@@ -3266,7 +3228,10 @@ impl Natives {
             ("kowloon/pavement", street::pavement),
             ("kowloon/road", street::road),
             ("kowloon/concrete-member", street::concrete_member),
+            ("kowloon/wall-slab", procedural_wall::slab),
+            ("kowloon/wall-notices", procedural_wall::notices),
             ("kowloon/street-tree", street::street_tree),
+            ("kowloon/weed-blades", weeds::blades),
             ("kowloon/pavement-corner", street::pavement_corner),
             ("kowloon/pedestrian-avenue", street::pedestrian_avenue),
             ("kowloon/street-lamp", street::street_lamp),
@@ -3296,6 +3261,14 @@ impl Default for Natives {
     }
 }
 impl NativeGenerators for Natives {
+    fn preserve_signed_zero(&self, material_slot: &str) -> bool {
+        // The exporter derives tangent frames for the stock atlases from their
+        // indexed triangles. Keep those smoothing boundaries across placements.
+        super::city::uses_stock_material(material_slot)
+            || superspec_catalog::material(&format!("builtin:{material_slot}"))
+                .is_some_and(|material| material.normal_texture.is_some())
+    }
+
     fn identity(&self, name: &str) -> Option<String> {
         self.generators
             .contains_key(name)

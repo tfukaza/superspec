@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 const source = (path, format) => readFileSync(new URL(path, import.meta.url), format);
-const theme = "../crates/engine/src/worldspec/themes/kowloon/appearance/street-materials.json";
+const theme = "../crates/engine/src/worldspec/themes/kowloon/materials/street-materials.json";
 const examples = "../crates/engine/src/materialspec/program/examples/";
 
 /** Build a standalone Material Studio project for existing closed GLB meshes. Each

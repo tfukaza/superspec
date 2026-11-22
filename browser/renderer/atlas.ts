@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { MaterialShading, ProgramShader, Reads } from "./shade.ts";
 import { NORMAL_ENCODE, RELIEF_ADJUST } from "./relief-glsl.ts";
+import { LayoutDigest, hashFloats } from "./layout-digest.ts";
 
 /**
  * Receiver atlases for the GPU bake of scene projects. The layout comes from the engine
@@ -51,14 +52,6 @@ export interface AtlasLayout {
 /** Numbers per chart in `AtlasLayout.surface`. */
 const SURFACE = 10;
 
-/** FNV-1a over the bits of floats, for content keys; not a security boundary. */
-function hashFloats(values: Float32Array, seed = 0x811c9dc5): string {
-  const bits = new Uint32Array(values.buffer, values.byteOffset, values.length);
-  let value = seed;
-  for (let index = 0; index < bits.length; index++) value = Math.imul(value ^ bits[index], 0x01000193);
-  return (value >>> 0).toString(16).padStart(8, "0");
-}
-
 /** The receivers' atlases by mesh identity. Throws when the records are not the format this module reads. */
 export function atlasLayouts(layouts: ProjectLayouts): Map<string, AtlasLayout> {
   if (layouts.record !== RECORD) throw new Error(`Receiver layout records have ${layouts.record} numbers; this viewer reads ${RECORD}.`);
@@ -68,21 +61,20 @@ export function atlasLayouts(layouts: ProjectLayouts): Map<string, AtlasLayout> 
     if (records.length !== receiver.triangles * RECORD) throw new Error(`Receiver layout of ${receiver.id} is incomplete.`);
     const surface = Float64Array.from(receiver.surface ?? []);
     // The surface map names where a chart's texels sample the pattern: part of the content, like the records.
-    const mapped = surface.length ? `:${hashFloats(new Float32Array(new Float64Array(surface).buffer))}` : "";
+    const mapped = surface.length ? `:${hashFloats(surface)}` : "";
     found.set(receiver.id, { id: receiver.id, material: receiver.material, width: receiver.width, height: receiver.height, gutter: layouts.gutter,
       density: receiver.density, triangles: receiver.triangles, records, surface,
-      key: `${receiver.width}x${receiver.height}:${layouts.gutter}:${hashFloats(records)}:${hashFloats(records, 0x9747b28c)}${mapped}` });
+      key: `${receiver.width}x${receiver.height}:${layouts.gutter}:${hashFloats(records)}${mapped}` });
   }
   return found;
 }
 
-/** The mesh a baked receiver is displayed with: the receiver's triangles, unshared, with their atlas UVs. */
-export function displayGeometry(layout: AtlasLayout): THREE.BufferGeometry {
+/** Positions on screen include the receiver's material-frame origin. Bake records stay in the original frame. */
+export function displayGeometry(layout: AtlasLayout, materialOrigin?: readonly [number, number, number]): THREE.BufferGeometry {
   const count = layout.triangles * 3;
   const positions = new Float32Array(count * 3), normals = new Float32Array(count * 3), uvs = new Float32Array(count * 2);
   for (let triangle = 0; triangle < layout.triangles; triangle++) {
     const record = triangle * RECORD;
-    positions.set(layout.records.subarray(record + POSITIONS, record + POSITIONS + 9), triangle * 9);
     normals.set(layout.records.subarray(record + NORMALS, record + NORMALS + 9), triangle * 9);
     uvs.set(layout.records.subarray(record + ATLAS_UVS, record + ATLAS_UVS + 6), triangle * 6);
   }
@@ -90,16 +82,77 @@ export function displayGeometry(layout: AtlasLayout): THREE.BufferGeometry {
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
   geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-  geometry.computeBoundingBox();
-  geometry.computeBoundingSphere();
+  placeDisplayGeometry(geometry, layout, materialOrigin);
   return geometry;
 }
 
+/** Reconstruct from intrinsic vertices on every move so a sequence of drags never accumulates rounding. */
+export function placeDisplayGeometry(geometry: THREE.BufferGeometry, layout: AtlasLayout, origin: readonly [number,number,number] = [0,0,0]): void {
+  const attribute = geometry.getAttribute("position");
+  for (let t = 0; t < layout.triangles; t++) {
+    let from = t * RECORD + POSITIONS, to = t * 9;
+    for (let corner = 0; corner < 3; corner++) {
+      attribute.array[to++] = layout.records[from++] + origin[0];
+      attribute.array[to++] = layout.records[from++] + origin[1];
+      attribute.array[to++] = layout.records[from++] + origin[2];
+    }
+  }
+  attribute.needsUpdate = true;
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+}
+
+/** Keep the existing WebGL attribute and install positions and bounds prepared off the displayed mesh. */
+export function commitPositions(geometry: THREE.BufferGeometry, staged: THREE.BufferGeometry): void {
+  const positions = geometry.getAttribute("position");
+  positions.array.set(staged.getAttribute("position").array);
+  positions.needsUpdate = true;
+  geometry.boundingBox = staged.boundingBox;
+  geometry.boundingSphere = staged.boundingSphere;
+}
+
+/** Use indexed paint when each display triangle is its intact source triangle up to cyclic corner order. */
+export function carryIndexedTints(source: THREE.BufferGeometry, display: THREE.BufferGeometry): boolean {
+  const index = source.getIndex(), from = source.getAttribute("position"), to = display.getAttribute("position"), tints = source.getAttribute("color");
+  const corners = index ? index.count : from.count;
+  if (corners !== to.count) return false;
+  const prior = display.userData.tintRotations as Uint8Array | undefined;
+  const rotations = new Uint8Array(corners / 3);
+  let unchanged = prior?.length === rotations.length;
+  const matches = (corner: number, sourceCorner: number) => {
+    const vertex = index ? index.getX(sourceCorner) : sourceCorner;
+    return Math.abs(to.getX(corner) - from.getX(vertex)) <= 1e-5
+      && Math.abs(to.getY(corner) - from.getY(vertex)) <= 1e-5
+      && Math.abs(to.getZ(corner) - from.getZ(vertex)) <= 1e-5;
+  };
+  for (let c = 0; c < corners; c += 3) {
+    let rotation = 0;
+    while (rotation < 3 && !(matches(c, c + rotation) && matches(c + 1, c + (rotation + 1) % 3)
+      && matches(c + 2, c + (rotation + 2) % 3))) rotation++;
+    if (rotation === 3) return false;
+    rotations[c / 3] = rotation;
+    if (prior?.[c / 3] !== rotation) unchanged = false;
+  }
+  if (unchanged) return true;
+  const colors = new Float32Array(to.count * 3);
+  for (let c = 0; c < corners; c++) {
+    const k = c % 3, sourceCorner = c - k + (k + rotations[(c - k) / 3]) % 3;
+    const vertex = index ? index.getX(sourceCorner) : sourceCorner;
+    colors[c * 3] = tints.getX(vertex);
+    colors[c * 3 + 1] = tints.getY(vertex);
+    colors[c * 3 + 2] = tints.getZ(vertex);
+  }
+  display.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  display.userData.tintRotations = rotations;
+  return true;
+}
+
 /**
- * Floats per vertex of the bake geometry: atlas position (3), a triangle record, then its chart's surface map without
- * the chart's position (eight numbers; zero for a chart that is not on a pattern anchor's lattice).
+ * A bake instance holds the original triangle record, its lattice transform and up to five 2D chart corners.
+ * The GPU reuses one triangle fan for every instance.
  */
-const STRIDE = 3 + RECORD + SURFACE - 2;
+const POLYGON = RECORD + 2 + SURFACE - 2;
+const STRIDE = POLYGON + 8;
 /** The role of a triangle of a whole flat face on a pattern anchor's lattice (`LAYOUT_RECORD` in `authoring/layout.rs`). */
 const FACE = 3;
 
@@ -131,24 +184,33 @@ function clip(points: number[][], f: (point: number[]) => number, side: number):
  * is the same point of the plane. Every vertex of such a chart carries the chart's surface map
  * (`AtlasLayout.surface`), from which the bake takes the lattice point each texel samples.
  */
-export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
-  const vertices: number[] = [], indices: number[] = [];
+export function bakeGeometry(layout: AtlasLayout): THREE.InstancedBufferGeometry {
   const gutter = layout.gutter;
-  const charts = new Map<string, Float64Array>();
-  for (let chart = 0; chart + SURFACE <= layout.surface.length; chart += SURFACE) {
-    charts.set(`${layout.surface[chart]},${layout.surface[chart + 1]}`, layout.surface.subarray(chart + 2, chart + SURFACE));
+  const faces = new Set<number>();
+  for (let offset = 0; offset < layout.records.length; offset += RECORD) {
+    if (layout.records[offset + META + 3] === FACE) faces.add(layout.records[offset] + layout.records[offset + 1] * layout.width);
   }
-  const none = new Float64Array(SURFACE - 2);
-  const faces = new Set<string>();
-  const emit = (polygon: number[][], record: Float32Array, surface: Float64Array): void => {
+  const charts = new Map<number, Float64Array>();
+  for (let chart = 0; chart + SURFACE <= layout.surface.length; chart += SURFACE) {
+    const key = layout.surface[chart] + layout.width * layout.surface[chart + 1];
+    if (faces.has(key)) charts.set(key, layout.surface.subarray(chart + 2, chart + SURFACE));
+  }
+  const instances = new Float32Array((layout.triangles + faces.size) * STRIDE);
+  let used = 0;
+  const emit = (polygon: number[][], record: Float32Array, surface?: Float64Array, faceRectangle = false): void => {
     if (polygon.length < 3) return;
-    const first = vertices.length / STRIDE;
-    for (const point of polygon) {
-      vertices.push(point[0], point[1], 0);
-      for (let index = 0; index < RECORD; index++) vertices.push(record[index]);
-      for (let index = 0; index < SURFACE - 2; index++) vertices.push(surface[index]);
+    const start = used++ * STRIDE;
+    // Pack the fifth fan point next to the last receiver normal.
+    instances.set(record.subarray(0, UVS), start);
+    instances.set(record.subarray(UVS), start + UVS + 2);
+    if (surface) { instances.set(surface, start + RECORD + 2); instances[start + POLYGON - 1] = faceRectangle ? 2 : 1; }
+    // Clipping a rectangle by one line yields at most five corners. Repeated fan vertices have zero area.
+    for (let corner = 0; corner < 5; corner++) {
+      const point = polygon[Math.min(corner, polygon.length - 1)];
+      const at = start + (corner === 4 ? UVS : POLYGON + corner * 2);
+      instances[at] = point[0];
+      instances[at + 1] = point[1];
     }
-    for (let corner = 1; corner + 1 < polygon.length; corner++) indices.push(first, first + corner, first + corner + 1);
   };
   for (let triangle = 0; triangle < layout.triangles; triangle++) {
     const record = layout.records.subarray(triangle * RECORD, (triangle + 1) * RECORD);
@@ -156,12 +218,15 @@ export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
     const turn = record[META], role = record[META + 3];
     let polygon = [[x, y], [x + width, y], [x + width, y + height], [x, y + height]];
     if (role === FACE) {
-      const name = `${x},${y}`, surface = charts.get(name);
-      if (!surface) throw new Error(`Receiver layout of ${layout.id} states no surface map for the chart at ${name}.`);
-      // The last number says the chart is one the shaders read through its surface map.
-      const mapped = Float64Array.from(surface); mapped[SURFACE - 3] = 1;
-      if (!faces.has(name)) { faces.add(name); emit(polygon, record, mapped); }
-      emit([0, 1, 2].map(corner => [record[ATLAS_UVS + corner * 2] * layout.width, (1 - record[ATLAS_UVS + corner * 2 + 1]) * layout.height]), record, mapped);
+      const key = x + layout.width * y, surface = charts.get(key);
+      if (!surface) throw new Error(`Receiver layout of ${layout.id} states no surface map for the chart at ${x},${y}.`);
+      if (faces.delete(key)) {
+        emit(polygon, record, surface, true);
+        // The backing rectangle interpolates from this same triangle's record at gl_FragCoord.
+        // Redrawing its interior would run the material twice there. Imported corners can extend past it.
+        if (faceInsideChart(layout, triangle * RECORD)) continue;
+      }
+      emit([0, 1, 2].map(corner => [record[ATLAS_UVS + corner * 2] * layout.width, (1 - record[ATLAS_UVS + corner * 2 + 1]) * layout.height]), record, surface);
       continue;
     }
     if (role > 0) {
@@ -173,21 +238,23 @@ export function bakeGeometry(layout: AtlasLayout): THREE.BufferGeometry {
       };
       polygon = clip(polygon, edge, role === 1 ? -1 : 1);
     }
-    emit(polygon, record, none);
+    emit(polygon, record);
   }
-  const buffer = new THREE.InterleavedBuffer(new Float32Array(vertices), STRIDE);
-  const geometry = new THREE.BufferGeometry();
+  const buffer = new THREE.InstancedInterleavedBuffer(instances.subarray(0, used * STRIDE), STRIDE);
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.instanceCount = used;
   const attribute = (name: string, size: number, offset: number) => geometry.setAttribute(name, new THREE.InterleavedBufferAttribute(buffer, size, offset));
-  attribute("position", 3, 0);
-  attribute("aRect", 4, 3 + RECT); attribute("aMeta", 4, 3 + META);
-  for (let corner = 0; corner < 3; corner++) {
-    attribute(`aP${corner}`, 3, 3 + POSITIONS + corner * 3);
-    attribute(`aN${corner}`, 3, 3 + NORMALS + corner * 3);
-  }
+  attribute("aRect", 4, RECT); attribute("aMeta", 4, META);
+  // Five attributes for the 18 position/normal components leaves one ordinary vertex attribute
+  // for the fan corner, even on WebGL2 devices offering the minimum of sixteen slots.
+  for (let i = 0; i < 5; i++) attribute(`aPointNormal${i}`, 4, POSITIONS + i * 4);
   // The third corner's surface UV with the first corner's atlas UV, then the other two corners' atlas UVs.
-  attribute("aUv01", 4, 3 + UVS); attribute("aUv2A0", 4, 3 + UVS + 4); attribute("aA12", 4, 3 + ATLAS_UVS + 2);
-  attribute("aSurface0", 4, 3 + RECORD); attribute("aSurface1", 4, 3 + RECORD + 4);
-  geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+  attribute("aUv01", 4, UVS + 2); attribute("aUv2A0", 4, UVS + 6); attribute("aA12", 4, ATLAS_UVS + 4);
+  attribute("aSurface0", 4, RECORD + 2); attribute("aSurface1", 4, RECORD + 6);
+  // ShaderMaterial already declares normal and uv. Bake meshes have no lighting normals or mesh UVs of their own.
+  attribute("normal", 3, POLYGON); attribute("uv", 2, POLYGON + 3); attribute("aCornerTail", 3, POLYGON + 5);
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0], 3));
+  geometry.setIndex([0, 1, 2, 0, 2, 3, 0, 3, 4]);
   return geometry;
 }
 
@@ -336,18 +403,115 @@ const ATTACHMENT_OUTPUTS: Record<string, string[]> = {
   base: ["base_color", "opacity"], properties: ["roughness", "metalness"], height: ["height", "receiver_normal"], emissive: ["emissive"], offset: ["normal_offset"],
 };
 
+/** A spatially uniform color or property needs only the same covered atlas texels.
+ * Height also carries a receiver normal, and live and hybrid programs may depend on a receiver. */
+export function uniformAttachment(shader: ProgramShader, name: AtlasAttachment): boolean {
+  if (!(name === "base" || name === "properties" || name === "emissive")
+    || !shader.reads?.outputs || shader.renderInputs?.length) return false;
+  return ATTACHMENT_OUTPUTS[name].every(output => !shader.outputs.includes(output) || uniformOutput(shader, output));
+}
+
+/** This stack plane evaluates the same value at every covered texel. */
+export function uniformOutput(shader: ProgramShader, output: string): boolean {
+  const read = shader.reads?.outputs?.[output];
+  return !shader.renderInputs?.length && read?.intrinsic === true
+    && read.sample?.length === 0 && read.cpuFields?.length === 0 && read.planes?.length === 0
+    && read.features === false && read.edges === false;
+}
+
+const coverageKeys = new WeakMap<AtlasLayout, string>();
+const latticeKeys = new WeakMap<AtlasLayout, string>();
+
+function faceInsideChart(layout: AtlasLayout, start: number): boolean {
+  const r = layout.records, x = r[start], y = r[start + 1];
+  for (let j = ATLAS_UVS; j < RECORD; j += 2) {
+    const u = r[start + j] * layout.width, v = (1 - r[start + j + 1]) * layout.height;
+    if (!(u >= x && u <= x + r[start + 2] && v >= y && v <= y + r[start + 3])) return false;
+  }
+  return true;
+}
+
+/** Keys for two draws that do not use the mesh shape inside a lattice chart. The mapping draws
+ * its rectangles in order. It fills each rectangle with one lattice transform, then evaluates
+ * any off-lattice triangles using their full records. A uniform or atlas-plane-only output only
+ * cares which texels are covered, including the two halves of an ordinary paired chart. */
+function chartDrawKey(layout: AtlasLayout, lattice: boolean): string {
+  const cache = lattice ? latticeKeys : coverageKeys;
+  const cached = cache.get(layout);
+  if (cached) return cached;
+  const { records } = layout;
+  const words = new Uint32Array(records.buffer, records.byteOffset, records.length);
+  const seen = new Map<number, number>();
+  const transforms = new Map<number, number>();
+  // bakeGeometry uploads the transform as seven float attributes. Its eighth value is replaced
+  // by the face/rectangle marker. Preserve exactly what the lattice shader can actually see.
+  const surface = lattice ? Float32Array.from(layout.surface) : new Float32Array();
+  const transformBits = new Uint32Array(surface.buffer);
+  for (let i = 0; i < surface.length; i += SURFACE) transforms.set(surface[i] + layout.width * surface[i + 1], i + 2);
+  const digest = new LayoutDigest();
+  for (let start = 0; start < words.length; start += RECORD) {
+    if (records[start + META + 3] === FACE) {
+      const x = records[start], y = records[start + 1], width = records[start + 2], height = records[start + 3];
+      const chart = x + y * layout.width;
+      const first = seen.get(chart);
+      // Only the first occurrence draws its backing rectangle. A malformed imported chart
+      // with other extents or corners outside that rectangle has additional coverage.
+      if (!lattice && (!faceInsideChart(layout, start) || (first !== undefined &&
+        (records[first + 2] !== width || records[first + 3] !== height)))) {
+        cache.set(layout, layout.key);
+        return layout.key;
+      }
+      if (first !== undefined) continue;
+      seen.set(chart, start);
+      digest.add(FACE);
+      for (let i = 0; i < 4; i++) digest.add(words[start + i]);
+      if (lattice) {
+        const offset = transforms.get(chart);
+        if (offset === undefined) return layout.key;
+        for (let i = 0; i < 7; i++) digest.add(transformBits[offset + i]);
+      }
+    } else {
+      digest.add(0);
+      // Off-lattice samples of the pattern also read their geometry, normals and material UVs.
+      const end = lattice ? RECORD : META + 1;
+      for (let i = 0; i < end; i++) digest.add(words[start + i]);
+      if (!lattice) digest.add(words[start + META + 3]);
+    }
+  }
+  const key = `${lattice ? "lattice" : "coverage"}:${layout.width}x${layout.height}:${layout.gutter}:${digest.key()}`;
+  cache.set(layout, key);
+  return key;
+}
+
+export function atlasCoverage(layout: AtlasLayout): string { return chartDrawKey(layout, false); }
+export function atlasLatticeKey(layout: AtlasLayout): string { return chartDrawKey(layout, true); }
+
+/** External planes and CPU fields are sampled by atlas texel. Their identity is carried
+ * separately by the graph. Only their covered area depends on the layout. */
+export function atlasPlaneLayoutKey(layout: AtlasLayout, shader: ProgramShader, channel: string): string {
+  const read = shader.reads?.outputs?.[channel];
+  return !shader.renderInputs?.length && read?.sample?.length === 0 && read.features === false && read.edges === false
+    ? atlasCoverage(layout) : layout.key;
+}
+
 /**
  * The program's own uniforms that a value with the engine's stated reads depends on, or undefined when the record is
  * not one this understands (the value may then read anything). Parameters are uniforms already; a read seed is every
  * named seed's uniform (the record does not say which); images and CPU fields are named and found in the shader's
  * lists. Source edges and external planes reach a shader only through CPU fields, so a value that reads them reads
- * every CPU field that does, besides the fields it lists. Features and the parts of a sample are the receiver's, which
- * is in every key.
+ * every CPU field that does, besides the fields it lists. The caller can also ask for the receiver inputs.
  */
-function statedUniforms(shader: ProgramShader, read: Reads): Set<string> | undefined {
+function statedUniforms(shader: ProgramShader, read: Reads, receiver: boolean): Set<string> | undefined {
   if (typeof read !== "object" || read === null) return undefined;
   if ([read.parameters, read.images ?? [], read.cpuFields ?? [], read.planes ?? []].some(list => !Array.isArray(list))) return undefined;
   const found = new Set<string>(read.parameters);
+  if (receiver) {
+    // Older records and render-only programs keep all receiver inputs in their keys.
+    if (shader.renderInputs?.length || typeof read.features !== "boolean" || !Array.isArray(read.sample)
+      || read.sample.some(name => !BAKE_SAMPLE_INPUTS.has(name))) return undefined;
+    for (const name of read.sample) found.add(`ms_${name}`);
+    if (read.features) found.add("ms_features"); // The engine includes zone queries here.
+  }
   if (read.seed) for (const seed of shader.seeds) found.add(seed.uniform);
   for (const name of read.images ?? []) {
     const image = shader.images.find(image => image.name === name);
@@ -359,6 +523,23 @@ function statedUniforms(shader: ProgramShader, read: Reads): Set<string> | undef
     if (read.cpuFields?.includes(field.name) || (read.edges && field.edges) || field.planes?.some(plane => planes.has(plane))) found.add(field.uniform);
   }
   return found;
+}
+
+const BAKE_SAMPLE_INPUTS = new Set(["uv", "surface", "world", "object", "normal", "gravity", "bounds", "footprint", "uv_footprint"]);
+
+/** Which receiver uniforms can reach a sampled value in evaluateFragment/SURFACE_OF. */
+export function usesAtlasUniform(reads: ReadonlySet<string> | undefined, mode: number, uniform: string): boolean {
+  if (!reads) return uniform !== "msAnchorFromWorld" || mode === 3;
+  switch (uniform) {
+    case "msMapping": return reads.has("ms_surface");
+    case "msExtent": return reads.has("ms_surface") && mode === 0;
+    case "msObjectFromWorld": return reads.has("ms_object") || (reads.has("ms_surface") && mode !== 0 && mode !== 2 && mode !== 3);
+    case "msAnchorFromWorld": return reads.has("ms_surface") && mode === 3;
+    case "ms_bounds_min": case "ms_bounds_max": return reads.has("ms_bounds");
+    case "ms_gravity": return reads.has("ms_gravity");
+    case "ms_features": case "ms_feature_count": case "ms_feature_selectors": case "ms_zone_count": return reads.has("ms_features");
+    default: return true;
+  }
 }
 
 /**
@@ -376,9 +557,9 @@ function statedUniforms(shader: ProgramShader, read: Reads): Set<string> | undef
  *   source and carries no text; the relief entry covers the height texture.)
  * - else nothing: every texture is keyed by every value.
  *
- * Receiver inputs (features, bounds, gravity, mapping) are not program uniforms and are in every texture's key.
+ * With `receiver`, include the compiler's sample and feature dependencies so the bake can select receiver uniforms.
  */
-export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayout): Partial<Record<AtlasAttachment, ReadonlySet<string>>> {
+export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayout, receiver = false): Partial<Record<AtlasAttachment, ReadonlySet<string>>> {
   const own = [...shader.parameters, ...shader.seeds, ...shader.images, ...(shader.cpuFields ?? [])].map(entry => entry.uniform);
   const reads: Partial<Record<AtlasAttachment, ReadonlySet<string>>> = {};
   const stated = shader.reads;
@@ -398,12 +579,12 @@ export function attachmentReads(shader: ProgramShader, layout: AtlasProgramLayou
         // An output the program does not set reads nothing; one the engine does not list may read anything.
         for (const output of ATTACHMENT_OUTPUTS[attachment]) if (stated.outputs[output] || shader.outputs.includes(output)) found.push(stated.outputs[output]);
       }
-      const uniforms = found.map(read => read && statedUniforms(shader, read));
+      const uniforms = found.map(read => read && statedUniforms(shader, read, receiver));
       if (uniforms.every(set => set)) reads[attachment] = new Set(uniforms.flatMap(set => [...set!]));
     }
     return reads;
   }
-  // The uniforms an entry point's text names, found once per entry.
+  // Older entry points state only their own uniforms. The bake keeps their complete receiver key.
   const named = new Map<string, Set<string>>();
   const namedBy = (entry: NonNullable<ProgramShader["entries"]>[number]): Set<string> => {
     let found = named.get(entry.function);
@@ -514,18 +695,21 @@ vec2 msLegs(vec2 texel) {
 export const ATLAS_VERTEX = `
 in vec4 aRect;
 in vec4 aMeta;
-in vec3 aP0;
-in vec3 aP1;
-in vec3 aP2;
-in vec3 aN0;
-in vec3 aN1;
-in vec3 aN2;
+in vec4 aPointNormal0;
+in vec4 aPointNormal1;
+in vec4 aPointNormal2;
+in vec4 aPointNormal3;
+in vec4 aPointNormal4;
 in vec4 aUv01;
 in vec4 aUv2A0;
 in vec4 aA12;
 in vec4 aSurface0;
 in vec4 aSurface1;
+in vec3 aCornerTail;
 uniform vec2 msAtlas;
+// One receiver may contain planar lattice faces beside rounded or beveled edges.
+// Paired draws for an intrinsic output write the two disjoint sets of charts.
+uniform int msChartSubset; // 0 all, 1 lattice, -1 ordinary
 flat out vec4 vLegMap;
 flat out vec2 vLegOrigin;
 flat out vec4 vSurface0;
@@ -541,6 +725,15 @@ flat out vec3 vN2;
 flat out vec4 vUv01;
 flat out vec4 vUv2Footprints;
 void main() {
+  // A lattice mapping uses only each face's backing rectangle. Its interior triangles would
+  // fetch exactly the same tile cells. Other passes still need those triangles' attributes.
+  if ((msChartSubset == 1 && aSurface1.w < 1.5) || (msChartSubset == -1 && aSurface1.w > 0.5)) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
+  }
+  vec3 aP0 = aPointNormal0.xyz, aP1 = vec3(aPointNormal0.w, aPointNormal1.xy);
+  vec3 aP2 = vec3(aPointNormal1.zw, aPointNormal2.x), aN0 = aPointNormal2.yzw;
+  vec3 aN1 = aPointNormal3.xyz, aN2 = vec3(aPointNormal3.w, aPointNormal4.xy);
   vRect = aRect; vMeta = aMeta;
   vP0 = aP0; vP1 = aP1; vP2 = aP2;
   vN0 = aN0; vN1 = aN1; vN2 = aN2;
@@ -558,7 +751,9 @@ void main() {
   vLegOrigin = corner;
   vLegMap = area != 0.0 ? vec4(second.y, -second.x, -first.y, first.x) / area : vec4(0.0);
   vSurface0 = aSurface0; vSurface1 = aSurface1;
-  gl_Position = vec4(position.x / msAtlas.x * 2.0 - 1.0, 1.0 - position.y / msAtlas.y * 2.0, 0.0, 1.0);
+  vec2 point = position.x == 0.0 ? normal.xy : position.x == 1.0 ? vec2(normal.z, uv.x)
+    : position.x == 2.0 ? vec2(uv.y, aCornerTail.x) : position.x == 3.0 ? aCornerTail.yz : aPointNormal4.zw;
+  gl_Position = vec4(point.x / msAtlas.x * 2.0 - 1.0, 1.0 - point.y / msAtlas.y * 2.0, 0.0, 1.0);
 }
 `;
 
@@ -609,11 +804,19 @@ export function planeFragment(source: string, values: string[], below: string[])
   for (const uniform of below) {
     const read = new RegExp(`texelFetch\\(\\s*${uniform}\\s*,\\s*ms_texel\\s*,\\s*0\\s*\\)`, "g");
     if (!read.test(text)) throw new Error(`the layer's plan reads ${uniform} in a form the GPU stack does not know`);
-    text = text.replace(read, `texelFetch(${uniform}, msPlaneTexel(ms_texel), 0)`);
+    text = text.replace(read, `msPlaneAt(${uniform}, msPlaneTexel(ms_texel))`);
   }
-  const head = below.length ? "ivec2 msPlaneTexel(ivec2 texel) { return ivec2(texel.x, int(msAtlas.y) - 1 - texel.y); }\n" : "";
+  const head = below.length ? PLANE_FETCH + "ivec2 msPlaneTexel(ivec2 texel) { return ivec2(texel.x, int(msAtlas.y) - 1 - texel.y); }\n" : "";
   return evaluateFragment(text, values, head);
 }
+
+// Stack intermediates that are constant across a receiver occupy one texel. Full-resolution
+// planes still use integer, unfiltered reads, including in the gutter and the relief stencil.
+const PLANE_FETCH = `
+vec4 msPlaneAt(highp sampler2D plane, ivec2 at) {
+  return texelFetch(plane, min(at, textureSize(plane, 0) - 1), 0);
+}
+`;
 
 /** Lattice cells per side of an intrinsic tile (`intrinsicTileFragment`), and the cell its first tile starts at. */
 export const TILE_CELLS = 512;
@@ -692,22 +895,22 @@ uniform bool msHasRoughness;
 uniform bool msHasMetalness;
 uniform int msOutput;
 layout(location = 0) out vec4 msOut;
+${PLANE_FETCH}
 void main() {
   ivec2 at = ivec2(gl_FragCoord.xy);
-  if (msOutput == 0) msOut = vec4(clamp(msHasColor ? texelFetch(msColor, at, 0).rgb : vec3(0.5), 0.0, 1.0),
-    msHasOpacity ? clamp(texelFetch(msOpacity, at, 0).r, 0.0, 1.0) : 1.0);
-  else if (msOutput == 1) msOut = vec4(1.0, clamp(msHasRoughness ? texelFetch(msRoughness, at, 0).r : 1.0, 0.0, 1.0),
-    clamp(msHasMetalness ? texelFetch(msMetalness, at, 0).r : 0.0, 0.0, 1.0), 1.0);
-  else msOut = vec4(max(texelFetch(msEmissive, at, 0).rgb, vec3(0.0)), 1.0);
+  if (msOutput == 0) msOut = vec4(clamp(msHasColor ? msPlaneAt(msColor, at).rgb : vec3(0.5), 0.0, 1.0),
+    msHasOpacity ? clamp(msPlaneAt(msOpacity, at).r, 0.0, 1.0) : 1.0);
+  else if (msOutput == 1) msOut = vec4(1.0, clamp(msHasRoughness ? msPlaneAt(msRoughness, at).r : 1.0, 0.0, 1.0),
+    clamp(msHasMetalness ? msPlaneAt(msMetalness, at).r : 0.0, 0.0, 1.0), 1.0);
+  else msOut = vec4(max(msPlaneAt(msEmissive, at).rgb, vec3(0.0)), 1.0);
 }
 `;
 
 /**
- * The lattice charts of a receiver's atlas, when every triangle lies on a pattern anchor's lattice (a whole flat face,
- * role 3) at one step: the step and the intrinsic tiles (`TILE_CELLS` cells, from `TILE_START`) its texels read,
- * as tile indices. Null when some chart is not on the lattice, the steps differ, or more than `MAX_TILES` are read.
+ * Tiles covering this receiver's planar lattice charts at one common step. Other charts, such as bevels,
+ * are evaluated directly. Different steps and spans beyond the sampler allowance use the ordinary bake.
  */
-export function latticeTiles(layout: AtlasLayout): { step: number; tiles: [number, number][] } | null {
+export function latticeTiles(layout: AtlasLayout): { step: number; tiles: [number, number][]; mixed: boolean } | null {
   if (!layout.triangles) return null;
   const charts = new Map<string, Float64Array>();
   for (let chart = 0; chart + SURFACE <= layout.surface.length; chart += SURFACE) {
@@ -716,9 +919,11 @@ export function latticeTiles(layout: AtlasLayout): { step: number; tiles: [numbe
   let step: number | undefined;
   const tiles = new Map<string, [number, number]>();
   const seen = new Set<string>();
+  let mixed = false;
   for (let triangle = 0; triangle < layout.triangles; triangle++) {
     const record = layout.records.subarray(triangle * RECORD, (triangle + 1) * RECORD);
-    if (record[META + 3] !== FACE) return null;
+    if (record[META + 3] !== FACE) { mixed = true; continue; }
+    if (!faceInsideChart(layout, triangle * RECORD)) return null;
     const name = `${record[0]},${record[1]}`;
     if (seen.has(name)) continue;
     seen.add(name);
@@ -745,14 +950,14 @@ export function latticeTiles(layout: AtlasLayout): { step: number; tiles: [numbe
       }
     }
   }
-  return step === undefined ? null : { step, tiles: [...tiles.values()] };
+  return step === undefined ? null : { step, tiles: [...tiles.values()], mixed };
 }
 
 /** The program's own uniforms the values of `outputs` read (see `attachmentReads`), or undefined when not stated. */
-export function outputReads(shader: ProgramShader, outputs: string[]): ReadonlySet<string> | undefined {
+export function outputReads(shader: ProgramShader, outputs: string[], receiver = false): ReadonlySet<string> | undefined {
   const stated = shader.reads;
   if (!stated || typeof stated !== "object" || typeof stated.outputs !== "object" || stated.outputs === null) return undefined;
-  const sets = outputs.map(output => stated.outputs[output] && statedUniforms(shader, stated.outputs[output]));
+  const sets = outputs.map(output => stated.outputs[output] && statedUniforms(shader, stated.outputs[output], receiver));
   return sets.every(set => set) ? new Set(sets.flatMap(set => [...set!])) : undefined;
 }
 
@@ -863,7 +1068,8 @@ uniform bool msBend;
 layout(location = 0) out vec4 msNormalOut;
 ${RELIEF_ADJUST}
 ${NORMAL_ENCODE}
-vec4 msHeightAt(ivec2 texel) { return texelFetch(msHeightMap, ivec2(texel.x, int(msAtlas.y) - 1 - texel.y), 0); }
+${PLANE_FETCH}
+vec4 msHeightAt(ivec2 texel) { return msPlaneAt(msHeightMap, ivec2(texel.x, int(msAtlas.y) - 1 - texel.y)); }
 vec3 msRelief(ivec2 texel) {
   // On a pattern anchor's lattice every texel of the chart is a sample, the gutter's too, and the chart's frame is its
   // rectangle's (\`Atlas::legs\`): atlas +x and +y, whatever way the triangle's own legs run.
@@ -897,7 +1103,7 @@ vec3 msRelief(ivec2 texel) {
   vec3 frameY = turn == 0 ? -bitangent : turn == 1 ? -t : turn == 2 ? bitangent : t;
   vec3 relief = vec3(dot(world, frameX), dot(world, frameY), dot(world, n));
   ivec2 at = ivec2(texel.x, int(msAtlas.y) - 1 - texel.y);
-  vec3 offset = msBend ? texelFetch(msOffsetMap, at, 0).rgb : vec3(0.0);
+  vec3 offset = msBend ? msPlaneAt(msOffsetMap, at).rgb : vec3(0.0);
   return msAdjustRelief(relief, center.gba, offset, frameX, frameY, n, msOrient, msBend);
 }
 void main() {

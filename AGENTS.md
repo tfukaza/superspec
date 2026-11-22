@@ -1,5 +1,11 @@
 # SuperSpec implementation guidance
 
+Do not use the `efficient-3d-modeling` skill for work in this repository.
+Delegate 3D modeling tasks to subagents.
+For Klali props, carry the market bucket's subtle color variation across finishes.
+Orient long, shallow brushstroke normals along each part's long axis or wood
+grain so curved highlights break into soft bands. Keep the material recognizable.
+
 Read `README.md`, `docs/AML.md` and `docs/plans/extraction-decisions.md` first.
 The product direction is in `docs/plans/spec-modularization.md` and `material-spec.md`.
 

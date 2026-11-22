@@ -150,7 +150,8 @@ export function receiverUniforms(): Record<string, THREE.IUniform> {
   const features = new THREE.DataTexture(new Float32Array(12), 3, 1, THREE.RGBAFormat, THREE.FloatType);
   features.needsUpdate = true;
   return {
-    ms_features: { value: features }, ms_feature_count: { value: 0 }, ms_gravity: { value: new THREE.Vector3(0, 0, -1) },
+    ms_features: { value: features }, ms_feature_count: { value: 0 }, ms_feature_selectors: { value: 0 },
+    ms_gravity: { value: new THREE.Vector3(0, 0, -1) },
     ms_bounds_min: { value: new THREE.Vector3() }, ms_bounds_max: { value: new THREE.Vector3(1, 1, 1) }, ms_loop: { value: 0 },
   };
 }
@@ -586,7 +587,7 @@ export class FoliageView {
    * view and picks each one's level, packing the instances each level draws when that choice changed. Returns whether
    * the scene has foliage.
    */
-  update(models: THREE.Object3D, camera: THREE.Camera, sun: THREE.DirectionalLight | undefined, casting: boolean): boolean {
+  update(models: THREE.Object3D, camera: THREE.Camera, sun: THREE.DirectionalLight | undefined, casting: boolean, lodBias: number | false = 1): boolean {
     if (models !== this.group) this.collect(models);
     if (!this.patches.length) return false;
     this.shadow.update(sun, casting);
@@ -599,7 +600,7 @@ export class FoliageView {
     this.frustum.setFromProjectionMatrix(this.matrix);
     const eye = camera.getWorldPosition(new THREE.Vector3());
     for (const patch of this.patches) {
-      if (!patch.visibility.update(this.frustum, eye)) continue;
+      if (!patch.visibility.update(this.frustum, eye, lodBias)) continue;
       const began = performance.now();
       for (const level of patch.levels) this.pack(level, patch.visibility.chosen);
       this.stats.packs++;
@@ -730,10 +731,15 @@ export class FoliageView {
   private collect(models: THREE.Object3D): void {
     this.group = models;
     const byPatch = new Map<string, Omit<Patch, "visibility">>();
+    // Culling packs a drawable prefix into each instance buffer (often zero instances).
+    // An intact patch keeps the full source arrays, LOD choices, painted crown and shadow state.
+    const prior = new Map(this.patches.filter(p => p.levels.every(level => level.mesh.parent === models)).map(p => [p.id, p]));
     for (const object of models.children) {
       const mesh = object as THREE.InstancedMesh;
       const look = mesh.userData.foliage as FoliageLook | undefined;
       if (!look || !mesh.isInstancedMesh) continue;
+      const existing = prior.get(look.patch);
+      if (existing) { byPatch.set(look.patch, existing); continue; }
       let patch = byPatch.get(look.patch);
       if (!patch) byPatch.set(look.patch, patch = { id: look.patch, levels: [], tiles: new Map(), far: look.far });
       patch.far = Math.max(patch.far, look.far);
@@ -782,6 +788,7 @@ export class FoliageView {
       patch.levels.push({ mesh, look, source, tiles, drawn: count, level, vertices: geometry.getAttribute("position").count, blades });
     }
     for (const patch of byPatch.values()) {
+      if (prior.has(patch.id)) continue;
       // A plant painted as a mass: the mass is drawn with the batch that carries it (once per placement, built once
       // per mesh), in place of the patch's leaves and hull.
       if (!patch.levels.some(level => level.look.mass)) continue;
@@ -806,6 +813,7 @@ export class FoliageView {
             followPaintedFinishing(bark.material);
             for (const other of patch.levels) if (other.look.family === "bark" && !other.mesh.userData.animeBark) {
               other.mesh.userData.animeBark = other.mesh.material;
+              other.mesh.userData.animeBarkMaterial = bark.material;
               other.mesh.material = bark.material;
               other.mesh.customDepthMaterial = bark.depth;
             }
@@ -827,6 +835,8 @@ export class FoliageView {
       }
     }
     this.patches = Array.from(byPatch.values(), patch => {
+      const existing = prior.get(patch.id);
+      if (existing) return existing;
       // Each level thins toward the next level's share, and the last toward nothing at far. The values change in place:
       // compiled programs hold these uniform objects.
       // A plant's families thin toward the next level of the same family; one the next level does not draw (leaves at

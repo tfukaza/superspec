@@ -38,32 +38,38 @@ pub fn gas_cylinder(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Res
     );
     lathe(
         d,
-        "metal",
+        "paint",
         at,
         &[
-            [0.14, 0.],
-            [0.15, 0.03],
-            [0.15, 0.5],
-            [0.11, 0.6],
+            [0.134, 0.],
+            [0.144, 0.009],
+            [0.144, 0.026],
+            [0.15, 0.041],
+            [0.15, 0.49],
+            [0.143, 0.53],
+            [0.11, 0.595],
             [0.05, 0.63],
             [0.05, 0.66],
-            [0.09, 0.66],
+            [0.087, 0.66],
             [0.09, 0.74],
             [0.08, 0.74],
             [0.08, 0.66],
         ],
         &[
-            shade(paint, 0.7),
-            paint,
-            paint,
-            paint,
+            shade(paint, 0.53),
+            shade(paint, 0.71),
+            shade(paint, 0.84),
+            shade(paint, 0.98),
+            shade(paint, 1.05),
+            shade(paint, 1.17),
+            shade(paint, 1.12),
             shade(paint, 0.8),
-            shade(paint, 0.6),
-            shade(paint, 0.9),
-            shade(paint, 0.9),
-            shade(paint, 0.5),
+            shade(paint, 0.65),
+            shade(paint, 0.89),
+            shade(paint, 1.26),
+            shade(paint, 0.54),
         ],
-        12,
+        18,
         None,
     )?;
     lathe(
@@ -91,46 +97,74 @@ pub fn roaster(
     repeat: f64,
 ) -> Result<(), String> {
     d.mesh.check_work(0)?;
-    let iron = shade([0.57, 0.60, 0.59], rng.float(0.94, 1.04));
+    let wear = rng.float(0.94, 1.04);
+    let iron = shade([0.71, 0.74, 0.72], wear);
+    let enamel = shade(srgb("#636a59"), wear);
     let [x, y, z] = at;
     lathe(
         d,
         "metal",
         at,
         &[
-            [0.36, 0.],
-            [0.36, 0.3],
-            [0.372, 0.3],
-            [0.372, 0.34],
-            [0.36, 0.34],
-            [0.36, 0.9],
-            [0.372, 0.9],
-            [0.372, 0.94],
-            [0.36, 0.94],
             [0.36, 1.22],
             [0.375, 1.24],
-            [0.3, 1.31],
-            [0.1, 1.37],
+            [0.374, 1.254],
+            [0.323, 1.292],
+            [0.20, 1.335],
+            [0.09, 1.368],
             [0., 1.37],
         ],
         &[
-            shade(iron, 0.64),
-            iron,
-            shade(iron, 1.3),
-            shade(iron, 0.85),
-            iron,
-            iron,
-            shade(iron, 1.3),
-            shade(iron, 0.85),
-            iron,
             shade(iron, 1.18),
             shade(iron, 1.03),
-            shade(iron, 0.9),
-            shade(iron, 0.75),
+            shade(iron, 0.95),
+            shade(iron, 0.92),
+            shade(iron, 0.86),
+            shade(iron, 0.82),
         ],
-        14,
+        22,
         textured.then_some(repeat),
     )?;
+    for [bottom, top] in [[0., 0.3], [0.34, 0.9], [0.94, 1.22]] {
+        let finish = |p: V3| {
+            let height = (p[2] - z - bottom) / (top - bottom);
+            let use_marks = sin((p[0] - x) * 21. + sin((p[1] - y) * 7.)) * 0.045;
+            Ok(shade(enamel, 0.83 + 0.21 * height + use_marks))
+        };
+        forms::lathe(
+            d,
+            "paint",
+            at,
+            &[[0.36, bottom], [0.36, top]],
+            &Tints::Uniform(&Tint::Field(&finish)),
+            22,
+            None,
+        )?;
+    }
+    for [bottom, top] in [[0.3, 0.34], [0.9, 0.94]] {
+        lathe(
+            d,
+            "metal",
+            at,
+            &[
+                [0.36, bottom],
+                [0.37, bottom + 0.005],
+                [0.372, bottom + 0.009],
+                [0.372, top - 0.007],
+                [0.367, top - 0.002],
+                [0.36, top],
+            ],
+            &[
+                shade(iron, 0.79),
+                shade(iron, 1.22),
+                iron,
+                shade(iron, 1.17),
+                shade(iron, 0.75),
+            ],
+            22,
+            textured.then_some(repeat),
+        )?;
+    }
     forms::limb(
         d,
         "metal",

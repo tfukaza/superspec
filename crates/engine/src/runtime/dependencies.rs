@@ -2,10 +2,13 @@
 use super::store::{Retention, Store};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
+};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
 };
 
 pub use super::store::ContentKey;
@@ -61,6 +64,20 @@ pub struct Plan {
     targets: Vec<String>,
 }
 
+const MAX_DEPTH: usize = 128;
+
+struct PlannedNode<'a> {
+    key: ContentKey,
+    depth: usize,
+    deepest_input: Option<&'a str>,
+}
+
+struct Traversal<'a> {
+    nodes: &'a BTreeMap<String, Node>,
+    products: BTreeMap<&'a str, PlannedNode<'a>>,
+    order: Vec<&'a str>,
+    reverse: BTreeMap<String, BTreeSet<String>>,
+}
 fn framed(hash: &mut Sha256, value: &[u8]) {
     hash.update((value.len() as u64).to_le_bytes());
     hash.update(value);
@@ -85,14 +102,8 @@ impl Plan {
         if nodes.len() > 4096 || targets.len() > 4096 {
             return Err(failure("Build graph exceeds its node/target allowance."));
         }
-        let mut plan = Self {
-            nodes: BTreeMap::new(),
-            keys: BTreeMap::new(),
-            order: vec![],
-            reverse: BTreeMap::new(),
-            targets,
-        };
-        let mut bytes = plan.targets.iter().map(String::len).sum::<usize>();
+        let mut by_id = BTreeMap::new();
+        let mut bytes = targets.iter().map(String::len).sum::<usize>();
         let mut edges = 0usize;
         for node in nodes {
             edges = edges.saturating_add(node.dependencies.len());
@@ -124,98 +135,40 @@ impl Plan {
                 return Err(failure("Invalid or excessive build graph inputs."));
             }
             let id = node.id.clone();
-            if plan.nodes.insert(id.clone(), node).is_some() {
+            if by_id.insert(id.clone(), node).is_some() {
                 return Err(failure(&format!("Duplicate build node {id}.")));
             }
         }
-        let ids: Vec<_> = plan.nodes.keys().cloned().collect();
-        for id in ids {
-            plan.visit(&id, &mut Vec::new())?;
+        let mut traversal = Traversal {
+            nodes: &by_id,
+            products: BTreeMap::new(),
+            order: vec![],
+            reverse: BTreeMap::new(),
+        };
+        let mut active = Vec::new();
+        for id in by_id.keys() {
+            traversal.visit(id, &mut active)?;
         }
-        let mut needed = BTreeSet::new();
-        for target in &plan.targets {
-            plan.collect(target, &mut needed)?;
-        }
-        plan.order.retain(|id| needed.contains(id));
-        Ok(plan)
-    }
-
-    fn visit(&mut self, id: &str, active: &mut Vec<String>) -> Result<ContentKey, GraphError> {
-        if let Some(key) = self.keys.get(id) {
-            return Ok(*key);
-        }
-        let source = active
-            .last()
-            .and_then(|parent| self.nodes.get(parent))
-            .and_then(|n| n.source.clone());
-        if let Some(start) = active.iter().position(|name| name == id) {
-            let mut chain = active[start..].to_vec();
-            chain.push(id.into());
-            return Err(GraphError {
-                message: "Cyclic build dependency.".into(),
-                chain,
-                source,
-            });
-        }
-        if active.len() >= 128 {
-            return Err(GraphError {
-                message: "Build dependency depth exceeds 128.".into(),
-                chain: active.clone(),
-                source,
-            });
-        }
-        let node = self.nodes.get(id).cloned().ok_or_else(|| {
-            let mut chain = active.clone();
-            chain.push(id.into());
-            GraphError {
-                message: "Missing build dependency.".into(),
-                chain,
-                source,
-            }
-        })?;
-        active.push(id.into());
-        let mut dependencies = node.dependencies;
-        dependencies.sort_by(|a, b| a.role.cmp(&b.role));
-        let mut roles = BTreeSet::new();
-        let mut hash = Sha256::new();
-        framed(&mut hash, b"superspec-job-v1");
-        framed(&mut hash, node.implementation.as_bytes());
-        framed(&mut hash, &node.inputs);
-        for dependency in dependencies {
-            if dependency.role.is_empty() || !roles.insert(dependency.role.clone()) {
-                return Err(GraphError {
-                    message: "Empty or duplicate dependency role.".into(),
-                    chain: active.clone(),
-                    source: node.source,
-                });
-            }
-            let key = self.visit(&dependency.node, active)?;
-            framed(&mut hash, dependency.role.as_bytes());
-            hash.update(key);
-            self.reverse
-                .entry(dependency.node)
-                .or_default()
-                .insert(id.into());
-        }
-        active.pop();
-        let key = hash.finalize().into();
-        self.keys.insert(id.into(), key);
-        self.order.push(id.into());
-        Ok(key)
-    }
-
-    fn collect(&self, id: &str, needed: &mut BTreeSet<String>) -> Result<(), GraphError> {
-        let node = self.nodes.get(id).ok_or_else(|| GraphError {
-            message: "Missing build target.".into(),
-            chain: vec![id.into()],
-            source: None,
-        })?;
-        if needed.insert(id.into()) {
-            for dependency in &node.dependencies {
-                self.collect(&dependency.node, needed)?;
-            }
-        }
-        Ok(())
+        let needed = traversal.reachable_targets(&targets)?;
+        let order = traversal
+            .order
+            .into_iter()
+            .filter(|id| needed.contains(id))
+            .map(str::to_owned)
+            .collect();
+        let keys = traversal
+            .products
+            .into_iter()
+            .map(|(id, node)| (id.to_owned(), node.key))
+            .collect();
+        let reverse = traversal.reverse;
+        Ok(Self {
+            nodes: by_id,
+            keys,
+            order,
+            reverse,
+            targets,
+        })
     }
 
     pub fn key(&self, id: &str) -> Option<ContentKey> {
@@ -235,19 +188,172 @@ impl Plan {
     }
 }
 
-/// Serializes producers within a session so simultaneous equal requests share completed work.
-/// Starting a newer revision is lock-free, allowing obsolete producers to observe cancellation.
+impl<'a> Traversal<'a> {
+    fn source(&self, id: &str) -> Option<SourceRef> {
+        self.nodes.get(id).and_then(|node| node.source.clone())
+    }
+
+    fn visit(&mut self, id: &'a str, active: &mut Vec<&'a str>) -> Result<(), GraphError> {
+        if let Some(product) = self.products.get(id) {
+            if active.len() + product.depth > MAX_DEPTH {
+                return Err(self.depth_error(active, id));
+            }
+            return Ok(());
+        }
+        if let Some(start) = active.iter().position(|name| *name == id) {
+            let mut chain: Vec<_> = active[start..].iter().map(|id| (*id).into()).collect();
+            chain.push(id.into());
+            return Err(GraphError {
+                message: "Cyclic build dependency.".into(),
+                chain,
+                source: active.last().and_then(|parent| self.source(parent)),
+            });
+        }
+        if active.len() >= MAX_DEPTH {
+            return Err(self.depth_error(active, id));
+        }
+        let node = self.nodes.get(id).ok_or_else(|| {
+            let mut chain: Vec<_> = active.iter().map(|id| (*id).into()).collect();
+            chain.push(id.into());
+            GraphError {
+                message: "Missing build dependency.".into(),
+                chain,
+                source: active.last().and_then(|parent| self.source(parent)),
+            }
+        })?;
+        active.push(id);
+        let mut dependencies: Vec<_> = node.dependencies.iter().collect();
+        dependencies.sort_by(|a, b| a.role.cmp(&b.role));
+        let mut previous_role = "";
+        let mut hash = Sha256::new();
+        framed(&mut hash, b"superspec-job-v1");
+        framed(&mut hash, node.implementation.as_bytes());
+        framed(&mut hash, &node.inputs);
+        let mut depth = 1;
+        let mut deepest_input = None;
+        for dependency in dependencies {
+            if dependency.role == previous_role {
+                return Err(GraphError {
+                    message: "Empty or duplicate dependency role.".into(),
+                    chain: active.iter().map(|id| (*id).into()).collect(),
+                    source: node.source.clone(),
+                });
+            }
+            previous_role = &dependency.role;
+            self.visit(&dependency.node, active)?;
+            let input = &self.products[dependency.node.as_str()];
+            framed(&mut hash, dependency.role.as_bytes());
+            hash.update(input.key);
+            if input.depth + 1 > depth {
+                depth = input.depth + 1;
+                deepest_input = Some(dependency.node.as_str());
+            }
+            self.reverse
+                .entry(dependency.node.clone())
+                .or_default()
+                .insert(id.into());
+        }
+        active.pop();
+        let key = hash.finalize().into();
+        self.products.insert(
+            id,
+            PlannedNode {
+                key,
+                depth,
+                deepest_input,
+            },
+        );
+        self.order.push(id);
+        Ok(())
+    }
+
+    fn depth_error(&self, active: &[&str], id: &str) -> GraphError {
+        let mut chain: Vec<String> = active.iter().map(|id| (*id).into()).collect();
+        let mut next = Some(id);
+        while let Some(id) = next {
+            chain.push(id.into());
+            if chain.len() > MAX_DEPTH {
+                break;
+            }
+            next = self.products[id].deepest_input;
+        }
+        let source = self.source(&chain[MAX_DEPTH - 1]);
+        GraphError {
+            message: format!("Build dependency depth exceeds {MAX_DEPTH}."),
+            chain,
+            source,
+        }
+    }
+
+    fn reachable_targets<'t>(&self, targets: &'t [String]) -> Result<BTreeSet<&'t str>, GraphError>
+    where
+        'a: 't,
+    {
+        let mut pending: Vec<_> = targets.iter().rev().map(String::as_str).collect();
+        let mut needed = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if needed.insert(id) {
+                let node = self.nodes.get(id).ok_or_else(|| GraphError {
+                    message: "Missing build target.".into(),
+                    chain: vec![id.into()],
+                    source: None,
+                })?;
+                pending.extend(
+                    node.dependencies
+                        .iter()
+                        .rev()
+                        .map(|input| input.node.as_str()),
+                );
+            }
+        }
+        Ok(needed)
+    }
+}
+
+/// Shares completed artifacts across revisions. One producer at a time can allocate new artifacts.
 pub struct Runtime<T> {
     latest: AtomicU64,
+    generation: AtomicU64,
+    producer: Mutex<()>,
     store: Mutex<Store<T>>,
-    interests: Mutex<BTreeMap<(u64, ContentKey), usize>>,
+    interests: Mutex<BTreeMap<(u64, u64, ContentKey), usize>>,
     retention: Retention,
 }
 
-/// Register before waiting for the producer lock, so cancelling its first consumer cannot
-/// cancel work still needed by a queued consumer of the current revision.
+thread_local! {
+    static PRODUCER_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Detect a callback that tries to start another producer while it owns the slot.
+struct Producing;
+
+impl Producing {
+    fn enter(runtime: usize) -> Result<Self, String> {
+        PRODUCER_STACK.with(|stack| {
+            let mut stack = stack.borrow_mut();
+            if stack.contains(&runtime) {
+                return Err(
+                    "A build producer cannot start another producer on its runtime.".into(),
+                );
+            }
+            stack.push(runtime);
+            Ok(Self)
+        })
+    }
+}
+
+impl Drop for Producing {
+    fn drop(&mut self) {
+        PRODUCER_STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+/// Queued consumers keep the producer they need alive even if its first consumer cancels.
 struct Interests<'a> {
-    registered: &'a Mutex<BTreeMap<(u64, ContentKey), usize>>,
+    registered: &'a Mutex<BTreeMap<(u64, u64, ContentKey), usize>>,
+    generation: u64,
     revision: u64,
     keys: BTreeSet<ContentKey>,
 }
@@ -255,7 +361,7 @@ impl Drop for Interests<'_> {
     fn drop(&mut self) {
         if let Ok(mut registered) = self.registered.lock() {
             for key in &self.keys {
-                let identity = (self.revision, *key);
+                let identity = (self.generation, self.revision, *key);
                 if let Some(count) = registered.get_mut(&identity) {
                     *count -= 1;
                     if *count == 0 {
@@ -271,6 +377,8 @@ impl<T> Runtime<T> {
     pub fn new(maximum_bytes: usize) -> Self {
         Self {
             latest: AtomicU64::new(0),
+            generation: AtomicU64::new(0),
+            producer: Mutex::new(()),
             store: Mutex::new(Store::default()),
             interests: Mutex::new(BTreeMap::new()),
             retention: Retention {
@@ -312,9 +420,11 @@ impl<T> Runtime<T> {
     }
 
     pub(crate) fn clear(&self) {
-        if let Ok(mut store) = self.store.lock() {
-            *store = Store::default();
-        }
+        let previous = self.store.lock().ok().map(|mut store| {
+            self.generation.fetch_add(1, Ordering::AcqRel);
+            std::mem::take(&mut *store)
+        });
+        drop(previous);
     }
 
     pub fn begin(&self, revision: u64) -> Result<(), String> {
@@ -341,10 +451,13 @@ impl<T> Runtime<T> {
             &dyn Fn() -> bool,
         ) -> Result<(T, usize), String>,
     ) -> Result<BTreeMap<String, Arc<T>>, String> {
+        let generation = self.generation.load(Ordering::Acquire);
         self.begin(revision)?;
-        let stopped = || cancelled() || !self.current(revision);
+        let reset = || self.generation.load(Ordering::Acquire) != generation;
+        let stopped = || reset() || cancelled() || !self.current(revision);
         let interests = Interests {
             registered: &self.interests,
+            generation,
             revision,
             keys: plan.order.iter().map(|id| plan.keys[id]).collect(),
         };
@@ -354,27 +467,40 @@ impl<T> Runtime<T> {
                 .lock()
                 .map_err(|_| "Build consumers are unavailable.")?;
             for key in &interests.keys {
-                *registered.entry((revision, *key)).or_default() += 1;
+                *registered.entry((generation, revision, *key)).or_default() += 1;
             }
         }
-        if stopped() {
-            return Err("Build cancelled or superseded.".into());
-        }
-        let mut store = self
-            .store
-            .lock()
-            .map_err(|_| "Build artifact store is unavailable.")?;
         let mut complete = BTreeMap::<String, Arc<T>>::new();
         let mut coalesced = BTreeMap::<ContentKey, Arc<T>>::new();
+        let find = |key: &ContentKey| {
+            self.store
+                .lock()
+                .map(|mut store| store.get(self.retention, key))
+                .map_err(|_| "Build artifact store is unavailable.")
+        };
         for id in &plan.order {
             if stopped() {
                 return Err("Build cancelled or superseded.".into());
             }
             let key = plan.keys[id];
-            let cached = store.get(self.retention, &key);
-            let value = if let Some(value) = cached.or_else(|| coalesced.get(&key).cloned()) {
+            let value = if let Some(value) = find(&key)?.or_else(|| coalesced.get(&key).cloned()) {
                 value
             } else {
+                // Admission and eviction stay available during production. Recheck after
+                // waiting for the producer slot because another consumer may have filled it.
+                let _producing = Producing::enter(std::ptr::from_ref(self).addr())?;
+                let _producer = self
+                    .producer
+                    .lock()
+                    .map_err(|_| "Build producer is unavailable.")?;
+                if stopped() {
+                    return Err("Build cancelled or superseded.".into());
+                }
+                if let Some(value) = find(&key)? {
+                    coalesced.insert(key, value.clone());
+                    complete.insert(id.clone(), value);
+                    continue;
+                }
                 let node = &plan.nodes[id];
                 let inputs = node
                     .dependencies
@@ -382,12 +508,18 @@ impl<T> Runtime<T> {
                     .map(|dependency| (dependency.role.clone(), complete[&dependency.node].clone()))
                     .collect();
                 let producer_stopped = || {
+                    if reset() {
+                        return true;
+                    }
                     if !stopped() {
                         return false;
                     }
                     let latest = self.latest.load(Ordering::Acquire);
                     self.interests.lock().map_or(true, |registered| {
-                        registered.get(&(latest, key)).copied().unwrap_or(0)
+                        registered
+                            .get(&(generation, latest, key))
+                            .copied()
+                            .unwrap_or(0)
                             <= usize::from(latest == revision)
                     })
                 };
@@ -396,6 +528,13 @@ impl<T> Runtime<T> {
                     return Err("Build cancelled or superseded.".into());
                 }
                 let value = Arc::new(value);
+                let mut store = self
+                    .store
+                    .lock()
+                    .map_err(|_| "Build artifact store is unavailable.")?;
+                if reset() {
+                    return Err("Build cancelled or superseded.".into());
+                }
                 store.insert(self.retention, key, value.clone(), bytes, false);
                 value
             };
@@ -455,6 +594,44 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.chain, ["a", "missing"]);
+    }
+
+    #[test]
+    fn depth_limit_is_independent_of_root_names_and_requested_targets() {
+        let chain = |length: usize, reverse_ids: bool| {
+            let ids: Vec<_> = (0..length)
+                .map(|i| format!("{:03}", if reverse_ids { length - i } else { i }))
+                .collect();
+            let nodes = ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let mut value = node(id, b"", &[]);
+                    value
+                        .dependencies
+                        .extend(ids.get(i + 1).map(|input| Dependency {
+                            role: "input".into(),
+                            node: input.clone(),
+                        }));
+                    value.source.as_mut().unwrap().offset = i;
+                    value
+                })
+                .collect();
+            (nodes, ids)
+        };
+        for reverse_ids in [false, true] {
+            let (nodes, ids) = chain(128, reverse_ids);
+            assert!(
+                Plan::new(nodes, vec![ids[0].clone()])
+                    .unwrap()
+                    .key(&ids[0])
+                    .is_some()
+            );
+            let (nodes, ids) = chain(129, reverse_ids);
+            let error = Plan::new(nodes, vec![]).unwrap_err();
+            assert_eq!(error.chain, ids);
+            assert_eq!(error.source.unwrap().offset, 127);
+        }
     }
 
     #[test]
@@ -592,6 +769,52 @@ mod tests {
         );
         assert_eq!(*second.join().unwrap().unwrap()["shared"], 42);
         assert!(runtime.interests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn producer_can_read_the_store_and_reset_cancels_its_publication() {
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            check_store_reentrancy();
+            done.send(()).unwrap();
+        });
+        completed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("artifact producer and cancellation callbacks must be able to use the store");
+        worker.join().unwrap();
+    }
+
+    fn check_store_reentrancy() {
+        let plan = Plan::new(vec![node("value", b"", &[])], vec!["value".into()]).unwrap();
+        let key = plan.key("value").unwrap();
+        let runtime = Runtime::new(1024);
+        assert!(
+            runtime
+                .run(1, &plan, &|| false, |_, _, stopped| {
+                    assert!(!runtime.holds(&key));
+                    let error = runtime
+                        .run(1, &plan, &|| false, |_, _, _| unreachable!())
+                        .unwrap_err();
+                    assert!(error.contains("another producer"));
+                    runtime.clear();
+                    assert!(stopped());
+                    Ok((1, 1))
+                })
+                .is_err()
+        );
+        assert!(!runtime.holds(&key));
+        let request = runtime.run(1, &plan, &|| runtime.holds(&key), |_, _, _| {
+            assert_eq!(runtime.retained(runtime.retention), (0, 0));
+            Ok((2, 1))
+        });
+        assert!(
+            request.is_err(),
+            "the consumer cancelled when its artifact appeared"
+        );
+        let result = runtime
+            .run(1, &plan, &|| false, |_, _, _| panic!("published once"))
+            .unwrap();
+        assert_eq!(*result["value"], 2);
     }
 
     #[test]

@@ -100,6 +100,9 @@ impl Default for InstanceBatch {
     }
 }
 
+mod admission;
+pub(crate) use admission::BatchUsage;
+
 /// Named attributes of one domain a batch may carry.
 pub const MAX_ATTRIBUTES: usize = 12;
 
@@ -217,6 +220,56 @@ pub struct View<'a> {
 }
 
 impl Buffers {
+    /// Channels with the same length in a retained scene. One interval per channel bounds the
+    /// metadata even when changes are scattered. Exact IEEE bits distinguish signed zero.
+    pub(crate) fn changed_spans(&self, old: &Self) -> [[usize; 2]; 9] {
+        fn span<T: Copy>(a: &[T], b: &[T], bits: impl Fn(T) -> u32) -> [usize; 2] {
+            debug_assert_eq!(a.len(), b.len());
+            let mut pairs = a.iter().zip(b);
+            let Some(first) = pairs.position(|(&a, &b)| bits(a) != bits(b)) else {
+                return [0, 0];
+            };
+            let trailing = pairs
+                .rev()
+                .position(|(&a, &b)| bits(a) != bits(b))
+                .unwrap_or(a.len() - first - 1);
+            [first, a.len() - first - trailing]
+        }
+        [
+            span(&self.positions, &old.positions, f32::to_bits),
+            span(&self.normals, &old.normals, f32::to_bits),
+            span(&self.uvs, &old.uvs, f32::to_bits),
+            span(&self.colors, &old.colors, f32::to_bits),
+            span(&self.indices, &old.indices, |i| i),
+            span(&self.placements, &old.placements, f32::to_bits),
+            span(&self.values, &old.values, f32::to_bits),
+            span(&self.tints, &old.tints, f32::to_bits),
+            span(&self.attributes, &old.attributes, f32::to_bits),
+        ]
+    }
+
+    pub(crate) fn write_spans(&self, bytes: &mut Vec<u8>, spans: [[usize; 2]; 9]) {
+        fn append<T: Copy>(
+            bytes: &mut Vec<u8>,
+            data: &[T],
+            [start, count]: [usize; 2],
+            bits: impl Fn(T) -> u32,
+        ) {
+            for &value in &data[start..start + count] {
+                bytes.extend_from_slice(&bits(value).to_le_bytes());
+            }
+        }
+        append(bytes, &self.positions, spans[0], f32::to_bits);
+        append(bytes, &self.normals, spans[1], f32::to_bits);
+        append(bytes, &self.uvs, spans[2], f32::to_bits);
+        append(bytes, &self.colors, spans[3], f32::to_bits);
+        append(bytes, &self.indices, spans[4], |i| i);
+        append(bytes, &self.placements, spans[5], f32::to_bits);
+        append(bytes, &self.values, spans[6], f32::to_bits);
+        append(bytes, &self.tints, spans[7], f32::to_bits);
+        append(bytes, &self.attributes, spans[8], f32::to_bits);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.placements.is_empty()
     }
@@ -253,6 +306,61 @@ impl Buffers {
                 .tint_start
                 .map(|start| &self.tints[instances(start, 3)]),
             attributes: &self.attributes,
+        }
+    }
+
+    /// Writes validated source channels directly into their delivered ranges.
+    fn push_source(
+        &mut self,
+        batch: &InstanceBatch,
+        mesh: &LocalMesh,
+        local_bounds: [V3; 2],
+        bounds: [V3; 2],
+    ) -> Batch {
+        let counts = self.counts();
+        let mut attributes = Vec::new();
+        for (domain, name, components, values) in batch.named_attributes() {
+            attributes.push(Attribute {
+                name: name.clone(),
+                domain,
+                components,
+                start: self.attributes.len(),
+            });
+            self.attributes.extend_from_slice(values);
+        }
+        self.positions
+            .extend(mesh.positions.as_flattened().iter().map(|v| *v as f32));
+        self.normals
+            .extend(mesh.normals.as_flattened().iter().map(|v| *v as f32));
+        self.colors
+            .extend(mesh.colors.as_flattened().iter().map(|v| *v as f32));
+        self.uvs
+            .extend(mesh.uvs.as_flattened().iter().map(|v| *v as f32));
+        self.indices.extend_from_slice(&mesh.indices);
+        self.placements
+            .extend(batch.placements.iter().flat_map(Placement::delivered));
+        self.values.extend_from_slice(batch.values.as_flattened());
+        self.tints.extend_from_slice(batch.tints.as_flattened());
+        Batch {
+            id: batch.id.clone(),
+            object_id: batch.object_id.clone(),
+            source: batch.source.clone(),
+            material: batch.material.clone(),
+            template: batch.template.clone(),
+            visible: batch.visible,
+            collision: batch.collision,
+            vertex_start: counts.vertices,
+            vertex_count: mesh.positions.len(),
+            index_start: counts.indices,
+            index_count: mesh.indices.len(),
+            instance_start: counts.instances,
+            instance_count: batch.placements.len(),
+            value_start: (!batch.values.is_empty()).then_some(counts.values),
+            tint_start: (!batch.tints.is_empty()).then_some(counts.tints),
+            attributes,
+            local_bounds,
+            bounds,
+            foliage: batch.foliage.clone(),
         }
     }
 
@@ -338,6 +446,9 @@ impl Buffers {
 /// Whether a scene's batch records and buffers agree: contiguous ranges in record order, records
 /// ascending by identity, counts as stated. Composition and export check this before indexing.
 pub fn check(scene: &Scene) -> Result<(), String> {
+    if !BatchUsage::scene(scene).fits() {
+        return Err("Scene exceeds its batch allowance.".into());
+    }
     let buffers = &scene.batches;
     let counts = buffers.counts();
     let mut expected = Counts::default();
@@ -353,7 +464,40 @@ pub fn check(scene: &Scene) -> Result<(), String> {
     {
         return Err("Invalid scene batch buffers.".into());
     }
+    if scene.manifest.batches.is_empty() && counts == Counts::default() {
+        return Ok(());
+    }
+    let mesh_ids: BTreeSet<_> = scene
+        .manifest
+        .meshes
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
+    let materials: BTreeSet<_> = scene
+        .manifest
+        .materials
+        .iter()
+        .map(|m| m.id.as_str())
+        .collect();
     for batch in &scene.manifest.batches {
+        if mesh_ids.contains(batch.id.as_str())
+            || batch.id.is_empty()
+            || batch.id.len() > 4096
+            || batch.object_id.is_empty()
+            || batch.object_id.len() > 4096
+        {
+            return Err(format!(
+                "Invalid or duplicate batch or mesh identity {}.",
+                batch.id
+            ));
+        }
+        if batch
+            .material
+            .as_deref()
+            .is_some_and(|id| !materials.contains(id))
+        {
+            return Err(format!("Batch {} references a missing material.", batch.id));
+        }
         if previous.is_some_and(|id| id >= batch.id.as_str())
             || batch.vertex_start != expected.vertices
             || batch.index_start != expected.indices
@@ -364,6 +508,9 @@ pub fn check(scene: &Scene) -> Result<(), String> {
             || batch
                 .tint_start
                 .is_some_and(|start| start != expected.tints)
+            || batch.vertex_count > counts.vertices - expected.vertices
+            || batch.index_count > counts.indices - expected.indices
+            || batch.instance_count > counts.instances - expected.instances
             || batch.vertex_count == 0
             || batch.index_count == 0
             || !batch.index_count.is_multiple_of(3)
@@ -385,11 +532,15 @@ pub fn check(scene: &Scene) -> Result<(), String> {
             if attribute.start != expected.attributes || !matches!(attribute.components, 1 | 3) {
                 return Err(format!("Invalid scene batch attribute: {}", batch.id));
             }
-            expected.attributes += attribute.components
+            let length = attribute.components
                 * match attribute.domain {
                     Domain::Instance => batch.instance_count,
                     Domain::Vertex => batch.vertex_count,
                 };
+            if length > counts.attributes - expected.attributes {
+                return Err(format!("Invalid scene batch attribute: {}", batch.id));
+            }
+            expected.attributes += length;
         }
     }
     if expected != counts {
@@ -425,19 +576,21 @@ pub fn placed_bounds(local: &[V3; 2], placements: &[f32]) -> [V3; 2] {
     bounds(
         placements
             .chunks_exact(PLACEMENT_FLOATS)
-            .flat_map(|placement| {
-                (0..8).map(move |corner| {
-                    place(
-                        placement,
-                        std::array::from_fn(|axis| local[(corner >> axis) & 1][axis]),
-                    )
-                })
-            }),
+            .flat_map(|p| placed_corners(local, p)),
     )
 }
 
+fn placed_corners(local: &[V3; 2], placement: &[f32]) -> [V3; 8] {
+    std::array::from_fn(|corner| {
+        place(
+            placement,
+            std::array::from_fn(|axis| local[(corner >> axis) & 1][axis]),
+        )
+    })
+}
+
 /// Puts batch records in ascending identity order, with the buffers in the same order.
-fn sort(scene: &mut Scene) {
+pub(crate) fn sort(scene: &mut Scene) {
     let records = &scene.manifest.batches;
     if records.windows(2).all(|pair| pair[0].id < pair[1].id) {
         return;
@@ -457,191 +610,56 @@ impl Scene {
     /// Adds an instanced batch to a delivered scene. The mesh is stored once; nothing is expanded.
     /// A failure leaves the scene as it was.
     pub fn add_batch(&mut self, batch: &InstanceBatch, mesh: &LocalMesh) -> Result<(), String> {
-        let count = batch.placements.len();
-        if batch.id.is_empty()
-            || batch.id.len() > 4096
-            || batch.object_id.is_empty()
-            || batch.object_id.len() > 4096
-            || self.manifest.batches.iter().any(|old| old.id == batch.id)
-            || self.manifest.meshes.iter().any(|old| old.id == batch.id)
+        self.insert_batch(batch, mesh)?;
+        if batch.template.is_some() {
+            self.manifest
+                .batch_placement_owners
+                .remove(&batch.object_id);
+        }
+        sort(self);
+        self.manifest.batch_counts = Some(self.batches.counts());
+        Ok(())
+    }
+
+    /// `add_batch` without restoring the batches' order: a caller adding many sorts once after
+    /// them (re-sorting after each would copy every batch's buffers again for each one added).
+    pub(crate) fn insert_batch(
+        &mut self,
+        batch: &InstanceBatch,
+        mesh: &LocalMesh,
+    ) -> Result<(), String> {
+        if !BatchUsage::scene(self)
+            .plus(BatchUsage::source(batch, mesh))
+            .fits()
         {
             return Err(format!(
-                "Batch identity {:?} is invalid or already used by a batch or mesh.",
+                "Batch {}: the scene's batch allowance is exceeded.",
                 batch.id
             ));
         }
-        let fail = |message: &str| format!("Batch {}: {message}", batch.id);
+        if self.manifest.batches.iter().any(|old| old.id == batch.id)
+            || self.manifest.meshes.iter().any(|old| old.id == batch.id)
+        {
+            return Err(format!(
+                "Batch identity {:?} is already used by a batch or mesh.",
+                batch.id
+            ));
+        }
         if batch
             .material
             .as_ref()
             .is_some_and(|id| !self.manifest.materials.iter().any(|m| &m.id == id))
         {
-            return Err(fail("it references a missing material."));
-        }
-        if batch
-            .template
-            .as_ref()
-            .is_some_and(|id| id.is_empty() || id.len() > 4096)
-        {
-            return Err(fail("its template mesh identity is invalid."));
-        }
-        mesh.validate().map_err(|message| fail(&message))?;
-        if let Some(foliage) = &batch.foliage {
-            foliage.validate().map_err(|message| fail(&message))?;
-        }
-        // Named attributes, in delivery order, into a pool of their own.
-        let mut attributes = vec![];
-        let mut pool: Vec<f32> = vec![];
-        for (domain, expected, scalars, vectors) in [
-            (Domain::Instance, count, &batch.scalars, &batch.vectors),
-            (
-                Domain::Vertex,
-                mesh.positions.len(),
-                &batch.vertex_scalars,
-                &batch.vertex_vectors,
-            ),
-        ] {
-            if scalars.len() + vectors.len() > MAX_ATTRIBUTES
-                || scalars.keys().any(|name| vectors.contains_key(name))
-            {
-                return Err(fail(
-                    "it has too many named attributes, or one name for a scalar and a vector.",
-                ));
-            }
-            let named =
-                scalars
-                    .iter()
-                    .map(|(name, values)| (name, 1, values.clone()))
-                    .chain(vectors.iter().map(|(name, values)| {
-                        (name, 3, values.iter().flatten().copied().collect())
-                    }));
-            for (name, components, values) in named {
-                if name.is_empty()
-                    || name.len() > 32
-                    || !name.as_bytes()[0].is_ascii_alphabetic()
-                    || !name.bytes().all(|b| b.is_ascii_alphanumeric())
-                    || ["instance", "tint"].contains(&name.as_str())
-                {
-                    return Err(fail(&format!(
-                        "attribute name {name:?} must be 1 to 32 letters and digits, starting with a letter, and not `instance` or `tint`."
-                    )));
-                }
-                if values.len() != expected * components || values.iter().any(|v| !v.is_finite()) {
-                    return Err(fail(&format!(
-                        "attribute {name} needs one finite value per {}.",
-                        if domain == Domain::Instance {
-                            "instance"
-                        } else {
-                            "vertex"
-                        }
-                    )));
-                }
-                attributes.push(Attribute {
-                    name: name.clone(),
-                    domain,
-                    components,
-                    start: pool.len(),
-                });
-                pool.extend(values);
-            }
-        }
-        if count == 0 {
-            return Err(fail("it has no instance."));
-        }
-        if (!batch.values.is_empty() && batch.values.len() != count)
-            || (!batch.tints.is_empty() && batch.tints.len() != count)
-        {
-            return Err(fail(
-                "per-instance attributes must be given for every instance or for none.",
+            return Err(format!(
+                "Batch {}: it references a missing material.",
+                batch.id
             ));
         }
-        if batch.values.iter().flatten().any(|v| !v.is_finite())
-            || batch
-                .tints
-                .iter()
-                .flatten()
-                .any(|v| !v.is_finite() || *v < 0.)
-        {
-            return Err(fail(
-                "instance values must be finite and tints finite and nonnegative.",
-            ));
-        }
-        let counts = self.batches.counts();
-        if self.manifest.batches.len() >= MAX_BATCHES
-            || counts.instances + count > MAX_INSTANCES
-            || counts.vertices + mesh.positions.len() > MAX_BATCH_VERTICES
-            || counts.indices + mesh.indices.len() > MAX_BATCH_INDICES
-        {
-            return Err(fail("the scene's batch allowance is exceeded."));
-        }
-        let mut placements = Vec::with_capacity(count * PLACEMENT_FLOATS);
-        for (index, placement) in batch.placements.iter().enumerate() {
-            placement
-                .validate()
-                .map_err(|message| fail(&format!("instance {index}: {message}")))?;
-            placements.extend(placement.delivered());
-        }
-        let flat = |values: &[[f64; 3]]| -> Vec<f32> {
-            values.iter().flatten().map(|v| *v as f32).collect()
-        };
-        let positions = flat(&mesh.positions);
-        let normals = flat(&mesh.normals);
-        let colors = flat(&mesh.colors);
-        let uvs: Vec<f32> = mesh.uvs.iter().flatten().map(|v| *v as f32).collect();
-        let values: Vec<f32> = batch.values.iter().flatten().copied().collect();
-        let tints: Vec<f32> = batch.tints.iter().flatten().copied().collect();
-        // Bounds describe the delivered single-precision data, so a consumer's own agree exactly.
-        let local_bounds = bounds(
-            positions
-                .chunks_exact(3)
-                .map(|point| [point[0], point[1], point[2]].map(f64::from)),
-        );
-        let world = placed_bounds(&local_bounds, &placements);
-        if world
-            .iter()
-            .flatten()
-            .any(|v| !v.is_finite() || v.abs() > 1e9)
-        {
-            return Err(fail("an instance leaves the supported coordinate range."));
-        }
-        let record = Batch {
-            id: batch.id.clone(),
-            object_id: batch.object_id.clone(),
-            source: batch.source.clone(),
-            material: batch.material.clone(),
-            template: batch.template.clone(),
-            visible: batch.visible,
-            collision: batch.collision,
-            vertex_start: 0,
-            vertex_count: mesh.positions.len(),
-            index_start: 0,
-            index_count: mesh.indices.len(),
-            instance_start: 0,
-            instance_count: count,
-            value_start: None,
-            tint_start: None,
-            attributes,
-            local_bounds,
-            bounds: world,
-            foliage: batch.foliage.clone(),
-        };
-        let record = self.batches.push(
-            record,
-            View {
-                positions: &positions,
-                normals: &normals,
-                uvs: &uvs,
-                colors: &colors,
-                indices: &mesh.indices,
-                placements: &placements,
-                values: (!values.is_empty()).then_some(&values),
-                tints: (!tints.is_empty()).then_some(&tints),
-                attributes: &pool,
-            },
-        );
+        mesh.validate()
+            .map_err(|message| format!("Batch {}: {message}", batch.id))?;
+        let (local_bounds, world) = batch.validate_for_mesh(mesh)?;
+        let record = self.batches.push_source(batch, mesh, local_bounds, world);
         self.manifest.batches.push(record);
-        sort(self);
-        self.manifest.batch_counts = Some(self.batches.counts());
         if batch.collision == Collision::Instances {
             // Physical content no validation has seen.
             self.manifest.validation = None;
@@ -671,12 +689,9 @@ impl Scene {
         {
             return Err("Composed scenes contain duplicate batch identities.".into());
         }
-        let counts = self.batches.counts();
-        let added = addition.batches.counts();
-        if self.manifest.batches.len() + addition.manifest.batches.len() > MAX_BATCHES
-            || counts.instances + added.instances > MAX_INSTANCES
-            || counts.vertices + added.vertices > MAX_BATCH_VERTICES
-            || counts.indices + added.indices > MAX_BATCH_INDICES
+        if !BatchUsage::scene(self)
+            .plus(BatchUsage::scene(addition))
+            .fits()
         {
             return Err("Composed scene exceeds its batch allowance.".into());
         }
@@ -1002,7 +1017,6 @@ pub fn add_project_batches(scene: &mut Scene, batches: &[ProjectBatch]) -> Resul
     if batches.is_empty() {
         return Ok(());
     }
-    let mut prepared = Vec::with_capacity(batches.len());
     let mut templates = BTreeSet::new();
     // Checked against a scene that holds nothing but the batches, so a refusal changes nothing.
     let mut trial = Scene::empty(scene.manifest.revision, "superspec-batch-admission");
@@ -1042,26 +1056,88 @@ pub fn add_project_batches(scene: &mut Scene, batches: &[ProjectBatch]) -> Resul
             ));
         }
         let material = batch.material.take();
-        trial.add_batch(&batch, &mesh)?;
-        batch.material = material;
-        prepared.push((batch, mesh));
+        trial.insert_batch(&batch, &mesh)?;
+        if material
+            .as_ref()
+            .is_some_and(|id| !scene.manifest.materials.iter().any(|m| &m.id == id))
+        {
+            return Err(format!(
+                "Batch {}: it references a missing material.",
+                batch.id
+            ));
+        }
+        trial.manifest.batches.last_mut().unwrap().material = material;
     }
-    let counts = scene.batches.counts();
-    let added = trial.batches.counts();
-    if scene.manifest.batches.len() + prepared.len() > MAX_BATCHES
-        || counts.instances + added.instances > MAX_INSTANCES
-        || counts.vertices + added.vertices > MAX_BATCH_VERTICES
-        || counts.indices + added.indices > MAX_BATCH_INDICES
-        || prepared
+    if !BatchUsage::scene(scene)
+        .plus(BatchUsage::scene(&trial))
+        .fits()
+        || trial
+            .manifest
+            .batches
             .iter()
-            .any(|(batch, _)| scene.manifest.batches.iter().any(|old| old.id == batch.id))
+            .any(|batch| scene.manifest.batches.iter().any(|old| old.id == batch.id))
     {
         return Err("Project batches exceed the scene's allowance or repeat an identity.".into());
     }
-    remove_meshes(scene, &templates);
-    for (batch, mesh) in &prepared {
-        scene.add_batch(batch, mesh)?;
+    // A template that owns an authored render level cannot be removed without
+    // explicitly replacing that group's references. Refuse before any mutation.
+    if scene
+        .manifest
+        .geometry_lods
+        .iter()
+        .flat_map(|g| &g.levels)
+        .flat_map(|level| &level.meshes)
+        .any(|id| templates.contains(id))
+    {
+        return Err("Project batch template is owned by an authored geometry LOD group.".into());
     }
+    let geometry_lods = crate::lod::with_foliage(
+        &scene.manifest.geometry_lods,
+        scene.manifest.batches.iter().chain(&trial.manifest.batches),
+    )?;
+    crate::lod::validate(
+        &geometry_lods,
+        scene
+            .manifest
+            .meshes
+            .iter()
+            .filter(|mesh| !templates.contains(&mesh.id))
+            .map(|mesh| (mesh.id.as_str(), mesh.visible)),
+        scene
+            .manifest
+            .batches
+            .iter()
+            .chain(&trial.manifest.batches)
+            .map(|batch| (batch.id.as_str(), batch.visible)),
+    )?;
+    remove_meshes(scene, &templates);
+    scene.manifest.geometry_lods = geometry_lods;
+    // A new, independent template batch does not declare a shared placement order.
+    if !scene.manifest.batch_placement_owners.is_empty() {
+        for batch in &trial.manifest.batches {
+            if batch.template.is_some() {
+                scene
+                    .manifest
+                    .batch_placement_owners
+                    .remove(&batch.object_id);
+            }
+        }
+    }
+    // Publish the buffers already validated and expanded by admission.
+    if scene.manifest.batches.is_empty() {
+        scene.batches = trial.batches;
+        scene.manifest.batches = trial.manifest.batches;
+    } else {
+        for record in trial.manifest.batches {
+            let view = trial.batches.view(&record);
+            scene
+                .manifest
+                .batches
+                .push(scene.batches.push(record, view));
+        }
+    }
+    sort(scene);
+    scene.manifest.batch_counts = Some(scene.batches.counts());
     Ok(())
 }
 
@@ -1079,6 +1155,42 @@ pub fn add_project_text(scene: &mut Scene, text: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn spans_preserve_float_bits_and_ignore_untouched_channels() {
+        let old = Buffers {
+            positions: vec![0.; 6],
+            indices: vec![1, 2, 3],
+            placements: vec![0.; 10],
+            ..Default::default()
+        };
+        let mut next = old.clone();
+        next.positions[1] = -0.;
+        next.positions[4] = 2.;
+        next.indices[2] = 0;
+        let spans = next.changed_spans(&old);
+        assert_eq!(
+            spans,
+            [
+                [1, 4],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [2, 1],
+                [0, 0],
+                [0, 0],
+                [0, 0],
+                [0, 0]
+            ]
+        );
+        let mut bytes = Vec::new();
+        next.write_spans(&mut bytes, spans);
+        let expected: Vec<u8> = [(-0.0f32).to_bits(), 0, 0, 2.0f32.to_bits(), 0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        assert_eq!(bytes, expected);
+    }
 
     fn triangle() -> LocalMesh {
         LocalMesh {

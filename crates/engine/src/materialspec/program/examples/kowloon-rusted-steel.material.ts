@@ -4,7 +4,7 @@
 // the catalog rust image triplanar with fully rotated lattice copies. Edges come from the
 // receiver's own creases and open rims. View-dependent lighting is recorded as live operations.
 import {
-  defineMaterial, param, vec2, vec3, add, sub, mul, div, mix, min, max, smoothstep, step,
+  defineMaterial, param, chippedShoulder, edgeGlint, vec2, vec3, add, sub, mul, div, mix, min, max, smoothstep, step,
   sqrt, dot, clamp, fract, floor, length, hash, valueNoise, variedColor, triplanarWeights, seed,
   creaseDistance, creaseNormal, world, normal, footprint, boundsMin, boundsMax,
   modulateDiffuse, grazingFalloff, filterEnvironment, bandLuminance, scaleSpecular,
@@ -20,6 +20,12 @@ const surfaceRust = param.scalar({ default: 1, range: [0, 1], label: "Surface ru
 const rainRust = param.scalar({ default: 1, range: [0, 1], label: "Raindrop rust" });
 const polishedEdges = param.scalar({ default: 1, range: [0, 1], label: "Polished edges" });
 const edgeSpecular = param.scalar({ default: 0.16, range: [0, 1], label: "Exposed arris specular" });
+const glintPull = param.scalar({ default: 0.62, range: [0, 1], label: "Edge normal pull" });
+const glintThreshold = param.scalar({ default: 0.27, range: [0, 0.99], label: "Edge alignment threshold" });
+const glintGain = param.scalar({ default: 0.9, range: [0, 4], label: "Edge specular gain" });
+const chipDepth = param.scalar({ default: 0.0008, range: [0, 0.012], unit: "m", label: "Edge chip depth" });
+const chipAmount = param.scalar({ default: 0.48, range: [0, 1], label: "Edge chip coverage" });
+const chipPolish = param.scalar({ default: 0.13, range: [0, 0.5], label: "Fresh chip polish" });
 const creaseAngle = param.scalar({ default: 30, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
 const rustRepeat = param.scalar({ default: 2, range: [0.1, 20], label: "Oxide texture repeat per meter" });
 const rustRoughness = param.scalar({ default: 0.92, range: [0, 1], label: "Oxide roughness" });
@@ -86,6 +92,8 @@ const roundWidth = min(0.008, mul(0.45, thinnest));
 const exposedMetal = mul(polishedEdges, sub(1, coverage));
 const rimBand = sub(1, smoothstep(0, roundWidth, edgeDistance));
 const polishedRim = mul(exposedMetal, rimBand);
+const chip = chippedShoulder({ distance: edgeDistance, width: roundWidth, amount: chipAmount,
+  field: edgeNoise, grit: fine, depth: chipDepth });
 const minimumRim = mul(mul(edgeSpecular, metalness), rimBand);
 const rimRoughness = mix(roughness, 0.13, polishedRim);
 const rimMiddle = creaseNormal("convex", creaseAngle, add(roundWidth, footprint));
@@ -99,7 +107,8 @@ export default defineMaterial({
   name: "Kowloon rusted steel",
   base: {
     baseColor: mix(substrate, oxideColor, coverage),
-    roughness: mix(rimRoughness, rustRoughness, coverage),
+    height: chip.height,
+    roughness: max(0.08, sub(mix(rimRoughness, rustRoughness, coverage), mul(chipPolish, chip.coverage))),
     metalness: mix(metalness, 0, coverage),
     // The study's rim bend after normal mapping: the shaded normal plus the direction across the
     // rim (the adjacent face's normal), weighted by the polished band (metal_normal.glsl).
@@ -116,6 +125,7 @@ export default defineMaterial({
       brightSoftness: mix(0.04, 0.035, paintedValues),
       liftRed: mul(0.105, paintedValues), liftGreen: mul(0.135, paintedValues), liftBlue: mul(0.16, paintedValues),
     }),
+    edgeGlint({ mask: polishedRim, pull: glintPull, threshold: glintThreshold, specular: glintGain }),
   ],
 });
 

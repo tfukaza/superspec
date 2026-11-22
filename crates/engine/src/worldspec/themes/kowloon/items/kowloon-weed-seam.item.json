@@ -1,0 +1,5 @@
+{
+  "format": "itemspec", "version": 1, "id": "kowloon-weed-seam",
+  "generator": { "kind": "glb", "asset": "kowloon-weed-paint.glb", "scene": 1 },
+  "collision": "none"
+}

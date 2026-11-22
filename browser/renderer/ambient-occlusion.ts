@@ -3,13 +3,16 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { GTAOPass } from "three/examples/jsm/postprocessing/GTAOPass.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
+import { FXAAPass } from "three/examples/jsm/postprocessing/FXAAPass.js";
 import { SimplexNoise } from "three/examples/jsm/math/SimplexNoise.js";
 import { ContourPass, type ContourSource } from "./contours.ts";
 import { LitEdges } from "./lit-edges.ts";
-import type { AmbientOcclusionSettings, Contours } from "./lighting.ts";
+import { KuwaharaPass } from "./kuwahara.ts";
+import { HORIZON_OCCLUSION_GLSL, horizonUniforms, updateHorizon } from "./horizon-occlusion.ts";
+import type { AmbientOcclusionSettings, Contours, LightShadow } from "./lighting.ts";
 
 /** The lighting record's ambient occlusion values; whether the effect is on (`enabled`) is its host's decision. */
-type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "intensity" | "thickness">;
+type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "intensity" | "thickness" | "method" | "tint">;
 
 /**
  * The last pass: the renderer's own tone mapping, exposure and output color space (three.js applies them to a material
@@ -18,7 +21,8 @@ type AmbientOcclusionParameters = Pick<AmbientOcclusionSettings, "radius" | "int
  * The optional edge filter measures contrast in the displayed image, including its backdrop.
  */
 const OUTPUT = {
-  uniforms: { tDiffuse: { value: null }, backdrop: { value: new THREE.Vector3() }, edgeTexel: { value: new THREE.Vector2() }, edgeThreshold: { value: 0.12 } },
+  uniforms: { tDiffuse: { value: null }, backdrop: { value: new THREE.Vector3() }, edgeTexel: { value: new THREE.Vector2() }, edgeThreshold: { value: 0.12 },
+    ...horizonUniforms(), aoFoliage: { value: null }, aoHasFoliage: { value: 0 } },
   vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
 uniform sampler2D tDiffuse;
@@ -28,12 +32,21 @@ varying vec2 vUv;
 uniform vec2 edgeTexel;
 uniform float edgeThreshold;
 #endif
-vec3 displayColor(vec2 uv) {
+#ifdef HORIZON
+${HORIZON_OCCLUSION_GLSL}
+uniform sampler2D aoFoliage;
+uniform float aoHasFoliage;
+#endif
+// The record's horizon occlusion darkens the tone-mapped colour (horizon-occlusion.ts); 'darkening' is 0 without it.
+vec3 displayColor(vec2 uv, float darkening) {
   vec4 texel = texture2D(tDiffuse, uv);
   float coverage = clamp(texel.a, 0.0, 1.0);
   vec3 color = coverage > 0.0 ? texel.rgb / coverage : vec3(0.0);
   #ifdef TONE_MAPPING
     color = toneMapping(color);
+  #endif
+  #ifdef HORIZON
+    color *= occlusionTone(darkening);
   #endif
   return mix(backdrop, linearToOutputTexel(vec4(color, 1.0)).rgb, coverage);
 }
@@ -44,12 +57,17 @@ float contrast(vec3 a, vec3 b) {
 }
 #endif
 void main() {
-  vec3 color = displayColor(vUv);
+  float darkening = 0.0;
+  #ifdef HORIZON
+    // Foliage is left out of the depth (see 'prepare'): where a leaf is in front it is not darkened.
+    darkening = horizonOcclusion(vUv) * (1.0 - aoHasFoliage * texture2D(aoFoliage, vUv).a);
+  #endif
+  vec3 color = displayColor(vUv, darkening);
   #ifdef EDGE_BLUR
     // Soften across the stronger gradient using taps one device pixel away.
     vec2 dx = vec2(edgeTexel.x, 0.0), dy = vec2(0.0, edgeTexel.y);
-    vec3 left = displayColor(vUv - dx), right = displayColor(vUv + dx);
-    vec3 down = displayColor(vUv - dy), up = displayColor(vUv + dy);
+    vec3 left = displayColor(vUv - dx, darkening), right = displayColor(vUv + dx, darkening);
+    vec3 down = displayColor(vUv - dy, darkening), up = displayColor(vUv + dy, darkening);
     float horizontal = max(contrast(color, left), contrast(color, right));
     float vertical = max(contrast(color, down), contrast(color, up));
     float wx = horizontal*horizontal, wy = vertical*vertical;
@@ -223,6 +241,11 @@ function fixedNoise(size = 64): THREE.DataTexture {
  */
 export class AmbientOcclusion {
   private readonly composer: EffectComposer;
+  // The normal buffer's alpha records outline eligibility. Keep drawing exempt
+  // meshes into the same depth and RGB normals used for AO and lit edges.
+  private readonly unoutlinedNormal = new THREE.MeshNormalMaterial({
+    side: THREE.DoubleSide, blending: THREE.NoBlending, opacity: 0,
+  });
   private readonly pass: GTAOPass;
   private readonly contact: GTAOPass;
   /** Whether materials that are not tone mapped are kept so (see `untoned`); off only to compare pictures with it. */
@@ -245,6 +268,8 @@ export class AmbientOcclusion {
     const size = renderer.getSize(new THREE.Vector2());
     const target = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(renderer, target);
+    this.unoutlinedNormal.allowOverride = false;
+    faceNormals(this.unoutlinedNormal);
     this.composer.addPass(new RenderPass(scene, camera));
     this.pass = new GTAOPass(scene, camera, size.x, size.y);
     this.foliageMask = this.prepare(this.pass, camera, excluded);
@@ -300,6 +325,15 @@ export class AmbientOcclusion {
     untoned.mode.value = AmbientOcclusion.invertUntoned ? UNTONED_MODES.get(this.renderer.toneMapping) ?? 0 : 0;
     untoned.exposure.value = this.renderer.toneMappingExposure;
     this.geometryDrawn = false;
+    if (this.horizon) {
+      // The horizon occlusion reads the depth the contour source draws (the occlusion passes are off), and its mask.
+      const source = this.contourSource();
+      const target = (this.pass as unknown as { normalRenderTarget: THREE.WebGLRenderTarget }).normalRenderTarget;
+      const uniforms = this.output.uniforms;
+      updateHorizon(uniforms, { enabled: true, ...this.horizon }, this.shadow, this.camera, source.depth, target.width, target.height);
+      uniforms.aoFoliage.value = source.foliage;
+      uniforms.aoHasFoliage.value = source.hasFoliage ? 1 : 0;
+    }
     try { this.composer.render(); } finally {
       untoned.mode.value = 0;
       this.renderer.setClearColor(clear, alpha);
@@ -331,16 +365,39 @@ export class AmbientOcclusion {
     denoise.pdMaterial.uniforms.tNoise.value = denoise.pdNoiseTexture;
     pass.normalMaterial.side = THREE.DoubleSide;
     faceNormals(pass.normalMaterial);
-    const internals = pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget; blendMaterial: THREE.ShaderMaterial };
+    const internals = pass as unknown as { _overrideVisibility(): void; _restoreVisibility(): void; normalRenderTarget: THREE.WebGLRenderTarget; blendMaterial: THREE.ShaderMaterial;
+      _renderOverride(renderer: THREE.WebGLRenderer, material: THREE.Material, target: THREE.WebGLRenderTarget, color: number, alpha: number): void };
     const hide = internals._overrideVisibility.bind(pass), restore = internals._restoreVisibility.bind(pass);
     let hidden: THREE.Object3D[] = [], leaves: THREE.Object3D[] = [];
     const scene = this.scene;
+    const originalMaterials = new Map<THREE.Mesh, THREE.Mesh["material"]>();
     internals._overrideVisibility = () => {
       hide();
       hidden = excluded().filter(object => object.visible);
       leaves = [];
-      scene.traverse(object => { if (object.visible && (object as THREE.Mesh).isMesh && object.userData.foliage) leaves.push(object); });
+      scene.traverse(object => {
+        if (!(object instanceof THREE.Mesh) || !object.visible) return;
+        if (object.userData.foliage) leaves.push(object);
+        else if ((object.userData.worldSpecOutline === false || object.geometry.userData.worldSpecOutline === false)
+          && (Array.isArray(object.material) || object.material.visible)) {
+          originalMaterials.set(object, object.material);
+        }
+      });
       for (const object of [...hidden, ...leaves]) object.visible = false;
+    };
+    const drawNormals = internals._renderOverride.bind(pass);
+    internals._renderOverride = (...args) => {
+      try {
+        for (const [mesh, material] of originalMaterials) {
+          mesh.material = Array.isArray(material)
+            ? material.map(part => part.visible ? this.unoutlinedNormal : part)
+            : this.unoutlinedNormal;
+        }
+        drawNormals(...args);
+      } finally {
+        for (const [mesh, material] of originalMaterials) mesh.material = material;
+        originalMaterials.clear();
+      }
     };
     internals._restoreVisibility = () => {
       for (const object of hidden) object.visible = true;
@@ -416,17 +473,44 @@ void main() {
   }
 
   private readonly output: ShaderPass;
+  private kuwahara?: KuwaharaPass;
+
+  setKuwahara(enabled: boolean): void {
+    if (enabled && !this.kuwahara) {
+      this.kuwahara = new KuwaharaPass(this.scene, this.camera);
+      this.composer.insertPass(this.kuwahara, this.composer.passes.indexOf(this.contact) + 1);
+    } else if (!enabled && this.kuwahara) {
+      this.composer.removePass(this.kuwahara);
+      this.kuwahara.dispose();
+      this.kuwahara = undefined;
+    }
+  }
+  private fxaa?: FXAAPass;
+
+  setAntialiasing(enabled: boolean): void {
+    if (enabled && !this.fxaa) {
+      this.fxaa = new FXAAPass();
+      this.composer.insertPass(this.fxaa, this.composer.passes.indexOf(this.output));
+    }
+    if (this.fxaa) this.fxaa.enabled = enabled;
+  }
+  private horizon: AmbientOcclusionParameters | null = null;
+  private shadow?: LightShadow;
+  /** The sun's shadow, whose hue the occlusion takes by the record's `tint`; undefined is neutral. */
+  setShadow(shadow: LightShadow | undefined): void { this.shadow = shadow; }
   private readonly backdrop = { r: 0, g: 0, b: 0 };
   private readonly clearColor = new THREE.Color();
 
   /** Contour lines over the frame (`contours.ts`), after the occlusion and before the output pass; null draws none. */
+  setOverlapOutlines(enabled: boolean): void { this.contours?.setOverlapsOnly(enabled); }
+
   setContours(contours: Contours | null): void {
     if (!contours) { if (this.contours) this.contours.enabled = false; return; }
     if (this.contours) { this.contours.set(contours); this.contours.enabled = true; return; }
     this.contours = new ContourPass(this.camera, () => this.contourSource(), contours);
     this.contours.setPixelRatio(this.pixelRatio);
     // Before the output pass, wherever that is by now.
-    const output = this.composer.passes.indexOf(this.output);
+    const output = this.composer.passes.indexOf(this.fxaa ?? this.output);
     if (output < 0) this.composer.addPass(this.contours);
     else this.composer.insertPass(this.contours, output);
   }
@@ -457,15 +541,22 @@ void main() {
     if (this.litEdges) { this.litEdges.enabled = sun !== null; return; }
     if (!sun) return;
     this.litEdges = new LitEdges(this.camera, () => this.contourSource(), sun);
-    this.composer.insertPass(this.litEdges, this.composer.passes.indexOf(this.output));
+    this.composer.insertPass(this.litEdges, this.composer.passes.indexOf(this.fxaa ?? this.output));
   }
   private readonly camera: THREE.Camera;
   private pixelRatio = 1;
 
   /** Changes the occlusion's look in place; null leaves the occlusion out of the frame (contour lines alone are then drawn). */
   set(parameters: AmbientOcclusionParameters | null): void {
-    this.pass.enabled = this.contact.enabled = parameters !== null;
-    if (!parameters) return;
+    // The record's `horizon` method is drawn in the output pass, after tone mapping (horizon-occlusion.ts).
+    this.horizon = parameters?.method === "horizon" ? parameters : null;
+    const defines = this.output.material.defines;
+    if (Boolean(defines.HORIZON) !== Boolean(this.horizon)) {
+      if (this.horizon) defines.HORIZON = 1; else delete defines.HORIZON;
+      this.output.material.needsUpdate = true;
+    }
+    this.pass.enabled = this.contact.enabled = parameters !== null && !this.horizon;
+    if (!parameters || this.horizon) return;
     // Lengths are scene meters (`screenSpaceRadius` off). Every sample within the radius raises the horizon in full
     // (no distance falloff): with the pass's default falloff only the nearest centimeters of a corner darken.
     this.pass.updateGtaoMaterial({ radius: parameters.radius, thickness: parameters.thickness, distanceExponent: 1, distanceFallOff: 0,
@@ -499,11 +590,14 @@ void main() {
   }
 
   dispose(): void {
+    this.unoutlinedNormal.dispose();
     this.pass.dispose();
     this.contact.dispose();
     this.contours?.dispose();
     this.litEdges?.dispose();
+    this.kuwahara?.dispose();
     this.output.dispose();
+    this.fxaa?.dispose();
     this.foliageMask.dispose();
     this.contactMask.dispose();
     this.composer.dispose();

@@ -80,6 +80,7 @@ impl Compiler<'_> {
                 "metal",
                 "brushed-metal",
                 "kitchen-metal",
+                "kitchen-worktop",
                 "vent-metal",
                 "vent-edge",
                 "shop-register",
@@ -335,8 +336,8 @@ impl Compiler<'_> {
     }
 
     pub(super) fn plan_buildings(
-        &mut self,
-        scene: &mut Scene,
+        &self,
+        diagnostics: &mut Vec<Diagnostic>,
         output: &Product,
         recipes: Vec<Recipe>,
         authored: &BTreeMap<u32, Geometry>,
@@ -426,7 +427,7 @@ impl Compiler<'_> {
                 evidence: "The requested host is smaller than the supported stocked-shop frontage."
                     .into(),
             }));
-            scene.manifest.diagnostics.push(diagnostic);
+            diagnostics.push(diagnostic);
         }
         Ok(Some(Prepared {
             plan,
@@ -436,8 +437,8 @@ impl Compiler<'_> {
         }))
     }
     pub(super) fn render_buildings(
-        &mut self,
-        scene: &mut Scene,
+        &self,
+        visuals: &mut VisualOutput<'_>,
         prepared: Option<Prepared>,
         theme: &mut ThemeState,
         execution: &Execution<'_>,
@@ -516,7 +517,7 @@ impl Compiler<'_> {
                 Ok(job.drawing.triangle_count() - before)
             })
             .map_err(fail)?;
-        scene.manifest.sign_plans.extend(sign_plans);
+        visuals.sign_plans().extend(sign_plans);
         (execution.observe)("building-spans");
         let contributors =
             if rules.len() >= 2 || settings.children.iter().any(|rule| rule.kind == "spans") {
@@ -566,7 +567,7 @@ impl Compiler<'_> {
             let rule = &rules[i].1;
             self.bake_visual(
                 execution,
-                scene,
+                visuals,
                 &mut drawing,
                 &plan.sites()[i].host,
                 rule,
@@ -577,9 +578,6 @@ impl Compiler<'_> {
             )?;
         }
         (execution.observe)("building-credit");
-        if let Some(context) = scene.manifest.architecture.as_mut() {
-            context.credit_visuals(&contributors).map_err(fail)?;
-        }
-        Ok(())
+        visuals.credit(&contributors).map_err(fail)
     }
 }

@@ -200,3 +200,23 @@ fn a_session_moves_between_threads_and_observers_can_read_or_clear_producer_stat
     .unwrap();
     assert!(session.compile(AML, 3, &|_| Ok(bytes())).is_ok());
 }
+
+#[test]
+fn item_library_is_separate_from_the_material_program_source_budget() {
+    let mut request = recipe();
+    request.modules = (0..64)
+        .map(|i| (format!("fixture-{i}.item.json"), "{}".into()))
+        .collect();
+    Session::default()
+        .build(&request, 1, &|_| panic!("no recipe images"), &|| false)
+        .expect("a material can be baked alongside a full item library");
+    request.modules = (0..64)
+        .map(|i| (format!("layer-{i}.ms"), "material 1;".into()))
+        .collect();
+    assert!(
+        Session::default()
+            .build(&request, 1, &|_| panic!("no recipe images"), &|| false)
+            .is_err(),
+        "material modules still count toward the 64-module limit"
+    );
+}

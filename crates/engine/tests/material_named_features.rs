@@ -197,7 +197,11 @@ fn named_feature_sets_are_bounded_and_refused_rather_than_cut() {
     assert_eq!(open.get("edge").unwrap().features().len(), 3);
     assert_eq!(closed.get("edge").unwrap().features().len(), 4);
     assert!(NamedFeatures::new(&[]).unwrap().is_empty());
-    let failed = |named: &[NamedFeature]| NamedFeatures::new(named).err().expect("refused");
+    let failed = |named: &[NamedFeature]| {
+        let error = NamedFeatures::new(named).err().expect("refused");
+        assert_eq!(NamedFeatures::validate(named).unwrap_err(), error);
+        error
+    };
     assert!(failed(&[feature("two words", square.clone(), false)]).contains("'two words'"));
     assert!(failed(&[feature("", square.clone(), false)]).contains("letters"));
     assert!(

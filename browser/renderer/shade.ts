@@ -6,6 +6,7 @@ import { DEFAULT_LIGHTING, DEFAULT_PAINTED, type PaintedFinishing } from "./ligh
 import { CAST_SHADOW } from "./shadow-style.ts";
 import { programFieldPass, sceneFieldUniforms } from "./scene-fields.ts";
 import type { LiveProgram } from "../model/packet.ts";
+import { featureTexture, featureUniforms } from "./feature-texture.ts";
 
 /**
  * Seconds of the viewer's time-driven render mode (`RustScene.setContinuous`), shared by every program material as
@@ -65,6 +66,8 @@ export interface ProgramShader {
   features: boolean;
   /** The zone names the source queries, in their kinds' order; a host binds `ms_zones` and `ms_zone_count` (see `zoneTexture`). */
   zones?: string[];
+  /** The engine proved that with zero zone segments, all outputs are their underlying channel. */
+  passthroughWithoutZones?: boolean;
   /** An identity of `source`: equal sources have equal identities. */
   id?: string;
   /** Every uniform `source` declares, as GLSL declares it, and how many of them are samplers. */
@@ -144,6 +147,8 @@ export interface MaterialShading {
 /** One mesh's receiver inputs: bounds and features as rows of twelve numbers (see `shade_project`). */
 export interface MeshShading {
   material: string;
+  /** World position of the material frame; the receiver's chart, features and bounds use this frame. */
+  materialOrigin?: [number, number, number];
   boundsMin: number[];
   boundsMax: number[];
   features: number[];
@@ -165,6 +170,8 @@ export interface SceneShading {
   domain?: number[];
 }
 type Uniforms = Record<string, THREE.IUniform>;
+// The initial, inline and refined shader variants for a receiver share its live placement.
+const materialFrames = new WeakMap<MeshShading, THREE.Vector3>();
 
 function uniformValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.length === 2 ? new THREE.Vector2(...(value as [number, number])) : new THREE.Vector3(...(value as [number, number, number]));
@@ -187,18 +194,6 @@ export function setSeeds(uniforms: Uniforms, material: MaterialShading): void {
     const uniform = uniforms[seed.uniform] ??= { value: material.seedValues[index] };
     uniform.value = material.seedValues[index];
   });
-}
-
-/** A mesh's features as a float texture: three texels per feature, one feature per row. */
-function featureTexture(features: number[]): THREE.DataTexture {
-  const rows = Math.max(1, features.length / 12);
-  const data = new Float32Array(rows * 12);
-  data.set(features);
-  const texture = new THREE.DataTexture(data, 3, rows, THREE.RGBAFormat, THREE.FloatType);
-  texture.minFilter = texture.magFilter = THREE.NearestFilter;
-  texture.generateMipmaps = false;
-  texture.needsUpdate = true;
-  return texture;
 }
 
 /** Texels of a zone row (`ZONE_ROW_TEXELS` in the engine). */
@@ -368,12 +363,17 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
   else if (shader.outputs.includes("opacity")) { material.transparent = true; material.depthWrite = false; }
   const features = featureTexture(mesh.features);
   const relief = mode === "pixel" && hasPixelRelief(shading);
+  let materialOrigin = materialFrames.get(mesh);
+  if (!materialOrigin) {
+    materialOrigin = new THREE.Vector3(...(mesh.materialOrigin ?? [0, 0, 0]));
+    materialFrames.set(mesh, materialOrigin);
+  }
   const objectFromWorld = new THREE.Matrix4();
   if (mesh.objectToWorld) objectFromWorld.fromArray(mesh.objectToWorld).invert();
   else objectFromWorld.makeTranslation(-mesh.boundsMin[0], -mesh.boundsMin[1], -mesh.boundsMin[2]);
   const uniforms: Uniforms = {
     ...shared,
-    ms_features: { value: features }, ms_feature_count: { value: mesh.features.length / 12 },
+    ...featureUniforms(features, mesh.features.length / 12),
     ...(shader.zones?.length ? { ms_zones: { value: zoneTexture(mesh.zones) }, ms_zone_count: { value: mesh.zones?.count ?? 0 } } : {}),
     ms_gravity: { value: new THREE.Vector3(...(gravity as [number, number, number])) },
     ms_bounds_min: { value: new THREE.Vector3(...(mesh.boundsMin as [number, number, number])) },
@@ -382,6 +382,7 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
     // Read under the anchored mapping alone: the receiver's pattern anchor frame (the world's without an anchor).
     msAnchorFromWorld: { value: new THREE.Matrix4().fromArray(anchorFromWorld(mesh.anchor)) },
     msMapping: { value: MAPPINGS.indexOf(shading.mapping) },
+    msMaterialOrigin: { value: materialOrigin },
     msReliefSamples: { value: 2 },
     msTime: programTime,
     msSunDirection: programSun,
@@ -404,6 +405,7 @@ export function programMaterial(shading: MaterialShading, mesh: MeshShading, gra
 varying vec3 msWorld;
 varying vec3 msNormal;
 varying vec2 msUv;
+uniform vec3 msMaterialOrigin;
 #ifdef MS_INSTANCED
 attribute vec4 ${INSTANCE_ATTRIBUTE};
 varying vec4 msInstanceValue;
@@ -411,7 +413,7 @@ varying mat3 msInstanceTurn;
 #endif
 ${inputs.vertexDeclarations}`)
       .replace("#include <project_vertex>", `#include <project_vertex>
-  msWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+  msWorld = (modelMatrix * vec4(transformed, 1.0)).xyz - msMaterialOrigin;
   msNormal = mat3(modelMatrix) * objectNormal;
   msUv = uv;
 ${inputs.vertexAssignments}

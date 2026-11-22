@@ -3,9 +3,17 @@ use crate::{
     Scene,
     architecture::build::{PhysicalBuild, PhysicalOutput, RenderSurfaces},
 };
+use std::collections::BTreeMap;
+use superspec_model::{
+    theme::{ground, signs},
+    visual::{BakedVisualInput, VisualInput},
+};
 use superspec_types::{architecture::Node, diagnostic::Diagnostic, material::Material};
 
-/// Scoped bridge for compiled-in visual producers. Physical maps remain private.
+mod items;
+pub(crate) use items::ItemOutput;
+
+/// Connects compiled-in themes to receiving surfaces and delivery.
 pub(crate) trait ThemeAdapter {
     fn prepare(
         &mut self,
@@ -19,8 +27,8 @@ pub(crate) trait ThemeAdapter {
     }
     fn plan(
         &mut self,
-        _physical: &mut PhysicalBuild<'_>,
-        _scene: &mut Scene,
+        _physical: &PhysicalBuild<'_>,
+        _diagnostics: &mut Vec<Diagnostic>,
         _output: &PhysicalOutput,
         _render: &RenderSurfaces,
     ) -> Result<(), Diagnostic> {
@@ -36,21 +44,70 @@ pub(crate) trait ThemeAdapter {
     }
     fn publish(
         &mut self,
-        _physical: &mut PhysicalBuild<'_>,
-        _scene: &mut Scene,
+        _physical: &PhysicalBuild<'_>,
+        _visuals: &mut VisualOutput<'_>,
     ) -> Result<(), Diagnostic> {
         Ok(())
     }
-    /// Append theme-owned visual items after architectural resources are complete.
-    fn place_items(
+    /// Compose admitted item models, including any physical contributions, after architecture.
+    fn place_items<'build>(
         &self,
-        _physical: &PhysicalBuild<'_>,
-        scene: Scene,
-    ) -> Result<Scene, Diagnostic> {
-        Ok(scene)
+        _physical: &'build PhysicalBuild<'_>,
+        items: ItemOutput<'build>,
+    ) -> Result<ItemOutput<'build>, Diagnostic> {
+        Ok(items)
     }
     fn fallback_source(&self) -> Option<&Node> {
         None
+    }
+}
+
+/// Post-review dressing can add draw data and visual provenance. Canonical mesh ranges,
+/// colliders and physical findings stay under the build coordinator's ownership.
+pub(crate) struct VisualOutput<'a>(&'a mut Scene);
+
+impl VisualOutput<'_> {
+    pub(crate) fn ensure_material(&mut self, material: &Material) -> Result<(), String> {
+        let materials = &mut self.0.manifest.materials;
+        if let Some(existing) = materials.iter().find(|existing| existing.id == material.id) {
+            if existing != material {
+                return Err(format!("Conflicting visual material {}.", material.id));
+            }
+        } else {
+            material.validate()?;
+            materials.push(material.clone());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn append(
+        &mut self,
+        host: &str,
+        drawing: &impl VisualInput,
+        bindings: &BTreeMap<String, String>,
+        bakes: &[impl BakedVisualInput],
+    ) -> Result<(), String> {
+        self.0.append_baked_visual(host, drawing, bindings, bakes)
+    }
+
+    pub(crate) fn ground_plans(&mut self) -> &mut Vec<ground::Plan> {
+        &mut self.0.manifest.ground_plans
+    }
+
+    pub(crate) fn sign_plans(&mut self) -> &mut Vec<signs::Plan> {
+        &mut self.0.manifest.sign_plans
+    }
+
+    pub(crate) fn credit(
+        &mut self,
+        contributors: &BTreeMap<String, Vec<String>>,
+    ) -> Result<(), String> {
+        self.0
+            .manifest
+            .architecture
+            .as_mut()
+            .expect("post-review visuals have architectural context")
+            .credit_visuals(contributors)
     }
 }
 
@@ -83,7 +140,7 @@ pub(crate) fn compile_prepared(
     if retain_solids {
         physical.retain_solids(&mut scene, &output)?;
     }
-    theme.plan(&mut physical, &mut scene, &output, &render)?;
+    theme.plan(&physical, &mut scene.manifest.diagnostics, &output, &render)?;
     physical.check_cancelled()?;
     observe("architectural-render");
     if visual {
@@ -110,7 +167,7 @@ pub(crate) fn compile_prepared(
     scene.manifest.vertex_count = scene.positions.len() / 3;
     scene.manifest.index_count = scene.indices.len();
     if visual {
-        theme.publish(&mut physical, &mut scene)?;
+        theme.publish(&physical, &mut VisualOutput(&mut scene))?;
     }
     physical.check_cancelled()?;
     observe("asset-publication");
@@ -123,11 +180,9 @@ pub(crate) fn compile_prepared(
     });
     physical.publish_assets(&mut scene, theme.fallback_source())?;
     physical.check_cancelled()?;
-    scene.manifest.success = true;
-    scene.manifest.vertex_count = scene.positions.len() / 3;
-    scene.manifest.index_count = scene.indices.len();
     if visual {
-        scene = theme.place_items(&physical, scene)?;
+        let items = ItemOutput::new(scene, physical.root());
+        scene = theme.place_items(&physical, items)?.finish(&physical)?;
     }
     observe("complete");
     physical.check_cancelled()?;

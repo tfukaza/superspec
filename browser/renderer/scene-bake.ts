@@ -1,9 +1,11 @@
 import * as THREE from "three";
 import { applyLiveOperations } from "./live.ts";
 import type { CpuField, MaterialShading } from "./shade.ts";
-import { GpuBaker, gpuBakeUnsupported, type AtlasMaps, type FieldTexels, type StackInput } from "./bake.ts";
-import { bakeGeometry, displayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
+import { GpuBaker, gpuBakeUnsupported, nextTurn, type AtlasMaps, type FieldTexels, type StackInput } from "./bake.ts";
+import type { GraphNode } from "./bake-graph.ts";
+import { bakeGeometry, carryIndexedTints, commitPositions, displayGeometry, placeDisplayGeometry, type AtlasLayout, type AtlasProgramLayout } from "./atlas.ts";
 import { shareInstanceAttributes } from "./batch.ts";
+import { imageIdentity } from "./textures.ts";
 
 /**
  * GPU-baked maps for the meshes of a shaded scene (the scene view's default look). Each mesh has two looks: the
@@ -42,6 +44,8 @@ export interface SceneBakeTarget {
   /** The program's parameter, seed and image uniforms and the receiver's own; shared objects, so edits reach the bake. */
   uniforms: Uniforms;
   layout: AtlasLayout;
+  /** Places the atlas display triangles on their receiver; it never changes the sampled texels. */
+  materialOrigin?: [number, number, number];
   /** Names the receiver inputs that are textures (its features), for the bake key. */
   receiver: string;
   /** Physical size of the UV square for `uv` mapping, meters. */
@@ -148,6 +152,7 @@ export interface PreparedScene {
 interface Entry {
   target: SceneBakeTarget;
   program: AtlasProgramLayout;
+  requiredFields: WantedField[];
   shaderGeometry: THREE.BufferGeometry;
   display?: THREE.BufferGeometry;
   bake?: THREE.BufferGeometry;
@@ -174,6 +179,7 @@ interface Run {
   entries: Entry[];
   fields?: FieldSource;
   fieldsInFlight: boolean;
+  fieldsDirty: boolean;
   fieldRetries: number;
   /** Whether the scene is the displayed one: only then do its looks go on its meshes. */
   attached: boolean;
@@ -184,6 +190,10 @@ interface Run {
   settleAt: number;
   timer?: ReturnType<typeof setTimeout>;
   started: number;
+  nextMapDraw: number;
+  mapsChanged: boolean;
+  heldNodes: Map<GraphNode, number>;
+  heldBytes: number;
   totals: { compileMs: number; drawMs: number; fieldMs: number; drawn: number; reused: number; nodesDrawn: number; nodesReused: number };
   details: string[];
   /** Compiles of the baked looks' materials still under way. */
@@ -209,18 +219,20 @@ const BAKED_TINTS = typeof location !== "undefined" && new URLSearchParams(locat
  * pattern anchor's lattice) takes the tint of a source vertex at each corner's position, or white. Says whether the
  * source has any tint at all; without one the look's geometry is left as it was.
  */
-function carryTints(source: THREE.BufferGeometry, display: THREE.BufferGeometry): boolean {
+function carryTints(source: THREE.BufferGeometry, display: THREE.BufferGeometry, localBuilding = false): boolean {
   const tints = source.getAttribute("color"), from = source.getAttribute("position"), to = display.getAttribute("position");
   if (!tints || !from || !to || tints.itemSize < 3) return false;
   let tinted = false;
   for (let vertex = 0; vertex < tints.count && !tinted; vertex++) tinted = tints.getX(vertex) < 0.999 || tints.getY(vertex) < 0.999 || tints.getZ(vertex) < 0.999;
   if (!tinted) return false;
+  const index = source.getIndex(), corners = index ? index.count : from.count;
+  if (localBuilding && carryIndexedTints(source, display)) return true;
+  delete display.userData.tintRotations;
   const key = (attribute: THREE.BufferAttribute | THREE.InterleavedBufferAttribute, vertex: number) =>
     `${Math.round(attribute.getX(vertex) * 2e3)},${Math.round(attribute.getY(vertex) * 2e3)},${Math.round(attribute.getZ(vertex) * 2e3)}`;
   // A triangle is named by its corners in their winding order, from the least: the two faces of a thin sheet (a sign's
   // front and back) lie on the same corners and may differ in tint.
   const wound = (keys: string[]) => { const first = keys.indexOf([...keys].sort()[0]); return [0, 1, 2].map(k => keys[(first + k) % 3]).join("|"); };
-  const index = source.getIndex(), corners = index ? index.count : from.count;
   const triangles = new Map<string, { keys: string[]; vertices: number[] }>(), anywhere = new Map<string, number>();
   for (let corner = 0; corner + 2 < corners; corner += 3) {
     const vertices = [0, 1, 2].map(k => index ? index.getX(corner + k) : corner + k), keys = vertices.map(vertex => key(from, vertex));
@@ -240,6 +252,7 @@ function carryTints(source: THREE.BufferGeometry, display: THREE.BufferGeometry)
 }
 
 export class SceneBaker {
+  private readonly fieldIdentities = new WeakMap<Float32Array, Promise<string>>();
   private current?: Run;
   private pending?: Run;
   /** Stand-ins for a baked look's maps while its material compiles, by color role. */
@@ -251,6 +264,11 @@ export class SceneBaker {
   /** Meshes of the displayed scene that stay on the per-pixel look (the caller may refine their relief instead). */
   unbaked(): THREE.Mesh[] { return (this.current?.entries ?? []).filter(entry => entry.unsupported).map(entry => entry.target.mesh); }
 
+  /** These evaluate the program on ordinary packet UVs. A receiver's baked atlas needs its own chart geometry. */
+  footprintPrograms(): Map<THREE.Mesh, THREE.Material> {
+    return new Map(this.current?.entries.map(({ target }) => [target.mesh, target.shader]));
+  }
+
   /**
    * Starts preparing a newly shaded scene, which is not displayed yet: bake programs and baked-look materials compile,
    * CPU fields are asked for and maps are drawn as each becomes possible. `ready` resolves when every mesh has its
@@ -260,26 +278,37 @@ export class SceneBaker {
   prepare(targets: SceneBakeTarget[], fields?: FieldSource, vertexTints: boolean | ((id: string) => boolean) = BAKED_TINTS): PreparedScene {
     this.discard();
     const baker = this.host.baker();
-    const run: Run = { entries: [], fields, fieldsInFlight: false, fieldRetries: 0, attached: false, shaderReady: false, closed: false, pumping: false,
-      settleAt: 0, started: performance.now(), totals: { ...NO_TOTALS }, details: [], materials: Promise.resolve() };
+    const run: Run = { entries: [], fields, fieldsInFlight: false, fieldsDirty: true, fieldRetries: 0, attached: false, shaderReady: false, closed: false, pumping: false,
+      settleAt: 0, started: performance.now(), nextMapDraw: 0, mapsChanged: false, heldNodes: new Map(), heldBytes: 0,
+      totals: { ...NO_TOTALS }, details: [], materials: Promise.resolve() };
     for (const target of targets) {
       // A layered slot's maps are laid out as its stack's result: the base's live arguments, and the channels the stack has.
       const program = target.stack ? baker.stackProgram(target.shading, target.stack) : baker.atlasProgram(target.shading);
       // A mesh kept from the scene on screen may be showing that scene's baked look: its own geometry is beside it.
       const shaderGeometry = (target.mesh.userData.sourceGeometry as THREE.BufferGeometry | undefined) ?? target.mesh.geometry;
-      const entry: Entry = { target, program, shaderGeometry, wanted: 1, done: 0, showing: "shader" };
+      const entry: Entry = { target, program, shaderGeometry, requiredFields: wantedFields(target), wanted: 1, done: 0, showing: "shader" };
       entry.unsupported = baker.unavailable() ?? target.unsupported ?? gpuBakeUnsupported(target.shading, true) ?? program.unsupported
-        ?? (wantedFields(target).length && !fields ? "the program needs CPU-baked fields" : undefined);
+        ?? (entry.requiredFields.length && !fields ? "the program needs CPU-baked fields" : undefined);
       run.entries.push(entry);
+    }
+    if (this.current) {
+      // Claim maps for unchanged charts before new large walls displace them from the
+      // bounded cache. Matching charts only sets priority: the graph still checks every
+      // texel dependency, including moved weathering and material parameter edits.
+      const previous = new Map(this.current.entries.filter(entry => entry.maps)
+        .map(({ target }) => [target.mesh.name, target.layout.key]));
+      const priority = (entry: Entry) => Number(previous.get(entry.target.mesh.name) === entry.target.layout.key);
+      run.entries.sort((a, b) => priority(b) - priority(a));
     }
     this.pending = run;
     // The baked looks' materials compile beside the bake programs, on stand-in maps: the first bake only swaps textures in.
     const fresh = run.entries.filter(entry => !entry.unsupported);
     for (const entry of fresh) {
-      entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout);
+      entry.material = this.material(entry); entry.display = displayGeometry(entry.target.layout, entry.target.materialOrigin);
       shareInstanceAttributes(entry.shaderGeometry, entry.display);
-      // An instanced batch is tinted per instance, not per vertex.
-      if ((typeof vertexTints === "function" ? vertexTints(entry.target.mesh.name) : vertexTints) && !(entry.target.mesh as THREE.InstancedMesh).isInstancedMesh && carryTints(entry.shaderGeometry, entry.display)) entry.material.vertexColors = true;
+      // A batch's vertex tints (a repeated building's sign board and ink) carry as a mesh's do; three.js multiplies a
+      // batch's per-instance tint into them.
+      if ((typeof vertexTints === "function" ? vertexTints(entry.target.mesh.name) : vertexTints) && carryTints(entry.shaderGeometry, entry.display, !!entry.target.materialOrigin)) entry.material.vertexColors = true;
     }
     run.materials = this.host.compile(fresh.map(entry => ({ mesh: entry.target.mesh, geometry: entry.display!, material: entry.material! }))).catch(() => {});
     const settled = new Promise<void>(resolve => {
@@ -335,6 +364,62 @@ export class SceneBaker {
       && run.entries.every(entry => entry.unsupported || (entry.done === entry.wanted && entry.showing === "baked"));
   }
 
+  /** A checked placement of the same local appearance can keep its field results and every graph lease. */
+  canMoveMaterialFrame(owner: string, from: [number, number, number]): boolean {
+    if (this.pending || !this.settled()) return false;
+    const entries = this.current!.entries.filter(({ target }) => target.mesh.userData.source?.objectId === owner);
+    return entries.length > 0 && entries.every(({ target }) => target.materialOrigin?.every((value, axis) => value === from[axis]));
+  }
+
+  async prepareMaterialMove(owner: string, to: [number, number, number], sources: Map<THREE.Mesh, THREE.BufferGeometry>, current: () => boolean): Promise<(() => void) | undefined> {
+    const run = this.current!;
+    const placements: { entry: Entry; staged?: THREE.BufferGeometry }[] = [];
+    let slice = performance.now();
+    for (const entry of run.entries) {
+      const { target } = entry;
+      if (target.mesh.userData.source?.objectId !== owner) continue;
+      let staged: THREE.BufferGeometry | undefined;
+      const source = sources.get(target.mesh);
+      if (source && entry.display) {
+        staged = new THREE.BufferGeometry();
+        staged.setAttribute("position", new THREE.BufferAttribute(new Float32Array(target.layout.triangles * 9), 3));
+        placeDisplayGeometry(staged, target.layout, to);
+        if (entry.material?.vertexColors) {
+          staged.userData.tintRotations = entry.display.userData.tintRotations;
+          carryTints(source, staged, true);
+        }
+      }
+      placements.push({ entry, staged });
+      if (performance.now() - slice >= 4) {
+        await new Promise<void>(nextTurn);
+        if (!current() || this.current !== run) return;
+        slice = performance.now();
+      }
+    }
+    return () => {
+      this.restart(run);
+      for (const { entry, staged } of placements) {
+        entry.target.materialOrigin = to;
+        (entry.target.shader.userData.programUniforms.msMaterialOrigin.value as THREE.Vector3).fromArray(to);
+        if (staged) {
+          const display = entry.display!;
+          commitPositions(display, staged);
+          if (staged.hasAttribute("color")) {
+            const colors = display.getAttribute("color");
+            colors.array.set(staged.getAttribute("color").array);
+            colors.needsUpdate = true;
+          }
+          display.userData.tintRotations = staged.userData.tintRotations;
+        }
+        if (entry.maps) {
+          run.totals.reused++;
+          run.totals.nodesReused += entry.maps.nodes.nodes.size;
+        }
+      }
+      this.report(run);
+    };
+  }
+
   /**
    * Gives a mesh of the displayed scene another per-pixel look: the same program in another form (one that draws
    * faster, compiled behind the scene), so its picture is the same. `receiver` holds the new look's own receiver
@@ -366,17 +451,28 @@ export class SceneBaker {
     const run = this.current;
     if (!run) return;
     let any = false;
+    let waitingForFirstLook = !run.shaderReady && !run.fieldsInFlight;
+    let changedTexels = 0;
     for (const entry of run.entries) {
-      if (entry.target.material !== material) continue;
+      if (entry.target.material !== material) {
+        if (!entry.unsupported && entry.done !== entry.wanted) waitingForFirstLook = false;
+        continue;
+      }
+      changedTexels += entry.target.layout.width * entry.target.layout.height;
+      if (!entry.maps || entry.target.stack || (entry.requiredFields.length && entry.fieldsKey !== this.fieldsKey(entry))) waitingForFirstLook = false;
       entry.wanted++;
       if (run.shaderReady) this.showShader(run, entry);
       any = true;
     }
     if (!any) return;
+    run.fieldsDirty = true;
     if (run.entries.every(entry => entry.unsupported || entry.done === entry.wanted || entry.target.material === material)) this.restart(run);
-    run.settleAt = performance.now() + SETTLE_MS;
+    // If the per-pixel shaders are still compiling, a small, already resident atlas
+    // can show the edit on the next turn. A large or field-dependent bake still settles.
+    const delay = waitingForFirstLook && changedTexels <= 512 * 512 ? 0 : SETTLE_MS;
+    run.settleAt = performance.now() + delay;
     clearTimeout(run.timer);
-    run.timer = setTimeout(() => void this.pump(run), SETTLE_MS + 1);
+    run.timer = setTimeout(() => void this.pump(run), delay ? delay + 1 : 0);
     this.report(run);
     this.host.draw();
   }
@@ -395,11 +491,12 @@ export class SceneBaker {
     if (!run) return 0;
     let asked = 0;
     for (const entry of run.entries) {
-      if (entry.unsupported || !wantedFields(entry.target).some(wanted => wanted.field.planes?.some(plane => names.includes(plane)))) continue;
+      if (entry.unsupported || !entry.requiredFields.some(wanted => wanted.field.planes?.some(plane => names.includes(plane)))) continue;
       entry.wanted++; entry.keepShown = true;
       asked++;
     }
     if (!asked) return 0;
+    run.fieldsDirty = true;
     if (run.entries.every(entry => entry.unsupported || entry.done === entry.wanted || entry.keepShown)) this.restart(run);
     this.report(run);
     void this.pump(run);
@@ -429,6 +526,8 @@ export class SceneBaker {
     if (!run) return;
     // The graph forgot its nodes with the context; nothing is left to release.
     for (const entry of run.entries) { this.showShader(run, entry); entry.maps = undefined; entry.done = 0; }
+    run.heldNodes.clear();
+    run.heldBytes = 0;
     this.report(run);
   }
 
@@ -451,6 +550,8 @@ export class SceneBaker {
       this.release(entry);
       entry.material?.dispose(); entry.display?.dispose(); entry.bake?.dispose();
     }
+    run.heldNodes.clear();
+    run.heldBytes = 0;
     run.idle?.();
   }
 
@@ -489,21 +590,39 @@ export class SceneBaker {
     this.host.baker().releaseAtlasMaps(maps);
   }
 
-  /** GPU memory of the distinct textures the run's meshes hold. */
-  private bytesHeld(run: Run): number {
-    return this.host.baker().atlasBytes(run.entries.map(entry => entry.maps));
+  /** Count each GPU texture once across meshes and across output slots of the same mesh. */
+  private countMaps(run: Run, maps: AtlasMaps | undefined, change: 1 | -1): void {
+    if (!maps) return;
+    for (const node of maps.nodes.nodes.values()) {
+      const count = run.heldNodes.get(node) ?? 0;
+      if (count + change === 0) {
+        run.heldNodes.delete(node);
+        run.heldBytes -= node.bytes;
+      } else {
+        run.heldNodes.set(node, count + change);
+        if (!count) run.heldBytes += node.bytes;
+      }
+    }
   }
 
-  private report(run: Run): void {
+  private report(run: Run, flush = false): void {
     if (run !== this.current) return;
     const pending = run.entries.filter(entry => !entry.unsupported && (entry.done !== entry.wanted || entry.showing !== "baked"));
+    // Every completed mesh is immediately available to a camera/input frame. When
+    // the viewport is stationary, draw intermediate map changes together so full
+    // scene renders do not compete with the atlas draws. Flush the last change now.
+    if (run.mapsChanged && (flush || !pending.length || performance.now() >= run.nextMapDraw)) {
+      run.nextMapDraw = performance.now() + 80;
+      run.mapsChanged = false;
+      this.host.draw();
+    }
     this.host.report({
       state: pending.length ? "baking" : "baked", meshes: run.entries.length,
       baked: run.entries.filter(entry => entry.showing === "baked").length,
       unsupported: Object.fromEntries(run.entries.filter(entry => entry.unsupported).map(entry => [entry.target.mesh.name, entry.unsupported!])),
       ms: Math.round(performance.now() - run.started), ...run.totals,
       compileMs: Math.round(run.totals.compileMs), drawMs: +run.totals.drawMs.toFixed(1), fieldMs: Math.round(run.totals.fieldMs),
-      bytes: this.bytesHeld(run), graph: this.host.baker().graph.stats(), shaderReady: run.shaderReady, details: run.details,
+      bytes: run.heldBytes, graph: this.host.baker().graph.stats(), shaderReady: run.shaderReady, details: run.details,
       atlases: Object.fromEntries(run.entries.map(entry => [entry.target.mesh.name, `${entry.target.layout.width}x${entry.target.layout.height}`])),
       ...(run.entries.some(entry => entry.target.stack) ? { layers: { meshes: run.entries.filter(entry => entry.target.stack && !entry.unsupported).length, perPixel: "base only" as const } } : {}),
     });
@@ -511,7 +630,7 @@ export class SceneBaker {
 
   /** What an entry's CPU fields depend on: the values of the parameters they read (seed, source and layout are the run's). */
   private fieldsKey(entry: Entry): string {
-    const wanted = wantedFields(entry.target);
+    const wanted = entry.requiredFields;
     const values: unknown[] = [];
     // The base's fields as they always were keyed; a layer's after them, by the layer.
     for (const { shading, uniforms, prefix } of [{ shading: entry.target.shading, uniforms: entry.target.uniforms, prefix: "" },
@@ -526,26 +645,28 @@ export class SceneBaker {
 
   /** Asks the CPU for the fields of every hybrid entry that lacks current ones; the entries are baked when they arrive. */
   private async fetchFields(run: Run): Promise<void> {
-    if (run.fieldsInFlight || !run.fields) return;
-    const needy = run.entries.filter(entry => !entry.unsupported && wantedFields(entry.target).length && entry.fieldsKey !== this.fieldsKey(entry));
+    if (run.fieldsInFlight || !run.fieldsDirty || !run.fields) return;
+    run.fieldsDirty = false;
+    const needy = run.entries.filter(entry => !entry.unsupported && entry.requiredFields.length && entry.fieldsKey !== this.fieldsKey(entry));
     if (!needy.length) return;
     run.fieldsInFlight = true;
     const keys = new Map(needy.map(entry => [entry, this.fieldsKey(entry)]));
     const started = performance.now();
     try {
       const baked = await run.fields(needy.map(entry => ({ mesh: entry.target.fieldsId ?? entry.target.mesh.name,
-        names: wantedFields(entry.target).map(wanted => wanted.request), planes: wantedFields(entry.target).map(wanted => wanted.field.planes ?? []) })));
+        names: entry.requiredFields.map(wanted => wanted.request), planes: entry.requiredFields.map(wanted => wanted.field.planes ?? []) })));
       if (run.closed) return;
       if (!baked) {
         // Superseded by a newer request of the page; asked again, a few times at most.
         if (++run.fieldRetries > 3) for (const entry of needy) entry.unsupported = "the CPU field bake was cancelled";
+        else run.fieldsDirty = true;
         return;
       }
       run.fieldRetries = 0;
       run.totals.fieldMs += performance.now() - started;
       for (const entry of needy) {
         const found = baked.get(entry.target.fieldsId ?? entry.target.mesh.name);
-        const wanted = wantedFields(entry.target);
+        const wanted = entry.requiredFields;
         const { width, height } = entry.target.layout;
         if (found && "error" in found) {
           entry.unsupported = `the CPU field bake failed: ${found.error}`;
@@ -556,14 +677,18 @@ export class SceneBaker {
           continue;
         }
         const key = keys.get(entry)!;
-        // A field that reads planes is named by their content where the source states it (the value of what the field
-        // reads of the parameters besides), so a request made for another plane leaves it, and what is drawn from it, alone.
-        const parameters = ({ field, shading, uniforms }: WantedField) => JSON.stringify(field.parameters.map(name =>
-          uniforms[shading.shader.parameters.find(parameter => parameter.name === name)?.uniform ?? ""]?.value));
-        const named = (item: WantedField, index: number) => item.field.planes?.length && found.keys?.[index] !== undefined
-          ? `planes:${found.keys[index]}:${parameters(item)}` : key;
-        entry.fields = Object.fromEntries(wanted.map((item, index) => [item.slot,
-          { id: `${entry.target.layout.key}:${entry.target.mesh.name}:${item.request}:${named(item, index)}`, width, height, rgba: found.fields[index] }]));
+        // A CPU field is a sampled RGBA texture. Its bytes and dimensions define the GPU input across receivers and revisions.
+        entry.fields = Object.fromEntries(await Promise.all(wanted.map(async (item, index) => {
+          const rgba = found.fields[index];
+          let identity = this.fieldIdentities.get(rgba);
+          if (!identity) {
+            const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+            identity = imageIdentity(bytes.buffer instanceof ArrayBuffer ? bytes as Uint8Array<ArrayBuffer> : bytes.slice());
+            this.fieldIdentities.set(rgba, identity);
+          }
+          return [item.slot, { id: `${width}x${height}:${await identity}`, width, height, rgba }];
+        })));
+        if (run.closed) return;
         entry.fieldsKey = key;
       }
     } catch (error) {
@@ -579,6 +704,7 @@ export class SceneBaker {
     if (run.pumping || run.closed || this.closed) return;
     run.pumping = true;
     const baker = this.host.baker();
+    let sliceStarted = performance.now();
     try {
       for (;;) {
         if (run.closed) return;
@@ -586,7 +712,7 @@ export class SceneBaker {
         if (performance.now() < run.settleAt) return;
         void this.fetchFields(run);
         const ready = (entry: Entry) => !entry.unsupported && entry.done !== entry.wanted
-          && (!wantedFields(entry.target).length || entry.fieldsKey === this.fieldsKey(entry));
+          && (!entry.requiredFields.length || entry.fieldsKey === this.fieldsKey(entry));
         const entry = run.entries.find(ready);
         if (!entry) return;
         const version = entry.wanted;
@@ -603,11 +729,17 @@ export class SceneBaker {
           entry.unsupported = baker.unavailable() ?? "the bake was interrupted";
           this.showShader(run, entry);
         }
-        this.report(run);
+        // Cache hits and small receivers can complete in a stream of microtasks. Give input and painting
+        // an event-loop turn, and publish one progress snapshot for the whole slice of work.
+        if (performance.now() - sliceStarted >= 8) {
+          if (performance.now() >= run.nextMapDraw) this.report(run);
+          await new Promise<void>(nextTurn);
+          sliceStarted = performance.now();
+        }
       }
     } finally {
       run.pumping = false;
-      if (!run.closed) { this.report(run); if (!run.fieldsInFlight) run.idle?.(); }
+      if (!run.closed) { this.report(run, true); if (!run.fieldsInFlight) run.idle?.(); }
     }
   }
 
@@ -615,16 +747,18 @@ export class SceneBaker {
     const baker = this.host.baker();
     const { target, program } = entry;
     const version = entry.wanted;
-    entry.bake ??= bakeGeometry(target.layout);
     // Every node a texture already holds (on this mesh, on another mesh, or kept from before) is taken as it is. The
     // others are drawn: over this mesh's own textures where only it holds them, unless they are on screen with no
     // per-pixel look to show meanwhile; into new textures otherwise, which replace the old ones when all are complete.
     const onScreen = run.attached && entry.showing === "baked" && (!run.shaderReady || entry.keepShown === true);
-    const input = { layout: target.layout, geometry: entry.bake, extent: target.extent, receiver: target.receiver, program };
+    // An unchanged receiver can find its entire graph resident. Tessellate its chart
+    // rectangles only if an operation actually draws, including a later parameter edit.
+    const input = { layout: target.layout, get geometry() { return entry.bake ??= bakeGeometry(target.layout); },
+      extent: target.extent, receiver: target.receiver, program };
     const options = {
       fields: entry.fields, current, inPlace: !onScreen,
       allocate: (bytes: number) => {
-        if (this.bytesHeld(run) + bytes > this.host.baker().sceneAllowance) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
+        if (run.heldBytes + bytes > this.host.baker().sceneAllowance) throw new Error("the scene's baked maps would exceed the preview's memory allowance");
       },
       beforeOverwrite: () => this.showShader(run, entry),
     };
@@ -635,6 +769,8 @@ export class SceneBaker {
     // The bake released the maps it replaced. A run closed meanwhile has no use for the new ones.
     if (run.closed) { baker.releaseAtlasMaps(baked.maps); return; }
     const { maps, timings } = baked;
+    this.countMaps(run, entry.maps, -1);
+    this.countMaps(run, maps, 1);
     entry.maps = maps;
     run.totals.nodesDrawn += timings.drawn.length; run.totals.nodesReused += timings.reused;
     if (timings.drawn.length) {
@@ -647,7 +783,7 @@ export class SceneBaker {
     if (!current() || entry.maps !== maps || !baker.atlasMapsComplete(maps)) return;
     this.show(entry);
     entry.done = version; entry.keepShown = false;
-    if (run.attached) { this.display(entry); this.host.draw(); }
+    if (run.attached) { this.display(entry); run.mapsChanged = true; }
   }
 
   private standIns(): { color: THREE.Texture; data: THREE.Texture } {

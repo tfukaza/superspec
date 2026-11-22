@@ -1,0 +1,48 @@
+<architecture version="1" id="kowloon-bench" name="Kowloon Bench Demo" validation="premap">
+  <material id="bench-steel" color="#535451" roughness="0.65" metalness="0.7"/>
+  <material id="drain-bed" color="#353731" roughness="0.94"/>
+
+  <profile id="floor-plan" points="-0.35 -0.42; 3.3 -0.42; 3.3 3; -0.35 3"/>
+  <profile id="soffit-plan" points="0 -0.34; 3.1 -0.34; 3.1 0.74; 0 0.74"/>
+  <path id="clerestory-axis" points="0 -0.17 0; 3.1 -0.17 0"/>
+  <path id="side-axis" points="-0.17 0 0; -0.17 2.86 0"/>
+
+  <slab id="floor" profile="floor-plan" thickness="0.19" material="builtin:concrete"/>
+  <wall id="clerestory" path="clerestory-axis" thickness="0.34" height="2.68" material="builtin:concrete"/>
+  <wall id="side-wall" path="side-axis" thickness="0.34" height="2.82" material="builtin:concrete"/>
+  <slab id="soffit" profile="soffit-plan" thickness="0.14" elevation="2.82" playable="false" material="builtin:concrete"/>
+
+  <!-- Open casements let the sun reach the bench and the tiled side wall. -->
+  <opening id="near-aperture" host="clerestory" shape="rectangle" center="1.13 1.79" width="0.8" height="0.86"/>
+  <opening id="far-aperture" host="clerestory" shape="rectangle" center="2.09 1.79" width="0.8" height="0.86"/>
+  <window id="near-casement" opening="near-aperture" open="true"/>
+  <window id="far-casement" opening="far-aperture" open="true"/>
+
+  <profile id="tile-panel" points="0.02 0.08; 2.28 0.08; 2.28 1.57; 0.02 1.57"/>
+  <profile id="tile-floor" points="0.02 0.01; 1.15 0.01; 1.15 2.29; 0.02 2.29"/>
+  <face-material id="wall-tiles" host="side-wall" face="right" projection="yz" profile="tile-panel" material="builtin:restaurant-tiles"/>
+  <face-material id="floor-tiles" host="floor" face="top" projection="xy" profile="tile-floor" material="builtin:restaurant-tiles"/>
+
+  <box id="bench-plank-front" position="0.57 0.34 0.43" width="2.05" depth="0.15" height="0.045" material="builtin:timber"/>
+  <box id="bench-plank-middle" position="0.57 0.18 0.43" width="2.05" depth="0.15" height="0.045" material="builtin:timber"/>
+  <box id="bench-plank-back" position="0.57 0.02 0.43" width="2.05" depth="0.15" height="0.045" material="builtin:timber"/>
+  <box id="bench-bracket-left" position="0.8 0.005 0.36" width="0.045" depth="0.465" height="0.07" material="bench-steel"/>
+  <box id="bench-bracket-right" position="2.27 0.005 0.36" width="0.045" depth="0.465" height="0.07" material="bench-steel"/>
+  <box id="bench-brace-left" position="0.8 0.025 0.19" rotation="38 0 0" width="0.045" depth="0.30" height="0.034" material="bench-steel"/>
+  <box id="bench-brace-right" position="2.27 0.025 0.19" rotation="38 0 0" width="0.045" depth="0.30" height="0.034" material="bench-steel"/>
+
+  <cylinder id="drain-rim" position="1.37 1.51 0.002" radius="0.108" height="0.01" material="bench-steel"/>
+  <cylinder id="drain-inset" position="1.37 1.51 0.011" radius="0.086" height="0.002" material="drain-bed"/>
+  <box id="drain-grate-left" position="1.321 1.441 0.013" width="0.011" depth="0.138" height="0.003" material="bench-steel"/>
+  <box id="drain-grate-center" position="1.365 1.431 0.013" width="0.011" depth="0.158" height="0.003" material="bench-steel"/>
+  <box id="drain-grate-right" position="1.408 1.441 0.013" width="0.011" depth="0.138" height="0.003" material="bench-steel"/>
+
+  <city>
+    <duct-run id="galvanized-duct" position="0.22 0.4 1.04" width="0.34" height="0.27"
+       points="0 0 0; 0 0 1.15; 0 1.28 1.15" supports="-0.22 0 0; -0.22 0 0"/>
+    <wall-extraction-grille id="extractor" position="0.012 1.91 2.18" heading="90"/>
+    <pipe-run id="rusted-riser" position="0.25 2.6 0.02" radius="0.084"
+       points="0 0 0; 0 0 2.37; -0.25 0 2.37" supports="-0.25 0 0; 0 0 0"/>
+    <ceiling-bulkhead id="bench-light" position="2.55 0.36 2.68"/>
+  </city>
+</architecture>

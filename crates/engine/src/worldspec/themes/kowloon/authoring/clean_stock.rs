@@ -17,6 +17,26 @@ const PALETTE: [[u8; 3]; 8] = [
     [31, 111, 111],
 ];
 const SUFFIXES: [&str; 3] = ["", "-normal", "-properties"];
+const GLASS: [[u8; 3]; 8] = [
+    [109, 67, 35],
+    [102, 64, 37],
+    [70, 76, 36],
+    [119, 74, 34],
+    [128, 84, 41],
+    [61, 79, 50],
+    [43, 61, 61],
+    [66, 80, 49],
+];
+const BOTTLE_CAPS: [[u8; 3]; 8] = [
+    [132, 53, 43],
+    [88, 94, 95],
+    [147, 113, 60],
+    [130, 89, 64],
+    [168, 131, 69],
+    [115, 112, 85],
+    [139, 146, 140],
+    [78, 74, 49],
+];
 
 fn container(name: &str, size: V3) -> Result<Vec<Face>, String> {
     let (sides, profile): (usize, &[[f64; 2]]) = match name {
@@ -165,15 +185,50 @@ fn maps(name: &str, variant: usize, labels: &Image, tin: &Image) -> [Image; 3] {
     let color = PALETTE[variant];
     let jar = name == "seasoning-jar";
     let canned = name == "food-tin";
-    let base = if jar { [86, 47, 22] } else { [65, 33, 15] };
+    let bottle = !jar && !canned;
+    let base = if bottle {
+        GLASS[variant]
+    } else if jar {
+        [86, 47, 22]
+    } else {
+        [65, 33, 15]
+    };
+    let closure = if bottle { BOTTLE_CAPS[variant] } else { color };
     let mut albedo = solid(256, 256, base);
     let mut props = solid(256, 256, [255, 100, 0]);
-    let mut rng = SeededRng::from_u32(410);
-    for p in albedo.rgba.chunks_exact_mut(4) {
-        for c in &mut p[..3] {
-            *c = i32::from(*c)
-                .saturating_add(rng.integer(0, 6) as i32 - 3)
-                .clamp(0, 255) as u8;
+    let mut normal = solid(256, 256, [128, 128, 255]);
+    if bottle {
+        use super::super::noise::smooth_step;
+        for y in 4..179 {
+            let z = ((1. - y as f64 / 256. - 0.30) / 0.68).clamp(0., 1.);
+            let foot = smooth_step(0.015, 0.12, z);
+            let shoulder = smooth_step(0.6, 0.77, z);
+            for x in 0..256 {
+                let u = x as f64 / 256.;
+                let offset = (u + 0.018 * (z * 5. + variant as f64).sin()).fract();
+                let stripe = 1. - smooth_step(0.025, 0.079, (offset - 0.29).abs());
+                let turned = 0.92 + 0.13 * (std::f64::consts::TAU * u).cos();
+                let body = (0.72 + 0.28 * foot) * (turned + 0.22 * stripe + 0.05 * shoulder);
+                let pane = base.map(|v| (f64::from(v) * body).round().min(255.) as u8);
+                let stroke = (std::f64::consts::TAU * (u * 5. + 0.06 * z)).sin();
+                put(&mut albedo, x, y, pane);
+                put(
+                    &mut props,
+                    x,
+                    y,
+                    [255, (110. - 22. * stripe + 12. * (1. - foot)) as u8, 0],
+                );
+                put(&mut normal, x, y, [(128. + 7. * stroke) as u8, 128, 255]);
+            }
+        }
+    } else {
+        let mut rng = SeededRng::from_u32(410);
+        for p in albedo.rgba.chunks_exact_mut(4) {
+            for c in &mut p[..3] {
+                *c = i32::from(*c)
+                    .saturating_add(rng.integer(0, 6) as i32 - 3)
+                    .clamp(0, 255) as u8;
+            }
         }
     }
     let (art, x, y, w, h) = if canned {
@@ -209,14 +264,30 @@ fn maps(name: &str, variant: usize, labels: &Image, tin: &Image) -> [Image; 3] {
         albedo.rgba[target..target + w * 4].copy_from_slice(&resized[j * w * 4..(j + 1) * w * 4]);
     }
     rectangle(&mut props, [x, y, x + w, y + h], [255, 210, 0]);
+    rectangle(&mut normal, [x, y, x + w, y + h], [128, 128, 255]);
     if !canned {
         let cap = ((1_f64 - (0.30 + 0.68 * if jar { 0.80 } else { 0.95 })) * 256.).round() as usize;
-        rectangle(&mut albedo, [5, 5, 251, cap + 1], color);
+        rectangle(&mut albedo, [5, 5, 251, cap + 1], closure);
         rectangle(&mut props, [5, 5, 251, cap + 1], [255, 150, 180]);
+        rectangle(&mut normal, [5, 5, 251, cap + 1], [128, 128, 255]);
+        if bottle {
+            for x in 5..251 {
+                let ridge = if x % 6 < 2 { 0.78 } else { 1.06 };
+                for y in 5..=cap {
+                    let sheen = if y == 6 || y + 1 == cap { 1.15 } else { 1. };
+                    put(
+                        &mut albedo,
+                        x,
+                        y,
+                        closure.map(|v| (f64::from(v) * ridge * sheen).min(255.) as u8),
+                    );
+                }
+            }
+        }
     }
     for cx in [64_i32, 192] {
-        let metal = if jar && cx == 64 {
-            color
+        let metal = if !canned && cx == 64 {
+            closure
         } else {
             [135, 128, 106]
         };
@@ -248,7 +319,7 @@ fn maps(name: &str, variant: usize, labels: &Image, tin: &Image) -> [Image; 3] {
             *c = (gray * 0.42 + f64::from(*c) * 0.58).round() as u8;
         }
     }
-    [albedo, solid(256, 256, [128, 128, 255]), props]
+    [albedo, normal, props]
 }
 
 pub(super) fn region(value: &Value) -> Result<[f64; 4], String> {

@@ -324,6 +324,21 @@ fn concrete_toggles_and_the_ground_slab_change_only_what_they_name() {
 }
 
 #[test]
+fn concrete_top_runoff_leaves_slab_caps_and_soffits_dry() {
+    let mut slab = cuboid("slab", [-0.8, -0.8, 0.], [0.8, 0.8, 0.18]);
+    // The first two quads are the upper and lower faces. Keep wall mode enabled
+    // so only the receiver's slope can turn off top runoff.
+    slab.positions.truncate(24);
+    slab.normals.truncate(24);
+    slab.uvs.truncate(16);
+    slab.indices.truncate(12);
+    let recipe = "kowloon-concrete.material.ts";
+    let (with_runoff, _) = bake(recipe, slab.clone(), serde_json::json!({ "grime": true }));
+    let (without_runoff, _) = bake(recipe, slab, serde_json::json!({ "grime": false }));
+    assert_eq!(maps(&with_runoff)[0], maps(&without_runoff)[0]);
+}
+
+#[test]
 fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
     let block = cuboid("block", [0., 0., 0.], [0.4, 0.3, 0.25]);
     let (output, seconds) = bake(
@@ -368,7 +383,8 @@ fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
             "grazingFalloff",
             "scaleSpecular",
             "filterEnvironment",
-            "bandLuminance"
+            "bandLuminance",
+            "edgeGlint"
         ]
     );
     use superspec_types::material::LiveArgument;
@@ -413,7 +429,8 @@ fn rusted_steel_bakes_bare_metal_and_oxide_with_rusted_edges() {
             "grazingFalloff",
             "scaleSpecular",
             "filterEnvironment",
-            "bandLuminance"
+            "bandLuminance",
+            "edgeGlint"
         ],
         "{live:?}"
     );

@@ -24,6 +24,25 @@ standing water are left to the materials rather than modeled:
   drain, and the dark openings: four parameter sets of one recipe.
 - `tiled-courtyard` for the wall and floor tile.
 
+## Clerestory daylight
+
+Set `DAYLIGHT=1` to raise the bench wall and add a recessed steel clerestory with
+three open lights and a concrete soffit. The window has real jambs, a sill and a
+lintel, so the shallow sun can light the floor through the openings and cast
+shadows from the frame. The profile lowers ambient fill to make the light and
+shade easier to compare across concrete, tile, wood and metal.
+
+```powershell
+$env:DAYLIGHT = "1"
+node tests/studio/washroom/build.mjs 256 128
+$env:SCREENSHOT = "generated/washroom/daylight/preview.png"
+npm run test:washroom:browser
+```
+
+Open `generated/washroom/daylight/washroom.studio.json` in Material Studio.
+The Studio preview shows direct sun, shadows and ambient fill. A bounced-light
+comparison would use WorldSpec's separate probe-bake and playback path.
+
 ## Painted slab
 
 `buildProject(resolution, density, { painted: true })`, `PAINTED=1` for `build.mjs` or for the browser

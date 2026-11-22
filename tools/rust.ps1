@@ -4,6 +4,7 @@ $originalRustFlags = $env:RUSTFLAGS
 $originalBootstrap = $env:RUSTC_BOOTSTRAP
 Push-Location (Join-Path $PSScriptRoot '..')
 try {
+    $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
     $rustLocal = Join-Path (Get-Location).Path 'generated/rust-toolchain'
     $cargoCommand = 'cargo'
     $bindgenCommand = 'wasm-bindgen'
@@ -27,7 +28,7 @@ try {
         'wasm' {
             & $cargoCommand build -p superspec-wasm --target wasm32-unknown-unknown --release --locked
             if ($LASTEXITCODE -ne 0) { throw 'Wasm compilation failed.' }
-            & $bindgenCommand --target web --out-dir generated/wasm target/wasm32-unknown-unknown/release/superspec_wasm.wasm
+            & $bindgenCommand --target web --out-dir generated/wasm (Join-Path $targetDir 'wasm32-unknown-unknown/release/superspec_wasm.wasm')
         }
         'wasm-threads' {
             $env:RUSTC_BOOTSTRAP = '1'
@@ -40,7 +41,7 @@ try {
         'wasm-tests' {
             & $cargoCommand build -p superspec-kernel-acceptance --target wasm32-unknown-unknown --release --locked
             if ($LASTEXITCODE -ne 0) { throw 'Wasm acceptance compilation failed.' }
-            & $bindgenCommand --target web --out-dir generated/wasm-tests target/wasm32-unknown-unknown/release/superspec_kernel_acceptance.wasm
+            & $bindgenCommand --target web --out-dir generated/wasm-tests (Join-Path $targetDir 'wasm32-unknown-unknown/release/superspec_kernel_acceptance.wasm')
         }
     }
     if ($LASTEXITCODE -ne 0) { throw "Rust $Task failed with exit code $LASTEXITCODE." }

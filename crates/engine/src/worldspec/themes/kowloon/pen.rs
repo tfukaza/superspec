@@ -67,6 +67,9 @@ impl Pen {
     pub(super) fn with_kitchen_metal(&self, repeat: f64) -> Result<Self, String> {
         self.with_stainless(repeat, "kitchen-metal")
     }
+    pub(super) fn with_kitchen_worktop(&self, repeat: f64) -> Result<Self, String> {
+        self.with_stainless(repeat, "kitchen-worktop")
+    }
     fn with_stainless(&self, repeat: f64, material: &'static str) -> Result<Self, String> {
         let mut pen = self.clone();
         pen.brushed = Some(super::brushed::Brushed::new(self, repeat, material)?);

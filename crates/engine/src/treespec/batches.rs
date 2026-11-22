@@ -403,6 +403,17 @@ pub fn tree_levels(
     offset: V3,
     look: &superspec_model::batches::Foliage,
 ) -> Result<Vec<FoliageBatch>, String> {
+    tree_levels_for(tree, offset, look, |_| true)
+}
+
+/// Converts only the draw families a consumer uses. The generated geometry, LOD selection
+/// and input admission are shared with the full plant converter.
+pub(crate) fn tree_levels_for(
+    tree: &GeneratedTree,
+    offset: V3,
+    look: &superspec_model::batches::Foliage,
+    include: impl Fn(superspec_types::batch::FoliageFamily) -> bool,
+) -> Result<Vec<FoliageBatch>, String> {
     use superspec_types::batch::FoliageFamily;
     let mut all = vec![];
     let one = |id: String, mesh: &FoliageMesh| {
@@ -425,18 +436,20 @@ pub fn tree_levels(
         converted
     };
     for (level, lod) in tree.lods.iter().enumerate() {
-        let trunk = &tree.meshes[lod.trunk];
-        let bark = match lod.branches {
-            Some(branches) => merged(trunk, &tree.meshes[branches], format!("bark/lod{level}")),
-            None => trunk.clone(),
-        };
-        all.push(with(
-            one(format!("{}/bark/lod{level}", tree.id), &bark),
-            FoliageFamily::Bark,
-            level,
-            1.,
-        ));
-        if lod.leaf_instances > 0 {
+        if include(FoliageFamily::Bark) {
+            let trunk = &tree.meshes[lod.trunk];
+            let bark = match lod.branches {
+                Some(branches) => merged(trunk, &tree.meshes[branches], format!("bark/lod{level}")),
+                None => trunk.clone(),
+            };
+            all.push(with(
+                one(format!("{}/bark/lod{level}", tree.id), &bark),
+                FoliageFamily::Bark,
+                level,
+                1.,
+            ));
+        }
+        if include(FoliageFamily::Leaves) && lod.leaf_instances > 0 {
             let mut leaves = batch(
                 format!("{}/leaves/lod{level}", tree.id),
                 &tree.id,
@@ -452,7 +465,9 @@ pub fn tree_levels(
             )?;
             all.push(with(leaves, FoliageFamily::Leaves, level, lod.leaf_keep));
         }
-        if let Some(hull) = lod.hull_mesh {
+        if include(FoliageFamily::Hull)
+            && let Some(hull) = lod.hull_mesh
+        {
             all.push(with(
                 one(format!("{}/hull/lod{level}", tree.id), &tree.meshes[hull]),
                 FoliageFamily::Hull,
@@ -461,7 +476,9 @@ pub fn tree_levels(
             ));
         }
     }
-    if let Some(shadow) = tree.shadow {
+    if include(FoliageFamily::Shadow)
+        && let Some(shadow) = tree.shadow
+    {
         all.push(with(
             one(format!("{}/shadow", tree.id), &tree.meshes[shadow]),
             FoliageFamily::Shadow,

@@ -262,6 +262,12 @@ and a program measures to them with `feature_distance("name", maxDistance)` and
 - Queries are charged like crease queries (one step, one more per 16 segments visited, eight
   operations per segment toward the row), and `Dependencies::named_features` and
   `Metadata::named_features` list the names read. A value that reads one is not intrinsic.
+- A GLSL host can append a selector index to the three-texel-wide `ms_features` sampler.
+  For selector `s`, texel `(s % 3, ms_feature_count + s / 3)` stores the first candidate row
+  and exclusive end row in red and green. Set `ms_feature_selectors` to the number of indexed
+  selectors and leave an empty range for a missing kind. Ties use the first eligible segment,
+  so preserve their original order within every selector. Hosts supplying only the segment
+  rows keep `ms_feature_selectors` at its default of zero.
 - `Program::evaluator_with_feature_sets` shares a receiver's derived features and named
   features, with their grids, between evaluators. A receiver bake derives and indexes both once
   with the layout (`Atlas::features`, `Atlas::named`): named features are part of the layout's

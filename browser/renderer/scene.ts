@@ -8,11 +8,12 @@ import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
 import { deliveredProgram, hasPixelRelief, programMaterial, programTexture, programTime, setParameters, setSeeds, shaderIdentity, zoneTexture, type MaterialShading, type MeshShading, type SceneShading, type ZoneRows } from "./shade.ts";
 import { GpuBaker, gpuBakeUnsupported, matchesMesh, scaledDomain, type BakeDomain, type FieldTexels, type GpuBake, type StackInput } from "./bake.ts";
-import { atlasLayouts, type ProjectLayouts } from "./atlas.ts";
+import { atlasLayouts, commitPositions, type ProjectLayouts } from "./atlas.ts";
+import { hashFloats } from "./layout-digest.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
 import type { ShadowStyle } from "./shadow-style.ts";
 import type { AmbientOcclusion } from "./ambient-occlusion.ts";
-import type { Lighting } from "./lighting.ts";
+import { defaultLighting, type Lighting } from "./lighting.ts";
 import { SceneLighting, studioEnvironment } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { fitNearPlane } from "./depth-range.ts";
@@ -22,6 +23,15 @@ import { FoliageView, type FoliageProfile } from "./foliage.ts";
 import { STROKES, STROKE_BANDS, foliageTexturesReady, leafBrushTexture } from "./foliage-plants.ts";
 import { STROKE_LAYER, StrokeEdges } from "./stroke-edges.ts";
 import { BLUR_LAYER, FoliageBlur } from "./foliage-blur.ts";
+import { PlacementTransforms, type PlacementMove } from "./placement-preview.ts";
+import { footprintGeometry, disposeFootprintGeometry, type FootprintGeometry } from "./footprint-geometry.ts";
+import { retainedPlants } from "./plant-reuse.ts";
+import { rigidMaterialTranslation, type MaterialOrigin } from "./material-translation.ts";
+import { PacketLods } from "./packet-lods.ts";
+import { configurePacketMaterial, PacketMaterialLods, type PreparedPacketMaterialLod } from "./packet-material-lods.ts";
+import { featureTexture, featureUniforms } from "./feature-texture.ts";
+import { resolveGraphicsSettings } from "../../adapters/three/src/graphicsSettings.ts";
+import { lightingOverridesQuery, type ResolvedRenderProfile } from "../../adapters/three/src/renderProfile.ts";
 
 /** Builds a translucent inspection surface from Rust-owned navigation polygons. */
 function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
@@ -96,7 +106,7 @@ export interface SceneBakeRequest { layouts: ProjectLayouts; fields?: FieldSourc
 /** Materials prepared for a scene's meshes while the scene before it is still displayed: put on them, or given up. */
 export interface SceneLook { commit(): void; discard(): void }
 /** The uniforms of a program material that describe its mesh, not its program (see `programMaterial`). */
-const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_zones", "ms_zone_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msAnchorFromWorld", "msMapping"];
+const RECEIVER_UNIFORMS = ["ms_features", "ms_feature_count", "ms_feature_selectors", "ms_zones", "ms_zone_count", "ms_gravity", "ms_bounds_min", "ms_bounds_max", "msObjectFromWorld", "msAnchorFromWorld", "msMapping"];
 
 /**
  * How long a newly shaded scene waits for its baked maps alone before its per-pixel looks start compiling beside them
@@ -114,12 +124,9 @@ function sourceGeometry(mesh: THREE.Mesh): THREE.BufferGeometry {
   return (mesh.userData.sourceGeometry as THREE.BufferGeometry | undefined) ?? mesh.geometry;
 }
 
-/** A small content hash of numbers (FNV-1a over their float bits), for cache keys. */
+/** Feature and zone textures are uploaded as float32, including their signed directions. */
 function hashNumbers(values: number[]): string {
-  const bits = new Uint32Array(new Float32Array(values).buffer);
-  let value = 0x811c9dc5;
-  for (let index = 0; index < bits.length; index++) value = Math.imul(value ^ bits[index], 0x01000193);
-  return (value >>> 0).toString(16);
+  return hashFloats(Float32Array.from(values));
 }
 
 /**
@@ -141,6 +148,20 @@ const EDIT_LOOK_REST_MS = 250;
 
 /** Minimal Z-up scene adapter. Owns GPU resources; all model geometry and materials arrive from Rust. */
 export class RustScene {
+  private packetLods?: PacketLods;
+  private packetMaterialLods?: PacketMaterialLods;
+
+  private materialLodHooks() {
+    const materials = this.packetMaterialLods;
+    return materials?.size ? { restoreMaterials: () => materials.restore(),
+      frameMaterials: (camera: THREE.Camera, height: number, editing: boolean) => materials.frame(camera, height, editing) } : {};
+  }
+  private lodEditing = false;
+  private readonly lodSize = new THREE.Vector2();
+  private graphics = resolveGraphicsSettings();
+  private previewLods = true;
+  /** Editing handles/layouts use canonical geometry; world previews select authored levels. */
+  setLodEditing(editing: boolean): void { this.lodEditing = editing; this.invalidate(); }
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
   /** Foliage batches drawn by their shader families (foliage.ts); `?foliage=lit|painted` overrides each batch's profile. */
   private readonly foliage = new FoliageView(this.renderer, new URLSearchParams(location.search).get("foliage"));
@@ -187,6 +208,14 @@ export class RustScene {
   private walking = false;
   private readonly resize: ResizeObserver;
   private models = new THREE.Group();
+  private readonly placementTransforms = new PlacementTransforms();
+  private batchPlacementOwners: Record<string, string[]> = {};
+  private placementRevision?: number;
+  private pendingPlacement?: { moves: readonly PlacementMove[]; revision: number };
+  private regeneratedFootprint?: FootprintGeometry;
+  private displayedMaterialDefinitions: ScenePacket["manifest"]["materials"] = [];
+  private preparingFootprint?: FootprintGeometry;
+  private previousPlantPacket?: ScenePacket;
   private readonly texturePool = new TexturePool(this.renderer);
   private textureLeases = new Set<string>();
   /** Shaded materials by identity: the uniforms every mesh of the material shares. */
@@ -200,7 +229,10 @@ export class RustScene {
   private readonly itemOverlays: ItemOverlays;
   private collisionIds = new Set<string>();
   private selected?: string;
+  /** Explicit selection changes, including a click on empty space, supersede a pending rename. */
+  selectionRevision = 0;
   private sceneId?: string;
+  private displayedRevision?: number;
   private frame = 0;
   private closed = false;
   /**
@@ -209,6 +241,7 @@ export class RustScene {
    * given), with the page's parameters on top as session overrides.
    */
   private readonly lights: SceneLighting;
+  private authoredLighting?: { record: Lighting; stated?: unknown; city: boolean };
   /** Whether the viewer casts and receives shadows (the record's sun casts them, unless `?shadows=off`). */
   get shadows(): boolean { return this.lights.shadows; }
   /** The shadows' look, patched into every scene material; it draws three.js's plain shadows while the style is `plain`. */
@@ -218,11 +251,25 @@ export class RustScene {
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
+    if (this.pendingPlacement) {
+      const { moves, revision } = this.pendingPlacement;
+      this.pendingPlacement = undefined;
+      const shown = this.placementTransforms.apply(this.models.children as THREE.Mesh[], this.batchPlacementOwners, moves);
+      this.placementRevision = shown ? revision : undefined;
+      if (shown && moves.some(move => move.footprint)) {
+        this.host.dataset.footprintDragLook = this.placementTransforms.hulls.children.some(mesh => mesh.visible) ? "hull" : "resident-materials";
+      } else delete this.host.dataset.footprintDragLook;
+      if (this.navigation) this.navigation.visible = !shown;
+    }
     // The near plane follows the view, so depth stays precise far away (depth-range.ts).
     fitNearPlane(this.camera, this.walking ? null : this.controls.target);
     // Foliage first: its tiles are culled and its levels chosen for this view (foliage.ts).
     this.camera.updateMatrixWorld();
-    const foliage = this.foliage.update(this.models, this.camera, this.lights.sun, this.shadows);
+    const { geometryLodBias, materialLodBias, renderScale } = this.graphics;
+    const foliage = this.foliage.update(this.models, this.camera, this.lights.sun, this.shadows,
+      this.previewLods ? geometryLodBias * renderScale : false);
+    const height = this.renderer.getDrawingBufferSize(this.lodSize).y;
+    this.packetLods?.frame(this.camera, height * geometryLodBias, this.lodEditing || !this.previewLods, height * materialLodBias);
     // Draw calls and triangles of the whole frame: the shadow pass, the scene and any passes after it.
     this.renderer.info.reset();
     // Stroke edges: the canopy masses leave the scene's own pass and are painted over it with leafy edges.
@@ -264,13 +311,17 @@ export class RustScene {
         if (mesh.visible && !clumpAnchor) clumpAnchor = this.controls.target.clone();
       }
     }
-    if (this.ambientOcclusion) this.ambientOcclusion.render();
-    else this.renderer.render(this.scene, this.camera);
+    this.lights.render();
     if (this.clumpBlur) this.clumpBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, clumpAnchor);
     if (this.grassBlur) this.grassBlur.blur.render(this.scene, this.camera as THREE.PerspectiveCamera, this.controls.target);
     if (this.foliageBlur) this.foliageBlur.render(this.scene, this.camera as THREE.PerspectiveCamera, blurAnchor);
     if (this.strokeEdges) this.strokeEdges.render(this.scene, this.camera as THREE.PerspectiveCamera, strokeAnchor, this.strokeEdges.options.tile);
     this.frameStats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
+    if (this.placementRevision !== undefined) this.host.dataset.placementFrame = String(this.placementRevision);
+    if (this.regeneratedFootprint && this.host.dataset.footprintGeometryFrame !== String(this.placementRevision)) {
+      this.host.dataset.footprintGeometryFrame = String(this.placementRevision);
+      this.host.dispatchEvent(new CustomEvent("footprintgeometryframe", { detail: this.placementRevision }));
+    }
     if (!foliage) { if (this.foliageReported) { delete this.host.dataset.foliage; this.foliageReported = ""; } return; }
     // The boundary field follows the sun, its shadow map (made during the frame) and the ground: when it was made again,
     // the next frame shows the blades it keeps.
@@ -315,6 +366,109 @@ export class RustScene {
     this.lights.fit(this.models);
   }
 
+  /** Display the compiler's new shape while MaterialSpec prepares its detailed finish, preserving the accepted scene. */
+  async previewFootprintGeometry(packet: ScenePacket, current: () => boolean): Promise<void> {
+    const revision = packet.manifest.revision;
+    const live = () => !this.closed && current() && this.placementRevision === revision && !this.pendingPlacement;
+    const owners = this.placementTransforms.footprintOwners();
+    if (!owners || !live()) return;
+    const accepted = new Map<string, { assignment: string | null; material: THREE.Material; mesh: THREE.Mesh }>();
+    const roles = new Map<string, { assignment: string; material: THREE.Material } | null>();
+    const programs = this.sceneBaker?.footprintPrograms();
+    const definitions = new Map(this.displayedMaterialDefinitions.map(material => [material.id, JSON.stringify(material)]));
+    const sameBinding = new Set<string | null>([null, ...packet.manifest.materials
+      .filter(material => definitions.get(material.id) === JSON.stringify(material)).map(material => material.id)]);
+    const stock = new Map<string, THREE.Material>();
+    const role = (source: SceneMesh) => source.objectId + "|" + source.material + "|" + source.id.slice(source.objectId.length).replace(/-\d+(?=\/)/g, "-#");
+    for (const item of this.models.children as THREE.Mesh[]) {
+      const source = item.userData.source as SceneMesh;
+      if (!owners.has(source.objectId) || !source.visible || Array.isArray(item.material)) continue;
+      const material = programs?.get(item) ?? item.material;
+      if (!sameBinding.has(source.material)) continue;
+      const look = { assignment: source.material, material, mesh: item };
+      accepted.set(source.id, look);
+      if (!item.userData.shaded && source.material && (material as THREE.MeshStandardMaterial).map) stock.set(source.material, material);
+      const key = role(source), family = item.userData.shaded ?? source.material ?? "";
+      const existing = roles.get(key);
+      if (existing === undefined) roles.set(key, { assignment: family, material });
+      else if (existing && existing.assignment !== family) roles.set(key, null);
+    }
+    const mesh = await footprintGeometry(packet, owners, live, source => {
+      const direct = accepted.get(source.id);
+      if (direct?.assignment === source.material) {
+        const item = direct.mesh;
+        if (item.userData.sourceGeometry && item.userData.sourceGeometry !== item.geometry && item.material !== direct.material
+          && sameGeometry(item, packet, source)) return { retained: item };
+        return direct.material;
+      }
+      // A new repeated bay can use its siblings' agreed program. A new or ambiguous slot keeps its packet colors.
+      return roles.get(role(source))?.material ?? (source.material ? stock.get(source.material) : undefined);
+    });
+    if (!mesh) return;
+    if (!live()) { disposeFootprintGeometry(mesh); return; }
+    this.discardFootprintGeometry();
+    this.preparingFootprint = mesh;
+    mesh.receiveShadow = this.shadows;
+    mesh.castShadow = this.shadows;
+    for (const child of mesh.children) {
+      child.receiveShadow = this.shadows;
+      child.castShadow = this.shadows && !child.userData.decal;
+    }
+    try {
+      await this.compileLooks(mesh.material.map(material => ({ mesh, geometry: mesh.geometry, material })));
+      if (live() && this.preparingFootprint === mesh) {
+        this.preparingFootprint = undefined;
+        this.placementTransforms.showRegenerated(mesh.userData.retained);
+        this.regeneratedFootprint = mesh;
+        this.host.dataset.footprintMaterialCoverage = JSON.stringify(mesh.userData.coverage);
+        this.scene.add(mesh);
+        // The accepted sun map can shadow a newly exposed facade with the wall that moved away.
+        if (this.shadows) this.renderer.shadowMap.needsUpdate = true;
+        this.invalidate();
+      }
+    } finally {
+      if (this.preparingFootprint === mesh) {
+        this.preparingFootprint = undefined;
+        disposeFootprintGeometry(mesh);
+      }
+    }
+  }
+
+  private discardFootprintGeometry(): void {
+    if (this.preparingFootprint) {
+      disposeFootprintGeometry(this.preparingFootprint);
+      this.preparingFootprint = undefined;
+    }
+    if (!this.regeneratedFootprint) return;
+    this.scene.remove(this.regeneratedFootprint);
+    // The next draw shows either another gesture or the accepted scene after rollback.
+    if (this.shadows) this.renderer.shadowMap.needsUpdate = true;
+    disposeFootprintGeometry(this.regeneratedFootprint);
+    this.regeneratedFootprint = undefined;
+    delete this.host.dataset.footprintGeometryFrame;
+    delete this.host.dataset.footprintMaterialCoverage;
+  }
+
+  /** Keep the newest input for the next draw. Shadow maps and contact fields refresh with the authoritative revision. */
+  previewPlacements(moves: readonly PlacementMove[], revision: number): boolean {
+    this.discardFootprintGeometry();
+    const hadPreview = this.placementRevision !== undefined || this.pendingPlacement !== undefined;
+    if (!hadPreview && !moves.length) return false;
+    delete this.host.dataset.placementFrame;
+    if (moves.length) {
+      if (!hadPreview) this.walk.stop();
+      this.pendingPlacement = { moves, revision };
+    } else {
+      this.pendingPlacement = undefined;
+      this.placementTransforms.clear();
+      this.placementRevision = undefined;
+      delete this.host.dataset.footprintDragLook;
+      if (this.navigation) this.navigation.visible = true;
+    }
+    this.invalidate();
+    return moves.length > 0;
+  }
+
   /**
    * Lights and renders the view by a scene's lighting record (see `lighting.ts`); the page's parameters and the
    * exposure control stay on top of it. Values change in place; only turning shadows, their style or ambient occlusion
@@ -322,6 +476,7 @@ export class RustScene {
    * (see `SceneLighting.set`).
    */
   setLighting(record: Lighting, stated?: unknown, city = false): void {
+    this.authoredLighting = { record, stated, city };
     this.lights.set(record, stated, city);
     // Grass casts no shadow: its blades take the ground's shade at their roots (foliage.ts). A plant casts from its bark
     // and its canopy's shadow proxy (foliage-plants.ts).
@@ -332,6 +487,28 @@ export class RustScene {
     this.foliage.invalidate();
     this.fitShadows();
     this.stateLighting();
+    this.invalidate();
+  }
+
+  /** Apply display quality without rebuilding the packet, material recipes or export data. */
+  setGraphicsProfile({ preset, settings, diagnostics }: ResolvedRenderProfile): void {
+    if (this.closed) return;
+    this.graphics = settings;
+    this.previewLods = diagnostics.visibility.lod;
+    const pixelRatio = Math.min(devicePixelRatio, 2) * settings.renderScale;
+    if (this.renderer.getPixelRatio() !== pixelRatio) {
+      this.renderer.setPixelRatio(pixelRatio);
+      this.lights.resize();
+    }
+    this.texturePool.setAnisotropy(settings.materialAnisotropy);
+    this.lights.setSunShadowMapSize(settings.sunShadowMapSize);
+    if (this.lights.setOverrides(lightingOverridesQuery(diagnostics))) {
+      const authored = this.authoredLighting;
+      this.setLighting(authored?.record ?? defaultLighting(), authored?.stated, authored?.city);
+    }
+    this.host.dataset.graphics = JSON.stringify({
+      preset, ...settings, pixelRatio, sunShadowMapSize: this.lights.sun.shadow.mapSize.x,
+    });
     this.invalidate();
   }
 
@@ -379,6 +556,8 @@ export class RustScene {
       // would stand there unbent; it is left out of them and drawn in the image as usual.
       () => [...[this.navigation, this.itemGuides, this.itemOverlays.group].filter((group): group is THREE.Group => group !== undefined), ...this.foliage.meshes()]);
     this.scene.add(this.models);
+    this.scene.add(this.placementTransforms.hulls);
+    this.scene.add(this.placementTransforms.pieces);
     this.stateLighting();
     host.append(this.renderer.domElement);
     this.itemOverlays = new ItemOverlays(this.renderer.domElement, this.camera, this.controls, this.invalidate,
@@ -389,7 +568,7 @@ export class RustScene {
     this.resize = new ResizeObserver(() => {
       const width = Math.max(1, host.clientWidth), height = Math.max(1, host.clientHeight);
       this.renderer.setSize(width, height);
-      this.ambientOcclusion?.setSize(width, height, this.renderer.getPixelRatio());
+      this.lights.resize();
       if (this.camera instanceof THREE.PerspectiveCamera) this.camera.aspect = width / height;
       else {
         this.camera.left = -this.view.height * width / height / 2;
@@ -406,6 +585,92 @@ export class RustScene {
     this.render();
   }
 
+  /** Refresh picking and inspection on an unchanged display without rebinding geometry or restarting material jobs. */
+  applyRetained(packet: ScenePacket): boolean {
+    if (this.closed || packet.retainedFrom === undefined || packet.retainedFrom !== this.displayedRevision) return false;
+    const descriptors = [...packet.manifest.meshes, ...(packet.manifest.batches ?? [])];
+    if (descriptors.length !== this.models.children.length || descriptors.some((source, i) => source.id !== this.models.children[i].name)) return false;
+    this.previewPlacements([], packet.manifest.revision);
+    descriptors.forEach((source, index) => { this.models.children[index].userData.source = source; });
+    this.packetLods?.dispose();
+    this.packetLods = new PacketLods(this.scene, this.models, packet.manifest.geometryLods ?? [], this.materialLodHooks());
+    this.sceneId = packet.manifest.id;
+    this.displayedRevision = packet.manifest.revision;
+    this.host.dataset.revision = String(packet.manifest.revision);
+    this.host.dataset.reusedMeshes = String(packet.manifest.meshes.length);
+    if (this.previousPlantPacket) this.previousPlantPacket = packet;
+    this.host.dataset.reusedPlantBatches = String(this.models.children.filter(mesh =>
+      mesh.userData.paintedMass || mesh.userData.animeBark).length);
+    this.clearNavigation();
+    this.walk.setPacket(packet);
+    this.inspect(descriptors.find(source => source.id === this.selected));
+    this.invalidate();
+    return true;
+  }
+
+  /** The caller supplies the very same isolated, building-local appearance project. Install the
+   * compiler's new positions and collision packet while preserving uploaded atlases and programs. */
+  async applyMaterialTranslation(packet: ScenePacket, previous: ScenePacket, owner: string, from: MaterialOrigin, to: MaterialOrigin, current: () => boolean): Promise<boolean> {
+    const descriptors = packet.manifest.meshes;
+    if (this.closed || previous.manifest.revision !== this.displayedRevision || descriptors.length !== this.models.children.length
+      || !this.sceneBaker?.canMoveMaterialFrame(owner, from) || !rigidMaterialTranslation(previous, packet, owner, from, to)
+      || descriptors.some((d, i) => d.id !== this.models.children[i].name)) return false;
+    const moved = from.some((value, axis) => value !== to[axis]);
+    const staged = new Map<THREE.Mesh, THREE.BufferGeometry>();
+    let slice = performance.now();
+    if (moved) for (const [i, descriptor] of descriptors.entries()) {
+      if (descriptor.objectId !== owner) continue;
+      const mesh = this.models.children[i] as THREE.Mesh, original = sourceGeometry(mesh), next = new THREE.BufferGeometry();
+      next.setAttribute("position", new THREE.BufferAttribute(packet.positions.subarray(descriptor.vertexStart * 3, (descriptor.vertexStart + descriptor.vertexCount) * 3), 3));
+      next.setAttribute("color", original.getAttribute("color"));
+      next.setIndex(original.getIndex());
+      next.computeBoundingBox();
+      next.computeBoundingSphere();
+      staged.set(mesh, next);
+      if (performance.now() - slice >= 4) {
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        if (!current() || this.closed) return false;
+        slice = performance.now();
+      }
+    }
+    const install = await this.sceneBaker.prepareMaterialMove(owner, to, staged, current);
+    if (!install || !current() || this.closed || previous.manifest.revision !== this.displayedRevision || !this.sceneBaker.canMoveMaterialFrame(owner, from)) return false;
+    this.previewPlacements([], packet.manifest.revision);
+    for (const [i, descriptor] of descriptors.entries()) {
+      const mesh = this.models.children[i] as THREE.Mesh;
+      mesh.userData.source = descriptor;
+      if (descriptor.objectId !== owner || !moved) continue;
+      commitPositions(sourceGeometry(mesh), staged.get(mesh)!);
+      // A program-only look (a painted recipe, for example) has no baked entry of its own.
+      const frame = (mesh.material as THREE.Material).userData.programUniforms?.msMaterialOrigin;
+      if (frame) (frame.value as THREE.Vector3).fromArray(to);
+    }
+    install();
+    this.packetLods?.dispose();
+    // The moved material frame may have new procedural origins. Keep its live
+    // original look until the next complete packet prepares matching alternatives.
+    this.packetMaterialLods?.dispose(); this.packetMaterialLods = undefined;
+    this.packetLods = new PacketLods(this.scene, this.models, packet.manifest.geometryLods ?? []);
+    if (moved) this.host.dataset.meshes = JSON.stringify(this.models.children.map(object => {
+      const mesh = object as THREE.Mesh;
+      return { id: mesh.name, bounds: [mesh.geometry.boundingBox!.min.toArray(), mesh.geometry.boundingBox!.max.toArray()], vertices: mesh.geometry.getAttribute("position").count };
+    }));
+    this.collisionIds = new Set(packet.manifest.colliders);
+    this.clearNavigation();
+    this.walk.setPacket(packet);
+    this.inspect(descriptors.find(source => source.id === this.selected));
+    this.displayedRevision = packet.manifest.revision;
+    this.host.dataset.revision = String(packet.manifest.revision);
+    this.host.dataset.reusedMeshes = String(descriptors.length);
+    if (moved) {
+      this.updateCameraRange(this.models);
+      this.fitShadows();
+      this.refreshSceneFields();
+    }
+    this.invalidate();
+    return true;
+  }
+
   /** Atomically replaces a scene and preserves selection; explicit new-file opens may request camera framing. */
   async apply(packet: ScenePacket, current: () => boolean = () => true, fit = false, decorate?: (meshes: THREE.Mesh[]) => Promise<SceneLook>): Promise<boolean> {
     const next = new THREE.Group();
@@ -415,9 +680,11 @@ export class RustScene {
     const previousMeshes = new Map(this.models.children.map(object => [object.name, object as THREE.Mesh]));
     const reused: { mesh: THREE.Mesh; source: SceneMesh }[] = [];
     const ordered: THREE.Mesh[] = [];
+    const preparedLodMaterials: PreparedPacketMaterialLod[] = [];
     let committed = false;
     const assets = new Map(packet.manifest.assets.map(asset => [asset.id, asset]));
     const materials = new Map(packet.manifest.materials.map(material => [material.id, material]));
+    const descriptorsById = new Map([...packet.manifest.meshes, ...(packet.manifest.batches ?? [])].map(source => [source.id, source]));
     const decals = new Set(packet.manifest.decals ?? []);
     const checkCurrent = (): void => {
       if (!current() || this.closed) throw new Error("Scene replacement cancelled.");
@@ -429,7 +696,10 @@ export class RustScene {
       const cached = textures.get(key);
       if (cached) return cached;
       const asset = assets.get(id)!;
-      const bytes = packet.assets.slice(asset.byteStart, asset.byteStart + asset.byteLength);
+      // The pool can already hold this exact texture during a shape edit. A view
+      // costs no pixel copy; the KTX2 decoder owns its transferable copy on a miss.
+      const view = packet.assets.subarray(asset.byteStart, asset.byteStart + asset.byteLength);
+      const bytes = view.buffer instanceof ArrayBuffer ? view as Uint8Array<ArrayBuffer> : view.slice();
       let identity = identities.get(id);
       if (!identity) {
         identity = imageIdentity(bytes);
@@ -445,6 +715,10 @@ export class RustScene {
       const requests = new Map<string, { id: string; color: boolean }>();
       // Instanced batches are drawn beside the meshes: a batch's record has a mesh's fields, and its data is its own.
       const batches = packet.manifest.batches ?? [];
+      const retained = !this.batchStress && retainedPlants(this.previousPlantPacket, packet, id => {
+        const mesh = previousMeshes.get(id);
+        return Boolean(mesh && (mesh.userData.paintedMass || mesh.userData.animeBarkMaterial === mesh.material));
+      });
       for (const descriptor of [...packet.manifest.meshes, ...batches]) {
         const definition = descriptor.visible && descriptor.material !== null ? materials.get(descriptor.material) : undefined;
         if (!definition) continue;
@@ -471,20 +745,37 @@ export class RustScene {
       const stress = batches.length ? this.batchStress : 0;
       const volume = new THREE.Box3();
       if (stress) for (const mesh of packet.manifest.meshes) if (mesh.visible) volume.union(new THREE.Box3(new THREE.Vector3(...mesh.bounds[0]), new THREE.Vector3(...mesh.bounds[1])));
+      let sliceStarted = performance.now();
+      const signatures = new Map<string | null, string>();
       for (const descriptor of [...packet.manifest.meshes, ...batches] as (SceneMesh & Partial<SceneBatch>)[]) {
+        // These meshes still belong to the pending group. Let input and drawing run
+        // between batches of preparation, before publishing anything to the live scene.
+        if (decorate && performance.now() - sliceStarted >= 5) {
+          await new Promise<void>(done => setTimeout(done, 0));
+          sliceStarted = performance.now();
+        }
         checkCurrent();
         const batch = descriptor.instanceCount === undefined ? undefined : descriptor as SceneBatch;
         const definition = descriptor.material === null ? undefined : materials.get(descriptor.material);
-        const signature = JSON.stringify(definition ? {
-          ...definition, id: undefined,
-          texture: definition.texture === null ? null : textures.get(definition.texture + ":true")?.uuid,
-          normalTexture: definition.normalTexture === null ? null : textures.get(definition.normalTexture + ":false")?.uuid,
-          metallicRoughnessTexture: definition.metallicRoughnessTexture === null ? null : textures.get(definition.metallicRoughnessTexture + ":false")?.uuid,
-          emissiveTexture: definition.emissiveTexture == null ? null : textures.get(definition.emissiveTexture + ":true")?.uuid,
-          occlusionTexture: definition.occlusionTexture == null ? null : textures.get(definition.occlusionTexture + ":false")?.uuid,
-        } : null);
+        let signature = signatures.get(descriptor.material);
+        if (signature === undefined) {
+          signature = JSON.stringify(definition ? {
+            ...definition, id: undefined,
+            texture: definition.texture === null ? null : textures.get(definition.texture + ":true")?.uuid,
+            normalTexture: definition.normalTexture === null ? null : textures.get(definition.normalTexture + ":false")?.uuid,
+            metallicRoughnessTexture: definition.metallicRoughnessTexture === null ? null : textures.get(definition.metallicRoughnessTexture + ":false")?.uuid,
+            emissiveTexture: definition.emissiveTexture == null ? null : textures.get(definition.emissiveTexture + ":true")?.uuid,
+            occlusionTexture: definition.occlusionTexture == null ? null : textures.get(definition.occlusionTexture + ":false")?.uuid,
+          } : null);
+          signatures.set(descriptor.material, signature);
+        }
         const previous = previousMeshes.get(descriptor.id);
-        if (!batch && previous && !(previous as THREE.InstancedMesh).isInstancedMesh && previous.visible === descriptor.visible && previous.userData.materialSignature === signature && sameGeometry(previous, packet, descriptor)) {
+        if (batch && previous && retained && retained.has(batch.id)) {
+          reused.push({ mesh: previous, source: descriptor });
+          ordered.push(previous);
+          continue;
+        }
+        if (!batch && previous && !(previous as THREE.InstancedMesh).isInstancedMesh && (previous.userData.source?.visible ?? previous.visible) === descriptor.visible && previous.userData.materialSignature === signature && sameGeometry(previous, packet, descriptor)) {
           reused.push({ mesh: previous, source: descriptor });
           ordered.push(previous);
           continue;
@@ -519,38 +810,12 @@ export class RustScene {
           geometry.computeBoundingBox();
           geometry.computeBoundingSphere();
         }
-        material.vertexColors = true;
-        material.wireframe = this.view.wireframe;
-        if (definition?.baseColorFactor) material.color.fromArray(definition.baseColorFactor);
-        // A batch without a material shows its vertex colors and tints as they are.
-        else material.color.set(definition?.color ?? (batch ? "#ffffff" : "#b9c7d1"));
-        material.roughness = definition?.roughness ?? (batch ? 0.9 : 0.8);
-        material.metalness = definition?.metalness ?? 0;
+        const lookup = (id: string) => textures.get(`${id}:false`);
+        const operations = await configurePacketMaterial(material, definition, {
+          batch: !!batch, visible: descriptor.visible, wireframe: this.view.wireframe, texture, lookup,
+        });
         if (definition && descriptor.visible) {
-          if (definition.emissiveFactor) material.emissive.fromArray(definition.emissiveFactor);
-          else material.emissive.set(definition.emissive ?? "#000000");
-          material.emissiveIntensity = definition.emissiveStrength ?? 1;
-          material.opacity = definition.alphaMode === "OPAQUE" ? 1 : definition.opacity ?? 1;
-          material.transparent = definition.alphaMode == null ? material.opacity < 1 : definition.alphaMode === "BLEND";
-          material.depthWrite = !material.transparent;
-          material.side = definition.doubleSided == null ? (material.transparent ? THREE.FrontSide : THREE.DoubleSide)
-            : definition.doubleSided ? THREE.DoubleSide : THREE.FrontSide;
-          material.alphaTest = definition.alphaMode == null ? definition.alphaCutoff ?? 0
-            : definition.alphaMode === "MASK" ? definition.alphaCutoff ?? 0.5 : 0;
-          material.alphaToCoverage = material.alphaTest > 0;
-          material.polygonOffset = material.alphaTest > 0;
-          material.polygonOffsetFactor = -1;
-          material.polygonOffsetUnits = -2;
-          material.map = await texture(definition.texture, true);
-          material.normalMap = await texture(definition.normalTexture, false);
-          material.normalScale.setScalar(definition.normalScale ?? 1);
-          material.roughnessMap = material.metalnessMap = await texture(definition.metallicRoughnessTexture, false);
-          material.emissiveMap = await texture(definition.emissiveTexture ?? null, true);
-          material.aoMap = await texture(definition.occlusionTexture ?? null, false);
-          material.aoMapIntensity = definition.occlusionStrength ?? 1;
-          // Live renderer operations execute in this material's shader on top of the baked maps.
-          const lookup = (id: string) => textures.get(`${id}:false`);
-          mesh.userData.liveOperations = applyLiveOperations(material, definition.live ?? [], lookup);
+          mesh.userData.liveOperations = operations;
           // What a GPU preview needs to put these operations back.
           mesh.userData.liveSource = { operations: definition.live ?? [], lookup };
         }
@@ -571,10 +836,38 @@ export class RustScene {
         mesh.name = descriptor.id;
         mesh.visible = descriptor.visible;
         mesh.userData.source = descriptor;
+        mesh.userData.worldSpecOutline = descriptor.worldSpecOutline;
         mesh.userData.materialSignature = signature;
       }
       // Shaded materials are made and compiled while the scene before this one stays on screen, untouched.
       const look = await decorate?.(ordered);
+      for (const mesh of ordered) {
+        const descriptor = descriptorsById.get(mesh.name) as SceneMesh & Partial<SceneBatch>;
+        const definition = descriptor?.material ? materials.get(descriptor.material) : undefined;
+        if (!definition?.lods?.length || !descriptor.visible || mesh.userData.foliage || Array.isArray(mesh.material)) continue;
+        const levels: THREE.Material[] = [];
+        try {
+          for (const level of definition.lods) {
+            checkCurrent();
+            const fallback = new THREE.MeshStandardMaterial(); this.shadowStyle?.apply(fallback);
+            try {
+              for (const id of liveTextures(level.material.live)) await texture(id, false);
+              await configurePacketMaterial(fallback, level.material, { batch: descriptor.instanceCount !== undefined,
+                visible: true, wireframe: this.view.wireframe, texture, lookup: id => textures.get(`${id}:false`) });
+              if (mesh.userData.decal) {
+                fallback.depthWrite = false; fallback.polygonOffset = true; fallback.polygonOffsetFactor = -2; fallback.polygonOffsetUnits = -4;
+              }
+              levels.push(level.material.program
+                ? this.deliveredLook(fallback, level.material.program, { ...descriptor, material: level.material.id }, descriptor.instanceCount !== undefined, mesh.geometry)
+                : fallback);
+            } catch (error) { fallback.dispose(); throw error; }
+          }
+          preparedLodMaterials.push({ mesh, levels, screenCoverage: definition.lods.map(level => level.screenCoverage) });
+        } catch (error) {
+          for (const material of levels) material.dispose();
+          checkCurrent(); console.warn("Keeping original packet material", definition.id, error);
+        }
+      }
       // The plants' generated textures were made beside all this (foliage-plants.ts); the scene is not shown without them.
       await foliageTexturesReady();
       // A scene of baked maps: its new materials are compiled the same way, as the meshes that will show them and
@@ -585,7 +878,8 @@ export class RustScene {
         let compiled = false;
         const gl = this.renderer.getContext();
         await Promise.race([
-          this.compileLooks(fresh.map(mesh => ({ mesh, geometry: mesh.geometry, material: mesh.material as THREE.Material }))).catch(() => { /* compiled at the first draw instead */ }),
+          this.compileLooks([...fresh.map(mesh => ({ mesh, geometry: mesh.geometry, material: mesh.material as THREE.Material })),
+            ...preparedLodMaterials.flatMap(entry => entry.levels.map(material => ({ mesh: entry.mesh, geometry: entry.mesh.geometry, material })))]).catch(() => { /* compiled at the first draw instead */ }),
           // A lost context never reports its programs complete, and a superseded scene need not wait for them.
           new Promise<void>(done => {
             const poll = (): void => { if (compiled || this.closed || gl.isContextLost() || !current()) done(); else setTimeout(poll, 50); };
@@ -594,9 +888,20 @@ export class RustScene {
         ]);
         compiled = true;
       }
+      if (decorate && preparedLodMaterials.length)
+        await this.compileLooks(preparedLodMaterials.flatMap(entry => entry.levels.map(material => ({ mesh: entry.mesh, geometry: entry.mesh.geometry, material }))));
       if (!current() || this.closed) { look?.discard(); this.release(next); this.texturePool.release(leases); return false; }
+      // A reused mesh must enter the new scene in its compiler-provided world coordinates.
+      this.discardFootprintGeometry();
+      this.placementTransforms.clear();
+      this.pendingPlacement = undefined;
+      this.placementRevision = undefined;
+      delete this.host.dataset.footprintDragLook;
+      delete this.host.dataset.placementFrame;
+      if (this.navigation) this.navigation.visible = true;
       for (const item of reused) {
         item.mesh.userData.source = item.source;
+        item.mesh.userData.worldSpecOutline = item.source.worldSpecOutline;
         // A reused mesh may still show a GPU preview; the build's own maps replace it.
         this.restoreBaked(item.mesh);
       }
@@ -606,15 +911,23 @@ export class RustScene {
       look?.commit();
       for (const mesh of ordered) next.add(mesh);
       this.scene.add(next);
+      this.packetLods?.dispose();
+      this.packetMaterialLods?.dispose();
       const previous = this.models;
       this.scene.remove(previous);
       this.models = next;
+      this.packetMaterialLods = new PacketMaterialLods(preparedLodMaterials);
+      this.packetLods = new PacketLods(this.scene, next, packet.manifest.geometryLods ?? [], this.materialLodHooks());
+      this.displayedMaterialDefinitions = packet.manifest.materials;
+      this.previousPlantPacket = batches.some(b => b.foliage?.mass) ? packet : undefined;
+      this.batchPlacementOwners = packet.manifest.batchPlacementOwners ?? {};
       committed = true;
       this.fitShadows();
       this.refreshSceneFields();
       this.texturePool.release(this.textureLeases);
       this.textureLeases = leases;
       this.host.dataset.reusedMeshes = String(reused.length);
+      this.host.dataset.reusedPlantBatches = String(retained ? retained.size : 0);
       // Counts of uploaded material maps by kind: "compressed" (KTX2) or "image" (PNG, JPEG).
       const kinds: Record<string, number> = {};
       for (const mesh of ordered) {
@@ -631,18 +944,10 @@ export class RustScene {
         .map(mesh => [mesh.name, mesh.userData.liveOperations])));
       this.clearNavigation();
       this.release(previous);
-      const sceneBounds = new THREE.Box3().setFromObject(next);
-      if (!sceneBounds.isEmpty()) {
-        const extent = sceneBounds.getSize(new THREE.Vector3()).length();
-        const distance = this.camera.position.distanceTo(sceneBounds.getCenter(new THREE.Vector3()));
-        this.camera.far = Math.max(1000, distance + extent * 10);
-        this.controls.maxDistance = this.camera.far * 0.4;
-        this.camera.updateProjectionMatrix();
-      }
+      const sceneBounds = this.updateCameraRange(next);
       if ((fit || this.sceneId !== packet.manifest.id) && next.children.length && !this.view.fixed) {
-        const bounds = new THREE.Box3().setFromObject(next);
-        const center = bounds.getCenter(new THREE.Vector3());
-        const radius = Math.max(1, bounds.getSize(new THREE.Vector3()).length());
+        const center = sceneBounds.getCenter(new THREE.Vector3());
+        const radius = Math.max(1, sceneBounds.getSize(new THREE.Vector3()).length());
         this.controls.target.copy(center);
         this.camera.position.copy(center).add(new THREE.Vector3(0.8, -1.2, 0.9).multiplyScalar(radius));
         this.controls.update();
@@ -667,6 +972,7 @@ export class RustScene {
         attributes: Object.keys(sourceGeometry(mesh).attributes).filter(name => /^ms(Instance|Vertex)_/.test(name)).sort() })));
       else delete this.host.dataset.batches;
       this.host.dataset.revision = String(packet.manifest.revision);
+      this.displayedRevision = packet.manifest.revision;
       // The decals drawn, for inspection and tests.
       if (decals.size) this.host.dataset.decals = JSON.stringify([...decals]);
       else delete this.host.dataset.decals;
@@ -679,7 +985,21 @@ export class RustScene {
       if (!committed) this.texturePool.release(leases);
       if (!current() || this.closed) return false;
       throw error;
+    } finally {
+      if (!committed) for (const material of new Set(preparedLodMaterials.flatMap(entry => entry.levels))) material.dispose();
     }
+  }
+
+  private updateCameraRange(models: THREE.Group): THREE.Box3 {
+    const bounds = new THREE.Box3().setFromObject(models);
+    if (!bounds.isEmpty()) {
+      const extent = bounds.getSize(new THREE.Vector3()).length();
+      const distance = this.camera.position.distanceTo(bounds.getCenter(new THREE.Vector3()));
+      this.camera.far = Math.max(1000, distance + extent * 10);
+      this.controls.maxDistance = this.camera.far * 0.4;
+      this.camera.updateProjectionMatrix();
+    }
+    return bounds;
   }
 
   /**
@@ -720,11 +1040,12 @@ export class RustScene {
     // The per-pixel look of a layered slot shows its base alone (first look, edits and drags); the bake shows its layers.
     if (layered.length) this.host.dataset.layers = JSON.stringify({ materials: layered, perPixel: "base only", baked: bake ? "gpu-composed" : "none" });
     else delete this.host.dataset.layers;
-    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline", instanced: boolean, attributes: readonly string[] = []) => {
+    const make = (entry: { uniforms: Record<string, THREE.IUniform>; material: MaterialShading }, spec: MeshShading, mode: "pixel" | "quad", noise: "looped" | "inline", instanced: boolean, attributes: readonly string[] = [], vertexColors = false) => {
       const material = programMaterial(entry.material, spec, shading.gravity, entry.uniforms, mode, noise, instanced, attributes);
       this.shadowStyle?.apply(material);
       material.wireframe = this.view.wireframe;
       material.side = THREE.DoubleSide;
+      material.vertexColors = vertexColors;
       return material;
     };
     return async meshes => {
@@ -752,6 +1073,8 @@ export class RustScene {
         // A foliage batch takes its look's recipe (a project material, often assigned to no mesh) into its shader families.
         const foliage = mesh.userData.foliage as SceneBatch["foliage"];
         if (foliage) {
+          // The crown supplies the illustrated bark shader; the retained mesh already shares it with every bark LOD.
+          if (mesh.userData.animeBark) continue;
           // A plant's shadow proxy draws only depth into the sun's shadow map: it has no program.
           const entry = foliage.material && foliage.family !== "shadow" ? prepared.get(foliage.material) : undefined;
           if (entry) made.push({ mesh, material: this.foliage.withProgram(mesh as THREE.InstancedMesh, { shading: entry.material, uniforms: entry.uniforms }) as THREE.MeshStandardMaterial, shaded: foliage.material! });
@@ -774,14 +1097,16 @@ export class RustScene {
         const first = this.noise === "inline" || kept ? "inline" : "looped";
         // The geometry's attributes: render inputs a program reads that the mesh lacks take their fallbacks.
         const attributes = Object.keys(sourceGeometry(mesh).attributes);
-        const material = make(entry, spec, "quad", first, instanced, attributes);
+        // The World view uses the same authored vertex paint in its real-time and baked finishes.
+        const carryPaint = attributes.includes("color") && (typeof bake?.vertexTints === "function" ? bake.vertexTints(receiverId) : bake?.vertexTints === true);
+        const material = make(entry, spec, "quad", first, instanced, attributes, carryPaint);
         if (kept) keptLooks.push({ mesh, geometry: sourceGeometry(mesh), material });
         made.push({ mesh, material, shaded: spec.material });
         const pixel = this.pixelRelief && hasPixelRelief(entry.material);
         if (pixel || this.noise === "settle") {
           refine.push({ mesh, first: material, source: shaderIdentity(entry.material.shader),
-            pixel: pixel ? () => make(entry, spec, "pixel", first, instanced, attributes) : undefined,
-            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline", instanced, attributes) : undefined });
+            pixel: pixel ? () => make(entry, spec, "pixel", first, instanced, attributes, carryPaint) : undefined,
+            settled: this.noise === "settle" ? () => make(entry, spec, pixel ? "pixel" : "quad", "inline", instanced, attributes, carryPaint) : undefined });
         }
         // A painted material is always drawn by its program: the sun and its shade band are live. Its baked maps are
         // the fallback delivered for renderers without the program, never this view's look.
@@ -792,12 +1117,12 @@ export class RustScene {
           const receiver = Object.fromEntries(RECEIVER_UNIFORMS.filter(name => own[name]).map(name => [name, own[name]]));
           const stack = entry.layers ? this.stackOf(entry, receiver, spec) : undefined;
           const zones = spec.zones ? `|zones ${spec.zones.count}:${spec.zones.rows.length}:${hashNumbers(spec.zones.rows)}` : "";
-          targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout,
+          targets.push({ mesh, material: spec.material, shader: material, shading: use.material, uniforms: { ...use.uniforms, ...receiver }, layout, materialOrigin: spec.materialOrigin,
             receiver: `${spec.features.length}:${hashNumbers(spec.features)}${zones}`, extent: (shading.domain as [number, number] | undefined) ?? [1, 1],
             ...(receiverId === mesh.name ? {} : { fieldsId: receiverId }),
             ...(typeof stack === "string" ? { unsupported: stack } : stack ? { stack } : {}) });
           // What the mesh shows while a value changes keeps the relief that compiles fast and settles on the noise form that draws fast.
-          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline", instanced, attributes) });
+          if (this.noise === "settle" && !kept) editLooks.push({ mesh, source: identity, settled: () => make(entry, spec, "quad", "inline", instanced, attributes, carryPaint) });
         }
       }
       // The per-pixel looks, compiled as the meshes that will show them and without blocking the page: drawn
@@ -840,8 +1165,11 @@ export class RustScene {
       return {
         discard: () => { discarded = true; baked?.discard(); for (const item of made) item.material.dispose(); },
         commit: () => {
+          // Three releases a program when its last material is disposed. Acquire the
+          // new materials' references while the displayed scene still holds them.
+          const compiling = shaderReady ? undefined : compileShaders();
           const run = this.commitShading(prepared, made, refine, baked, shaderReady, editLooks, keptInline);
-          if (!shaderReady) void compileShaders().then(() => { if (run === this.reliefRun && !this.closed) this.sceneBaker?.shadersReady(); });
+          if (compiling) void compiling.then(() => { if (run === this.reliefRun && !this.closed) this.sceneBaker?.shadersReady(); });
         },
       };
     };
@@ -867,7 +1195,8 @@ export class RustScene {
    */
   refreshSceneFields(): void {
     const meshes = this.models.children as THREE.Mesh[];
-    const read = new Set(meshes.flatMap(mesh => ((mesh.material as THREE.Material).userData?.sceneFields as string[] | undefined) ?? []));
+    const read = new Set([...meshes.flatMap(mesh => ((mesh.material as THREE.Material).userData?.sceneFields as string[] | undefined) ?? []),
+      ...this.packetMaterialLods?.fieldReads ?? []]);
     if (!read.size) { delete this.host.dataset.sceneFields; return; }
     const named = new URLSearchParams(location.search).get("ground");
     // Grass reads the ground under its roots: where the scene has grass, the ground is the mesh it grows on.
@@ -955,6 +1284,7 @@ export class RustScene {
   planesChanged(names: string[]): number { return this.sceneBaker?.planesChanged(names) ?? 0; }
 
   private newSceneBaker(): SceneBaker {
+    let baking = false;
     return new SceneBaker({
       baker: () => this.bakerInstance ??= this.newBaker(),
       style: material => { this.shadowStyle?.apply(material); material.wireframe = this.view.wireframe; },
@@ -963,6 +1293,12 @@ export class RustScene {
       draw: () => this.invalidate(),
       report: status => {
         this.host.dataset.sceneBake = JSON.stringify(status);
+        // The first shadow map can contain the per-pixel mesh. Refresh it once the final atlas geometry is installed.
+        if (baking && status.state === "baked" && this.shadows) {
+          this.fitShadows();
+          this.invalidate();
+        }
+        baking = status.state === "baking";
         if (status.state === "baked") this.unbakedRefinement?.();
         if (status.state === "baked" && status.shaderReady) this.editLookSettling?.();
       },
@@ -970,6 +1306,13 @@ export class RustScene {
   }
 
   private editLookSettling?: () => void;
+
+  /** A shape preview borrows the displayed materials. Let it release them before replacing a program and its textures. */
+  private async waitForMaterialRelease(current: () => boolean): Promise<void> {
+    while (current() && (this.placementRevision !== undefined || this.pendingPlacement)) {
+      await new Promise<void>(done => setTimeout(done, 50));
+    }
+  }
   /**
    * Programs (by `shaderIdentity`) whose settled per-pixel look for edits is compiled and held by the displayed scene.
    * The next scene's materials are made while that scene is still displayed, so one of the same program made in the
@@ -1010,6 +1353,8 @@ export class RustScene {
       catch { for (const entry of made) entry.material.dispose(); continue; }
       // The swap itself is a few assignments; it waits for a moment when no bake holds the old looks' uniforms.
       for (let tries = 0; current() && this.sceneBaker && made.length; tries++) {
+        await this.waitForMaterialRelease(current);
+        if (!current()) break;
         for (const entry of [...made]) {
           const old = this.sceneBaker.replaceShader(entry.item.mesh, entry.material,
             Object.fromEntries(RECEIVER_UNIFORMS.map(name => [name, (entry.material.userData.programUniforms as Record<string, THREE.IUniform>)[name]])));
@@ -1083,6 +1428,7 @@ export class RustScene {
       // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
       const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
       try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { discard(); continue; }
+      await this.waitForMaterialRelease(current);
       if (!current()) { discard(); return false; }
       for (const entry of made) {
         const { item, material } = entry;
@@ -1133,7 +1479,7 @@ export class RustScene {
       const zoned = queries ? { ms_zones: { value: this.layerZoneTexture(queries) }, ms_zone_count: { value: queries.count } } : {};
       const zones = queries ? `|zones ${queries.count}:${queries.rows.length}:${hashNumbers(queries.rows)}` : "";
       return { id: layer.id, shading: layer.material, reads: layer.reads, receiver: `${own.length}:${hashNumbers(own)}${zones}`,
-        uniforms: { ...layer.uniforms, ...receiver, ms_features: { value: this.layerFeatureTexture(own) }, ms_feature_count: { value: own.length / 12 }, ...zoned } };
+        uniforms: { ...layer.uniforms, ...receiver, ...featureUniforms(this.layerFeatureTexture(own), own.length / 12), ...zoned } };
     });
     if (layers.some(layer => !layer)) return "the engine gives no features for the slot's layers";
     return { channels: entry.channels ?? {}, layers: layers as StackInput["layers"] };
@@ -1160,13 +1506,7 @@ export class RustScene {
     const key = `${features.length}:${hashNumbers(features)}`;
     let texture = this.layerFeatures.get(key);
     if (texture) { this.layerFeatures.delete(key); this.layerFeatures.set(key, texture); return texture; }
-    const rows = Math.max(1, features.length / 12);
-    const data = new Float32Array(rows * 12);
-    data.set(features);
-    texture = new THREE.DataTexture(data, 3, rows, THREE.RGBAFormat, THREE.FloatType);
-    texture.minFilter = texture.magFilter = THREE.NearestFilter;
-    texture.generateMipmaps = false;
-    texture.needsUpdate = true;
+    texture = featureTexture(features, this.renderer.capabilities.maxTextureSize);
     this.layerFeatures.set(key, texture);
     // Kept for a few scenes' worth of meshes; a texture dropped while still bound is uploaded again where it is drawn.
     while (this.layerFeatures.size > 2048) {
@@ -1188,7 +1528,8 @@ export class RustScene {
       if (!roles) this.programImages.set(bytes, roles = new Map());
       let texture = roles.get(entry.linear);
       if (!texture) {
-        texture = programTexture(bytes, entry.linear).then(loaded => { this.programTextures.add(loaded); return loaded; });
+        texture = programTexture(bytes, entry.linear).then(loaded => { this.programTextures.add(loaded); return loaded; })
+          .catch(error => { roles.delete(entry.linear); throw error; });
         roles.set(entry.linear, texture);
       }
       uniforms[entry.uniform] = { value: await texture };
@@ -1459,6 +1800,7 @@ export class RustScene {
   /** Selects the same stable mesh identity used by pointer picking, without moving the camera. */
   select(id?: string): void {
     const mesh = this.models.children.find(object => object.name === id && object.visible);
+    this.selectionRevision++;
     this.selected = mesh?.name;
     this.inspect(mesh?.userData.source);
   }
@@ -1564,13 +1906,16 @@ export class RustScene {
   private readonly pick = (event: MouseEvent): void => {
     // The click that ends a handle drag selects nothing.
     if (this.itemOverlays.consumedClick()) return;
+    // This draw has the new shape but its placement IDs still belong to the accepted packet.
+    if (this.regeneratedFootprint) return;
     const bounds = this.renderer.domElement.getBoundingClientRect();
     const pointer = new THREE.Vector2((event.clientX - bounds.left) / bounds.width * 2 - 1, 1 - (event.clientY - bounds.top) / bounds.height * 2);
     const ray = new THREE.Raycaster();
     ray.setFromCamera(pointer, this.camera);
-    const hit = ray.intersectObjects(this.models.children).find(hit => hit.object.visible);
+    const hit = ray.intersectObjects(this.models.children).find(hit => hit.object.visible || this.packetLods?.isCanonical(hit.object));
     if (hit && this.walk.pick(hit.point)) return;
     const mesh: SceneMesh | undefined = hit?.object.userData.source;
+    this.selectionRevision++;
     this.selected = mesh?.id;
     // A batch reports the instance hit, by its index in the batch.
     const instance = mesh && (hit!.object as THREE.InstancedMesh).isInstancedMesh ? hit!.instanceId : undefined;
@@ -1579,7 +1924,10 @@ export class RustScene {
     this.inspect(mesh, instance);
   };
 
-  toggleWalk(): void { this.walk.toggle(); }
+  toggleWalk(): void {
+    if (this.placementRevision === undefined && !this.pendingPlacement) this.walk.toggle();
+    else this.host.dispatchEvent(new CustomEvent("walkstatus", { detail: "Walking resumes when the placement finishes compiling." }));
+  }
   setWalkHelper(helper: string): void { this.walk.setHelper(helper); }
 
   /** A restored context has an empty shadow map, and the map is only drawn on request. */
@@ -1716,6 +2064,8 @@ export class RustScene {
 
   /** Ends animation, listeners, controls and GPU ownership when the editor leaves the page. */
   dispose(): void {
+    this.discardFootprintGeometry();
+    this.placementTransforms.dispose();
     this.walk.dispose();
     this.closed = true;
     this.clearNavigation();
@@ -1723,6 +2073,8 @@ export class RustScene {
     this.itemOverlays.dispose();
     cancelAnimationFrame(this.frame);
     document.removeEventListener("visibilitychange", this.visibilityChanged);
+    this.packetLods?.dispose();
+    this.packetMaterialLods?.dispose();
     this.foliage.dispose();
     this.budgetReadout?.remove();
     this.resize.disconnect(); this.controls.removeEventListener("change", this.invalidate); this.controls.dispose();

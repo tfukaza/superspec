@@ -79,8 +79,8 @@ async function show(url: string, view: View) {
   await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
   lighting.render();
   let lights = 0, meshes = 0, styled = 0;
-  scene.traverse(object => {
-    if ((object as THREE.Light).isLight) lights++;
+  scene.traverseVisible(object => {
+    if ((object as THREE.Light).isLight && camera.layers.test(object.layers)) lights++;
     if ((object as THREE.Mesh).isMesh) { meshes++; if (object.castShadow && object.receiveShadow) styled++; }
   });
   return { stated, lighting: lighting.lighting, punctual, lights, meshes, shadowed: styled, ambientOcclusion: lighting.view.ambientOcclusion !== undefined,

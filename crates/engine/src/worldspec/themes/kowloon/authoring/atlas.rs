@@ -23,6 +23,38 @@ fn linear(value: u8) -> f64 {
     }
 }
 
+fn finish_roast_atlas(maps: &mut [Image; 3]) {
+    let [color, relief, properties] = maps;
+    let width = color.width;
+    for (index, ((pigment, normal), property)) in color
+        .rgba
+        .chunks_exact_mut(4)
+        .zip(relief.rgba.chunks_exact_mut(4))
+        .zip(properties.rgba.chunks_exact_mut(4))
+        .enumerate()
+    {
+        let [red, green, blue] = [pigment[0], pigment[1], pigment[2]].map(u32::from);
+        let breast_skin = index % width < CELL || index / width < CELL;
+        let polished = if breast_skin {
+            (red.saturating_sub(118) * green.saturating_sub(75) / 93).min(43)
+        } else {
+            0
+        };
+        pigment[0] = (red * 109 / 100 + (255 - red) * green / 1800 + polished / 5).min(255) as u8;
+        pigment[1] = (green * 110 / 100 + red / 13 + polished / 6).min(255) as u8;
+        pigment[2] = (blue * 106 / 100 + red / 10).min(255) as u8;
+        // Reduce scan noise while letting the upper ridges in the caramelized
+        // skin produce narrower reflections. Dry sliced meat stays satin.
+        for channel in &mut normal[..2] {
+            *channel = (128 + (i32::from(*channel) - 128) * 61 / 100) as u8;
+        }
+        normal[2] = ((u32::from(normal[2]) * 61 + 255 * 39) / 100) as u8;
+        property[1] = (u32::from(property[1]) + 36 - red / 25)
+            .saturating_sub(polished)
+            .min(255) as u8;
+    }
+}
+
 impl Atlas {
     fn new(columns: usize, rows: usize, gutter: usize, fill: [[u8; 4]; 3]) -> Self {
         let (width, height) = (columns * CELL, rows * CELL);
@@ -475,6 +507,7 @@ pub fn pack(inputs: &Inputs<'_>, source: &Path, food: bool) -> Result<Files, Str
         for (name, tile) in [("chicken", 0), ("slices", 3)] {
             remap_food(catalog.get_mut(name).unwrap(), &atlas.maps[0], tile)?;
         }
+        finish_roast_atlas(&mut atlas.maps);
         atlas.encode(name, &mut files)?;
     } else {
         if catalog.is_empty() || catalog.len() > 128 {

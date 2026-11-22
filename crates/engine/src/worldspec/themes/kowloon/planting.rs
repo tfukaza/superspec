@@ -1,12 +1,14 @@
 //! Illustrated avenue vegetation. A shadow batch carries the local density sites and twigs
 //! that the shared renderer draws, alongside the trunk and branch LODs.
+use super::cache::Cache;
 use crate::{
-    Scene,
     treespec::{
         batches::{self, FoliageBatch},
         tree,
     },
+    worldspec::build::ItemOutput,
 };
+use std::sync::{Arc, Mutex};
 use superspec_model::batches::Foliage;
 use superspec_types::{architecture::Node, batch::FoliageFamily, diagnostic::Diagnostic};
 fn scaled(mut definition: tree::TreeDefinition, factor: f64) -> tree::TreeDefinition {
@@ -145,11 +147,14 @@ fn groundcover(
     let across = [width / 2. - 0.85 + inset, width / 2. + 0.85 - inset];
     let [bx, by] = point(along[0], across[0]);
     let base = [bx, by, height(bx, by)];
-    let shrub = tree::parse(
+    let mut shrub = tree::parse(
         "shrub.tree.json",
         include_str!("../../../treespec/fixtures/shrub.tree.json"),
     )
     .map_err(|e| e.to_string())?;
+    // Each mound contributes leaf sites and twigs to a single painted mass. Keep
+    // the near level for TreeSpec's vertex-budget check and omit its unused distance meshes.
+    shrub.lods.truncate(1);
     let spacing = 0.6;
     let rows = ((across[1] - across[0]) / spacing).floor() as usize + 1;
     let (mut sites, mut twigs) = (vec![], vec![]);
@@ -194,10 +199,11 @@ fn groundcover(
     // The carrier: the shrub's shadow proxy batch with its mesh replaced by the box around the
     // planting's sites.
     let template = tree::generate(&shrub, cancelled).map_err(|e| e.to_string())?;
-    let mut carrier = batches::tree_levels(&template, base, look)?
-        .into_iter()
-        .find(|level| level.batch.foliage.as_ref().unwrap().family == FoliageFamily::Shadow)
-        .ok_or("Missing groundcover shadow proxy")?;
+    let mut carrier =
+        batches::tree_levels_for(&template, base, look, |f| f == FoliageFamily::Shadow)?
+            .into_iter()
+            .next()
+            .ok_or("Missing groundcover shadow proxy")?;
     let (mut low, mut high) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for site in &sites {
         for axis in 0..3 {
@@ -260,10 +266,10 @@ fn groundcover(
 fn plant(
     station: usize,
     shrub: bool,
-    at: [f64; 3],
     look: &Foliage,
     cancelled: &dyn Fn() -> bool,
-) -> Result<Vec<FoliageBatch>, String> {
+    cache: &Mutex<Cache>,
+) -> Result<Arc<[FoliageBatch]>, String> {
     let mut definition = if shrub {
         tree::parse(
             "shrub.tree.json",
@@ -277,6 +283,16 @@ fn plant(
         for (lod, distance) in definition.lods.iter_mut().zip([0., 8., 16.]) {
             lod.distance = distance;
         }
+    }
+    crate::treespec::check_cancelled(&definition.source, cancelled).map_err(|e| e.to_string())?;
+    // All generation and painterly look inputs are intrinsic. Source locations, row names,
+    // translations, rotations and placement scale are applied to a copy when the plant is bound.
+    let key = crate::runtime::dependencies::producer_key(
+        "kowloon-painted-plant-v1",
+        &serde_json::to_vec(&(&definition, look, shrub)).map_err(|e| e.to_string())?,
+    );
+    if let Some(levels) = cache.lock().expect("plant cache").plant(&key) {
+        return Ok(levels);
     }
     let tree = tree::generate(&definition, cancelled).map_err(|e| e.to_string())?;
     let mut mass = painted_mass(&definition, &tree);
@@ -292,13 +308,9 @@ fn plant(
         mass.variation = 0.8;
         mass.sparkles = 0.4;
     }
-    let mut levels = batches::tree_levels(&tree, at, look)?;
-    levels.retain(|l| {
-        matches!(
-            l.batch.foliage.as_ref().unwrap().family,
-            FoliageFamily::Bark | FoliageFamily::Shadow
-        )
-    });
+    let mut levels = batches::tree_levels_for(&tree, [0.; 3], look, |f| {
+        matches!(f, FoliageFamily::Bark | FoliageFamily::Shadow)
+    })?;
     for level in &mut levels {
         let f = level.batch.foliage.as_mut().unwrap();
         if f.family == FoliageFamily::Shadow {
@@ -307,13 +319,47 @@ fn plant(
             f.material = Some("painted-bark".into());
         }
     }
+    let levels: Arc<[FoliageBatch]> = levels.into();
+    let bytes = levels.iter().map(plant_bytes).sum();
+    cache
+        .lock()
+        .expect("plant cache")
+        .retain_plant(key, levels.clone(), bytes);
     Ok(levels)
 }
 
+/// Retained local bark and shadow levels have a single placement, named vertex attributes
+/// and, on the carrier, the canopy sites and twigs. Charge buffer capacities, including the
+/// per-twig vectors, plus the batch, strings, map nodes and the single transform.
+fn plant_bytes(level: &FoliageBatch) -> usize {
+    let mesh = &level.mesh;
+    let batch = &level.batch;
+    let mass = batch.foliage.as_ref().and_then(|f| f.mass.as_ref());
+    8192 + 24 * (mesh.positions.capacity() + mesh.normals.capacity() + mesh.colors.capacity())
+        + 16 * mesh.uvs.capacity()
+        + 4 * mesh.indices.capacity()
+        + batch
+            .vertex_scalars
+            .values()
+            .map(|v| v.capacity() * 4)
+            .sum::<usize>()
+        + batch
+            .vertex_vectors
+            .values()
+            .map(|v| v.capacity() * 12)
+            .sum::<usize>()
+        + mass.map_or(0, |m| {
+            m.sites.capacity() * 32
+                + m.twigs.capacity() * size_of::<Vec<[f64; 3]>>()
+                + m.twigs.iter().map(|t| t.capacity() * 24).sum::<usize>()
+        })
+}
+
 pub(super) fn append(
-    scene: &mut Scene,
+    items: &mut ItemOutput<'_>,
     node: &Node,
     cancelled: &dyn Fn() -> bool,
+    cache: &Mutex<Cache>,
 ) -> Result<(), Diagnostic> {
     let look:Foliage=serde_json::from_str(r#"{"family":"leaves","patch":"plant","far":60,"material":"painted-canopy","wind":{"azimuth":30,"angle":2.5,"scale":6,"speed":0.8,"bias":0.7,"flutter":9},"rejection":{"boundary":0,"fill":1,"grazing":0,"grazingKeep":0},"canopy":{}}"#).expect("street foliage settings");
     let origin = node.vector("position", [0.; 3]);
@@ -341,28 +387,33 @@ pub(super) fn append(
                 &look,
                 &height,
             )
-            .map(|b| vec![b])
+            .map(|b| Arc::from([b]))
         } else {
-            plant(index, node.kind == "shrub", at, &look, cancelled)
+            plant(index, node.kind == "shrub", &look, cancelled, cache)
         }
         .map_err(|e| node.fail("AML_CITY", e))?;
-        for mut level in levels {
-            level.batch.id = format!("{owner}/{}", level.batch.id);
-            level.batch.object_id = owner.clone();
-            level.batch.source = node.source.clone();
-            level.batch.foliage.as_mut().unwrap().patch = owner.clone();
+        for level in levels.iter() {
+            let mut batch = level.batch.clone();
+            batch.id = format!("{owner}/{}", batch.id);
+            batch.object_id = owner.clone();
+            batch.source = node.source.clone();
+            batch.foliage.as_mut().unwrap().patch = owner.clone();
             if node.kind != "avenue" {
-                for p in &mut level.batch.placements {
+                for p in &mut batch.placements {
+                    p.translation = at;
                     p.rotation = [0., 0., (angle / 2.).sin(), (angle / 2.).cos()];
                     for axis in &mut p.scale {
                         *axis *= node.number("scale", 1.);
                     }
                 }
             }
-            scene
-                .add_batch(&level.batch, &level.mesh)
+            items
+                .add_batch(&batch, &level.mesh)
                 .map_err(|e| node.fail("AML_CITY", e))?;
         }
     }
+    items
+        .project_foliage()
+        .map_err(|e| node.fail("AML_CITY", e))?;
     Ok(())
 }

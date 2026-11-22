@@ -290,8 +290,8 @@ float atLightValue(vec3 n, float occlusion, float jitter) {
 float atGlint(float light, float boost) {
   return min(1.0, light + boost * smoothstep(0.5, 0.75, light));
 }
-vec3 atRampColour(float v) {
-  float q = min((floor(v * atLight.w) + 0.5) / atLight.w, 0.9999) * 6.0;
+vec3 atRampColour(float v, float soften) {
+  float q = min(mix((floor(v * atLight.w) + 0.5) / atLight.w, v, soften), 0.9999) * 6.0;
   float i = floor(q);
   vec3 a = atRamp[0], b = atRamp[1];
   if (i > 0.5) { a = atRamp[1]; b = atRamp[2]; }
@@ -303,6 +303,7 @@ vec3 atRampColour(float v) {
   // The few leaves in full light: paler still.
   return mix(colour, colour * 1.16 + vec3(0.012, 0.01, 0.0), step(0.93, v));
 }
+vec3 atRampColour(float v) { return atRampColour(v, 0.0); }
 vec3 atBackLight(vec3 colour, vec3 n, vec3 toCamera, float occlusion) {
   float against = max(0.0, dot(-toCamera, sun));
   float edge = 1.0 - abs(dot(n, toCamera));

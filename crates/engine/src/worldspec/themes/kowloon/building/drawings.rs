@@ -38,7 +38,7 @@ fn draw(
             "rust",
             settings.number("rust", rule.number("wear", settings.number("wear", 0.2))),
         ),
-        density: rule.number("texture-density", 64.),
+        density: rule.number("texture-density", 96.),
         detail: 2,
     };
     let mut budget = Budget::new(allowance, cancelled)?;

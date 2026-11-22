@@ -861,8 +861,13 @@ fn generated_sdk_declares_every_operation_and_stays_in_sync_with_the_catalog() {
 #[test]
 fn every_catalog_group_expands_to_its_declared_outputs() {
     for group in catalog::groups().iter().filter(|g| g.unavailable.is_none()) {
+        let inputs = if group.id == "chippedShoulder" {
+            "distance: 0.006, field: 0.72"
+        } else {
+            ""
+        };
         let text = format!(
-            "import {{ defineMaterial, {id}, vec3, clamp }} from \"{SDK}\";\nconst g = {id}({{}});\nexport default defineMaterial({{ base: {{ baseColor: vec3(1) }}, channels: {{ roughness: clamp(g.{first}, 0, 1) }} }});\n",
+            "import {{ defineMaterial, {id}, vec3, clamp }} from \"{SDK}\";\nconst g = {id}({{{inputs}}});\nexport default defineMaterial({{ base: {{ baseColor: vec3(1) }}, channels: {{ roughness: clamp(g.{first}, 0, 1) }} }});\n",
             id = group.id,
             first = group.outputs[0].name
         );

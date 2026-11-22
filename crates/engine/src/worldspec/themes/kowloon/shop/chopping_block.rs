@@ -101,9 +101,11 @@ fn body(d: &mut Fixture<'_, '_>, timber: bool, fields: bool) -> Result<(), Strin
             let tint = |p: V3| {
                 let edge = ((p[2] - 0.10) / 0.02).max(0.);
                 let foot = (1. - p[2] / 0.025).max(0.);
-                let brightness = 1.04 + edge * 0.32 - foot * 0.2;
+                let angle = superspec_geometry::math::atan2(p[1], p[0]);
+                let grain = sin(angle * 29. + 0.3 * sin(p[2] * 67.)).powi(2);
+                let brightness = 0.89 + edge * 0.32 - foot * 0.2 - grain * 0.21;
                 Ok(if timber {
-                    [brightness / 2.; 3]
+                    [brightness * 0.58, brightness * 0.49, brightness * 0.40]
                 } else {
                     shade(srgb("#9c754c"), brightness)
                 })
@@ -193,6 +195,8 @@ pub fn draw(
     let pen = root
         .into_part(&format!("{}/cleaver", root.part))?
         .moved(at)?;
+    let cutting_pivot = [0., -0.05, 0.1204];
+    let pen = forms::rotated(&pen, cutting_pivot, 0, 0.32)?.moved(cutting_pivot.map(|v| -v))?;
     let metal = pen.with_kitchen_metal(settings.metal_repeat)?;
     let steel = &mut Fixture {
         pen: metal.clone(),
@@ -202,11 +206,42 @@ pub fn draw(
     let galvanized = srgb("#a4a9aa");
     steel.cuboid(
         "metal",
-        [-0.1, -0.05, 0.12],
+        [-0.1, -0.041, 0.12],
         [0.08, 0.04, 0.126],
         shade(galvanized, 1.2),
-        "",
+        "b",
     )?;
+    let cutting_edge = [[-0.1, -0.05, 0.1204], [0.08, -0.05, 0.1204]];
+    steel.face(
+        "metal",
+        &[
+            cutting_edge[0],
+            cutting_edge[1],
+            [0.08, -0.041, 0.126],
+            [-0.1, -0.041, 0.126],
+        ],
+        [0., -1., 1.],
+        [0.88, 0.90, 0.84],
+    )?;
+    steel.face(
+        "metal",
+        &[
+            cutting_edge[0],
+            cutting_edge[1],
+            [0.08, -0.041, 0.12],
+            [-0.1, -0.041, 0.12],
+        ],
+        [0., 0., -1.],
+        shade(galvanized, 0.9),
+    )?;
+    for (i, x) in [-0.1, 0.08].into_iter().enumerate() {
+        steel.face(
+            "metal",
+            &[cutting_edge[i], [x, -0.041, 0.12], [x, -0.041, 0.126]],
+            [if i == 0 { -1. } else { 1. }, 0., 0.],
+            shade(galvanized, 1.05),
+        )?;
+    }
     steel.cuboid(
         "metal",
         [0.075, 0.009, 0.123],
@@ -244,7 +279,7 @@ pub fn draw(
             "metal",
             [x, 0.02, top - 0.0003],
             &[[0.0025, 0.], [0.0025, 0.001], [0., 0.001]],
-            &Tints::Uniform(&Tint::Color(galvanized)),
+            &Tints::Uniform(&Tint::Color(srgb("#b8a282"))),
             8,
             None,
         )?;

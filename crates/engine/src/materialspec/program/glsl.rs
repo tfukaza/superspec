@@ -64,6 +64,10 @@ pub struct Shader {
     /// segment rows to `ms_zone_count`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<String>,
+    /// Every checked output selects the same channel beneath it when the receiver
+    /// has no zones. A host may bind those planes directly for that receiver.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub passthrough_without_zones: bool,
     /// Fields the shader reads from textures because they use CPU-only operations (`runoff`), set
     /// only by [`Program::shader_plan`]. Everything they read upstream stays out of the shader;
     /// everything that reads them downstream stays in it.
@@ -2161,6 +2165,7 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
             } else {
                 Vec::new()
             },
+            passthrough_without_zones: emitter.zones && passthrough_without_zones(program),
             cpu_fields,
             cpu_outputs,
             id: String::new(),
@@ -2176,9 +2181,64 @@ fn emit(program: &Program, partition: bool, inline: bool) -> Result<(Shader, usi
     ))
 }
 
+/// Match the checked outputs of a layer, including the outer gate and the
+/// actual fallback channel. A multiplication inside a coverage formula alone
+/// is insufficient: a non-finite operand could survive multiplication by zero.
+fn passthrough_without_zones(program: &Program) -> bool {
+    if program.metadata.kind != super::RecipeKind::Layer || program.compiled.outputs.is_empty() {
+        return false;
+    }
+    fn resolve<'a>(program: &'a Program, mut node: &'a Node) -> &'a Kind {
+        while let Kind::Field(index) = node.kind {
+            node = &program.compiled.fields[index];
+        }
+        &node.kind
+    }
+    program.compiled.outputs.iter().all(|(channel, value)| {
+        let Kind::Select(test, _, fallback) = resolve(program, value) else { return false };
+        let Kind::Binary(Op::Greater, hit, threshold) = resolve(program, test) else { return false };
+        let Kind::Member(extent, components) = resolve(program, hit) else { return false };
+        let Kind::Builtin(Builtin::External, args) = resolve(program, fallback) else { return false };
+        matches!(resolve(program, threshold), Kind::Number(0.0))
+            && components.as_slice() == [0]
+            && matches!(resolve(program, extent), Kind::Builtin(Builtin::ZoneExtent, _))
+            && matches!(args.first().map(|arg| resolve(program, arg)), Some(Kind::Text(name)) if name.as_ref() == format!("base.{channel}"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Sources, compile};
+
+    #[test]
+    fn empty_zone_layer_requires_a_direct_passthrough_on_every_channel() {
+        fn plan(source: &str) -> super::Shader {
+            let entry = "layer.material.ts".to_string();
+            compile(&Sources {
+                entry: entry.clone(),
+                modules: [(entry, source.to_string())].into(),
+            })
+            .unwrap()
+            .shader_plan()
+            .unwrap()
+        }
+        for source in [
+            include_str!("examples/kowloon-grime-streaks.material.ts"),
+            include_str!("examples/kowloon-rust-run.material.ts"),
+        ] {
+            assert!(plan(source).passthrough_without_zones);
+        }
+        let gated = r#"import {defineLayer, zoneExtent, param, select, gt, vec3} from "@superspec/material/v1";
+const hit = zoneExtent("drain");
+export default defineLayer({coverage: select(gt(hit.x, 0), 0.6, 0), roughness: 0.8, normalOffset: vec3(0, 0, 1)});"#;
+        assert!(plan(gated).passthrough_without_zones);
+        for variant in [
+            gated.replace("0.6, 0)", "0.6, 0.1)"),
+            gated.replace("gt(hit.x, 0)", "gt(hit.x, -1)"),
+        ] {
+            assert!(!plan(&variant).passthrough_without_zones);
+        }
+    }
 
     fn examples(entry: &str) -> super::Shader {
         let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2576,7 +2636,21 @@ mod tests {
         }
         assert!(concrete.features && concrete.images.len() >= 2);
         let steel = examples("kowloon-rusted-steel.material.ts");
-        assert_eq!(steel.live.len(), 5);
+        assert_eq!(
+            steel
+                .live
+                .iter()
+                .map(|op| op.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "modulateDiffuse",
+                "grazingFalloff",
+                "scaleSpecular",
+                "filterEnvironment",
+                "bandLuminance",
+                "edgeGlint",
+            ]
+        );
         assert!(steel.live.iter().all(|operation| {
             operation
                 .arguments

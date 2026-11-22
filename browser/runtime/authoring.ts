@@ -10,7 +10,7 @@ export interface SourceEdge { start: number[]; end: number[] }
  */
 export interface StudioModel {
   id: string; kind: "glb" | "aml" | "item"; name?: string; source?: string;
-  entry?: string; parameters?: Record<string, ParameterValue>; transform?: number[][]; slots?: Record<string, string>;
+  entry?: string; parameters?: Record<string, ParameterValue | number[][]>; transform?: number[][]; slots?: Record<string, string>;
   /** `item`: texels per meter for the meshes of a slot of this item, where it is not its material's or the project's. */
   slotDensities?: Record<string, number>;
 }
@@ -53,6 +53,10 @@ export interface StudioMaterial {
 }
 /** A weathering layer of a material slot (`authoring::Layer`). A name follows one receiver feature, or the nearest of a list of them. */
 export interface StudioLayer { entry: string; parameters: Record<string, ParameterValue>; seed: number; follow?: Record<string, string | string[]> }
+/** Alternate materials on the same receiver, ordered from the nearest transition to the farthest. */
+export type MaterialLodSources = Record<string, {
+  screenCoverage: number; entry?: string; parameters?: Record<string, ParameterValue>; resolution?: number;
+}[]>;
 /** Portable studio inputs; original scene assets remain separate from compiled render output. */
 export interface AuthoringProject {
   /** Version 2 adds `models` and `materials`; version 1 projects open unchanged. */
@@ -60,6 +64,7 @@ export interface AuthoringProject {
   kind: "material" | "item";
   entry: string;
   modules: Record<string, string>;
+  materialLods?: MaterialLodSources;
   parameters: Record<string, ParameterValue>;
   seed: number;
   /** Texture edge per receiver: 16-512, or up to 2048 with the production profile. */
@@ -111,8 +116,7 @@ export interface AuthoringProject {
    */
   planes?: Record<string, Record<string, string | { material: string; value: string }>>;
 }
-/** The external inputs the occluder service supplies (`authoring::occlusion::PLANES`), in the order it makes them. */
-export const OCCLUSION_PLANES = ["shadow", "occlusion", "sunExposure"] as const;
+export { OCCLUSION_PLANES } from "../model/occlusion-planes.ts";
 /**
  * What the occluder service did for a request: for each plane name, the milliseconds its call took in the worker
  * (composing the scene, laying out the receivers and keying every plane included), then every plane with its key, its
@@ -159,10 +163,12 @@ export interface Receiver {
 }
 export interface AuthoringRequest {
   requestId: number;
-  kind: "material" | "item" | "import-glb";
+  /** item-geometry returns a provisional shape from the same geometry cache as the full item. */
+  kind: "material" | "item" | "item-geometry" | "import-glb";
   entry: string;
   source: string;
   modules: Record<string, string>;
+  materialLods?: MaterialLodSources;
   parameters: Record<string, ParameterValue>;
   seed: number;
   assets: Record<string, Uint8Array>;
@@ -196,6 +202,8 @@ export interface AuthoringShadeRequest {
   assets: Record<string, Uint8Array>;
   /** Also lay out every assigned receiver's atlas as the CPU bake would (`AuthoringResult.layouts`), for a GPU bake in UV space. */
   layouts?: boolean;
+  includeScenePacket?: boolean;
+  latticeSurfaceMapsOnly?: boolean;
 }
 /**
  * Evaluates CPU-only fields for meshes of a scene project, each over its receiver's atlas, for a GPU bake of the scene
@@ -256,6 +264,10 @@ export interface AuthoringMetadata {
   [key: string]: unknown;
 }
 export interface AuthoringResult {
+  /** Native report bytes or the Wasm worker's JSON characters plus buffer bytes. */
+  responseBytes?: number;
+  /** Estimated resident data after expanding a differential native layout report. */
+  retainedBytes?: number;
   requestId: number;
   packet?: ArrayBuffer;
   fields?: BakedFields;
@@ -355,14 +367,14 @@ export class AuthoringCompiler {
   }
 
   /** Composes a project's models and compiles its materials to preview shaders; nothing is baked. */
-  shadeProject(project: AuthoringProject, requestId: number, layouts = false): Promise<AuthoringResult> {
+  shadeProject(project: AuthoringProject, requestId: number, layouts = false, includeScenePacket = true, latticeSurfaceMapsOnly = false): Promise<AuthoringResult> {
     const { assets, ...inputs } = project;
     // Shaders read images on the page; the engine only needs the models, the images their decals show and the shipped
     // catalog images a project supplies for its items' own slots (a sign's lettering atlas).
     const decals = decalImages(inputs);
     const models = Object.fromEntries(Object.entries(assets).filter(([name]) => /\.(glb|ktx2)$/i.test(name)
       || inputs.models?.some(model => model.name === name) || decals.has(name) || name.startsWith("superspec-material:")));
-    return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models, layouts });
+    return this.dispatch({ action: "shade-project", requestId, project: inputs, assets: models, layouts, includeScenePacket, latticeSurfaceMapsOnly });
   }
 
   /** Bakes CPU-only fields for meshes of a scene project (see `AuthoringProjectFieldsRequest`). */

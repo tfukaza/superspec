@@ -193,27 +193,9 @@ impl Input {
             embedded = None;
         } else {
             let bytes = read(&path, superspec_types::limits::MAX_PROJECT_FILE_BYTES)?;
-            if super::archive::is_archive(&bytes) {
-                let assets;
-                (value, assets) = super::archive::read(&bytes)?;
-                if let Some(profile) = arguments.profile {
-                    value["profile"] = json!(profile);
-                }
-                validate_bundle(&value)?;
-                embedded = Some(assets);
-            } else {
-                value = serde_json::from_slice::<Value>(&bytes)
-                    .map_err(|error| format!("Invalid studio project JSON: {error}"))?;
-                if let Some(profile) = arguments.profile {
-                    value["profile"] = json!(profile);
-                }
-                validate_bundle(&value)?;
-                embedded = Some(companions(&value["assets"])?);
-                value
-                    .as_object_mut()
-                    .ok_or("Studio project must be an object.")?
-                    .remove("assets");
-            }
+            let bundle = Self::decode_bundle(&bytes, arguments.profile)?;
+            value = bundle.0;
+            embedded = Some(bundle.1);
         }
         if let Some(profile) = arguments.profile {
             value["profile"] = json!(profile);
@@ -235,6 +217,54 @@ impl Input {
                 .ok_or("Project parameters must be an object.")?;
             target.extend(supplied.clone());
         }
+        Self::from_parts(value, parent, raw_recipe, embedded)
+    }
+
+    fn decode_bundle(
+        bytes: &[u8],
+        profile: Option<superspec_engine::authoring::Profile>,
+    ) -> Result<(Value, BTreeMap<String, Arc<[u8]>>), String> {
+        let (mut value, archived) = if super::archive::is_archive(bytes) {
+            let (value, assets) = super::archive::read(bytes)?;
+            (value, Some(assets))
+        } else {
+            (
+                serde_json::from_slice(bytes)
+                    .map_err(|error| format!("Invalid studio project JSON: {error}"))?,
+                None,
+            )
+        };
+        if let Some(profile) = profile {
+            value["profile"] = json!(profile);
+        }
+        validate_bundle(&value)?;
+        let assets = match archived {
+            Some(assets) => assets,
+            None => companions(&value["assets"])?,
+        };
+        value
+            .as_object_mut()
+            .ok_or("Studio project must be an object.")?
+            .remove("assets");
+        Ok((value, assets))
+    }
+
+    pub fn uploaded(bytes: &[u8]) -> Result<Self, String> {
+        let (value, assets) = Self::decode_bundle(bytes, None)?;
+        Self::from_parts(value, PathBuf::new(), false, Some(assets))
+    }
+
+    pub fn with_companions((value, assets): super::archive::Contents) -> Result<Self, String> {
+        validate_bundle(&value)?;
+        Self::from_parts(value, PathBuf::new(), false, Some(assets))
+    }
+
+    fn from_parts(
+        value: Value,
+        parent: PathBuf,
+        raw_recipe: bool,
+        embedded: Option<BTreeMap<String, Arc<[u8]>>>,
+    ) -> Result<Self, String> {
         let lighting = superspec_export::project_lighting(&value).map_err(|findings| {
             let findings: Vec<String> = findings.iter().map(ToString::to_string).collect();
             format!("Invalid lighting record: {}.", findings.join("; "))

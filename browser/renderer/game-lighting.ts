@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { parseLighting, type Lighting } from "./lighting.ts";
 import { SceneLighting, studioEnvironment } from "./rendering.ts";
+import { GltfLights } from "./gltf-lights.ts";
 
 /**
  * Lighting for a three.js game: the lights, shadow look and ambient occlusion of a SuperSpec lighting record
@@ -26,19 +27,22 @@ import { SceneLighting, studioEnvironment } from "./rendering.ts";
  */
 
 /** What a loaded glTF offers this module: three.js's `GLTF` result, or anything shaped like its parts. */
-export interface LoadedGltf { userData?: Record<string, unknown>; parser?: { json?: unknown } }
+export interface LoadedGltf { scene?: { userData?: Record<string, unknown> }; userData?: Record<string, unknown>; parser?: { json?: unknown } }
 
 /**
- * The lighting record a SuperSpec GLB carries (`extras.superspec.lighting`), as its file states it, or undefined when
- * it has none and so the shipped look. Give the result to `GameLighting`, which admits it.
+ * The lighting record a SuperSpec GLB carries, as its file states it. Without
+ * a record, GameLighting uses the file's lights or the shipped preview rig.
  */
 export function gltfLighting(gltf: LoadedGltf): unknown {
   type Extras = { superspec?: { lighting?: unknown } } | undefined;
   // GLTFLoader copies the document's `extras` onto its result's `userData`; the parsed document has them too.
-  return (gltf.userData as Extras)?.superspec?.lighting ?? (gltf.parser?.json as { extras?: Extras } | undefined)?.extras?.superspec?.lighting;
+  return (gltf.userData as Extras)?.superspec?.lighting ?? (gltf.parser?.json as { extras?: Extras } | undefined)?.extras?.superspec?.lighting
+    ?? gltf.scene?.userData?.worldSpecLighting;
 }
 
 export interface GameLightingOptions {
+  /** Use the published city's screen-space finishing. */
+  city?: boolean;
   /**
    * The world's up axis. `y` (the default) is a loaded glTF scene's and three.js's own; `z` is the record's and the
    * SuperSpec packet's frame. The record's directions are turned with the world.
@@ -49,6 +53,8 @@ export interface GameLightingOptions {
    * `lightingFromQuery`), for a debug menu or a quality setting. They sit on top of every record given later.
    */
   overrides?: URLSearchParams;
+  /** Requested map size for the preview rig's sun, limited by the renderer. */
+  sunShadowMapSize?: number;
   /** What ambient occlusion must not see: overlays that are drawn in the image but cast no occlusion. */
   excluded?: () => THREE.Object3D[];
 }
@@ -58,42 +64,54 @@ export class GameLighting {
   readonly view: SceneLighting;
   private readonly environment: THREE.WebGLRenderTarget;
   private readonly adopted = new Set<THREE.Object3D>();
+  private readonly embedded = new GltfLights();
+  private stated?: unknown;
+  private record: Lighting;
+  private useRig?: boolean;
+  private authoredShadows = false;
+  private readonly city: boolean;
+  private readonly query: URLSearchParams;
 
   /**
-   * `record` is a lighting record as stated (parsed JSON, or `gltfLighting`'s result); undefined is the shipped look.
+   * `record` is parsed JSON or `gltfLighting`'s result. An absent record gives
+   * embedded lights precedence over the shipped preview rig.
    * An invalid record is refused with a `LightingError` naming every field.
    */
-  constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, record?: unknown, options: GameLightingOptions = {}) {
+  constructor(private readonly renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera,
+    record?: unknown, options: GameLightingOptions = {}) {
+    this.record = parseLighting(record ?? { version: 1 });
+    this.stated = record;
     this.environment = studioEnvironment(renderer);
-    this.view = new SceneLighting(renderer, scene, camera, this.environment.texture, options.overrides ?? new URLSearchParams(), options.excluded, options.up ?? "y");
-    this.set(record);
+    this.city = options.city === true;
+    this.query = options.overrides ?? new URLSearchParams();
+    this.view = new SceneLighting(renderer, scene, camera, this.environment.texture, this.query, options.excluded, options.up ?? "y");
+    if (options.sunShadowMapSize !== undefined) {
+      const size = Math.min(options.sunShadowMapSize, renderer.capabilities.maxTextureSize);
+      this.view.sun.shadow.mapSize.set(size, size);
+    }
+    this.syncLights(true);
   }
 
   /** The record in effect, complete, with the overrides and this renderer's defaults applied. */
   get lighting(): Lighting { return this.view.lighting; }
 
-  /** Lights the scene by another record (as stated; undefined is the shipped look). Values change in place. */
+  /** Lights the scene by another record. An absent record restores authored lighting. */
   set(record?: unknown): void {
-    this.view.set(parseLighting(record ?? { version: 1 }), record);
-    for (const root of this.adopted) this.dress(root);
-    this.fit();
+    this.record = parseLighting(record ?? { version: 1 });
+    this.stated = record;
+    this.syncLights(true);
   }
 
   /**
    * Takes loaded models into the lit scene: their meshes cast and receive the sun's shadows as the record says, their
-   * standard materials get the shadow look, and the punctual lights an exported GLB carries for other consumers are
-   * removed (this module lights the scene from the whole record; both would light it twice). Call it once per loaded
-   * root, after adding it to the scene, and again for materials replaced later.
+   * standard materials get the shadow look. Authored lights remain in the model.
+   * A lighting record supplies its own sun and ambient, and an unlit file receives the preview rig. Call once per loaded
+   * root, after adding it to the scene, and again for materials replaced later. Pass false when the WorldSpec
+   * adapter supplies the shadow shaders.
    */
-  adopt(root: THREE.Object3D): void {
-    const lights: THREE.Object3D[] = [];
-    root.traverse(object => { if ((object as THREE.Light).isLight) lights.push(object); });
-    for (const light of lights) {
-      light.removeFromParent();
-      (light as THREE.Light).dispose();
-    }
+  adopt(root: THREE.Object3D, styleMaterials = true): void {
     const styled = this.styled;
-    root.traverse(object => {
+    if (styleMaterials) root.traverse(object => {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh) return;
       for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
@@ -103,14 +121,26 @@ export class GameLighting {
       }
     });
     this.adopted.add(root);
-    this.dress(root);
-    this.fit();
+    this.syncLights(false);
   }
   private readonly styled = new WeakSet<THREE.Material>();
 
   /** Stops tending a root that left the scene. */
   release(root: THREE.Object3D): void {
     this.adopted.delete(root);
+    this.syncLights(false);
+  }
+
+  private syncLights(recordChanged: boolean): void {
+    const { useRig, authored } = this.embedded.select(this.adopted, this.stated == null ? undefined : this.record);
+    if (recordChanged || useRig !== this.useRig) {
+      this.view.set(useRig ? this.record : { ...this.record, lights: [] }, this.stated, this.city);
+      this.view.ambient.visible = useRig;
+      this.useRig = useRig;
+    }
+    this.authoredShadows = this.query.get("shadows") !== "off" && authored.some(light => light.castShadow);
+    this.renderer.shadowMap.enabled = this.view.shadows || this.authoredShadows;
+    for (const root of this.adopted) this.dress(root);
     this.fit();
   }
 
@@ -119,6 +149,7 @@ export class GameLighting {
    * drawn on demand, not every frame.
    */
   fit(): void {
+    if (this.authoredShadows) this.renderer.shadowMap.needsUpdate = true;
     const bounds = new THREE.Box3();
     for (const root of this.adopted) { root.updateWorldMatrix(true, true); bounds.expandByObject(root); }
     this.view.fitBounds(bounds);
@@ -131,11 +162,12 @@ export class GameLighting {
   resize(): void { this.view.resize(); }
 
   private dress(root: THREE.Object3D): void {
-    const shadows = this.view.shadows;
+    const shadows = this.view.shadows || this.authoredShadows;
     root.traverse(object => { if ((object as THREE.Mesh).isMesh) object.castShadow = object.receiveShadow = shadows; });
   }
 
   dispose(): void {
+    this.embedded.restore();
     this.adopted.clear();
     this.view.dispose();
     this.environment.dispose();

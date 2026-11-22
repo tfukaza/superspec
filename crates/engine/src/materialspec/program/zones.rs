@@ -333,6 +333,22 @@ pub fn pack(
     (rows, count)
 }
 
+/// Check zone inputs for a consumer that never samples them.
+pub(super) fn validate_zones(named: &[NamedFeature], total_segments: usize) -> Result<(), String> {
+    // A zone can have fewer usable segments than its polyline (e.g. one parallel to down).
+    // Only a receiver large enough to reach the allowance needs that geometric count.
+    if total_segments > MAX_ZONE_SEGMENTS {
+        return zone_sets(named).map(drop);
+    }
+    for feature in named {
+        if let Some(zone) = &feature.zone {
+            zone.check()
+                .map_err(|message| format!("Feature '{}': {message}", feature.name))?;
+        }
+    }
+    Ok(())
+}
+
 /// A receiver's zones by name, from the features that carry one.
 pub(super) fn zone_sets(named: &[NamedFeature]) -> Result<Vec<(String, ZoneSet)>, String> {
     let mut by_name: BTreeMap<&str, ZoneSet> = BTreeMap::new();
@@ -459,6 +475,7 @@ mod tests {
     fn bad_zones_are_refused_and_ids_are_stable() {
         let mut bad = wall_zone(vec![], vec![]);
         bad.zone.as_mut().unwrap().down = [0., 0., -2.];
+        assert!(validate_zones(std::slice::from_ref(&bad), 1).is_err());
         assert!(zone_sets(&[bad]).is_err());
         let mut bad = wall_zone(vec![], vec![]);
         bad.zone.as_mut().unwrap().length = 0.;
@@ -466,5 +483,19 @@ mod tests {
         assert_eq!(zone_id(&[1, 2]), zone_id(&[1, 2]));
         assert_ne!(zone_id(&[1, 2]), zone_id(&[2, 1]));
         assert!((0. ..1.).contains(&zone_id(&[u64::MAX])));
+    }
+
+    #[test]
+    fn chart_admission_counts_only_usable_zone_segments() {
+        let mut edge = wall_zone(vec![], vec![]);
+        edge.points = (0..=MAX_ZONE_SEGMENTS + 1)
+            .map(|i| [i as f64 * 0.01, 0., 0.])
+            .collect();
+        let count = edge.points.len() - 1;
+        assert!(validate_zones(std::slice::from_ref(&edge), count).is_err());
+        // The last leg follows gravity, so it contributes no zone edge.
+        let previous = edge.points[count - 1];
+        edge.points[count] = [previous[0], previous[1], previous[2] - 0.01];
+        assert!(validate_zones(&[edge], count).is_ok());
     }
 }

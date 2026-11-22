@@ -1,9 +1,34 @@
 import * as THREE from "three";
 import type { LiveOperation } from "../model/packet.ts";
 import { shadowStyleKey } from "./shadow-style.ts";
+import { paintedMetalSky, radialSkyShader, radialSkyVertex } from "./painted-metal-sky.ts";
 
 /** Operations this renderer executes; others are ignored, like any renderer without support. */
-export const SUPPORTED_LIVE_OPERATIONS = ["modulateDiffuse", "grazingFalloff", "filterEnvironment", "bandLuminance", "scaleSpecular", "lightFloor"] as const;
+export const SUPPORTED_LIVE_OPERATIONS = ["modulateDiffuse", "grazingFalloff", "edgeGlint", "filterEnvironment", "virtualSky", "kuwahara", "bandLuminance", "scaleSpecular", "lightFloor"] as const;
+
+// WorldSpec's upright axis is +Z. Three short studio softboxes are visible
+// in reflection on upward-facing surfaces.
+const virtualSkyShader = `
+vec3 msVirtualSky( vec3 viewDir, vec3 surfaceNormal, float roughness, float verticals ) {
+  vec3 reflected = reflect( -viewDir, surfaceNormal );
+  vec3 direction = transformDirectionByInverseViewMatrix( normalize( reflected ), viewMatrix );
+  float ceiling = smoothstep( 0.15, 0.80, direction.z );
+  vec3 worldNormal = transformDirectionByInverseViewMatrix( surfaceNormal, viewMatrix );
+  float top = smoothstep( 0.74, 0.96, worldNormal.z );
+  // The three columns are the first direction and its rotations by 120 and 240 degrees.
+  vec3 axisX = vec3( -0.45000, -0.54839, 0.99839 );
+  vec3 axisY = vec3( 0.89303, -0.83623, -0.05680 );
+  vec3 depth = direction.x * axisX + direction.y * axisY;
+  vec3 across = abs( direction.x * axisY - direction.y * axisX );
+  float feather = 0.012 + 0.055 * roughness;
+  vec3 width = 0.047 * max( vec3( 0.0 ), depth );
+  vec3 body = 1.0 - smoothstep( width, width + feather, across );
+  float height = smoothstep( 0.055, 0.10, direction.z ) * ( 1.0 - smoothstep( 0.20, 0.28, direction.z ) );
+  float pillar = dot( body, smoothstep( vec3( 0.0 ), vec3( 0.25 ), depth ) ) * height * top;
+  vec3 room = mix( vec3( 0.085, 0.090, 0.101 ), vec3( 0.22, 0.23, 0.24 ), ceiling );
+  return room + vec3( 0.95, 1.04, 1.10 ) * pillar * max( 0.0, verticals );
+}
+`;
 
 /** Texture identities a material's live operations sample. */
 export function liveTextures(operations: LiveOperation[] | undefined): string[] {
@@ -17,6 +42,8 @@ export function liveTextures(operations: LiveOperation[] | undefined): string[] 
  * - grazingFalloff raises specular F90 toward 1.08 on sunlit surfaces by a mask from facing `from` (0) to `to` (1), times `mask`;
  * - filterEnvironment reflects nine environment taps spread `spread` around the reflection at `roughness`,
  *   keeping the lowest-variance quadrant's mean;
+ * - virtualSky adds a procedural environment to indirect specular radiance;
+ * - kuwahara opts the material into the shaded-color compositor pass;
  * - bandLuminance steps reflected luminance into bands `spacing` apart in square-root luminance, by `mask`,
  *   softening bright bands toward `brightSoftness` and lifting dark ones by `lift*`;
  * - scaleSpecular keeps authored reductions and gives increases a restrained, direct-sun response;
@@ -69,7 +96,7 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
     }
     return (name: string, fallback: string) => named[name] ?? fallback;
   });
-  const lighting: string[] = [], diffuse: string[] = [];
+  const lighting: string[] = [], diffuse: string[] = [], virtualSky: string[] = [], spun: string[] = [], glints: string[] = [];
   if (usable.some(op => op.id === "grazingFalloff" || op.id === "scaleSpecular")) {
     lighting.push(`float msSunEdge = 0.0;
 #if defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
@@ -92,6 +119,28 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
     if (operation.id === "modulateDiffuse") {
       diffuse.push(`{ float k = mix(1.0, ${arg("factor", "1.0")}, clamp(${arg("mask", "1.0")}, 0.0, 1.0));
         reflectedLight.directDiffuse *= k; reflectedLight.indirectDiffuse *= k; }`);
+    } else if (operation.id === "edgeGlint") {
+      const mask = `clamp(${arg("mask", "0.")},0.,1.)`;
+      diffuse.push(`reflectedLight.directDiffuse *= 1. + ${mask} * ${arg("diffuse",".028")};
+        reflectedLight.indirectDiffuse *= 1. + ${mask} * ${arg("diffuse",".028")};`);
+      glints.push(`#if NUM_DIR_LIGHTS > 0
+        {
+          vec3 eye=isOrthographic?vec3(0.,0.,1.):normalize(vViewPosition);
+          vec3 sun=directionalLights[0].direction, sum=eye+sun;
+          vec3 h=sum*inversesqrt(max(dot(sum,sum),1e-8));
+          float align=smoothstep(${arg("threshold",".27")},${arg("threshold",".27")}+max(.001,${arg("feather",".32")}),dot(normal,h));
+          vec3 n=normalize(mix(normal,h,align*clamp(${arg("pull",".62")},0.,1.)*${mask}));
+          float visibility=1.;
+          #if defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
+            if(receiveShadow && ${mask}>.001) {
+              DirectionalLightShadow sh=directionalLightShadows[0];
+              visibility=getShadow(directionalShadowMap[0],sh.shadowMapSize,1.,sh.shadowBias,sh.shadowRadius,vDirectionalShadowCoord[0]);
+            }
+          #endif
+          reflectedLight.directSpecular+=visibility*directionalLights[0].color*material.specularColorBlended
+            *smoothstep(0.,.3,dot(normal,sun))*${mask}*${arg("specular",".9")}*pow(max(0.,dot(reflect(-sun,n),eye)),mix(36.,7.,material.roughness));
+        }
+        #endif`);
     } else if (operation.id === "grazingFalloff") {
       lighting.push(`{ float span = ${arg("to", "0.0")} - ${arg("from", "1.0")};
         float facing = abs(dot(normal, normalize(vViewPosition)));
@@ -110,7 +159,16 @@ export function applyLiveOperations(material: THREE.MeshStandardMaterial, operat
           * (t * t * (3.0 - 2.0 * t)) * clamp(${arg("mask", "1.0")}, 0.0, 1.0); }`);
     } else if (operation.id === "filterEnvironment") {
       filter = { roughness: arg("roughness", "-1.0"), spread: arg("spread", "0.0") };
-    } else {
+    } else if (operation.id === "virtualSky") {
+      const tint = `vec3(${arg("red","1.")},${arg("green","1.")},${arg("blue","1.")})`;
+      virtualSky.push(`radiance += ${tint} * max(0.0, ${arg("intensity", "1.0")}) *
+        msVirtualSky(geometryViewDir, geometryNormal, material.roughness, ${arg("verticals", "0.65")});`);
+      if (operation.arguments.radial) {
+        spun.push(`reflectedLight.indirectSpecular += ${tint} * max(0.0, ${arg("radial", "0.0")}) *
+          max(0.0, ${arg("intensity", "1.0")}) * material.metalness *
+          msRadialReflection(msSpunSky, -vViewPosition, geometryViewDir, geometryNormal, material.roughness, true);`);
+      }
+    } else if (operation.id === "bandLuminance") {
       band = { spacing: arg("spacing", "0.25"), softness: arg("softness", "0.05"), mask: arg("mask", "1.0"),
         bright: arg("brightSoftness", "-1.0"), lift: `vec3(${arg("liftRed", "0.0")}, ${arg("liftGreen", "0.0")}, ${arg("liftBlue", "0.0")})` };
     }
@@ -174,12 +232,25 @@ ${band ? `  {
       .replace("#include <clipping_planes_fragment>", `#include <clipping_planes_fragment>\n${fetches.concat(reads).join("\n")}`)
       .replace("#include <lights_physical_fragment>", `#include <lights_physical_fragment>\n${lighting.join("\n")}`)
       .replace("#include <aomap_fragment>", `#include <aomap_fragment>\n${diffuse.join("\n")}`);
+    if (glints.length) fragment = fragment.replace("#include <lights_fragment_end>", `#include <lights_fragment_end>\n${glints.join("\n")}`);
     if (radiance) {
       fragment = fragment
         .replace("#include <envmap_physical_pars_fragment>", `#include <envmap_physical_pars_fragment>\n${radiance}`)
         .replace("#include <lights_fragment_maps>", THREE.ShaderChunk.lights_fragment_maps
           .replace("vec3 iblRadiance = getIBLRadiance( geometryViewDir, geometryNormal, material.roughness );",
             "vec3 iblRadiance = msLiveRadiance( geometryViewDir, geometryNormal, material.roughness );"));
+    }
+    if (virtualSky.length) {
+      fragment = fragment
+        .replace("#include <envmap_physical_pars_fragment>", `#include <envmap_physical_pars_fragment>\n${virtualSkyShader}`)
+        .replace("#include <lights_fragment_end>", `#if defined(RE_IndirectSpecular)\n${virtualSky.join("\n")}\n#endif\n#include <lights_fragment_end>`);
+    }
+    if (spun.length) {
+      shader.uniforms.msSpunSky = { value: paintedMetalSky() };
+      shader.vertexShader = radialSkyVertex(shader.vertexShader);
+      fragment = "uniform sampler2D msSpunSky;\n" + fragment
+        .replace("#include <normal_pars_fragment>", `#include <normal_pars_fragment>\n${radialSkyShader}`)
+        .replace("#include <aomap_fragment>", `${spun.join("\n")}\n#include <aomap_fragment>`);
     }
     shader.fragmentShader = fragment;
   };

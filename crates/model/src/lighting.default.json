@@ -28,7 +28,7 @@
         "tintAlt": [0.04970656598412723, 0.07818742180518633, 0.6866853124353135],
         "tintStrength": 0.22,
         "wrap": 0.3,
-        "noise": { "scale": 1.1, "edge": 0.07, "amount": 0.6, "seed": 7 }
+        "noise": { "scale": 1.1, "edge": 0.004, "amount": 0.015, "seed": 7 }
       }
     }
   ]

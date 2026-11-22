@@ -22,11 +22,26 @@ function basisTranscoder(): Plugin {
   };
 }
 
-export default defineConfig({
+/** Fail the native viewer build if a browser compiler becomes reachable from any editor. */
+function nativeBoundary(): Plugin {
+  return {
+    name: "superspec-native-viewer-boundary",
+    generateBundle() {
+      for (const id of this.getModuleIds()) {
+        if (/(?:^|\/)generated\/wasm(?:-threaded)?\/|\/runtime\/(?:authoring|compiler|recipe)-worker\.ts/.test(id.replaceAll("\\", "/")))
+          this.error("Native viewer imported a browser compiler: " + id);
+      }
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => ({
+  resolve: { alias: mode === "native" ? [{ find: /^(?:\.\.?\/)+compiler-host\.ts$/, replacement: resolve("editor/native-host.ts") }] : [] },
+  base: mode === "native" ? "./" : "/",
   root: "editor",
   publicDir: false,
-  plugins: [basisTranscoder()],
+  plugins: [basisTranscoder(), ...(mode === "native" ? [nativeBoundary()] : [])],
   server: { host: "127.0.0.1", fs: { allow: [".."] }, headers: { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" } },
-  build: { outDir: "../generated/rust-editor", emptyOutDir: true, rollupOptions: { input: { editor: "editor/index.html", preview: "editor/preview.html", material: "editor/material.html", item: "editor/item.html" } } },
+  build: { outDir: mode === "native" ? "../generated/native-viewer" : "../generated/rust-editor", emptyOutDir: true, rollupOptions: { input: { native: "editor/native.html", editor: "editor/index.html", preview: "editor/preview.html", material: "editor/material.html", item: "editor/item.html" } } },
   worker: { format: "es" },
-});
+}));

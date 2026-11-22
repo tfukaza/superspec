@@ -2,7 +2,7 @@
 // Value noise has one lattice cell per unit; a key (from seed("name")) selects the lattice.
 import {
   valueNoise, hash, vec2, vec3, add, sub, mul, div, abs, smoothstep, softThreshold, cos, dot, max,
-  floor, fract, sin, pow, exp, clamp, min, length,
+  floor, fract, sin, pow, exp, clamp, min, length, mix,
 } from "@superspec/material/v1";
 import type { Scalar, ScalarInput, Vec2, Vec3 } from "@superspec/material/v1";
 
@@ -44,6 +44,19 @@ export const fracture = (p: Vec2, jaggedness: ScalarInput, key: ScalarInput): Sc
 export const contour = (field: ScalarInput, width: ScalarInput): Scalar =>
   softThreshold(field, 0.5, mul(width, 2));
 
+/** Break up a broad color transition with centimeter-scale aggregate. Keep the patch interiors coherent. */
+export const mottledContour = (
+  field: Scalar, meters: Vec2, width: ScalarInput, breakup: ScalarInput, key: ScalarInput,
+): Scalar => mixContour(field, add(
+  mul(centered(mul(meters, 14), key), 0.30),
+  mul(centered(add(mul(meters, 33), vec2(19.3, 42.1)), key), 0.16),
+), width, breakup);
+const mixContour = (field: Scalar, grit: Scalar, width: ScalarInput, breakup: ScalarInput): Scalar =>
+  mix(contour(field, width), contour(
+    add(field, mul(grit, sub(1, smoothstep(0.04, 0.24, abs(sub(field, 0.5)))))),
+    max(width, 0.09),
+  ), breakup);
+
 /** The chipped shoulder shared by joints and exposed edges: one at the line, zero at `width`. */
 export const shoulder = (distance: ScalarInput, width: ScalarInput): Scalar =>
   sub(1, smoothstep(mul(width, 0.4), width, distance));
@@ -51,6 +64,43 @@ export const shoulder = (distance: ScalarInput, width: ScalarInput): Scalar =>
 /** Hue variation along a direction in degrees, scaled by luminance (the study's pigment). */
 export const pigment = (color: Vec3, at: Vec2, amount: ScalarInput, degrees: ScalarInput, key: ScalarInput): Vec3 =>
   hued(color, cos(add(vec3(mul(degrees, 0.017453292519943295)), vec3(0, -2.0943951, 2.0943951))), sub(mul(fractal(add(mul(at, 4.68), vec2(41.2, 3.7)), key), 2), 0.7), amount);
+
+/**
+ * An illustrated finish over a concrete or plaster color, after painted backgrounds: broad patches
+ * with torn contours in a warm and a cool tint, a darker warm rim just inside each warm patch (where
+ * a painter outlines a peel), and faint directional brush dabs. `p` is in meters and `scale` is the
+ * patch size in meters. Tints are multipliers; `amount` 0 returns `color`.
+ */
+export const illustrate = (
+  color: Vec3, p: Vec2, amount: ScalarInput, scale: ScalarInput, warm: Vec3, cool: Vec3,
+  strokes: ScalarInput, jaggedness: ScalarInput, key: ScalarInput,
+): Vec3 => illustrateWithBreakup(color, p, amount, scale, warm, cool, strokes, jaggedness, key, 0);
+export const illustrateWithBreakup = (
+  color: Vec3, meters: Vec2, amount: ScalarInput, scale: ScalarInput, warm: Vec3, cool: Vec3,
+  strokes: ScalarInput, jaggedness: ScalarInput, key: ScalarInput, breakup: ScalarInput,
+): Vec3 => illustrated(color, div(meters, scale), meters, amount, warm, cool, strokes, jaggedness, key, breakup);
+const illustrated = (
+  color: Vec3, q: Vec2, meters: Vec2, amount: ScalarInput, warm: Vec3, cool: Vec3, strokes: ScalarInput,
+  jaggedness: ScalarInput, key: ScalarInput, breakup: ScalarInput,
+): Vec3 => paintedPatches(color, fracture(add(q, vec2(17.3, 5.1)), jaggedness, key),
+  fracture(add(mul(q, 1.37), vec2(61.7, 23.9)), jaggedness, key), q, meters, amount, warm, cool, strokes, key, breakup);
+const paintedPatches = (
+  color: Vec3, warmField: Scalar, coolField: Scalar, q: Vec2, meters: Vec2, amount: ScalarInput, warm: Vec3, cool: Vec3,
+  strokes: ScalarInput, key: ScalarInput, breakup: ScalarInput,
+): Vec3 => paintedTint(color, mottledContour(warmField, meters, 0.012, breakup, key),
+  mottledContour(coolField, meters, 0.012, breakup, key),
+  mul(sub(1, breakup), max(sub(contour(warmField, 0.012), softThreshold(warmField, 0.6, 0.03)),
+    mul(sub(contour(coolField, 0.012), softThreshold(coolField, 0.6, 0.03)), 0.6))), q, amount, warm, cool, strokes, key);
+const paintedTint = (
+  color: Vec3, warmMask: Scalar, coolMask: Scalar, rim: Scalar, q: Vec2, amount: ScalarInput, warm: Vec3, cool: Vec3,
+  strokes: ScalarInput, key: ScalarInput,
+): Vec3 => add(color, mul(sub(mul(mul(mul(color,
+  add(add(vec3(1), mul(sub(warm, vec3(1)), warmMask)), mul(sub(cool, vec3(1)), mul(coolMask, sub(1, warmMask))))),
+  sub(vec3(1), mul(vec3(0.2, 0.3, 0.38), rim))),
+  add(1, mul(mul(strokes, 0.2), sub(brushDabs(q, key), 0.45)))), color), amount));
+/** Elongated dabs about a third of a patch long, laid at 25 degrees, flat inside. */
+const brushDabs = (q: Vec2, key: ScalarInput): Scalar =>
+  softThreshold(valueNoise(add(mul(vec2(add(mul(q.x, 0.906), mul(q.y, 0.423)), sub(mul(q.y, 0.906), mul(q.x, 0.423))), vec2(3.2, 11)), vec2(5.5, 71.3)), key), 0.55, 0.05);
 
 const luminance = (color: Vec3): Scalar => dot(color, vec3(0.2126, 0.7152, 0.0722));
 const hued = (color: Vec3, direction: Vec3, hue: Scalar, amount: ScalarInput): Vec3 =>

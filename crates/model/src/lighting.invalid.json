@@ -18,6 +18,8 @@
   { "name": "ambient color above one", "record": { "version": 1, "ambient": { "ground": [0.2, 1.2, 0.2] } }, "field": "ambient.ground" },
   { "name": "occlusion radius zero", "record": { "version": 1, "ambientOcclusion": { "radius": 0 } }, "field": "ambientOcclusion.radius" },
   { "name": "occlusion too strong", "record": { "version": 1, "ambientOcclusion": { "intensity": 4.5 } }, "field": "ambientOcclusion.intensity" },
+  { "name": "occlusion tint above one", "record": { "version": 1, "ambientOcclusion": { "tint": 1.5 } }, "field": "ambientOcclusion.tint" },
+  { "name": "unknown occlusion method", "record": { "version": 1, "ambientOcclusion": { "method": "ssao" } }, "structural": true },
   { "name": "occlusion thickness zero", "record": { "version": 1, "ambientOcclusion": { "thickness": 0 } }, "field": "ambientOcclusion.thickness" },
   { "name": "two lights", "record": { "version": 1, "lights": [{ "id": "sun" }, { "id": "fill" }] }, "field": "lights" },
   { "name": "light id with a slash", "record": { "version": 1, "lights": [{ "id": "sun/1" }] }, "field": "lights[0].id" },

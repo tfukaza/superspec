@@ -71,6 +71,7 @@ pub fn check_reference_roast() {
                 },
                 &room,
                 roast::Assets {
+                    hero_props: false,
                     food: true,
                     metal: true,
                     surfaces: true,
@@ -172,6 +173,7 @@ fn deep_restaurant_tables_keep_floor_support_and_kitchen_clearance() {
             },
             &room,
             roast::Assets {
+                hero_props: false,
                 food: true,
                 metal: true,
                 surfaces: true,
@@ -212,6 +214,80 @@ fn deep_restaurant_tables_keep_floor_support_and_kitchen_clearance() {
             .any(|s| s.part == "room/dining/table-2")
     );
 }
+#[test]
+fn stoa_roast_bay_seats_four_beside_a_clear_aisle() {
+    let mut mesh = Mesh::new(Mode::Render, 400000, &|| false).unwrap();
+    let kit = kit("stoa-roast-seating", 1);
+    let room = Room {
+        width: 3.975,
+        depth: 3.10,
+        height: 2.80,
+        kit: &kit,
+        key: "stoa-roast",
+        assets: Assets {
+            posters: true,
+            grocer_props: true,
+            snack_packets: true,
+            market_apple: true,
+            shop_register: true,
+            market_trays: true,
+        },
+    };
+    roast::furnish(
+        &mut Fixture {
+            pen: Pen::new(Matrix::default(), "room").unwrap(),
+            mesh: &mut mesh,
+            repeats: &|_| 1.7,
+        },
+        &room,
+        roast::Assets {
+            hero_props: true,
+            food: true,
+            metal: true,
+            surfaces: true,
+            tiles: true,
+        },
+    )
+    .unwrap();
+    composition::valid(&mesh);
+    for index in 0..2 {
+        let top = composition::part_points(
+            &mesh,
+            &format!("room/dining/table-{index}"),
+            Matrix::default(),
+        );
+        assert!(top.iter().any(|p| (p[2] - 0.766).abs() < 1e-5));
+        for side in [-1, 1] {
+            let seat = composition::part_points(
+                &mesh,
+                &format!("room/dining/seat-{index}-{side}"),
+                Matrix::default(),
+            );
+            assert!(seat.iter().any(|p| p[2].abs() < 1e-5));
+            composition::bounds(&seat, [3.45, 0.61, 0.], [3.82, 2.89, 0.43]);
+        }
+    }
+    // Check triangle bounds conservatively against the main walking strip
+    // between the customer seating and the kitchen, below the hanging food.
+    let lower = [2.43, 0.09, 0.07];
+    let upper = [3.34, 2.95, 1.12];
+    for (triangle, &surface) in mesh.indices.chunks_exact(3).zip(&mesh.triangle_surfaces) {
+        let intersects = (0..3).all(|axis| {
+            let values = triangle
+                .iter()
+                .map(|&i| mesh.vertices[i as usize].position[axis]);
+            let min = values.clone().fold(f64::INFINITY, f64::min);
+            let max = values.fold(f64::NEG_INFINITY, f64::max);
+            max > lower[axis] && min < upper[axis]
+        });
+        assert!(
+            !intersects,
+            "{} crosses customer aisle",
+            mesh.surfaces[surface].part
+        );
+    }
+}
+
 #[test]
 fn complete_roast_preserves_stock_transforms_materials_and_named_streams() {
     check_reference_roast();

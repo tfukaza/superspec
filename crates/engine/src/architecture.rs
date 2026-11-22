@@ -21,6 +21,7 @@ mod retaining;
 mod terrain;
 mod validation;
 mod walls;
+mod windows;
 
 trait At<T> {
     fn at(self, node: &Node) -> Result<T, Diagnostic>;
@@ -58,6 +59,8 @@ struct Compiler<'a> {
     wall_paths: BTreeMap<usize, Vec<V3>>,
     wall_offsets: BTreeMap<usize, Vec<V3>>,
     wall_silhouettes: BTreeMap<usize, Vec<V3>>,
+    window_openings: BTreeMap<usize, usize>,
+    window_fits: BTreeMap<usize, windows::Fit>,
     flights: BTreeMap<usize, flights::Flight>,
     volumes: Vec<context::Volume>,
     authored: Vec<([V3; 3], u32)>,
@@ -79,7 +82,7 @@ impl Compiler<'_> {
             .values()
             .filter(|node| node.kind == "material")
         {
-            materials.push(Material::read(node)?);
+            materials.push(superspec_aml::material_catalog::registered_material(node)?);
         }
         if !materials.iter().any(|m| m.id == "default") {
             materials.push(Material::default());
@@ -239,6 +242,10 @@ impl Compiler<'_> {
             for opening in openings {
                 let cut = self.cutter(opening, index, &product.solids, None)?;
                 let host = Solid::union(&product.solids).at(&node.source)?;
+                if let Some(&window) = self.window_openings.get(&opening) {
+                    let fit = self.fit_window(window, opening, index, &host, &cut)?;
+                    self.window_fits.insert(window, fit);
+                }
                 let overlap = host
                     .boolean(&cut, Operation::Intersection)
                     .at(&node.source)?;
@@ -298,7 +305,9 @@ impl Compiler<'_> {
                 }
             }
         }
-        if !node.source.boolean("visible", true) || node.source.kind == "collision" {
+        if !node.source.boolean("visible", true)
+            || matches!(node.source.kind.as_str(), "collision" | "window")
+        {
             product.render.clear();
         }
         if !node.source.boolean("collidable", true) {
@@ -691,6 +700,8 @@ impl Compiler<'_> {
                     .transform(placement)
                     .at(source)?,
             );
+        } else if kind == "window" {
+            result.solids = self.window_collision(index, source)?;
         } else if kind == "opening" {
             self.resolution
                 .reference(index, source.text("host").unwrap())?;

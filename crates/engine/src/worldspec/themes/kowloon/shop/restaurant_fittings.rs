@@ -10,7 +10,7 @@ use super::{
     grocer_props::{self, Options},
     restaurant_surfaces::{self, Settings},
 };
-use superspec_geometry::V3;
+use superspec_geometry::{V3, math::sin};
 use superspec_types::rng::SeededRng;
 const WIPED: V3 = [0.88, 0.90, 0.91];
 fn galvanized() -> V3 {
@@ -54,7 +54,11 @@ pub fn steel_top(
     if !thickness.is_finite() || thickness <= 0.006 || thickness >= size[2] {
         return Err("Steel top thickness must fit below its work plane.".into());
     }
-    let d = &mut metal(d, repeat)?;
+    let d = &mut Fixture {
+        pen: d.pen.with_kitchen_worktop(repeat)?,
+        mesh: d.mesh,
+        repeats: d.repeats,
+    };
     let [w, depth, h] = size;
     let bevel = 0.004;
     d.cuboid(
@@ -158,45 +162,63 @@ pub fn workbench(d: &mut Fixture<'_, '_>, size: V3, repeat: f64) -> Result<Shelf
     for i in 0..bays {
         let left = 0.03 + i as f64 * pitch;
         let right = left + pitch - 0.008;
-        let brightness = 0.56 + (i % 3) as f64 * 0.045;
+        let finish = srgb(["#596e65", "#747361", "#556c70"][i % 3]);
         steel.cuboid(
             "metal",
             [left, 0.025, 0.115],
             [right, 0.037, separator - 0.006],
-            [brightness, brightness + 0.025, brightness + 0.025],
+            [0.63, 0.67, 0.64],
             "bf",
         )?;
-        for [low, high] in [[0.115, 0.235], [0.235, separator - 0.006]] {
-            let tint = |p: V3| {
-                let wear = (1. - (p[2] - 0.115) / 0.12).max(0.) * 0.10;
-                Ok([
-                    brightness - wear,
-                    brightness + 0.025 - wear,
-                    brightness + 0.025 - wear,
-                ])
-            };
-            steel.pen.face(
-                steel.mesh,
+        for [bottom, top, front] in [
+            [0.115, separator - 0.006, 0.025],
+            [separator, body - 0.012, 0.023],
+        ] {
+            let bands = [bottom, bottom + (top - bottom) * 0.22, top];
+            for band in bands.windows(2) {
+                for column in 0..9 {
+                    let x = |column| left + (right - left) * column as f64 / 9.;
+                    let tint = |[x, _, z]: V3| {
+                        let wear = (1. - (z - bottom) / 0.090).max(0.);
+                        let wipe = sin((x - left) * 33. + 1.5 * sin(19. * z + i as f64));
+                        let scrubbed = shade(finish, 0.90 + 0.12 * wipe + 0.10 * z / top);
+                        let umber = srgb("#7c533f");
+                        let rust = 0.38 * wear * (wipe * 0.5 + 0.5);
+                        Ok(std::array::from_fn(|k| {
+                            scrubbed[k] * (1. - rust) + umber[k] * rust
+                        }))
+                    };
+                    steel.pen.face(
+                        steel.mesh,
+                        "paint",
+                        &[
+                            [x(column), front, band[0]],
+                            [x(column + 1), front, band[0]],
+                            [x(column + 1), front, band[1]],
+                            [x(column), front, band[1]],
+                        ],
+                        [0., -1., 0.],
+                        &Tint::Field(&tint),
+                        steel.repeat("paint"),
+                        None,
+                        None,
+                    )?;
+                }
+            }
+            steel.bar(
                 "metal",
-                &[
-                    [left, 0.025, low],
-                    [right, 0.025, low],
-                    [right, 0.025, high],
-                    [left, 0.025, high],
-                ],
-                [0., -1., 0.],
-                &Tint::Field(&tint),
-                steel.repeat("metal"),
-                None,
-                None,
+                [left + 0.002, front + 0.001, top - 0.002],
+                [right - 0.002, front + 0.001, top - 0.002],
+                0.003,
+                [0.82, 0.83, 0.76],
             )?;
         }
         steel.cuboid(
             "metal",
             [left, 0.023, separator],
             [right, 0.037, body - 0.012],
-            [0.70, 0.72, 0.72],
-            "f",
+            [0.71, 0.74, 0.71],
+            "bf",
         )?;
         let handle = (left + right) / 2.;
         for z in [separator - 0.065, body - 0.08] {

@@ -85,6 +85,15 @@ pub(super) struct ResolvedItems {
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
 
+/// The geometry and placements already produced while resolving an item's receiver bindings.
+type PlacedModels = BTreeMap<
+    String,
+    (
+        superspec_model::instances::Model,
+        BTreeMap<String, [f64; 16]>,
+    ),
+>;
+
 /// One material applied to a set of meshes. Every assignment's entry module comes from the
 /// project's shared module map, so several materials are edited side by side.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -110,6 +119,8 @@ pub struct Project {
     pub kind: String,
     pub entry: String,
     pub modules: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub material_lods: crate::materialspec::program::MaterialLodSources,
     pub parameters: BTreeMap<String, serde_json::Value>,
     pub seed: u32,
     pub resolution: usize,
@@ -164,6 +175,7 @@ impl Default for Project {
             kind: "material".into(),
             entry: "main.ms".into(),
             modules: BTreeMap::new(),
+            material_lods: BTreeMap::new(),
             parameters: BTreeMap::new(),
             seed: 0,
             resolution: 128,
@@ -228,12 +240,16 @@ impl Session {
                 .world
                 .as_ref()
                 .ok_or_else(|| fail("World project requires its composition settings.".into()))?;
+            let mut world = world.clone();
+            for (owner, levels) in &project.material_lods {
+                world.material_lods.insert(owner.clone(), levels.clone());
+            }
             let model = crate::worldspec::authored::build_model(
                 self,
                 &project.entry,
                 source,
                 &project.modules,
-                world,
+                &world,
                 project.resolution,
                 revision,
                 assets,
@@ -244,6 +260,8 @@ impl Session {
                 metadata: serde_json::json!({"items":world.items.len(),"materialAssignments":world.materials.len()}),
             });
         }
+        crate::materialspec::program::check_lod_owners(&project.material_lods, &project.modules)
+            .map_err(&fail)?;
         if project.kind == "material"
             && (!project.models.is_empty() || !project.materials.is_empty())
         {
@@ -254,6 +272,7 @@ impl Session {
             entry: project.entry.clone(),
             source: source.clone(),
             modules: project.modules.clone(),
+            material_lods: project.material_lods.clone(),
             parameters: project.parameters.clone(),
             seed: project.seed,
             resolution: project.resolution,
@@ -380,10 +399,9 @@ impl Session {
     }
 }
 
-/// At most this many models compose one project scene.
-pub const MAX_MODELS: usize = 16;
-/// At most this many material assignments apply to one project scene.
-pub const MAX_ASSIGNMENTS: usize = 64;
+pub use superspec_types::limits::{
+    MAX_PROJECT_MATERIAL_ASSIGNMENTS as MAX_ASSIGNMENTS, MAX_PROJECT_MODELS as MAX_MODELS,
+};
 
 fn valid_identity(id: &str) -> bool {
     !id.is_empty()
@@ -399,16 +417,12 @@ impl Session {
     pub(super) fn compose_models(
         &mut self,
         project: &Project,
+        mut placed_models: PlacedModels,
         revision: u64,
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(WorldModel, BTreeMap<String, [f64; 16]>), Vec<Diagnostic>> {
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
-        if project.models.is_empty() || project.models.len() > MAX_MODELS {
-            return Err(fail(format!(
-                "A material project composes 1 to {MAX_MODELS} models."
-            )));
-        }
         let mut seen = BTreeSet::new();
         let mut composed: Option<Scene> = None;
         let mut transforms = BTreeMap::new();
@@ -469,11 +483,13 @@ impl Session {
                 }
                 "item" => {
                     let prefix = format!("{}/", model.id);
-                    let placed = self.place_item(project, model, &prefix, assets, cancelled)?;
-                    for (id, matrix) in placed.transforms {
+                    let (geometry, item_transforms) = placed_models
+                        .remove(&model.id)
+                        .ok_or_else(|| fail(format!("Missing placement for item {}.", model.id)))?;
+                    for (id, matrix) in item_transforms {
                         transforms.insert(format!("{prefix}{id}"), matrix);
                     }
-                    WorldModel::from_instances(placed.model)
+                    WorldModel::from_instances(geometry)
                         .and_then(|model| model.scene_cancellable(revision as u32, cancelled))
                         .map_err(&fail)?
                 }
@@ -504,9 +520,16 @@ impl Session {
         project: &Project,
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<Option<ResolvedItems>, Vec<Diagnostic>> {
+    ) -> Result<(Option<ResolvedItems>, PlacedModels), Vec<Diagnostic>> {
+        let mut placements = BTreeMap::new();
+        if project.models.is_empty() || project.models.len() > MAX_MODELS {
+            return Err(vec![Diagnostic::message(
+                &project.entry,
+                format!("A material project composes 1 to {MAX_MODELS} models."),
+            )]);
+        }
         if !project.models.iter().any(|model| model.kind == "item") {
-            return Ok(None);
+            return Ok((None, placements));
         }
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         let mut resolved = ResolvedItems {
@@ -638,6 +661,7 @@ impl Session {
                     });
             }
             resolved.metadata.insert(model.id.clone(), placed.metadata);
+            placements.insert(model.id.clone(), (placed.model, placed.transforms));
         }
         // Features of scene reach: the receivers of every other item that come near enough are
         // given them (an item's own receivers have them already, by its item reach).
@@ -669,7 +693,7 @@ impl Session {
                 }
             }
         }
-        Ok(Some(resolved))
+        Ok((Some(resolved), placements))
     }
 
     /// Builds a multi-model, multi-material project: the composed models, then each material
@@ -683,7 +707,7 @@ impl Session {
         cancelled: &dyn Fn() -> bool,
     ) -> Result<ProjectOutput, Vec<Diagnostic>> {
         // Item models bind their slots' meshes to materials and name their features.
-        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let (resolved, placements) = self.resolve_items(project, assets, cancelled)?;
         let items = resolved.as_ref().map(|resolved| &resolved.metadata);
         let project = resolved
             .as_ref()
@@ -694,7 +718,8 @@ impl Session {
                 "At most {MAX_ASSIGNMENTS} materials apply to one project."
             )));
         }
-        let (mut model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
+        let (mut model, transforms) =
+            self.compose_models(project, placements, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
             .map_err(&fail)?;
@@ -804,8 +829,7 @@ pub(super) fn material_request(
     source: &str,
     receivers: Vec<Receiver>,
 ) -> Request {
-    // Features and anchors are part of a receiver's layout, which is also asked for one
-    // receiver at a time (`project_layouts`), so every mesh's are passed along.
+    // The CPU bake samples named features and resolves pattern anchors for this assignment.
     request_with(
         project,
         assignment,
@@ -876,24 +900,11 @@ fn request_with(
         entry: assignment.entry.clone(),
         source: source.to_owned(),
         modules: project.modules.clone(),
+        material_lods: project.material_lods.clone(),
         parameters: assignment.parameters.clone(),
         seed: assignment.seed,
-        resolution: project.resolution,
         inspection: (project.inspection != "final").then(|| project.inspection.clone()),
-        mapping: *project
-            .mappings
-            .get(&assignment.id)
-            .unwrap_or(&project.mapping),
-        domain: project.domain,
         edges: project.edges.clone(),
-        gravity: project.gravity,
-        profile: project.profile,
-        // The material's own density, where it has one; a receiver's own comes before it.
-        texel_density: project
-            .texel_densities
-            .get(&assignment.id)
-            .copied()
-            .or(project.texel_density),
         texel_densities: densities,
         receivers,
         anchors,
@@ -905,6 +916,26 @@ fn request_with(
         planes,
         features,
         layers: assignment.layers.clone(),
+        ..layout_settings(project, assignment)
+    }
+}
+
+/// Only chart sizing and mapping. The caller supplies receiver overrides where needed.
+pub(super) fn layout_settings(project: &Project, assignment: &MaterialAssignment) -> Request {
+    Request {
+        resolution: project.resolution,
+        mapping: *project
+            .mappings
+            .get(&assignment.id)
+            .unwrap_or(&project.mapping),
+        domain: project.domain,
+        gravity: project.gravity,
+        profile: project.profile,
+        texel_density: project
+            .texel_densities
+            .get(&assignment.id)
+            .copied()
+            .or(project.texel_density),
         ..Default::default()
     }
 }
@@ -1002,19 +1033,14 @@ pub const PREVIEW_FEATURES: usize = 1024;
 /// follows it as, and the receiver's other names as they are, as a CPU bake renames them.
 fn preview_features(
     receiver: &Receiver,
+    found: &[crate::materialspec::program::Feature],
     named: Option<&[crate::materialspec::program::NamedFeature]>,
     names: &[String],
     follow: &BTreeMap<String, crate::materialspec::program::Follow>,
 ) -> Vec<f64> {
     let mut features = Vec::new();
-    let mut found =
-        crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices);
-    // Sharpest first, so a receiver with more edges than a shader visits loses only its
-    // shallowest creases.
-    found.sort_by(|a, b| b.angle.total_cmp(&a.angle));
-    found.truncate(PREVIEW_FEATURES - receiver.contacts.len().min(PREVIEW_FEATURES / 2));
     use crate::materialspec::program::FeatureKind as Kind;
-    for feature in &found {
+    for feature in found {
         let kind = match feature.kind {
             Kind::Convex => 0.,
             Kind::Concave => 1.,
@@ -1095,6 +1121,21 @@ impl Session {
     pub fn shade_prepared(
         &mut self,
         prepared: &super::PreparedProject,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<serde_json::Value, Vec<Diagnostic>> {
+        self.shade_prepared_with_features(
+            prepared,
+            &mut |values| serde_json::json!(values),
+            cancelled,
+        )
+    }
+
+    /// Describe the same shaders and receivers while allowing a binary transport
+    /// to replace each feature array by a handle to its exact source values.
+    pub fn shade_prepared_with_features(
+        &mut self,
+        prepared: &super::PreparedProject,
+        feature_data: &mut dyn FnMut(&[f64]) -> serde_json::Value,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<serde_json::Value, Vec<Diagnostic>> {
         let super::PreparedProject {
@@ -1185,7 +1226,16 @@ impl Session {
             let base_zones = program.metadata().zones.clone();
             if !assignment.layers.is_empty() {
                 // A slot its bake would refuse is refused here too, with the same diagnostics.
-                self.check_layered(&material_request(project, assignment, source, Vec::new()))?;
+                // Layer declarations and their parameters can be checked before any receiver is shaped.
+                self.check_layered(&request_with(
+                    project,
+                    assignment,
+                    source,
+                    Vec::new(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                ))?;
                 let (layers, channels) = self.layer_shaders(project, assignment, &program)?;
                 for (layer, described) in assignment
                     .layers
@@ -1239,15 +1289,27 @@ impl Session {
                         high[axis] = high[axis].max(point[axis]);
                     }
                 }
+                let mut derived = Vec::new();
                 if wants_features || layer_queries.iter().any(|(derived, _, _)| *derived) {
+                    derived = crate::materialspec::program::receiver_features(
+                        &receiver.positions,
+                        &receiver.indices,
+                    );
                     receiver.contacts = touching
                         .get_or_init(|| ContactScene::new(scene))
-                        .contacts(scene, &receiver);
+                        .contacts_for(scene, &receiver.id, &derived);
+                    // Every layer samples the same sharpest creases. Contact order stays the
+                    // receiver's original edge order, before this stable sort.
+                    derived.sort_by(|a, b| b.angle.total_cmp(&a.angle));
+                    derived.truncate(
+                        PREVIEW_FEATURES - receiver.contacts.len().min(PREVIEW_FEATURES / 2),
+                    );
                 }
                 let named = project.features.get(&receiver.id).map(Vec::as_slice);
                 let features = if wants_features {
                     preview_features(
                         &receiver,
+                        &derived,
                         named,
                         &program.metadata().named_features,
                         &BTreeMap::new(),
@@ -1256,7 +1318,7 @@ impl Session {
                     Vec::new()
                 };
                 let mut entry = serde_json::json!({
-                    "material": assignment.id, "boundsMin": low, "boundsMax": high, "features": features,
+                    "material": assignment.id, "boundsMin": low, "boundsMax": high, "features": feature_data(&features),
                     "objectToWorld": receiver.object_to_world,
                 });
                 if !layer_queries.is_empty() {
@@ -1264,11 +1326,13 @@ impl Session {
                     // (and follows the slot's): a GPU host binds these to that layer's shader.
                     entry["layerFeatures"] = layer_queries
                         .iter()
-                        .map(|(derived, names, follow)| {
-                            if *derived {
-                                preview_features(&receiver, named, names, follow)
+                        .map(|(reads_features, names, follow)| {
+                            if *reads_features {
+                                feature_data(&preview_features(
+                                    &receiver, &derived, named, names, follow,
+                                ))
                             } else {
-                                Vec::new()
+                                feature_data(&[])
                             }
                         })
                         .collect();
@@ -1307,12 +1371,12 @@ impl Session {
         }
         let ids: Vec<&str> = visible.into_iter().collect();
         let mut metadata = serde_json::json!({
-            "materials": materials,
             "meshes": ids,
-            "shading": meshes,
             "gravity": project.gravity,
             "domain": project.domain,
         });
+        metadata["materials"] = serde_json::Value::Object(materials);
+        metadata["shading"] = serde_json::Value::Object(meshes);
         if let Some(items) = items {
             metadata["items"] = serde_json::Value::Object(items.clone());
             metadata["bindings"] = bindings(project);
@@ -1384,7 +1448,13 @@ fn closest_on_triangle(p: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f
 pub(super) struct ContactScene {
     /// Each visible mesh, by its place in the scene's manifest, with its triangles' bounds
     /// (low corner, then high) in index order.
-    meshes: Vec<(usize, Vec<[f32; 6]>)>,
+    meshes: Vec<ContactMesh>,
+}
+
+struct ContactMesh {
+    index: usize,
+    triangles: Vec<[f32; 6]>,
+    nearby: std::cell::OnceCell<(super::occlusion::Bvh, Vec<u32>)>,
 }
 
 impl ContactScene {
@@ -1412,7 +1482,11 @@ impl ContactScene {
                         bounds
                     })
                     .collect();
-                (at, boxes)
+                ContactMesh {
+                    index: at,
+                    triangles: boxes,
+                    nearby: Default::default(),
+                }
             })
             .collect();
         Self { meshes }
@@ -1422,41 +1496,88 @@ impl ContactScene {
     /// this was made for): both ends and the midpoint within [`CONTACT_TOLERANCE`] of its
     /// triangles. A wall's base on a slab or a crate's bottom edges on the ground are contacts.
     pub(super) fn contacts(&self, scene: &Scene, receiver: &Receiver) -> Vec<super::Contact> {
+        let features =
+            crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices);
+        self.contacts_for(scene, &receiver.id, &features)
+    }
+
+    fn contacts_for(
+        &self,
+        scene: &Scene,
+        id: &str,
+        features: &[crate::materialspec::program::Feature],
+    ) -> Vec<super::Contact> {
+        if features.is_empty() {
+            return Vec::new();
+        }
         let tolerance = CONTACT_TOLERANCE;
         // A triangle whose bounds a point is farther from than this cannot be within the tolerance
         // of it, whatever the rounding of the exact measure below; the measure decides the rest.
         let reach = tolerance * 1.001 + 1e-9;
+        // Only meshes overlapping the receiver's edges can touch an endpoint or midpoint.
+        // Reject distant meshes once per receiver, before testing individual samples.
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for edge in features {
+            for axis in 0..3 {
+                low[axis] = low[axis].min(edge.start[axis]).min(edge.end[axis]);
+                high[axis] = high[axis].max(edge.start[axis]).max(edge.end[axis]);
+            }
+        }
+        let candidates: Vec<_> = self
+            .meshes
+            .iter()
+            .filter_map(|source| {
+                let mesh = &scene.manifest.meshes[source.index];
+                let [min, max] = mesh.bounds;
+                (mesh.id != id
+                    && (0..3).all(|axis| {
+                        high[axis] >= min[axis] - reach && low[axis] <= max[axis] + reach
+                    }))
+                .then_some((mesh, source))
+            })
+            .collect();
         let point = |index: usize| -> [f64; 3] {
             std::array::from_fn(|axis| f64::from(scene.positions[index * 3 + axis]))
         };
         let touches = |p: [f64; 3]| {
-            self.meshes.iter().any(|(mesh, boxes)| {
-                let mesh = &scene.manifest.meshes[*mesh];
+            candidates.iter().any(|&(mesh, source)| {
                 let [low, high] = mesh.bounds;
                 let outside =
                     (0..3).any(|i| p[i] < low[i] - tolerance || p[i] > high[i] + tolerance);
-                !outside
-                    && mesh.id != receiver.id
-                    && scene.indices[mesh.index_start..mesh.index_start + mesh.index_count]
-                        .chunks_exact(3)
-                        .zip(boxes)
-                        .any(|(triangle, bounds)| {
-                            if (0..3).any(|i| {
-                                p[i] < f64::from(bounds[i]) - reach
-                                    || p[i] > f64::from(bounds[i + 3]) + reach
-                            }) {
-                                return false;
-                            }
-                            let [a, b, c] =
-                                [0, 1, 2].map(|k| point(mesh.vertex_start + triangle[k] as usize));
-                            let q = closest_on_triangle(p, a, b, c);
-                            let gap: f64 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum::<f64>();
-                            gap <= tolerance * tolerance
-                        })
+                if outside {
+                    return false;
+                }
+                let corners = |triangle: usize| {
+                    let at = mesh.index_start + triangle * 3;
+                    [0, 1, 2].map(|k| point(mesh.vertex_start + scene.indices[at + k] as usize))
+                };
+                let test = |triangle: usize| {
+                    let bounds = &source.triangles[triangle];
+                    if (0..3).any(|i| {
+                        p[i] < f64::from(bounds[i]) - reach
+                            || p[i] > f64::from(bounds[i + 3]) + reach
+                    }) {
+                        return false;
+                    }
+                    let [a, b, c] = corners(triangle);
+                    let q = closest_on_triangle(p, a, b, c);
+                    let gap: f64 = (0..3).map(|i| (p[i] - q[i]).powi(2)).sum();
+                    gap <= tolerance * tolerance
+                };
+                if source.triangles.len() < 64 {
+                    return (0..source.triangles.len()).any(test);
+                }
+                let (tree, source_order) = source.nearby.get_or_init(|| {
+                    super::occlusion::Bvh::ordered(
+                        (0..source.triangles.len()).map(corners).collect(),
+                    )
+                });
+                tree.any_near(p, reach, |i| test(source_order[i] as usize))
             })
         };
-        crate::materialspec::program::receiver_features(&receiver.positions, &receiver.indices)
-            .into_iter()
+        features
+            .iter()
             .filter(|feature| {
                 let middle = std::array::from_fn(|i| (feature.start[i] + feature.end[i]) * 0.5);
                 touches(feature.start) && touches(feature.end) && touches(middle)

@@ -28,47 +28,7 @@ pub struct Authoring {
     occlusion: OcclusionStore,
 }
 
-/// Planes of the occluder service, by the asset name projects bind them under
-/// (`occlusion/<name>/<key>`: the key is the plane's content). They outlive a request's assets,
-/// so a later request whose planes have the same keys casts no ray: a moved sun bakes `shadow`
-/// again and finds `occlusion` and `sunExposure` here.
-#[derive(Default)]
-struct OcclusionStore {
-    planes: BTreeMap<String, Arc<[u8]>>,
-    /// Asset names, least recently used first.
-    order: Vec<String>,
-    bytes: usize,
-}
-
-impl OcclusionStore {
-    /// Encoded planes kept at most; what one call uses is kept whatever it takes.
-    const ALLOWANCE: usize = 96 * 1024 * 1024;
-
-    fn holds(&self, name: &str, key: &str) -> bool {
-        self.planes.contains_key(&format!("occlusion/{name}/{key}"))
-    }
-
-    /// Marks planes as used now and adds the new ones, then drops the least recently used
-    /// beyond the allowance, never one of `used`.
-    fn keep(&mut self, used: &[String], added: BTreeMap<String, Arc<[u8]>>) {
-        for (asset, bytes) in added {
-            self.bytes += bytes.len();
-            if let Some(previous) = self.planes.insert(asset, bytes) {
-                self.bytes -= previous.len();
-            }
-        }
-        self.order.retain(|asset| !used.contains(asset));
-        self.order.extend(used.iter().cloned());
-        let mut index = 0;
-        while self.bytes > Self::ALLOWANCE && index + used.len() < self.order.len() {
-            let asset = self.order.remove(index);
-            if let Some(dropped) = self.planes.remove(&asset) {
-                self.bytes -= dropped.len();
-            }
-            index = 0;
-        }
-    }
-}
+use superspec_engine::authoring::occlusion_store::OcclusionStore;
 
 /// A project text and the project read from it. A request hands the same text to several calls
 /// (a description, then the layouts; the library images, then the field bakes): the text is read
@@ -186,7 +146,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -195,14 +155,16 @@ impl Authoring {
             let scene = output
                 .scene(revision)
                 .map_err(|e| vec![Diagnostic::message(&request.entry, e)])?;
-            Ok((output, scene.packet()))
+            Ok((output, scene.packet(), request.kind == "item-geometry"))
         })();
         match result {
-            Ok((output, packet)) => {
+            Ok((output, packet, shape_draft)) => {
                 let response =
                     serde_json::json!({"success":true,"metadata":output.metadata}).to_string();
                 self.packet = packet;
-                self.accepted = Some(output);
+                if !shape_draft {
+                    self.accepted = Some(output);
+                }
                 response
             }
             Err(diagnostics) => {
@@ -238,7 +200,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -295,7 +257,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -330,7 +292,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -368,7 +330,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -392,7 +354,12 @@ impl Authoring {
     /// out, for a renderer that bakes in UV space. The reply lists the receivers; their triangle
     /// records (see `superspec_engine::authoring::LAYOUT_RECORD`) are then taken with
     /// [`Self::layout_records`].
-    pub fn layout_project(&mut self, source: &str, revision: u32) -> String {
+    pub fn layout_project(
+        &mut self,
+        source: &str,
+        revision: u32,
+        lattice_maps_only: Option<bool>,
+    ) -> String {
         let result = (|| {
             if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
@@ -402,21 +369,31 @@ impl Authoring {
             }
             let read = read_project(&mut self.read, source)?;
             let project = read.project.clone();
+            if project.schema_version != 2 || project.kind != "material" {
+                return Err(vec![Diagnostic::message(
+                    &project.entry,
+                    "Only version 2 material projects have receiver layouts.",
+                )]);
+            }
             let cancelled = || cancelled_by_host(self.cancellable);
             // What a description of this text at this revision prepared, when one came before.
-            if let Some((_, prepared)) = read.prepared.take().filter(|(at, _)| *at == revision) {
-                return self.session.layouts_prepared(&prepared, &cancelled);
-            }
-            self.session.project_layouts(
-                &project,
-                revision as u64,
-                &|name| {
-                    self.assets
-                        .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
-                        .cloned()
-                        .ok_or_else(|| format!("Asset {name} was not supplied."))
-                },
+            let assets = |name: &str| {
+                self.assets
+                    .get(name)
+                    .or_else(|| self.occlusion.get(name))
+                    .cloned()
+                    .ok_or_else(|| format!("Asset {name} was not supplied."))
+            };
+            let prepared = match read.prepared.take().filter(|(at, _)| *at == revision) {
+                Some((_, prepared)) => prepared,
+                None => {
+                    self.session
+                        .prepare_project(&project, revision as u64, &assets, &cancelled)?
+                }
+            };
+            self.session.layouts_prepared_with_surface_maps(
+                &prepared,
+                lattice_maps_only.unwrap_or(false),
                 &cancelled,
             )
         })();
@@ -516,7 +493,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -567,7 +544,6 @@ impl Authoring {
     /// another session; empty for a name it does not hold.
     pub fn occlusion_plane(&self, asset: &str) -> Vec<u8> {
         self.occlusion
-            .planes
             .get(asset)
             .map(|bytes| bytes.to_vec())
             .unwrap_or_default()
@@ -575,7 +551,7 @@ impl Authoring {
 
     /// Whether this session holds the plane bound under `asset`.
     pub fn holds_occlusion_plane(&self, asset: &str) -> bool {
-        self.occlusion.planes.contains_key(asset)
+        self.occlusion.contains(asset)
     }
 
     /// Keeps a plane another session baked (the host's copy of it), under the asset name
@@ -636,6 +612,24 @@ impl Authoring {
                     serde_json::from_str::<Vec<String>>(&superspec_engine::library_assets(source))
                         .unwrap_or_default(),
                 );
+            }
+        }
+        for model in project.models.iter().filter(|model| model.kind == "item") {
+            let entry = model
+                .entry
+                .clone()
+                .unwrap_or_else(|| format!("{}.item.json", model.id));
+            if let Some(source) = model
+                .source
+                .as_ref()
+                .or_else(|| project.modules.get(&entry))
+            {
+                names.extend(self.session.library_assets(&Request {
+                    kind: "item".into(),
+                    entry,
+                    source: source.clone(),
+                    ..Default::default()
+                }));
             }
         }
         for material in &project.materials {
@@ -714,7 +708,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -740,7 +734,12 @@ impl Authoring {
 
     /// Describes a project for a renderer that evaluates its materials in a shader: the composed
     /// models as the staged packet, and each material's preview shader in the metadata. No bake.
-    pub fn shade_project(&mut self, source: &str, revision: u32) -> String {
+    pub fn shade_project(
+        &mut self,
+        source: &str,
+        revision: u32,
+        include_packet: Option<bool>,
+    ) -> String {
         let result = (|| {
             if source.len() > PROJECT_BYTES {
                 return Err(vec![Diagnostic::message(
@@ -754,7 +753,7 @@ impl Authoring {
             let assets = |name: &str| {
                 self.assets
                     .get(name)
-                    .or_else(|| self.occlusion.planes.get(name))
+                    .or_else(|| self.occlusion.get(name))
                     .cloned()
                     .ok_or_else(|| format!("Asset {name} was not supplied."))
             };
@@ -765,11 +764,22 @@ impl Authoring {
                 self.session
                     .prepare_project(&project, revision as u64, &assets, &cancelled)?;
             let metadata = self.session.shade_prepared(&prepared, &cancelled)?;
-            let mut scene = prepared.scene.clone();
-            superspec_model::batches::add_project_text(&mut scene, source)
+            let batches = superspec_model::batches::of_project_text(source)
                 .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
+            let packet = if include_packet != Some(false) || !batches.is_empty() {
+                let mut scene = prepared.scene.clone();
+                superspec_model::batches::add_project_batches(&mut scene, &batches)
+                    .map_err(|e| vec![Diagnostic::message(&project.entry, e)])?;
+                if include_packet == Some(false) {
+                    vec![]
+                } else {
+                    scene.packet()
+                }
+            } else {
+                vec![]
+            };
             read.prepared = Some((revision, prepared));
-            Ok((metadata, scene.packet()))
+            Ok((metadata, packet))
         })();
         match result {
             Ok((metadata, packet)) => {
@@ -837,7 +847,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },
@@ -928,7 +938,7 @@ impl Authoring {
                 &|name| {
                     self.assets
                         .get(name)
-                        .or_else(|| self.occlusion.planes.get(name))
+                        .or_else(|| self.occlusion.get(name))
                         .cloned()
                         .ok_or_else(|| format!("Asset {name} was not supplied."))
                 },

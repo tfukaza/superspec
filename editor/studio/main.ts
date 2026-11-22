@@ -1,3 +1,4 @@
+import { MAX_PROJECT_MODELS } from "../../browser/model/limits.ts";
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_BYTES, megabytes } from "../../browser/model/limits.ts";
 import "./style.css";
 import * as THREE from "three";
@@ -16,18 +17,23 @@ import { LightingPanel } from "./lighting.ts";
 import type { MaterialShading, SceneShading } from "../../browser/renderer/shade.ts";
 import { gpuBakeUnsupported, scaledDomain, swatchDomain, type FieldTexels, type GpuBake } from "../../browser/renderer/bake.ts";
 import { libraryAsset } from "../../browser/runtime/library.ts";
+import { imageIdentity } from "../../browser/renderer/textures.ts";
 import { decodePacket, type SceneMesh, type ScenePacket } from "../../browser/model/packet.ts";
-import { AuthoringCompiler, OCCLUSION_PLANES, type OcclusionReport, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type ItemReport, type ParameterValue, type StudioMaterial } from "../../browser/runtime/authoring.ts";
+import { authoringCompiler, recipeTools } from "../compiler-host.ts";
+import { OCCLUSION_PLANES } from "../../browser/model/occlusion-planes.ts";
+import { type OcclusionReport, type AuthoringDiagnostic, type AuthoringMetadata, type AuthoringRequest, type AuthoringResult, type ItemReport, type ParameterValue, type StudioMaterial } from "../../browser/runtime/authoring.ts";
 import { ItemPanel } from "./items.ts";
 import { readAmlSelection } from "../open-aml.ts";
+import { connectAuthoringGraphics } from "../graphics-controls.ts";
 import { AmlLoader } from "./aml.ts";
 import { Channels } from "./channels.ts";
 import { mount } from "./layout.ts";
 import { ParameterControls } from "./parameters.ts";
-import { RecipeTools, type Patch } from "../../browser/runtime/recipe.ts";
+import type { Patch } from "../../browser/runtime/recipe.ts";
 import { RecipePanel } from "./recipe.ts";
 import { TypeChecker } from "../../browser/runtime/typecheck.ts";
 import { mergeReceivers, receivers } from "./packets.ts";
+import { itemShapePreview, onlyItemShapeChanged } from "./item-shape.ts";
 import { copyProject, download, mergeAssets, openProject, parseEnvironment, projectFile, type StudioProject } from "./project.ts";
 import { initialProject, itemSource, kowloonYard, loadKowloonTextures, needsKowloonTextures } from "./starters.ts";
 
@@ -79,13 +85,14 @@ class Studio {
   private baseMetadata?: AuthoringMetadata;
   private visible?: ScenePacket;
   private draftVisible = false;
+  private itemBuildMs = 0;
   private metadata?: AuthoringMetadata;
-  private readonly authoring = new AuthoringCompiler();
-  /** The GPU preview lane's own worker (shader plans, field bakes): it never competes with, or cancels, the CPU build's. */
-  private readonly lane = new AuthoringCompiler({ keepWorker: true });
-  private readonly recipeTools = new RecipeTools();
+  private readonly authoring = authoringCompiler();
+  private readonly lane = authoringCompiler({ keepWorker: true });
+  private readonly recipeTools = recipeTools();
   private readonly typeChecker = new TypeChecker();
   private recipe?: RecipePanel;
+  private city?: import("../city-appearance.ts").CityAppearance;
   private readonly aml = new AmlLoader();
   private readonly scene: RustScene;
   private readonly parameters: ParameterControls;
@@ -137,17 +144,26 @@ class Studio {
   /** The newest revision a GPU preview was tried for, and the newest whose CPU build reached the viewport. */
   private gpuAttempted = 0;
   private cpuRevision = 0;
+  private graphicsProbe = false;
 
   constructor(private readonly kind: StudioProject["kind"]) {
     this.project = initialProject(kind); this.module = this.project.entry;
     this.scene = new RustScene(element("viewport"), (mesh, instance) => this.selection(mesh, instance));
-    // Diagnostics for tests that compare a GPU preview's maps with the CPU build's (`?gpuprobe`); nothing reads it otherwise.
-    // Also the contour fuzz prototype and the leaf-card atlas, for previews that build test shapes in the scene.
-    if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: this.scene, __three: THREE, __contourFuzz: contourFuzz, __leafCards: () => leafCardTextures(true), __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief, __grassTufts: grassTufts });
-    this.parameters = new ParameterControls(element("parameters"), (name, value) => {
-      // A shaded scene takes a parameter as a uniform: nothing to wait for.
-      this.project.parameters[name] = value; this.edit(this.liveScene(this.project));
+    this.scene.setLodEditing(kind === "item");
+    connectAuthoringGraphics(element("preview-graphics"), this.scene, profile => {
+      // GPU/CPU comparison and test-shape helpers are available through the shared probe setting.
+      this.graphicsProbe = profile.diagnostics.instrumentation.gpuProbe;
+      if (this.graphicsProbe) Object.assign(window, { __three: THREE, __contourFuzz: contourFuzz, __leafCards: () => leafCardTextures(true), __leafNormalMaterial: leafNormalMaterial, __domeGeometry: domeGeometry, __smoothGeometry: smoothGeometry, __leafNormalTexture: leafNormalTexture, __densityField: densityField, __densityPoints: densityPoints, __densitySurface: densitySurface, __sampleDensity: sampleDensity, __densityCards: densityCards, __twigStrips: twigStrips, __branchCardTexture: branchCardTexture, __shadeNormals: shadeNormals, __grassClumps: grassClumps, __grassRelief: grassRelief, __grassTufts: grassTufts });
     });
+    this.parameters = new ParameterControls(element("parameters"), (name, value) => {
+      if (JSON.stringify(this.project.parameters[name]) === JSON.stringify(value)) return;
+      this.project.parameters[name] = value;
+      if (!this.updateMaterialUniforms()) {
+        // Standalone item controls submit a completed numeric edit on change.
+        const itemShape = this.kind === "item" && this.metadata?.parameters?.some(parameter => parameter.name === name && parameter.role === "geometry");
+        this.edit(!!itemShape || this.liveScene(this.project));
+      }
+    }, () => this.liveScene(this.project));
     this.channels = new Channels(element("channels"));
     this.lightingPanel = new LightingPanel(element("lighting-controls"), (lighting, statesOcclusion) => this.relight(lighting, statesOcclusion));
     if (kind === "material") this.itemPanel = new ItemPanel(element("item-list"), (item, parameter, value, dragging) => this.itemEdit(item, parameter, value, dragging));
@@ -253,7 +269,36 @@ class Studio {
     return project.materials.find(material => material.id === this.activeMaterial) ?? project.materials[0];
   }
 
-  /** The editor's entry and parameters belong to the active material. */
+  /** Applies a public value edit to the current scene, including its derived material bindings. */
+  private updateMaterialUniforms(): boolean {
+    const material = this.active();
+    if (!material || !this.environmentValid || !this.liveScene(this.project) || this.dragging
+        || this.status.dataset.state !== "ready" || !this.shaded || this.visible !== this.shaded.packet) return false;
+    // Only the public parameter control calls this path. The displayed program, receiver geometry,
+    // assignments and UI declarations are still the accepted ones. Item weathering can derive
+    // several bindings from this material; prefer the longest authored ID for dotted names.
+    const authored = this.project.materials!.map(item => item.id).sort((a, b) => b.length - a.length);
+    const bindings = Object.keys(this.shaded.metadata.materials ?? {}).filter(id =>
+      authored.find(base => id === base || id.startsWith(base + ".")) === material.id);
+    if (!bindings.length) return false;
+    this.syncActive();
+    const candidate = copyProject(this.project);
+    const previous = this.bakeProject;
+    this.bakeProject = candidate;
+    if (!bindings.every(id => this.scene.setShadingParameters(id, candidate.parameters))) {
+      this.bakeProject = previous;
+      return false;
+    }
+    const revision = ++this.revision;
+    this.accepted = candidate;
+    element("viewport").dataset.inputRevision = String(revision);
+    this.ready(`Revision ${revision} ready · Material parameters updated.`);
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => { if (revision === this.revision) void this.recipe?.refresh(); }, 120);
+    return true;
+  }
+
+  /** Updates the active material binding stored in the authoring project. */
   private syncActive(): void {
     const active = this.active();
     if (!this.sceneMode() || !active) return;
@@ -292,7 +337,7 @@ class Studio {
       }
       if (revision !== this.revision) return;
     }
-    if (models.length > 16) throw new Error("A scene composes at most 16 models.");
+    if (models.length > MAX_PROJECT_MODELS) throw new Error(`A scene composes at most ${MAX_PROJECT_MODELS} models.`);
     candidate.assets = mergeAssets(candidate.assets, companions);
     candidate.models = models; candidate.schemaVersion = 2;
     if (!candidate.materials?.length) {
@@ -444,7 +489,7 @@ class Studio {
     element("restore-material").addEventListener("click", () => {
       const valid = this.status.dataset.state === "ready";
       const revision = this.begin("Restoring original material…"); this.project.target.enabled = false;
-      if (this.base) void this.scene.apply(this.base, () => revision === this.revision).then(applied => {
+      if (this.base) void this.applyBase(this.base, revision).then(applied => {
         if (applied && this.base) {
           this.visible = this.base; this.showMeshes(this.base); element("viewport").dataset.inputRevision = String(revision);
           if (valid) { this.accepted = copyProject(this.project); this.ready("Original material restored."); }
@@ -493,6 +538,8 @@ class Studio {
       await this.compile(candidate, revision, undefined, undefined, true);
     });
     for (const id of ["collision", "attachments"]) element(id).addEventListener("change", () => this.guides());
+    const previewLods = element<HTMLInputElement>("preview-lods");
+    previewLods.addEventListener("change", () => this.scene.setLodEditing(!previewLods.checked));
   }
 
   /** Starts a new input revision before asynchronous reads or Wasm work can publish. */
@@ -543,7 +590,9 @@ class Studio {
       const draft = { ...candidate, resolution: 64 };
       if (!await this.compile(draft, revision, base, baseMetadata, false, fit, true)) return;
     }
-    await this.compile(candidate, revision, base, baseMetadata, opened, fit);
+    const shapeEdit = !opened && this.kind === "item" && !!this.accepted
+      && onlyItemShapeChanged(this.accepted, candidate, this.metadata?.parameters ?? []);
+    await this.compile(candidate, revision, base, baseMetadata, opened, fit, false, shapeEdit);
   }
 
   /** What the engine's swatch shader depends on: source, entry, seed (a named seed's value) and domain, but never parameters. */
@@ -634,7 +683,7 @@ class Studio {
       // The contents of the images the program samples: the same shader with another image must bind again.
       const images = JSON.stringify(use.shader.images.map(entry => [entry.name, candidate.assets[entry.name] ? this.assetId(candidate.assets[entry.name]) : "library"]));
       const shading = this.scene.gpuPreviewReady(use, images) ? undefined : use;
-      const probe = new URLSearchParams(location.search).has("gpuprobe");
+      const probe = this.graphicsProbe;
       // Hybrid: the CPU bakes the fields only it can evaluate, once per layout; a change to what they read bakes them again
       // while the previous ones keep showing (stale while revalidating). The CPU build of this edit waits for this, so the
       // field bake (a subset of that build) never competes with it; a newer edit cancels it.
@@ -686,7 +735,7 @@ class Studio {
       // A revision that is no longer current asks the lane for nothing: its request would cancel the current one's.
       if (hybrid && !fieldsFresh && current()) {
         const request: Omit<AuthoringRequest, "requestId"> = { kind: this.kind, entry: candidate.entry, source: candidate.modules[candidate.entry],
-          modules: candidate.modules, parameters: candidate.parameters, seed: candidate.seed, resolution, assets: candidate.assets,
+          modules: candidate.modules, materialLods: candidate.materialLods, parameters: candidate.parameters, seed: candidate.seed, resolution, assets: candidate.assets,
           mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
         const fieldStarted = performance.now();
         const result = await this.lane.bakeFields(request, cpuFields.map(field => field.name), revision);
@@ -709,8 +758,49 @@ class Studio {
       fallback(String(error instanceof Error ? error.message : error));
     }
   }
+  /** An imported city's original bindings use the same recipes as the WorldSpec editor. */
+  private async applyBase(packet: ScenePacket, revision: number, fit = false, replaced?: ReadonlySet<string>) {
+    const current = () => revision === this.revision;
+    if (!packet.manifest.architecture?.metadata?.some(section => section.kind === "city"))
+      return this.scene.apply(packet, current, fit);
+    const { CityAppearance } = await import("../city-appearance.ts");
+    if (!current()) return false;
+    this.city ??= new CityAppearance();
+    return this.city.apply(this.scene, packet, current, fit, replaced);
+  }
+
+  /** Show the exact new item while its measured slow finish is evaluated on the same compiler session. */
+  private async compileItemShape(request: AuthoringRequest): Promise<AuthoringResult> {
+    const revision = request.requestId;
+    const materials = this.metadata?.materials as Record<string, { entry: string }> | undefined;
+    if (this.itemBuildMs < 50 || !Object.values(materials ?? {}).some(slot => !slot.entry.startsWith("builtin:")))
+      return this.authoring.compile(request);
+    const shape = await this.authoring.compile({ ...request, kind: "item-geometry" }).catch(() => undefined);
+    if (revision !== this.revision) throw new DOMException("Superseded", "AbortError");
+    const pending = this.authoring.compile(request);
+    let refining = true;
+    if (shape?.packet && this.visible) {
+      const current = () => refining && revision === this.revision;
+      try {
+        const geometry = decodePacket(shape.packet);
+        const sameSlots = JSON.stringify(this.metadata?.meshSlots) === JSON.stringify(shape.metadata?.meshSlots)
+          && JSON.stringify(this.metadata?.materials) === JSON.stringify(shape.metadata?.materials);
+        const draft = sameSlots ? itemShapePreview(geometry, this.visible, current) : Promise.resolve(geometry);
+        void draft.then(async preview => {
+          if (!current()) return;
+          this.draftVisible = true;
+          if (await this.scene.apply(preview, current) && current()) {
+            element("viewport").dataset.itemShapeRevision = String(revision);
+            this.status.textContent = "Showing regenerated item · Updating surface details…";
+          }
+        }).catch(() => { /* The complete build remains active. */ });
+      } catch { /* This shape cannot use the provisional display path. */ }
+    }
+    return pending.finally(() => { refining = false; });
+  }
+
   /** Executes the shared authoring bridge and commits a complete scene only after renderer acceptance. */
-  private async compile(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false, fit = false, draft = false): Promise<boolean> {
+  private async compile(candidate: StudioProject, revision: number, base?: ScenePacket, baseMetadata?: AuthoringMetadata, opened = false, fit = false, draft = false, shapeEdit = false): Promise<boolean> {
     if (revision !== this.revision) return false;
     // Scene projects build whole through build_project: every model and every material at once.
     const scene = this.sceneMode(candidate);
@@ -718,12 +808,13 @@ class Studio {
     if (scene) base = undefined;
     const ids = scene ? new Set<string>() : this.targets(candidate, base);
     const request: AuthoringRequest = { requestId: revision, kind: this.kind, entry: candidate.entry,
-      source: candidate.modules[candidate.entry], modules: candidate.modules, parameters: candidate.parameters,
+      source: candidate.modules[candidate.entry], modules: candidate.modules, materialLods: candidate.materialLods, parameters: candidate.parameters,
       seed: candidate.seed, resolution: candidate.resolution, inspection: candidate.inspection === "final" ? undefined : candidate.inspection,
       assets: candidate.assets, mapping: candidate.mapping, domain: candidate.domain, edges: candidate.edges, gravity: candidate.gravity };
     if (this.kind === "material" && base && candidate.target.enabled) request.receivers = receivers(base, ids, baseMetadata?.receiverTransforms);
     const built = performance.now();
-    const result = scene ? await this.authoring.previewProject(candidate, revision) : await this.authoring.compile(request);
+    const result = await (scene ? this.authoring.previewProject(candidate, revision)
+      : shapeEdit ? this.compileItemShape(request) : this.authoring.compile(request));
     if (revision !== this.revision) return false;
     // A CPU-baked scene whose materials read the occluder service's planes had them baked for this build.
     if (result.occlusion) this.noteOcclusion(result.occlusion, performance.now() - built);
@@ -752,11 +843,17 @@ class Studio {
       this.diagnostics(result.diagnostics ?? [], candidate); void this.recipe?.refresh();
       throw new Error(result.error || "Source could not be compiled.");
     }
+    if (this.kind === "item") {
+      const measured = performance.now() - built;
+      if (opened || !this.accepted || candidate.resolution !== this.accepted.resolution || candidate.entry !== this.accepted.entry)
+        this.itemBuildMs = measured;
+      else if (shapeEdit) this.itemBuildMs = Math.max(this.itemBuildMs, measured);
+    }
     const artifact = decodePacket(result.packet);
     if (!artifact.manifest.success) throw new Error(artifact.manifest.diagnostics.map(finding => finding.message).join("\n"));
     let packet = artifact;
     if (this.kind === "material" && base) packet = candidate.target.enabled ? mergeReceivers(base, artifact, ids) : base;
-    if (!await this.scene.apply(packet, () => revision === this.revision, fit)) return false;
+    if (!await this.applyBase(packet, revision, fit, candidate.target.enabled ? ids : undefined)) return false;
     this.shownResolution = candidate.resolution;
     this.cpuRevision = revision;
     delete element("viewport").dataset.gpuPreview; this.previewLabel(false);
@@ -798,7 +895,7 @@ class Studio {
    */
   private showLighting(): void {
     const stated = this.project.lighting, lighting = projectLighting(this.project);
-    this.scene.setLighting(lighting, stated);
+    this.scene.setLighting(lighting, stated, this.base?.manifest.architecture?.metadata?.some(section => section.kind === "city"));
     this.shadowSun = this.sunKey();
     this.lightingPanel.show(lighting, statesAmbientOcclusion(stated));
     this.noteLighting();
@@ -822,7 +919,7 @@ class Studio {
   private relight(lighting: Lighting, statesOcclusion: boolean): void {
     const stored = storedLighting(lighting, statesOcclusion);
     if (stored) this.project.lighting = stored; else delete this.project.lighting;
-    this.scene.setLighting(lighting, stored);
+    this.scene.setLighting(lighting, stored, this.base?.manifest.architecture?.metadata?.some(section => section.kind === "city"));
     this.noteLighting();
     // A sun that moved (or stopped casting shadows) changes the occluder service's `shadow` plane and nothing else:
     // the materials that read it are baked again once the control rests, the others are left alone.
@@ -872,9 +969,9 @@ class Studio {
     derive(this.shaded?.metadata);
     // While an item control is dragged the scene is shown per pixel alone; its settled value is baked.
     const baking = this.sceneBake && !this.dragging;
-    const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.mappings, candidate.anchors, candidate.gravity, candidate.domain,
+    const key = JSON.stringify([candidate.modules, candidate.models, candidate.batches, candidate.mapping, candidate.mappings, candidate.anchors, candidate.gravity, candidate.domain, candidate.edges,
       (candidate.materials ?? []).map(({ id, entry, seed, meshes, layers }) => [id, entry, seed, meshes, layers?.map(layer => [layer.entry, layer.seed, layer.follow])]),
-      Object.entries(candidate.assets).map(([name, bytes]) => [name, bytes.length]),
+      Object.entries(candidate.assets).map(([name, bytes]) => [name, this.assetId(bytes)]),
       // Baked maps follow the receivers' atlases, which these size.
       baking ? [candidate.resolution, candidate.texelDensity, candidate.texelDensities, candidate.profile] : null]);
     let packet: ScenePacket, metadata: AuthoringMetadata;
@@ -989,8 +1086,12 @@ class Studio {
     const project: StudioProject = { ...baseline };
     if (this.project.lighting) project.lighting = this.project.lighting; else delete project.lighting;
     // Parameters count whole: finer than that is the engine's to know.
-    const scene = JSON.stringify([project.modules, project.models, project.mapping, project.mappings, project.anchors, project.domain, project.gravity, project.edges,
-      project.resolution, project.texelDensity, project.texelDensities, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])]);
+    // The same project snapshot serves many fields. Keep one fixed-size dependency key per field rather
+    // than escaping and copying all material source and item definitions into every cache entry.
+    const scene = await imageIdentity(new TextEncoder().encode(JSON.stringify([project.modules, project.models, project.batches,
+      project.mapping, project.mappings, project.anchors, project.domain, project.gravity, project.edges,
+      project.resolution, project.texelDensity, project.texelDensities, project.profile, Object.entries(project.assets).map(([name, bytes]) => [name, this.assetId(bytes)])])));
+    if (this.bakeProject !== baseline) return null;
     const sun = this.sunKey();
     const key = (mesh: string, name: string, planes: string[]): string => {
       const bound = this.meshBindings[mesh];
@@ -1118,6 +1219,7 @@ class Studio {
     candidate.assets = mergeAssets(candidate.assets, selected.assets); candidate.base = { kind: "aml", source: selected.source };
     candidate.target = { scope: "mesh", enabled: false };
     const packet = await this.aml.load(selected.source, selected.assets, revision);
+    if (packet.manifest.lighting && !candidate.lighting) candidate.lighting = storedLighting(projectLighting(packet.manifest), statesAmbientOcclusion(packet.manifest.lighting));
     if (revision === this.revision) await this.compile(candidate, revision, packet, undefined, true, true);
   }
 
@@ -1398,7 +1500,7 @@ class Studio {
   }
 
   /** Releases workers, staged inputs, URLs and renderer resources on page departure. */
-  private dispose(): void { clearTimeout(this.timer); this.authoring.close(); this.lane.close(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.channels.clear(); this.scene.dispose(); }
+  private dispose(): void { clearTimeout(this.timer); this.authoring.close(); this.lane.close(); this.recipeTools.dispose(); this.typeChecker.dispose(); this.aml.cancel(); this.city?.close(); this.channels.clear(); this.scene.dispose(); }
 }
 
 const kind = document.body.dataset.studio === "item" ? "item" : "material";

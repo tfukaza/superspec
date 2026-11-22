@@ -1,0 +1,211 @@
+{
+  "parameters": {
+    "edgeDiffuse": {
+      "default": 0.028,
+      "min": 0,
+      "max": 0.2
+    },
+    "edgeSpecular": {
+      "default": 0.9,
+      "min": 0,
+      "max": 4
+    },
+    "normalPull": {
+      "default": 0.62,
+      "min": 0,
+      "max": 1
+    },
+    "alignmentThreshold": {
+      "default": 0.27,
+      "min": 0,
+      "max": 0.99
+    },
+    "alignmentFeather": {
+      "default": 0.32,
+      "min": 0.005,
+      "max": 1
+    },
+    "edgeWidth": {
+      "default": 1,
+      "min": 0.25,
+      "max": 3
+    },
+    "reflection": {
+      "default": 0.32,
+      "min": 0,
+      "max": 2
+    },
+    "coatingResponse": {
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    "filterMix": {
+      "default": 0.44,
+      "min": 0,
+      "max": 1
+    },
+    "brushThreshold": {
+      "default": 0.85,
+      "min": 0,
+      "max": 8
+    },
+    "brushWidth": {
+      "default": 0.32,
+      "min": 0,
+      "max": 0.9
+    },
+    "brushBrightness": {
+      "default": 0.22,
+      "min": 0,
+      "max": 0.9
+    },
+    "brushScale": {
+      "default": 0.084,
+      "min": 0.005,
+      "max": 1
+    },
+    "skyRed": {
+      "default": 1,
+      "min": 0,
+      "max": 4
+    },
+    "skyGreen": {
+      "default": 1,
+      "min": 0,
+      "max": 4
+    },
+    "skyBlue": {
+      "default": 1,
+      "min": 0,
+      "max": 4
+    }
+  },
+  "finishes": {
+    "painted-metal": {},
+    "fixture-enamel": {
+      "extends": "painted-metal",
+      "parameters": {
+        "coatingResponse": 0.22,
+        "edgeSpecular": 0.52,
+        "normalPull": 0.4
+      }
+    },
+    "weathered-steel": {
+      "extends": "painted-metal",
+      "parameters": {
+        "edgeSpecular": 0.62,
+        "normalPull": 0.51,
+        "reflection": 0.21
+      }
+    },
+    "brushed-steel": {
+      "extends": "painted-metal",
+      "parameters": {
+        "edgeSpecular": 1.25,
+        "reflection": 0.48
+      }
+    },
+    "polished-worktop": {
+      "extends": "brushed-steel",
+      "parameters": {
+        "normalPull": 0.68,
+        "reflection": 0.76,
+        "filterMix": 0.52
+      }
+    },
+    "stock-hardware": {
+      "extends": "painted-metal",
+      "parameters": {
+        "edgeDiffuse": 0.022,
+        "edgeSpecular": 0.72,
+        "reflection": 0.28
+      }
+    }
+  },
+  "wearParameters": {
+    "chipDepth": {
+      "default": 0.0008,
+      "min": 0,
+      "max": 0.015
+    },
+    "chipCoverage": {
+      "default": 0.45,
+      "min": 0,
+      "max": 1
+    },
+    "chipScale": {
+      "default": 0.052,
+      "min": 0.005,
+      "max": 1
+    },
+    "chipPolish": {
+      "default": 0.15,
+      "min": -0.5,
+      "max": 0.8
+    },
+    "chipDiffuse": {
+      "default": 0,
+      "min": 0,
+      "max": 0.15
+    }
+  },
+  "wear": {
+    "worn": {},
+    "maintained": {
+      "extends": "worn",
+      "parameters": {
+        "chipDepth": 0.00018,
+        "chipCoverage": 0.2,
+        "chipPolish": 0.07
+      }
+    },
+    "masonry": {
+      "extends": "worn",
+      "parameters": {
+        "chipDepth": 0.0012,
+        "chipCoverage": 0.38,
+        "chipPolish": -0.09
+      }
+    }
+  },
+  "twinStripBindings": {
+    "builtin:fixture-enamel": {
+      "finish": "fixture-enamel",
+      "wear": "maintained",
+      "reflection": "virtual"
+    },
+    "builtin:cabinet-zinc": {
+      "finish": "stock-hardware",
+      "wear": "maintained",
+      "reflection": "virtual"
+    },
+    "builtin:brushed-metal": {
+      "finish": "brushed-steel",
+      "wear": "maintained",
+      "reflection": "virtual"
+    }
+  },
+  "bindings": {
+    "builtin:kitchen-worktop": {
+      "finish": "polished-worktop",
+      "wear": "maintained",
+      "reflection": "box"
+    },
+    "builtin:kitchen-metal": {
+      "finish": "brushed-steel",
+      "wear": "maintained",
+      "reflection": "box"
+    },
+    "builtin:shop-register": {
+      "finish": "stock-hardware",
+      "wear": "maintained",
+      "reflection": "virtual"
+    },
+    "Weathered street-lamp steel": {
+      "finish": "weathered-steel",
+      "wear": "worn",
+      "reflection": "box"
+    }
+  }
+}

@@ -5,6 +5,7 @@ mod decal;
 pub mod expression;
 mod footprint;
 mod glb;
+mod limits;
 mod location;
 mod memory;
 mod output;
@@ -135,7 +136,7 @@ enum Shape {
 /// Parameter/material resolution is separate from mesh construction so hosts can reuse local geometry.
 pub struct PreparedItem {
     pub geometry_key: String,
-    /// Version 2: each part's ID and geometry key, in definition order.
+    /// Version 2: every expanded part's instance ID and geometry key, in placement order.
     pub part_keys: Vec<(String, String)>,
     pub parameters: Values,
     /// Evaluated derived values.
@@ -383,11 +384,7 @@ pub fn prepare_in(
             for (slot, density) in inherited {
                 densities.entry(slot).or_insert(density);
             }
-            part_keys = prepared
-                .iter()
-                .zip(&definition.parts)
-                .map(|(part, source)| (source.id.clone(), part.key().to_owned()))
-                .collect();
+            part_keys = prepared.iter().map(parts::PreparedPart::identity).collect();
             authored = parts::authored(&context, &prepared)?;
             let identity = json!(["parts", part_keys, authored]);
             decals = parts::decals(&context, &prepared, Matrix(definition.transform))?;
@@ -610,12 +607,25 @@ impl PreparedItem {
         self.finish(existing.geometry.clone())
     }
     fn finish(&self, geometry: Arc<ItemGeometry>) -> Result<GeneratedItem, ItemDiagnostic> {
-        for slot in self.materials.keys() {
+        let mut materials = self.materials.clone();
+        for (slot, request) in &self.materials {
             if !geometry
                 .meshes
                 .iter()
                 .any(|mesh| &mesh.material_slot == slot)
             {
+                // An explicitly mapped part slot can name a catalog fallback even in
+                // variants that omit that part or produce no mesh for it.
+                if request.entry.starts_with("builtin:")
+                    && self
+                        .definition
+                        .parts
+                        .iter()
+                        .any(|part| part.slots.values().any(|part_slot| part_slot == slot))
+                {
+                    materials.remove(slot);
+                    continue;
+                }
                 return Err(fail(
                     &self.definition.source,
                     &format!("/slots/{}", pointer_key(slot)),
@@ -628,7 +638,7 @@ impl PreparedItem {
             id: self.definition.id.clone(),
             geometry_key: self.geometry_key.clone(),
             geometry,
-            materials: self.materials.clone(),
+            materials,
             attachments: self.attachments.clone(),
             collision: self.definition.collision.clone(),
             transform: self.definition.transform,

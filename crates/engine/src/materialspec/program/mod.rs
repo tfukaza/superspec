@@ -25,13 +25,13 @@ pub use features::{
     followed_names, orient_relief, receiver_features, receiver_seams,
 };
 pub use planes::{Binding, FieldPlane, PLANE_MAGIC, Plane};
-pub use zones::{
-    DEFAULT_DEPTH as ZONE_DEPTH, ZONE_ROW_TEXELS, Zone, ZoneHit, ZoneSet, pack as pack_zones,
-    zone_id,
-};
 pub use ts::{
     EditFailure, EditOp, Edited, Inspection, Patch, Span, apply as apply_edit,
     inspect as inspect_recipe,
+};
+pub use zones::{
+    DEFAULT_DEPTH as ZONE_DEPTH, ZONE_ROW_TEXELS, Zone, ZoneHit, ZoneSet, pack as pack_zones,
+    zone_id,
 };
 
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,30 @@ pub struct MaterialRequest {
     pub parameters: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub seed: u32,
+}
+
+/// Receiver-compatible material alternatives, keyed by their owning entry module.
+pub type MaterialLodSources = BTreeMap<String, Vec<MaterialLodSource>>;
+
+pub(crate) fn check_lod_owners(
+    sources: &MaterialLodSources,
+    modules: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(owner) = sources.keys().find(|owner| !modules.contains_key(*owner)) {
+        return Err(format!("Missing owning material LOD module {owner}."));
+    }
+    Ok(())
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaterialLodSource {
+    pub screen_coverage: f64,
+    #[serde(default)]
+    pub entry: Option<String>,
+    #[serde(default)]
+    pub parameters: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub resolution: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]

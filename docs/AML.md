@@ -1,6 +1,8 @@
 # Architecture Markup Language
 
-AML is SuperSpec's native XML authoring format. Use `.aml`; the same document can
+AML is the XML interchange format for architectural scenes. LevelSpec can
+publish an AML draft as XML, and SuperSpec reads the same format from authoring
+tools and handwritten files. Use `.aml`; the same document can
 use `.xml`. SVG is a drawing/export format. The package root and normal CLI inputs
 accept `<architecture version="1">`, not SVGX.
 
@@ -131,6 +133,22 @@ projected boundary. Recess depth starts at the negative-Y face plus `offset` inw
 and must leave a back web. Opening details use the same host frame with independent
 placement and collision. Frame borders are physical profile offsets, including
 ellipses and custom profiles, rather than scaled copies of the opening.
+
+A `window` fits a modeled casement into a named rectangular through-opening.
+The opening cuts the wall and supplies the dimensions and orientation of the
+frame. The opening must fit on one planar face of a wall or box. Supported
+widths are 0.4–4 m and heights are 0.4–3 m. The boolean `open` selects the
+authored pose and defaults to `false`.
+A fully open sash swings 90 degrees about its jamb, carrying the glass and
+handle with it. Keep enough space on the swing side of the wall.
+
+```xml
+<path id="east-axis" points="6 4 0; 6 0 0"/>
+<wall id="east-wall" path="east-axis" thickness="0.24" height="3"/>
+<opening id="east-bay" host="east-wall" shape="rectangle"
+         center="2 1.6" width="1.1" height="1.3"/>
+<window id="east-casement" opening="east-bay" open="true"/>
+```
 
 Extrusions retain profile holes. Sweeps use local XY cross-sections with holes and
 optional triangulation vertices, transported along an open path before the full
@@ -313,17 +331,37 @@ document, subject to the scene geometry limits.
 
 | Element | Local anchor and controls |
 | --- | --- |
-| `building` | Lot origin at pavement height. `floors` selects 2–12 storeys (default 4). `width` and `depth` are 6–14 m (defaults 9.8 × 7). `seed` selects repeatable architecture and dressing (0–31, defaults to floor count). The same intrinsic attributes share a design across placements. For the authored four-storey demo use `model="reference-corner"` with its original dimensions and seed. |
+| `building` | Lot origin at pavement height. `floors` selects 2–12 storeys (default 4). `width` and `depth` are 6–14 m (defaults 9.8 × 7). `seed` selects repeatable architecture and dressing (0–31, defaults to floor count). Use `front-trade` to open the first street-facing bay as a `provisions`, `grocer`, `greengrocer`, `hardware`, `herbalist`, or `roast` shop. The same intrinsic attributes share a design across placements. For the authored four-storey demo use `model="reference-corner"` with its original dimensions and seed. |
 | `road` | Near starting corner at road surface. `length` extends along +X and `width` toward −Y. |
 | `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
 | `pillar`, `wall` | Closed concrete member with its lower corner at the placement. Width follows +X, depth +Y, and height +Z before heading rotation. Defaults are 0.5 × 0.5 × 3 m for a pillar and 4 × 0.28 × 2.2 m for a wall. Each member has its own metric concrete finish and shares the washroom weathering recipe. |
+| `procedural-wall` | Standalone windowless concrete wall. Uses the same local axes as `wall` and dresses the −Y face with service pipes, wires and paper posters. `seed` selects a repeatable arrangement. Set `dressing="false"` for a plain weathered wall. |
+| `pipe-run`, `duct-run` | Sweeps a circular pipe or rectangular duct along local XYZ centerline points, for example `points="0 0 0; 0 0 2; 4 0 2"`. Pipe `radius` defaults to 0.055 m. Duct `width` and `height` default to 0.32 and 0.22 m. Elbows follow the polyline, with sleeves or flanges on straight runs. |
 | `avenue` | Starting corner at paving height. A pedestrian strip extends along +X, with its median halfway across its `width` toward −Y. Accepts `length` and `width`. |
 | `tree` | Trunk foot. The Kowloon theme supplies TreeSpec bark levels, illustrated foliage and a shadow proxy. Trees and shrubs accept a uniform `scale` from 0.05 to 5, default 1. Scaling preserves the root position. |
 | `shrub` | Root position for a low illustrated shrub. Supports the same heading and row controls as trees. |
+| `weed` | Root position for a small clump of soft undergrowth and grass blades. The default `variant="mound"` grows against masonry. Use `variant="seam"` for a lower broken line of growth. The long axis follows local +X so `heading` can align it with a joint. Supports the tree placement and uniform scale controls. |
+| `grass-field` | Places a painted lawn patch at its local origin. Supply its ItemSpec-compatible GLB companion with a relative `src`, e.g. `src="planting/court.glb"`. The asset carries the metric footprint, rolling ground relief, tuft atlas and grass pigment. Heading and row controls apply to the whole patch. |
 | `lamp` | Post foot. Optional `banner="true"` hangs a cloth banner. The arm points toward local −Y. |
+| `wall-extraction-grille` | Centre of the rear wall flange. Width 0.696 m, height 0.390 m and projection 0.066 m along local −Y. |
+| `passage-sign-lamp` | Backplate centre on the wall. The folded hood projects 0.19 m along local −Y. Allow 0.45 m in width and 0.22 m in height. |
+| `ceiling-bulkhead` | Centre of the ceiling mounting plate. The oval cast housing measures about 0.33 × 0.24 m. A wire cage protects the warm prismatic lens. Allow 0.16 m below the soffit and 0.37 m from the mount along local +X for the surface conduit. |
+| `ceiling-twin-strip` | Centre of the ceiling mounting face. Two cool opal tubes sit beneath folded aluminum reflectors along local X. `length` is 0.4–2.4 m (default 1.2 m). Allow 0.29 m across the housing and 0.12 m below the soffit. With `enclosed="true"`, a continuous ribbed opal cover, gasketed ivory end caps and zinc clips enclose the batten. The enclosed fitting measures 0.272 m across and hangs 0.106 m below the mount. |
+| `ceiling-girder` | Start of the upper flange. The beam extends along local +X. `length` is 1.6–20 m (default 4 m). Place intermediate ceiling fixings with `hangerStations="2 0 0; 5 0 0"` and set `soffitGap` to the vertical distance to the soffit in metres. |
 
 These theme props contribute visual geometry. Author AML slabs, walls or collision
 proxies independently where the layout requires walking surfaces or obstructions.
+
+For a four-sided building lot, supply `footprint="0 0; 10 0; 8 7; 0 7"` in place
+of `width` and `depth`. The four XY corners are in local metres, in counterclockwise
+order. The lot must be convex and its edges must each measure 6–14 m. The first
+edge takes the family's first facade. Position and heading place the finished
+building, including its shaped roof. The authored reference corner keeps its own lot.
+
+For service runs, `supports` accepts one local XYZ offset per centerline segment.
+Each offset points perpendicularly from the centerline to its mounting surface.
+The generator places clamps and footplates along straight sections. Use
+`0 0 0` for an unsupported leg such as a short wall penetration.
 The existing `<dressing><building host="…"/></dressing>` continues to dress an
 architectural host. The [WorldSpec city plan](plans/worldspec-city.md) records
 the placement and rendering scope.

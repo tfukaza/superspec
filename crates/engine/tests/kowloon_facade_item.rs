@@ -3048,3 +3048,58 @@ fn no_two_receivers_of_the_planned_buildings_lie_on_one_another() {
         );
     }
 }
+
+#[test]
+fn hosted_window_clear_aperture_follows_the_hinged_leaf_at_all_sizes() {
+    for (width, height) in [(0.4, 0.4), (1.05, 1.2), (4.0, 3.0)] {
+        for open in [false, true] {
+            let window = generate(
+                "kowloon-hosted-window.item.json",
+                &[
+                    ("width", json!(width)),
+                    ("height", json!(height)),
+                    ("open", json!(open)),
+                ],
+            );
+            let frame = bounds_of(&window, |id| id.starts_with("frame-"));
+            let pane = bounds_of(&window, |id| id.contains("glazing"));
+            let expected_frame = [[-width / 2., -0.036, 0.], [width / 2., 0.036, height]];
+            let pivot = -width / 2. + 0.048;
+            let expected_pane = if open {
+                [
+                    [pivot + 0.013, -width + 0.091, 0.083],
+                    [pivot + 0.017, -0.075, height - 0.083],
+                ]
+            } else {
+                [
+                    [-width / 2. + 0.083, -0.027, 0.083],
+                    [width / 2. - 0.083, -0.023, height - 0.083],
+                ]
+            };
+            for (actual, expected) in [(frame, expected_frame), (pane, expected_pane)] {
+                for (actual, expected) in actual
+                    .into_iter()
+                    .flatten()
+                    .zip(expected.into_iter().flatten())
+                {
+                    assert!((actual - expected).abs() < 1e-6, "{actual} vs {expected}");
+                }
+            }
+            // No opaque mesh spans this sightline into the real space behind the host.
+            let sight_height = height * 0.31;
+            for mesh in &window.geometry.meshes {
+                if !mesh.id.contains("glazing") {
+                    let [low, high] = bounds_of(&window, |id| id == mesh.id);
+                    assert!(
+                        low[0] > 0.
+                            || high[0] < 0.
+                            || low[2] > sight_height
+                            || high[2] < sight_height,
+                        "{}",
+                        mesh.id
+                    );
+                }
+            }
+        }
+    }
+}

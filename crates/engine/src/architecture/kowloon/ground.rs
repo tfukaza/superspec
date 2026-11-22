@@ -403,8 +403,8 @@ impl Compiler<'_> {
     }
 
     pub(super) fn render_ground(
-        &mut self,
-        scene: &mut Scene,
+        &self,
+        visuals: &mut VisualOutput<'_>,
         prepared: Vec<Prepared>,
         theme: &mut ThemeState,
         execution: &Execution<'_>,
@@ -475,7 +475,7 @@ impl Compiler<'_> {
                 .collect();
             self.bake_visual(
                 execution,
-                scene,
+                visuals,
                 &mut drawing,
                 host,
                 rule,
@@ -484,7 +484,7 @@ impl Compiler<'_> {
                 bindings,
                 None,
             )?;
-            scene.manifest.ground_plans.push(pavement::render::Plan {
+            visuals.ground_plans().push(pavement::render::Plan {
                 host: host.clone(),
                 anchors: prepared
                     .layout

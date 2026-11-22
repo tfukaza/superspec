@@ -11,6 +11,7 @@ pub enum Value {
     Number(f64),
     Boolean(bool),
     Vector(Vec<f64>),
+    PlanPoints(Vec<[f64; 2]>),
     Points(Vec<V3>),
     Triangles(Vec<[usize; 3]>),
 }

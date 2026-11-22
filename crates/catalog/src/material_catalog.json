@@ -1,4 +1,147 @@
 {
+  "cabinet-enamel": {
+    "color":"#ffffff", "repeat":1, "metalness":1, "roughness":1,
+    "texture":"superspec-material:cabinet-enamel.png",
+    "metallicRoughnessTexture":"superspec-material:cabinet-enamel-properties.png",
+    "normalTexture":"superspec-material:cabinet-enamel-normal.png", "normalScale":0.54,
+    "live":[{"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.28}}}]
+  },
+  "cabinet-zinc": {
+    "color":"#e0e1d7", "repeat":1, "metalness":0.35, "roughness":1,
+    "texture":"superspec-material:brushed-metal.png",
+    "metallicRoughnessTexture":"superspec-material:brushed-metal-properties.png",
+    "normalTexture":"superspec-material:brushed-metal-normal.png", "normalScale":0.43,
+    "live":[{"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.5}}}]
+  },
+  "cabinet-markings": {
+    "color":"#ffffff", "repeat":1, "roughness":0.82, "metalness":0,
+    "texture":"superspec-material:cabinet-markings.png"
+  },
+  "batten-ivory": {
+    "color":"#e6decb", "roughness":0.63, "metalness":0,
+    "emissive":"#6b6557", "emissiveStrength":0.50,
+    "normalTexture":"superspec-material:fixture-enamel-normal.png", "normalScale":0.21
+  },
+  "batten-opal-glass": {
+    "color":"#ffffff", "emissive":"#fff6e8", "emissiveStrength":0.80,
+    "roughness":1, "metalness":0, "repeat":1,
+    "texture":"superspec-material:batten-opal.png",
+    "emissiveTexture":"superspec-material:batten-opal-emission.png",
+    "normalTexture":"superspec-material:batten-opal-normal.png", "normalScale":0.62,
+    "metallicRoughnessTexture":"superspec-material:batten-opal-properties.png"
+  },
+  "sign-lamp-aluminum": {
+    "color":"#dededa", "metalness":0.62, "roughness":1,
+    "texture":"superspec-material:brushed-metal.png",
+    "normalTexture":"superspec-material:brushed-metal-normal.png", "normalScale":0.38,
+    "metallicRoughnessTexture":"superspec-material:brushed-metal-properties.png",
+    "emissive":"#626760", "emissiveStrength":0.58,
+    "live":[{"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.55}}}]
+  },
+  "sign-lamp-flutes": {
+    "color":"#f3dfba", "metalness":0, "roughness":0.42,
+    "emissive":"#ffcea0", "emissiveStrength":0.38
+  },
+  "sign-lamp-opal": {
+    "color":"#fff4db", "metalness":0, "roughness":0.51,
+    "emissive":"#ffdab0", "emissiveStrength":0.54
+  },
+  "opal-diffuser": {
+    "color": "#e7ece8",
+    "emissive": "#eaf4ef",
+    "emissiveStrength": 0.70,
+    "roughness": 0.42,
+    "metalness": 0
+  },
+  "bulkhead-spun-metal": {
+    "color": "#687079",
+    "emissive": "#ffffff",
+    "emissiveStrength": 2.0,
+    "emissiveTexture": "superspec-material:bulkhead-spun-metal-reflection.png",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:bulkhead-spun-metal.png",
+    "normalTexture": "superspec-material:bulkhead-spun-metal-normal.png",
+    "normalScale": 1,
+    "metallicRoughnessTexture": "superspec-material:bulkhead-spun-metal-properties.png",
+    "live": [
+      {"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.75},"radial":{"value":1.7}}},
+      {"id":"lightFloor","stage":"lighting-composition","requires":["view-direction","lit-radiance"],"arguments":{"from":{"value":0.17},"to":{"value":0.015},"red":{"value":0.20},"green":{"value":0.23},"blue":{"value":0.26}}}
+    ]
+  },
+  "bulkhead-prismatic-glass": {
+    "color": "#f6e6c9",
+    "emissive": "#ffdaa5",
+    "emissiveStrength": 0.64,
+    "roughness": 1,
+    "metalness": 0,
+    "texture": "superspec-material:bulkhead-glass.png",
+    "emissiveTexture": "superspec-material:bulkhead-glass.png",
+    "normalTexture": "superspec-material:bulkhead-glass-normal.png",
+    "normalScale": 0.72,
+    "metallicRoughnessTexture": "superspec-material:bulkhead-glass-properties.png"
+  },
+  "extraction-grille-frame": {
+    "color":"#ffffff","metalness":1,"roughness":1,"repeat":1,
+    "texture":"superspec-material:extraction-grille-frame.png",
+    "emissiveTexture":"superspec-material:extraction-grille-frame.png","emissive":"#babfc1","emissiveStrength":0.31,
+    "metallicRoughnessTexture":"superspec-material:extraction-grille-frame-properties.png",
+    "normalTexture":"superspec-material:extraction-grille-frame-normal.png","normalScale":0.62,
+    "live":[{"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.46}}}]
+  },
+  "casement-enamel": {
+    "color": "#ffffff",
+    "emissive": "#35423e",
+    "emissiveStrength": 0.70,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:casement-enamel.png",
+    "normalTexture": "superspec-material:casement-enamel-normal.png",
+    "normalScale": 0.63,
+    "metallicRoughnessTexture": "superspec-material:casement-enamel-properties.png",
+    "live": [
+      {"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.48}}},
+      {"id":"lightFloor","stage":"lighting-composition","requires":["view-direction","lit-radiance"],"arguments":{"from":{"value":0.23},"to":{"value":0.01},"red":{"value":1.10},"green":{"value":1.14},"blue":{"value":1.16}}}
+    ]
+  },
+  "casement-surround": {
+    "color": "#ffffff",
+    "roughness": 1,
+    "metalness": 1,
+    "emissive": "#404d54",
+    "emissiveStrength": 0.65,
+    "texture": "superspec-material:casement-surround.png",
+    "normalTexture": "superspec-material:casement-surround-normal.png",
+    "normalScale": 0.42,
+    "metallicRoughnessTexture": "superspec-material:casement-surround-properties.png",
+    "live": [
+      {"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.38}}},
+      {"id":"lightFloor","stage":"lighting-composition","requires":["view-direction","lit-radiance"],"arguments":{"from":{"value":0.20},"to":{"value":0.012},"red":{"value":1.04},"green":{"value":1.10},"blue":{"value":1.16}}}
+    ]
+  },
+  "casement-nickel": {
+    "color": "#ffffff",
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:casement-nickel.png",
+    "normalTexture": "superspec-material:casement-nickel-normal.png",
+    "normalScale": 0.45,
+    "metallicRoughnessTexture": "superspec-material:casement-nickel-properties.png",
+    "live": [
+      {"id":"virtualSky","stage":"environment-reflection","requires":["reflection-direction","specular-contribution"],"arguments":{"intensity":{"value":0.40}}},
+      {"id":"lightFloor","stage":"lighting-composition","requires":["view-direction","lit-radiance"],"arguments":{"from":{"value":0.25},"to":{"value":0.012},"red":{"value":1.13},"green":{"value":1.12},"blue":{"value":1.09}}}
+    ]
+  },
+  "fixture-enamel": {
+    "color": "#cccec4",
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:fixture-enamel.png",
+    "normalTexture": "superspec-material:fixture-enamel-normal.png",
+    "normalScale": 0.76,
+    "metallicRoughnessTexture": "superspec-material:fixture-enamel-properties.png"
+  },
   "concrete": {
     "color": "#ffffff",
     "repeat": 0.125,
@@ -44,6 +187,11 @@
     "metalness": 0.2,
     "texture": "superspec-material:metal.png"
   },
+  "galvanized-duct": {
+    "color": "#a3aaa7",
+    "roughness": 0.62,
+    "metalness": 0.42
+  },
   "sheet": {
     "color": "#ffffff",
     "repeat": 1.6,
@@ -66,6 +214,13 @@
     "texture": "superspec-material:restaurant-food.png",
     "normalTexture": "superspec-material:restaurant-food-normal.png",
     "metallicRoughnessTexture": "superspec-material:restaurant-food-properties.png"
+  },
+  "display-glass": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 0.08,
+    "metalness": 0,
+    "opacity": 0.055
   },
   "brushed-metal": {
     "color": "#ffffff",
@@ -117,6 +272,15 @@
     "texture": "superspec-material:grocer-props.png",
     "normalTexture": "superspec-material:grocer-props-normal.png",
     "metallicRoughnessTexture": "superspec-material:grocer-props-properties.png"
+  },
+  "market-hero-props": {
+    "color": "#ffffff",
+    "repeat": 1,
+    "roughness": 1,
+    "metalness": 1,
+    "texture": "superspec-material:market-hero-props.png",
+    "normalTexture": "superspec-material:market-hero-props-normal.png",
+    "metallicRoughnessTexture": "superspec-material:market-hero-props-properties.png"
   },
   "snack-packet": {
     "color": "#ffffff",
@@ -280,6 +444,16 @@
     "repeat": 2,
     "roughness": 1,
     "metalness": 1,
+    "texture": "superspec-material:kitchen-metal.png",
+    "normalTexture": "superspec-material:kitchen-metal-normal.png",
+    "metallicRoughnessTexture": "superspec-material:kitchen-metal-properties.png"
+  },
+  "kitchen-worktop": {
+    "color": "#ffffff",
+    "repeat": 2,
+    "roughness": 0.57,
+    "metalness": 1,
+    "normalScale": 0.8,
     "texture": "superspec-material:kitchen-metal.png",
     "normalTexture": "superspec-material:kitchen-metal-normal.png",
     "metallicRoughnessTexture": "superspec-material:kitchen-metal-properties.png"

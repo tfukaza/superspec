@@ -30,9 +30,11 @@ const HANDLE_STEP = 0.001;
 /** A drag in progress: the axis and value it started from, so a rebuilt overlay does not disturb it. */
 interface Drag { item: string; handle: OverlayHandle; origin: THREE.Vector3; axis: THREE.Vector3; start: number; value: number; pointer: number }
 
+interface Grip { mesh: THREE.Mesh; arrow: THREE.ArrowHelper; item: string; handle: OverlayHandle }
+
 export class ItemOverlays {
   readonly group = new THREE.Group();
-  private grips: { mesh: THREE.Mesh; item: string; handle: OverlayHandle }[] = [];
+  private grips: Grip[] = [];
   private drag?: Drag;
   private change?: HandleChange;
   /** Set by a drag, so the click that ends it selects nothing. */
@@ -56,6 +58,10 @@ export class ItemOverlays {
 
   /** Replaces the overlays. `features` shows features, anchors and decal outlines; `handles` shows the drag handles. */
   show(items: OverlayItem[], options: { features: boolean; handles: boolean }, change?: HandleChange): void {
+    // A dimension edit moves its handle. Keep its drawables and their driver programs
+    // through the edit, including the arrow the user is currently dragging.
+    const previous = new Map(this.grips.map(grip => [grip.mesh.name, grip]));
+    for (const grip of previous.values()) this.group.remove(grip.mesh, grip.arrow);
     this.clear();
     this.change = change;
     const line = (points: number[][], closed: boolean, color: number): void => {
@@ -82,16 +88,30 @@ export class ItemOverlays {
         for (const decal of item.decals) { line(decal.corners, true, 0xffffff); decals++; }
       }
       if (options.handles) for (const handle of item.handles) {
-        const mesh = new THREE.Mesh(new THREE.SphereGeometry(HANDLE_RADIUS, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff8a1f, depthTest: false, transparent: true, opacity: 0.95 }));
-        mesh.position.set(handle.position[0], handle.position[1], handle.position[2]);
-        mesh.renderOrder = 11;
-        mesh.name = `${item.id}/${handle.id}`;
-        this.group.add(mesh);
-        const arrow = new THREE.ArrowHelper(new THREE.Vector3(...handle.axis).normalize(), mesh.position, 0.22, 0xff8a1f, 0.07, 0.04);
-        arrow.traverse(object => { const material = (object as THREE.Mesh).material as THREE.Material | undefined; if (material) { material.depthTest = false; material.transparent = true; } object.renderOrder = 11; });
-        this.group.add(arrow);
-        this.grips.push({ mesh, item: item.id, handle });
+        const name = `${item.id}/${handle.id}`;
+        const axis = new THREE.Vector3(...handle.axis).normalize();
+        let grip = previous.get(name);
+        if (grip) {
+          previous.delete(name);
+          grip.handle = handle;
+          grip.arrow.setDirection(axis);
+        } else {
+          const mesh = new THREE.Mesh(new THREE.SphereGeometry(HANDLE_RADIUS, 16, 12), new THREE.MeshBasicMaterial({ color: 0xff8a1f, depthTest: false, transparent: true, opacity: 0.95 }));
+          mesh.renderOrder = 11;
+          mesh.name = name;
+          const arrow = new THREE.ArrowHelper(axis, mesh.position, 0.22, 0xff8a1f, 0.07, 0.04);
+          arrow.traverse(object => { const material = (object as THREE.Mesh).material as THREE.Material | undefined; if (material) { material.depthTest = false; material.transparent = true; } object.renderOrder = 11; });
+          grip = { mesh, arrow, item: item.id, handle };
+        }
+        grip.mesh.position.fromArray(handle.position);
+        grip.arrow.position.copy(grip.mesh.position);
+        this.group.add(grip.mesh, grip.arrow);
+        this.grips.push(grip);
       }
+    }
+    for (const grip of previous.values()) {
+      this.releaseDrawable(grip.mesh);
+      this.releaseDrawable(grip.arrow);
     }
     this.report(features, anchors, decals);
     this.invalidate();
@@ -171,13 +191,17 @@ export class ItemOverlays {
     if (this.dragged) this.change?.(drag.item, drag.handle, event.type === "pointercancel" ? drag.value : this.value(drag, event), true);
   };
 
-  private clear(): void {
-    this.group.traverse(object => {
+  private releaseDrawable(root: THREE.Object3D): void {
+    root.traverse(object => {
       const drawable = object as THREE.Mesh;
       drawable.geometry?.dispose();
       const materials = Array.isArray(drawable.material) ? drawable.material : [drawable.material];
       for (const material of materials) material?.dispose();
     });
+  }
+
+  private clear(): void {
+    this.releaseDrawable(this.group);
     this.group.clear();
     this.grips = [];
   }

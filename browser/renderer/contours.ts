@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { overlapOutlineShader } from "./overlap-outline.ts";
 import { FullScreenQuad, Pass } from "three/examples/jsm/postprocessing/Pass.js";
 import type { Contours } from "./lighting.ts";
 
@@ -39,6 +40,9 @@ const VERTEX = /* glsl */`varying vec2 vUv; void main() { vUv = uv; gl_Position 
  */
 const EDGE = /* glsl */`
 uniform sampler2D tDepth;
+${overlapOutlineShader}
+uniform bool overlapsOnly;
+uniform mat4 inverseProjection;
 uniform sampler2D tNormal;
 uniform sampler2D tFoliage;
 uniform float hasFoliage;
@@ -70,12 +74,25 @@ float crease( vec3 normal, float here, vec2 uv, float forward ) {
 }
 void main() {
 	float raw = texture2D( tDepth, vUv ).x;
-	if ( raw >= 1.0 ) { gl_FragColor = vec4( 0.0, 0.0, 0.0, 1.0 ); return; }
+	if ( raw >= 1.0 || texture2D(tNormal, vUv).a < .5 ) { gl_FragColor = vec4( 0.0, 0.0, 0.0, 1.0 ); return; }
 	float here = nearness( vUv );
 	float away = perspective > 0.5 ? 1.0 / here : - here;
 	// Meters per unit of nearness, and per CSS pixel, at this pixel.
 	float meters = perspective > 0.5 ? away * away : 1.0;
 	float footprint = ( perspective > 0.5 ? away : 1.0 ) * pixelWorld;
+	if (overlapsOnly) {
+		float depthPerMeter = perspective > .5 ? cameraNear * cameraFar / ((cameraFar-cameraNear)*meters) : 1./(cameraFar-cameraNear);
+		float ink = overlapOutline(tDepth,vUv,texel,depthPerMeter,footprint/pixelRatio);
+		vec4 ray = inverseProjection * vec4(vUv*2.-1.,0.,1.);
+		vec3 eye = perspective > .5 ? normalize(-ray.xyz) : vec3(0.,0.,1.);
+		vec3 n = normalAt(vUv);
+		float faceCoverage = smoothstep(.06,.25,abs(dot(n,eye)));
+		vec2 pixelMeters = 2. * texel * vec2(inverseProjection[0][0], inverseProjection[1][1])
+			* (perspective > .5 ? away : 1.);
+		float sizeFade = outlineSizeFade(pixelMeters,n,eye);
+		gl_FragColor = vec4(ink * faceCoverage * sizeFade * (1.-hasFoliage*texture2D(tFoliage,vUv).a),0.,0.,1.);
+		return;
+	}
 	// What a 24-bit depth buffer can tell apart here, with room for the three values of a second difference.
 	float resolved = perspective > 0.5 ? away * away / cameraNear * 4.8e-7 : ( cameraFar - cameraNear ) * 4.8e-7;
 	float jump = max( depthStep, max( resolved, 1.5 * silhouettePx * footprint / pixelRatio ) );
@@ -113,6 +130,7 @@ void main() {
 const COMPOSITE = /* glsl */`
 uniform sampler2D tDiffuse;
 uniform sampler2D tEdge;
+uniform bool overlapsOnly;
 uniform vec2 texel;
 uniform float softPx;
 uniform float blockPx;
@@ -123,6 +141,11 @@ uniform vec3 tint;
 varying vec2 vUv;
 void main() {
 	vec4 image = texture2D( tDiffuse, vUv );
+	if (overlapsOnly) {
+		float line = texelFetch(tEdge, ivec2(gl_FragCoord.xy), 0).r;
+		gl_FragColor = vec4(image.rgb * mix(vec3(1.), darken * tint, strength * line), image.a);
+		return;
+	}
 	vec2 soft = texel * softPx;
 	vec2 taps[ 4 ];
 	taps[ 0 ] = vUv + soft; taps[ 1 ] = vUv - soft; taps[ 2 ] = vUv + vec2( soft.x, - soft.y ); taps[ 3 ] = vUv + vec2( - soft.x, soft.y );
@@ -161,6 +184,8 @@ export class ContourPass extends Pass {
   private readonly edge = new THREE.ShaderMaterial({
     uniforms: {
       tDepth: { value: null }, tNormal: { value: null }, tFoliage: { value: null }, hasFoliage: { value: 0 },
+      overlapsOnly: { value: false },
+      inverseProjection: { value: new THREE.Matrix4() },
       texel: { value: new THREE.Vector2(1, 1) }, cameraNear: { value: 0.1 }, cameraFar: { value: 1000 }, perspective: { value: 1 },
       pixelWorld: { value: 0.001 }, pixelRatio: { value: 1 }, silhouettePx: { value: 2 }, creasePx: { value: 1 }, depthStep: { value: 0.04 },
       creaseLow: { value: 0.06 }, creaseHigh: { value: 0.23 }, fade: { value: 0.08 },
@@ -169,6 +194,7 @@ export class ContourPass extends Pass {
   });
   private readonly composite = new THREE.ShaderMaterial({
     uniforms: {
+      overlapsOnly: { value: false },
       tDiffuse: { value: null }, tEdge: { value: null }, texel: { value: new THREE.Vector2(1, 1) }, softPx: { value: 0.5 }, blockPx: { value: 16 },
       strength: { value: 0 }, darken: { value: 0.6 }, saturation: { value: LINE_SATURATION }, tint: { value: new THREE.Color(1, 1, 1) },
     },
@@ -184,6 +210,10 @@ export class ContourPass extends Pass {
   constructor(private readonly camera: THREE.Camera, private readonly source: () => ContourSource, contours: Contours) {
     super();
     this.set(contours);
+  }
+
+  setOverlapsOnly(enabled: boolean): void {
+    this.edge.uniforms.overlapsOnly.value = this.composite.uniforms.overlapsOnly.value = enabled;
   }
 
   /** Changes the look in place. */
@@ -229,6 +259,7 @@ export class ContourPass extends Pass {
   override render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
     const source = this.source(), edge = this.edge.uniforms, camera = this.camera as THREE.PerspectiveCamera | THREE.OrthographicCamera;
     edge.tDepth.value = source.depth;
+    edge.inverseProjection.value.copy(camera.projectionMatrixInverse);
     edge.tNormal.value = source.normal;
     edge.tFoliage.value = source.foliage;
     edge.hasFoliage.value = source.hasFoliage ? 1 : 0;

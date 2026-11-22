@@ -303,11 +303,17 @@ try {
   assert.equal((await meshes()).find(mesh => mesh.id === 'bench').bounds[1][0], 4.5);
   const validRevision = await page.locator('#viewport').getAttribute('data-revision');
   const validMeshes = await meshes();
-  await page.locator('#aml').fill('<architecture');
+  const badTag = '<unrecognized/>';
+  const badDraft = editorText(edited).replace('<box', '<!-- 🌿 -->' + badTag + '<box');
+  await page.locator('#aml').fill(badDraft);
   await page.waitForFunction(() => document.querySelector('#status')?.dataset.state === 'error');
   assert.equal(await page.locator('#viewport').getAttribute('data-revision'), validRevision);
   assert.deepEqual(await meshes(), validMeshes);
-  assert.match(await page.locator('#diagnostics').textContent(), /\d+:\d+ XML_SYNTAX/);
+  const finding = page.locator('#diagnostics button').first();
+  assert.match(await finding.textContent(), /AML_CHILD/);
+  await finding.click();
+  assert.deepEqual(await page.locator('#aml').evaluate(e => [e.selectionStart, e.selectionEnd]),
+    [badDraft.indexOf(badTag), badDraft.indexOf(badTag) + badTag.length]);
   assert.match(await page.locator('#status').textContent(), /last valid/);
   assert.equal(await page.locator('#download-glb').isDisabled(), true);
   await page.screenshot({ path: `${output}/invalid-retains-scene.png` });

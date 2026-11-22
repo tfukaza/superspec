@@ -371,7 +371,7 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
     prop(
         &mut placed(d, &layout.stool)?,
         room,
-        "shop-stool",
+        "shop-stool-detailed",
         [0.2, 0.2, 0.],
         [0.31, 0.31, 0.45],
         room.stream("stool")?.float(-0.25, 0.25),

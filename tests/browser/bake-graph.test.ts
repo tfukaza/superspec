@@ -146,6 +146,47 @@ test("a bake may be refused its memory, and leaves nothing behind", async () => 
   assert.equal(graph.stats().nodes, 3);
 });
 
+test("an unused stock patch survives receiver churn within the shared byte budget", async () => {
+  const { device: made, log } = device();
+  const each = targetBytes(target(""));
+  const graph = new BakeGraph(made, { idleBytes: each * 4, totalBytes: each * 4 });
+  const packet = (key: string, stock = false): NodeSpec[] => [{ id: "plane", key, stock, target: target(key), op: op("draw", log) }];
+  for (const name of ["plaster", "wall-1", "wall-2", "wall-3", "wall-4", "wall-5"]) {
+    graph.release((await graph.realize(packet(name, name === "plaster")))!.instance);
+  }
+  const same = (await graph.realize(packet("plaster", true)))!;
+  assert.deepEqual(same.drawn, []);
+  graph.release(same.instance);
+  assert.equal(graph.stats().idleBytes, 4 * each);
+  // An artist browsing other stocks cannot displace every receiver result.
+  for (const name of ["steel", "copper", "stone", "paint"]) {
+    graph.release((await graph.realize(packet(name, true)))!.instance);
+  }
+  assert.equal(graph.dirty(packet("plaster", true)), 1);
+  assert.equal(graph.dirty(packet("wall-5")), 0);
+  // Live receiver maps may use the complete allowance, including the stock reserve.
+  const large = packet("whole wall"); large[0].target = target("large", 16, 16);
+  const held = (await graph.realize(large))!;
+  assert.equal(graph.stats().idle, 0);
+  graph.release(held.instance);
+  graph.dispose();
+  assert.equal(graph.stats().bytes, 0);
+});
+
+test("each alpha cutoff keeps its own mip chain on a shared color plane", async () => {
+  const { device: made, log } = device();
+  const graph = new BakeGraph(made);
+  const color = target("coated wall", 8, 8, "mips");
+  const specs = (coverage?: number): NodeSpec[] => [{ id: "color", key: "same base pixels",
+    op: op("compose", log), target: { ...color, coverage } }];
+  for (const cutoff of [undefined, 0.2, 0.65]) {
+    const result = (await graph.realize(specs(cutoff)))!;
+    assert.deepEqual(result.drawn, ["color"]);
+    graph.release(result.instance);
+  }
+  assert.equal(graph.dirty(specs(0.2)), 0);
+});
+
 test("large nodes are drawn in bands, a level's nodes together, and an abandoned bake leaves its textures incomplete", async () => {
   const { device: made, log } = device();
   const graph = new BakeGraph(made);

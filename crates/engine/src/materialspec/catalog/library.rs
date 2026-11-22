@@ -316,6 +316,33 @@ pub fn groups() -> &'static [Group] {
                     let substrate = clamp(1.0 - face + chip, 0.0, 1.0);",
             },
             Group {
+                id: "chippedShoulder",
+                version: 1,
+                kind: Kind::Group,
+                title: "Chipped edge shoulder",
+                summary: "Break an edge into irregular recessed shoulders. Height perturbs the baked normal; coverage can drive roughness or specular independently.",
+                example: "const chip = chippedShoulder({ distance: rim, field: pockets });",
+                arguments: vec![
+                    argument("distance", Scalar, "m", None, "Distance to the receiving crease."),
+                    argument("field", Scalar, "", None, "Low-frequency fracture field in [0, 1]."),
+                    argument("width", Scalar, "m", Some("0.014"), "Typical shoulder width."),
+                    argument("amount", Scalar, "", Some("0.5"), "Share of the edge exposed to fracture."),
+                    argument("grit", Scalar, "", Some("0.5"), "Filtered local grain."),
+                    argument("depth", Scalar, "m", Some("0.002"), "Maximum chip depth."),
+                ],
+                outputs: vec![
+                    mask("coverage", "Irregular shoulder mask."),
+                    GroupOutput { name: "height", kind: Scalar, summary: "Signed chip relief in metres." },
+                ],
+                requires: &[],
+                unavailable: None,
+                template: "let start = mix(0.7, 0.38, amount);\n\
+                    let chips = smoothstep(start, start + 0.21, field);\n\
+                    let span = max(0.000001, width * mix(0.6, 2.5, chips));\n\
+                    let coverage = (1.0 - smoothstep(span * 0.4, span, distance)) * chips;\n\
+                    let height = -depth * coverage * (0.5 + 0.5 * grit);",
+            },
+            Group {
                 id: "edgeWear",
                 version: 1,
                 kind: Kind::Group,
@@ -579,6 +606,44 @@ pub fn renderer_operations() -> &'static [RendererOperation] {
                     argument("spread", Scalar, "rad", None, "Angular filter offset."),
                 ],
                 &["reflection-direction", "environment-texture"],
+            ),
+            op(
+                "edgeGlint",
+                "Pulls the specular normal toward the main light and eye half-vector near a masked edge. Diffuse and specular gain are independent.",
+                "edgeGlint({ mask: rim, threshold: 0.27, pull: 0.62 })",
+                "shading-normal",
+                vec![
+                    argument("mask", Scalar, "", None, "Geometry edge coverage."),
+                    argument("threshold", Scalar, "", Some("0.27"), "Minimum normal/half-vector cosine."),
+                    argument("feather", Scalar, "", Some("0.32"), "Width of the alignment transition."),
+                    argument("pull", Scalar, "", Some("0.62"), "Fractional rotation toward perfect reflection."),
+                    argument("specular", Scalar, "", Some("0.9"), "Tinted direct specular gain."),
+                    argument("diffuse", Scalar, "", Some("0.028"), "Pigment gain on the edge."),
+                ],
+                &["view-direction", "shading-normal", "specular-contribution"],
+            ),
+            op(
+                "virtualSky",
+                "Adds a material-local procedural studio with three short softboxes to indirect specular lighting. No environment texture is required.",
+                "virtualSky({ intensity: 0.7, verticals: 0.65 })",
+                "environment-reflection",
+                vec![
+                    argument("intensity", Scalar, "", Some("1.0"), "Overall reflection radiance."),
+                    argument("verticals", Scalar, "", Some("0.65"), "Strength of the vertical reflected shapes."),
+                    argument("radial", Scalar, "", Some("0.0"), "Strength of the painted sky reflection from concentric machining grooves. UV0 must chart the part around (0.5, 0.5)."),
+                    argument("red", Scalar, "", Some("1.0"), "Linear red sky tint multiplier."),
+                    argument("green", Scalar, "", Some("1.0"), "Linear green sky tint multiplier."),
+                    argument("blue", Scalar, "", Some("1.0"), "Linear blue sky tint multiplier."),
+                ],
+                &["reflection-direction", "specular-contribution"],
+            ),
+            op(
+                "kuwahara",
+                "Applies an edge-preserving Kuwahara filter to the fully shaded material in screen space.",
+                "kuwahara({})",
+                "post-lighting",
+                vec![],
+                &["shaded-color"],
             ),
             op(
                 "bandLuminance",

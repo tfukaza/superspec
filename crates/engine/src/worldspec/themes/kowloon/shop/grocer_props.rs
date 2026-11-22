@@ -138,6 +138,17 @@ pub(super) fn fitted_crate(
     draw_shape(d, "bottle-crate", at, dimensions, 0., options, None, true)
 }
 
+/// Distinct glass families use the same padded label charts and independent mold proportions.
+pub(super) fn fitted_bottle(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    dimensions: V3,
+    yaw: f64,
+    options: &Options,
+) -> Result<V3, String> {
+    draw_shape(d, "drink-bottle", at, dimensions, yaw, options, None, true)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_shape(
     d: &mut Fixture<'_, '_>,

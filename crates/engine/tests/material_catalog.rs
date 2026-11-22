@@ -107,6 +107,21 @@ fn builtin_materials_keep_their_namespace_channels_and_used_asset_set() {
 }
 
 #[test]
+fn structural_surfaces_retain_catalog_lighting_operations() {
+    let source = r#"<architecture version="1" id="metal"><box id="trim" material="builtin:casement-enamel"/></architecture>"#;
+    let scene = compile_with_assets(source, 0, &|_| Ok(PNG.to_vec())).unwrap();
+    let trim = scene
+        .manifest
+        .materials
+        .iter()
+        .find(|m| m.id == "builtin:casement-enamel")
+        .unwrap();
+    assert!(trim.live.iter().any(|op| op.id == "virtualSky"));
+    assert!(trim.live.iter().any(|op| op.id == "lightFloor"));
+    assert_eq!(trim, &material(&trim.id).unwrap());
+}
+
+#[test]
 fn builtin_errors_never_poison_later_compilation_or_hide_authored_overrides() {
     for source in [
         SOURCE.replace("builtin:concrete", "builtin:missing"),

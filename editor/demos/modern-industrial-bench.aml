@@ -1,0 +1,58 @@
+<architecture version="1" id="modern-industrial-bench" name="Modern Industrial Bench Demo" validation="premap">
+  <material id="modern-concrete" color="#ffffff" roughness="1" metalness="0" repeat="0.5"
+            texture="modern-concrete-color.png" normal-texture="modern-concrete-normal.png"
+            normal-scale="1" metallic-roughness-texture="modern-concrete-roughness.png"/>
+  <material id="modern-concrete-floor" color="#e8ebed" roughness="0.75" metalness="0" repeat="0.5"
+            texture="modern-concrete-color.png" normal-texture="modern-concrete-normal.png"
+            normal-scale="1" metallic-roughness-texture="modern-concrete-roughness.png"/>
+  <material id="modern-graphite" color="#454a4d" roughness="0.37" metalness="0.54"/>
+  <material id="modern-diffuser" color="#d9e5ea" roughness="0.46" emissive="#c7ddea" emissive-strength="0.85"/>
+
+  <profile id="floor-plan" points="-0.35 -0.42; 3.3 -0.42; 3.3 4.48; -0.35 4.48"/>
+  <profile id="soffit-plan" points="0 -0.34; 3.1 -0.34; 3.1 0.74; 0 0.74"/>
+  <path id="clerestory-axis" points="0 -0.17 0; 3.1 -0.17 0"/>
+  <path id="side-axis" points="-0.17 0 0; -0.17 4.34 0"/>
+
+  <slab id="floor" profile="floor-plan" thickness="0.19" material="modern-concrete-floor"/>
+  <wall id="clerestory" path="clerestory-axis" thickness="0.34" height="2.68" material="modern-concrete"/>
+  <wall id="side-wall" path="side-axis" thickness="0.34" height="2.82" material="modern-concrete"/>
+  <slab id="soffit" profile="soffit-plan" thickness="0.14" elevation="2.82" playable="false" material="modern-concrete"/>
+
+  <!-- The beveled profile leaves the concrete return visible around the open clerestory. -->
+  <profile id="clerestory-cut" points="-0.98 -0.30; -0.89 -0.39; 0.89 -0.39; 0.98 -0.30; 0.98 0.30; 0.89 0.39; -0.89 0.39; -0.98 0.30"/>
+  <opening id="observation-aperture" host="clerestory" shape="profile" profile="clerestory-cut" center="1.61 1.80"/>
+  <frame id="observation-frame" opening="observation-aperture" border="0.055" depth="0.045" offset="0.11" material="modern-graphite"/>
+
+  <box id="side-skirting" position="0 0.015 0.018" width="0.029" depth="4.30" height="0.105" material="modern-graphite"/>
+  <box id="back-skirting" position="0.029 0 0.018" width="3.036" depth="0.029" height="0.105" material="modern-graphite"/>
+  <box id="soffit-fascia" position="0 0.740 2.65" width="3.10" depth="0.045" height="0.17" material="modern-graphite"/>
+  <box id="light-channel" position="0.34 0.56 2.643" width="2.42" depth="0.09" height="0.037" material="modern-graphite"/>
+  <box id="light-diffuser" position="0.38 0.582 2.636" width="2.34" depth="0.046" height="0.007" material="modern-diffuser"/>
+  <!-- Each plug and socket share the assembled mating origin. -->
+  <opening id="power-socket-recess-1" host="side-wall" shape="circle" center="1.25 0.735" radius="0.332"/>
+  <opening id="power-socket-recess-2" host="side-wall" shape="circle" center="2.42 0.735" radius="0.332"/>
+  <opening id="power-socket-recess-3" host="side-wall" shape="circle" center="3.59 0.735" radius="0.332"/>
+  <coordinate-frame id="power-connector-mount-1" position="0 1.25 0.735"/>
+  <coordinate-frame id="power-connector-mount-2" position="0 2.42 0.735"/>
+  <coordinate-frame id="power-connector-mount-3" position="0 3.59 0.735"/>
+  <visual-mesh id="high-voltage-socket-1" label="High-voltage industrial socket 1" src="power-socket.glb"
+               frame="power-connector-mount-1" collidable="false"/>
+  <visual-mesh id="high-voltage-socket-2" label="High-voltage industrial socket 2" src="power-socket.glb"
+               frame="power-connector-mount-2" collidable="false"/>
+  <visual-mesh id="high-voltage-socket-3" label="High-voltage industrial socket 3" src="power-socket.glb"
+               frame="power-connector-mount-3" collidable="false"/>
+  <visual-mesh id="high-voltage-plug-1" label="High-voltage industrial plug 1" src="power-plug-body.glb"
+               frame="power-connector-mount-1" collidable="false"/>
+  <visual-mesh id="high-voltage-plug-2" label="High-voltage industrial plug 2" src="power-plug-body.glb"
+               frame="power-connector-mount-2" collidable="false"/>
+  <visual-mesh id="high-voltage-plug-3" label="High-voltage industrial plug 3" src="power-plug-body.glb"
+               frame="power-connector-mount-3" collidable="false"/>
+  <visual-mesh id="high-voltage-cables" label="Bundled high-voltage cables" src="power-cable-bundle.glb"
+               frame="power-connector-mount-2" collidable="false"/>
+  <visual-mesh id="critical-power-sign-01" label="重要電源 01" src="critical-power-01.glb"
+               frame="power-connector-mount-1" position="0 0 0.915" collidable="false"/>
+  <visual-mesh id="critical-power-sign-02" label="重要電源 02" src="critical-power-02.glb"
+               frame="power-connector-mount-2" position="0 0 0.915" collidable="false"/>
+  <visual-mesh id="critical-power-sign-03" label="重要電源 03" src="critical-power-03.glb"
+               frame="power-connector-mount-3" position="0 0 0.915" collidable="false"/>
+</architecture>

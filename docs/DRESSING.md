@@ -1050,8 +1050,8 @@ and profile limitations, reproduction, budgets, and actual rendered evidence.
 
 The roast restaurant also accepts `<prefix>-restaurant-tiles` with
 `restaurant-tiles.png`, `restaurant-tiles-normal.png` and
-`restaurant-tiles-properties.png`. This shared 1152×576 field represents 3.6×1.8m
-at 320 texels/m, baked by `tools/bake-restaurant-tiles.ts` from the current
+`restaurant-tiles-properties.png`. This shared 1728×864 field represents 3.6×1.8m
+at 480 texels/m, baked by `superspec-materials restaurant-tiles` from the current
 `TileField` ceramic damage, grout and plaster-bed recipe. Set white color,
 roughness and metalness factors to 1. Unbound projects retain the kitchen atlas.
 The glazing uses the kit's separate `display-glass` finish so clear display panes

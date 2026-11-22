@@ -14,7 +14,7 @@ import {
 } from "@superspec/material/v1";
 import type { Scalar, Vec2, Vec3 } from "@superspec/material/v1";
 import {
-  fractal, fracture, contour, shoulder, pigment, cellRandom, boxDistance, domainWarp, modulo,
+  fractal, fracture, contour, shoulder, pigment, cellRandom, boxDistance, domainWarp, modulo, illustrate,
 } from "./kowloon-noise.material";
 
 // Study controls.
@@ -37,10 +37,20 @@ const joints = param.bool({ default: true, label: "Construction joints" });
 const plaster = param.bool({ default: false, label: "Plaster coat" });
 const plasterChips = param.bool({ default: true, label: "Plaster loss" });
 const ground = param.bool({ default: false, label: "Ground slab" });
+// Illustrated finish: photographic grain flattened toward the source means, so the darkness and
+// blend fields read as flat painted patches, then warm and cool torn patches and brush dabs.
+const flatten = param.scalar({ default: 0, range: [0, 1], label: "Flatten photo grain" });
+const illustration = param.scalar({ default: 0, range: [0, 1], label: "Illustrated patches" });
+const patchScale = param.scalar({ default: 1.4, range: [0.2, 6], unit: "m", label: "Patch size" });
+const warmTint = param.vec3({ default: vec3(1.1, 0.97, 0.86), range: [0, 2], label: "Warm patch tint" });
+const coolTint = param.vec3({ default: vec3(0.92, 0.95, 1.06), range: [0, 2], label: "Cool patch tint" });
+const brushStrokes = param.scalar({ default: 0.5, range: [0, 1], label: "Brush dabs" });
 
 // The study's recorded linear means of its two source images.
 const meanA = vec3(0.37286770477657405, 0.3662141145046476, 0.3582086447939772);
 const meanB = vec3(0.20798059217157364, 0.20320214220777086, 0.18970546072187944);
+// The linear mean of the plaster image (building-plaster-plain.png).
+const plasterMean = vec3(0.7364711472602083, 0.6666688006220737, 0.5692678345895021);
 
 // Meters on the pattern anchor, two meters per study UV unit.
 const meters = surface;
@@ -49,10 +59,10 @@ const noiseUv = mul(studyUv, vec2(0.85, 0.68));
 const wall = not(ground);
 
 // Two varied source images with darkness fields, an eroded blend and pigment drift.
-const sampleA = select(variation, variedColor("textures/concrete-plain.png", studyUv, seed("concrete-a"), 0.32, 1), sampleColor("textures/concrete-plain.png", studyUv));
+const sampleA = mix(select(variation, variedColor("textures/concrete-plain.png", studyUv, seed("concrete-a"), 0.32, 1), sampleColor("textures/concrete-plain.png", studyUv)), meanA, flatten);
 const uvB = add(mul(studyUv, 1.13), vec2(3.7, 11.2));
 const sampleB = mul(
-  select(variation, variedColor("textures/concrete-fine-sand.png", uvB, seed("concrete-b"), 0.32, 1), sampleColor("textures/concrete-fine-sand.png", uvB)),
+  mix(select(variation, variedColor("textures/concrete-fine-sand.png", uvB, seed("concrete-b"), 0.32, 1), sampleColor("textures/concrete-fine-sand.png", uvB)), meanB, flatten),
   mix(vec3(1), div(meanA, meanB), 0.9),
 );
 const darkA = contour(fracture(add(mul(noiseUv, 5.4), vec2(5.3, 17.1)), jaggedness, seed("dark-a")), 0.035);
@@ -110,7 +120,7 @@ const plasterField = add(plasterBroad, mul(mul(plasterDetail(plasterP), jaggedne
 const exposedHeight = select(plaster, select(plasterChips, smoothstep(0.598, 0.602, plasterField), 0), 1);
 const exposedColor = select(plaster, select(plasterChips, softThreshold(plasterField, 0.6, 0.004), 0), 1);
 const plasterColor = pigment(
-  mul(variedColor("superspec-material:building-plaster-plain.png", studyUv, seed("plaster-image"), 0.32, 1), sub(1, mul(darknessA, fractal(add(mul(studyUv, vec2(3.7, 2.8)), 19.2), seed("plaster-mottling"))))),
+  mul(mix(variedColor("superspec-material:building-plaster-plain.png", studyUv, seed("plaster-image"), 0.32, 1), plasterMean, flatten), sub(1, mul(darknessA, fractal(add(mul(studyUv, vec2(3.7, 2.8)), 19.2), seed("plaster-mottling"))))),
   noiseUv, hueAmount, hueAngle, seed("pigment"),
 );
 const plasterHeight = mul(add(add(0.004, mul(valueNoise(mul(studyUv, 480), seed("plaster-grain")), 0.00016)), mul(fractal(mul(studyUv, 65), seed("plaster-fine")), 0.00035)), sub(1, exposedHeight));
@@ -132,7 +142,8 @@ const chipHeight = mul(mul(neg(chipRelieved), chipRelief), sub(1.35, mul(chipGra
 
 // Color composition, in the study's order; grime, stains, moss and edge wear are layers.
 const relieved = add(mul(repaired, sub(1, min(reliefDarkness, 0.85))), mul(vec3(0.012, 0.011, 0.009), reliefExposed));
-const coated = select(plaster, mix(plasterColor, relieved, exposedColor), relieved);
+const coated = illustrate(select(plaster, mix(plasterColor, relieved, exposedColor), relieved),
+  meters, illustration, patchScale, warmTint, coolTint, brushStrokes, jaggedness, seed("illustration"));
 const chipped = mul(coated, mix(1, add(0.59, mul(chipGrain, 0.29)), chipShaded));
 
 const surfaceHeight = add(

@@ -196,8 +196,8 @@ pub fn draw(
     match kind {
         Kind::Stool | Kind::BoxStand => {
             let top = if kind == Kind::Stool {
-                let size = grocer_props::size("shop-stool", [0.31, 0.31, 0.45])?;
-                prop(d, s, "shop-stool", [0.; 3], size, 0., 0)?;
+                let size = grocer_props::size("shop-stool-detailed", [0.31, 0.31, 0.45])?;
+                prop(d, s, "shop-stool-detailed", [0.; 3], size, 0., 0)?;
                 size[2]
             } else {
                 packing(d, s, [0.; 3], [0.34, 0.3, 0.24], rng)?;

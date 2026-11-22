@@ -5,11 +5,13 @@ import { DEFAULT_LIGHTING, contoursOf, defaultLighting, lightingFromQuery, paint
 import { ShadowStyle } from "./shadow-style.ts";
 import { programSun, setPaintedFinishing } from "./shade.ts";
 import { softwareOcclusionDefault } from "./software-occlusion.ts";
+import { usesKuwahara } from "./kuwahara.ts";
 
 const TONE_MAPPING: Record<Lighting["toneMapping"], THREE.ToneMapping> = {
   // `none` is no curve: the exposure still multiplies (three.js's "no tone mapping" would drop the exposure too).
   aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.LinearToneMapping,
 };
+const PREVIEW_SUN_SHADOW_SIZE = 2048;
 
 /**
  * The record's built-in `studio` environment: three.js's neutral room, prefiltered for reflections. Built once per
@@ -45,6 +47,7 @@ export class SceneLighting {
    * The composited frame for ambient occlusion, contour lines and edge blur.
    */
   ambientOcclusion?: AmbientOcclusion;
+  private materialComposite?: AmbientOcclusion;
   occluding = false;
   outlining = false;
   edgeBlurring = false;
@@ -52,6 +55,8 @@ export class SceneLighting {
   occlusionDefault: string | null = null;
   /** The record in effect: the scene's, with the session's overrides. */
   private resolved = defaultLighting();
+  /** Edge blur is installed when the compositor is constructed. */
+  private edgeBlurThreshold: number | null = null;
   /** The session's exposure (a host's own control), which then replaces the record's. */
   private exposure?: number;
   private readonly direction = new THREE.Vector3(0, 0, 1);
@@ -66,14 +71,14 @@ export class SceneLighting {
    * most three.js games have it; the record's directions are then turned with the world (x, y, z to x, z, -y).
    */
   constructor(private readonly renderer: THREE.WebGLRenderer, private readonly scene: THREE.Scene, private readonly camera: THREE.Camera,
-    private readonly environment: THREE.Texture, private readonly query: URLSearchParams, private readonly excluded: () => THREE.Object3D[] = () => [],
+    private readonly environment: THREE.Texture, private query: URLSearchParams, private readonly excluded: () => THREE.Object3D[] = () => [],
     private readonly up: "z" | "y" = "z") {
     this.ambient.position.set(0, 0, 1);
     // The sun does not move between records and a viewer renders on demand, so the shadow map is drawn when asked
     // (`shadowMap.needsUpdate`, see `fit`), not every frame.
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.shadowMap.autoUpdate = false;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.setScalar(PREVIEW_SUN_SHADOW_SIZE);
     // A small bias against acne and a normal bias that keeps thin parts (ducts, pipes) attached to their shadows.
     this.sun.shadow.bias = -0.0003;
     this.sun.shadow.normalBias = 0.02;
@@ -96,6 +101,23 @@ export class SceneLighting {
   get shadows(): boolean { return this.sun.castShadow; }
   /** Whether those shadows have the illustration look instead of three.js's plain one. */
   get styledShadows(): boolean { return this.shadowStyle.enabled; }
+
+  /** Replace session overrides before reapplying the current authored lighting record. */
+  setOverrides(query: URLSearchParams): boolean {
+    if (query.toString() === this.query.toString()) return false;
+    this.query = query;
+    return true;
+  }
+
+  setSunShadowMapSize(requested = PREVIEW_SUN_SHADOW_SIZE): void {
+    const size = Math.min(requested, this.renderer.capabilities.maxTextureSize);
+    const shadow = this.sun.shadow;
+    if (shadow.mapSize.x === size && shadow.mapSize.y === size) return;
+    shadow.mapSize.setScalar(size);
+    // Three resizes an existing render target on the next shadow update,
+    // releasing its old GPU allocation without replacing the texture binding.
+    shadow.needsUpdate = this.renderer.shadowMap.needsUpdate = true;
+  }
 
   /**
    * Lights and renders the view by `record`. Call `fit` afterwards: the sun may have moved or started casting.
@@ -146,7 +168,7 @@ export class SceneLighting {
       this.report(`ambientOcclusion is ${this.occlusionDefault}.`, "info");
     }
     // Contours and edge blur can use the composited frame independently of occlusion.
-    const contours = contoursOf(lighting);
+    const contours = city ? { ...contoursOf(lighting), enabled: this.query.get("outline") !== "off", width: 1, darken: .34 } : contoursOf(lighting);
     const edgeBlur = this.query.get("edgeblur") === "on";
     const edgeMode = this.query.get("edgeboost");
     const litEdges = casting && (edgeMode === "on" || (city && edgeMode !== "off"));
@@ -159,17 +181,26 @@ export class SceneLighting {
     this.occluding = occlusion.enabled && !unavailable;
     this.outlining = contours.enabled && !unavailable;
     this.edgeBlurring = edgeBlur && !unavailable;
+    const blurThreshold = this.edgeBlurring ? edgeThreshold : null;
+    if (blurThreshold !== this.edgeBlurThreshold) {
+      this.ambientOcclusion?.dispose();
+      this.ambientOcclusion = undefined;
+      this.edgeBlurThreshold = blurThreshold;
+    }
     if (this.occluding || this.outlining || this.edgeBlurring || (litEdges && !unavailable)) {
       if (this.ambientOcclusion) {
         this.ambientOcclusion.set(this.occluding ? occlusion : null);
         this.ambientOcclusion.setContours(this.outlining ? contours : null);
       } else {
         this.ambientOcclusion = new AmbientOcclusion(renderer, scene, this.camera, this.occluding ? occlusion : null, this.excluded,
-          this.outlining ? contours : null, this.edgeBlurring ? edgeThreshold : null);
+          this.outlining ? contours : null, blurThreshold);
         const size = renderer.getSize(new THREE.Vector2());
         this.ambientOcclusion.setSize(size.x, size.y, renderer.getPixelRatio());
       }
+      this.ambientOcclusion.setOverlapOutlines(city);
+      this.ambientOcclusion.setAntialiasing(city && this.query.get("aa") !== "off");
       this.ambientOcclusion.setLitEdges(litEdges && !unavailable ? this.sun : null);
+      this.ambientOcclusion.setShadow(sun?.shadow);
     } else {
       this.ambientOcclusion?.dispose();
       this.ambientOcclusion = undefined;
@@ -185,6 +216,30 @@ export class SceneLighting {
   setExposure(value: number): void {
     this.exposure = value;
     this.renderer.toneMappingExposure = value;
+  }
+
+  /** Materials can opt into filtering even when scene occlusion is disabled. */
+  render(): void {
+    let kuwahara = false;
+    this.scene.traverseVisible(object => {
+      const mesh = object as THREE.Mesh;
+      if (kuwahara || !mesh.isMesh) return;
+      kuwahara = Array.isArray(mesh.material) ? mesh.material.some(usesKuwahara) : usesKuwahara(mesh.material);
+    });
+    if (kuwahara && !this.ambientOcclusion && !this.materialComposite && !AmbientOcclusion.unavailable(this.renderer)) {
+      this.materialComposite = new AmbientOcclusion(this.renderer, this.scene, this.camera, null, this.excluded);
+      const size = this.renderer.getSize(new THREE.Vector2());
+      this.materialComposite.setSize(size.x, size.y, this.renderer.getPixelRatio());
+    }
+    if (this.materialComposite && (!kuwahara || this.ambientOcclusion)) {
+      this.materialComposite.dispose();
+      this.materialComposite = undefined;
+    }
+    const composer = this.ambientOcclusion ?? this.materialComposite;
+    if (composer) {
+      composer.setKuwahara(kuwahara);
+      composer.render();
+    } else this.renderer.render(this.scene, this.camera);
   }
 
   /**
@@ -212,16 +267,11 @@ export class SceneLighting {
     this.renderer.shadowMap.needsUpdate = true;
   }
 
-  /** Draws one frame: through the composited frame (ambient occlusion, contour lines) when one is on, else straight to the canvas. */
-  render(): void {
-    if (this.ambientOcclusion) this.ambientOcclusion.render();
-    else this.renderer.render(this.scene, this.camera);
-  }
-
   /** Follows the renderer's size (call after `renderer.setSize`): the occlusion's targets are sized with the canvas. */
   resize(): void {
     const size = this.renderer.getSize(new THREE.Vector2());
     this.ambientOcclusion?.setSize(size.x, size.y, this.renderer.getPixelRatio());
+    this.materialComposite?.setSize(size.x, size.y, this.renderer.getPixelRatio());
   }
 
   /** A setting this viewer cannot honor is said once, with its fallback, and never blocks the scene. */
@@ -232,6 +282,7 @@ export class SceneLighting {
   }
 
   dispose(): void {
+    this.materialComposite?.dispose();
     this.ambientOcclusion?.dispose();
     this.ambientOcclusion = undefined;
     this.frame.remove(this.ambient, this.sun, this.sun.target);

@@ -44,6 +44,26 @@ Collision is `"none"`, `"bounds"`, `"mesh"`, or a box/sphere object with `kind`,
 `center` and `size`/`radius`. Explicit shapes use definition coordinates and the
 item transform. Bounds, local node transforms and attachments reflect that transform.
 
+An item owner may declare render alternatives with
+`"lods": [{"distance": 20, "parameters": {"segments": 8}}, {"distance": 50, "parameters": {"segments": 4}}]`.
+Each override names a declared geometry control and satisfies its type and bounds.
+There are at most seven alternatives, with positive, strictly increasing distances
+in meters. The original definition and effective controls remain level zero.
+Collision, attachments and editor handles remain those of that canonical item.
+
+The shared native/Wasm authoring session emits the alternatives for standalone items
+and item models in WorldSpec projects as portable geometry LOD groups. Every level
+uses the same material binding and baking path. The low-level `prepare`/`build` calls
+still produce one effective control variant; `render_alternative` supplies the source
+and controls of a declared alternative. A composed item's root owns its level choices:
+sub-item generators read the controls passed by that root, rather than independently
+switching topology inside the parent's combined geometry.
+
+The Kowloon static tree intentionally keeps TreeSpec tier 1 as its existing near
+appearance and selects the authored tier 2 at 45 m. Painted avenue trees and shrubs
+already carry their full authored bark levels; the groundcover carrier deliberately
+uses one source tier to construct a single painted mass.
+
 Use `{"kind":"glb","asset":"models/item.glb"}` with optional scene index for
 imports. Start with empty slots to retain imported PBR materials. Returned slot
 names are `material/0`, `material/1`, etc.; missing primitive material uses
@@ -66,9 +86,10 @@ sampling, supported PBR channels). An unsupported renderer feature must fail at
 that boundary rather than disappear from the imported artifact.
 
 Limits include 1 MiB definition text, 128 controls, 128 slots, 256 attachments,
-32 MiB main GLB, 8 MiB GLB JSON, 64 MiB aggregate source/image bytes, 16 MiB per
-encoded image, 96 Mi pixels, 4096 nodes/primitives, 500000 local vertices and
-250000 source/placed triangles and 1000000 placed vertices. Images are validated before publication. Cancellation
+512 MiB main GLB, 8 MiB GLB JSON, 1 GiB aggregate source/image bytes, 64 MiB per
+encoded image, 512 Mi base-level pixels, and 4096 nodes/primitives. Source geometry
+allows 500,000 local vertices and 250,000 triangles. Across all placements, one
+item may use 1,500,000 vertices and 1,000,000 triangles. Images are validated before publication. Cancellation
 and resolver failures return errors; callers publish completed artifacts only.
 `retained_bytes` charges all retained attribute capacities, hierarchy and raw PBR
 metadata, images, bindings and provenance. Shared allocations are charged fully
@@ -108,6 +129,12 @@ Placement rules position openings and fittings: `{"from": "start"|"end"|"center"
 larger than `every`; copies are named `<id>-1`, `<id>-2`, ...) and `{"point": i}`.
 For an opening the rule places its near edge inside the length left over after its
 own size; for a fitting it places the fitting's centre by arc length.
+
+A route's `points` may also reference a numeric grid parameter containing XYZ triples.
+For mounted runs, `supports` references a second grid with one perpendicular offset
+from each segment's centerline to its receiving face. A zero offset leaves that leg
+unsupported. The resulting bands, arms and footplates share the `bracket` slot.
+Set `omitUnfittableRepeats` to omit repeated fittings that fall on a bend or end.
 
 **Bevels.** `bevel` is a radius in meters that rounds real edges where a silhouette shows them,
 in `bevelSegments` chords (1, a chamfer, by default; or 2); 0, the default, leaves the part and

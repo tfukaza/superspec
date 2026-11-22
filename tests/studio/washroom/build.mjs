@@ -10,19 +10,33 @@ import { writeGlb } from "./geometry.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const examples = resolve(here, "../../../crates/engine/src/materialspec/program/examples");
-const out = resolve(here, "../../../generated/washroom");
 
 const concrete = "kowloon-concrete.material.ts", steel = "kowloon-rusted-steel.material.ts";
+const daylightLighting = {
+  version: 1,
+  ambient: { intensity: 0.24 },
+  environment: { source: "studio", intensity: 0.22 },
+  lights: [{
+    id: "sun", role: "sun", kind: "directional", direction: [-0.72, -0.28, Math.sqrt(1 - 0.72 ** 2 - 0.28 ** 2)],
+    color: [1, 0.88, 0.73], intensity: 3, castsShadow: true, shadow: { style: "plain" },
+  }],
+};
 /** Steel without the study's stylized lighting, for parts that are not bare metal. */
 const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
+/** The city's washroom-concrete finish uses restrained color patches and shallow chips. */
+const illustrated = {
+  aggregateFinish: 1,
+  mottlingBreakup: 0.9, chipAmount: 0.28, chipScale: 0.4, chipRelief: 0.0018, edgeWidth: 0.035, edgeChipping: 0.6, edgeContrast: 1.15,
+  flatten: 0.85, illustration: 0.5, patchScale: 2.4, blendScale: 4, warmTint: [1.12, 1.03, 0.93], coolTint: [0.9, 0.92, 1.02], brushStrokes: 0.25,
+};
 
 /**
  * Every material of the scene: an example recipe, its parameters and the meshes it covers. `bolt` is the template of
  * the scene's instanced batch (`buildBatches`): its material is baked once and every bolt shows it.
  */
 export const materials = [
-  { id: "concrete-walls", entry: concrete, parameters: { darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40 }, meshes: ["wall-tall", "wall-low"] },
-  { id: "concrete-slab", entry: concrete, parameters: { ground: true, darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40 }, meshes: ["slab"] },
+  { id: "concrete-walls", entry: concrete, parameters: { darknessA: 0.14, darknessB: 0.15, hueAmount: 0.12, hueAngle: 40, ...illustrated }, meshes: ["wall-tall", "wall-low"] },
+  { id: "concrete-slab", entry: concrete, parameters: { ground: true, darknessA: 0.14, darknessB: 0.15, hueAmount: 0.12, hueAngle: 40, ...illustrated }, meshes: ["slab"] },
   { id: "tile", entry: "tiled-courtyard.material.ts", parameters: { tileSize: [0.15, 0.15], stagger: 0, wear: 0.3, glaze: [0.2, 0.42, 0.3], glazeRoughness: 0.12, missing: 0.1 }, meshes: ["tiles-wall", "tiles-floor"] },
   { id: "galvanized", entry: steel, parameters: { substrate: [0.5, 0.55, 0.57], metalness: 0.85, roughness: 0.38, surfaceRust: 0.12, rainRust: 0.25 }, meshes: ["duct"] },
   { id: "rusted-pipe", entry: steel, parameters: { substrate: [0.3, 0.15, 0.08], metalness: 0.45, roughness: 0.5, oxideLight: [0.36, 0.13, 0.035], surfaceRust: 0.8 }, meshes: ["pipe"] },
@@ -73,13 +87,12 @@ export function loadTrees(path = process.env.TREES_DOCUMENT ?? treesPath) {
  * `batches: false` builds the scene without its instanced batch (the bolts) and their template mesh; `painted: true`
  * gives the slab the painted ground (`paintedSlab`) instead of concrete; `grass` (true, or a lawn document) adds the
  * lawn and its grass (`lawnMaterials`); `trees` (true, or a plants document) adds the plants standing on that lawn
- * (`treeMaterials`), and with them the lawn. Without `grass` and `trees` the model and project are what they were before
- * them; `trees` changes no mesh of the model, only the project's materials and batches.
+ * (`treeMaterials`), and with them the lawn. `daylight` adds a clerestory, a soffit and a directional lighting setup.
  */
-export function buildProject(resolution = 512, texelDensity = 128, { batches = true, painted = false, grass = false, trees = false } = {}) {
+export function buildProject(resolution = 512, texelDensity = 128, { batches = true, painted = false, grass = false, trees = false, daylight = false } = {}) {
   const plants = trees === true ? loadTrees() : trees || null;
   const lawn = grass === true || (plants && !grass) ? loadLawn() : grass || null;
-  const meshes = buildMeshes({ batches, lawn });
+  const meshes = buildMeshes({ batches, lawn, daylight });
   const glb = writeGlb(meshes);
   const identity = name => {
     const index = meshes.findIndex(mesh => mesh.name === name);
@@ -101,7 +114,11 @@ export function buildProject(resolution = 512, texelDensity = 128, { batches = t
     ...(texelDensity ? { texelDensity } : {}), inspection: "final", mapping: "world", domain: [1, 1], edges: [], gravity: [0, 0, -1],
     base: { kind: "swatch" }, target: { scope: "mesh", enabled: false },
     models: [{ id: "washroom", kind: "glb", name: "washroom.glb" }],
-    materials: chosen.map(material => ({ ...material, seed: 7, meshes: material.meshes.filter(mesh => batches || mesh !== "bolt").map(identity) })),
+    ...(daylight ? { lighting: structuredClone(daylightLighting) } : {}),
+    materials: chosen.map(material => {
+      const receivers = daylight && material.id === "concrete-walls" ? [...material.meshes, "soffit"] : material.meshes;
+      return { ...material, seed: 7, meshes: receivers.filter(mesh => batches || mesh !== "bolt").map(identity) };
+    }),
     ...(batches || lawn ? { batches: [...(batches ? buildBatches().map(batch => ({ ...batch, mesh: identity(batch.mesh) })) : []), ...(lawn?.batches ?? []), ...(plants?.batches ?? [])] } : {}),
     assets: Object.fromEntries(Object.entries(assets).map(([name, bytes]) => [name, Buffer.from(bytes).toString("base64")])),
   };
@@ -109,7 +126,12 @@ export function buildProject(resolution = 512, texelDensity = 128, { batches = t
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { glb, project } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128), { painted: process.env.PAINTED === "1", grass: process.env.GRASS === "1", trees: process.env.TREES === "1" });
+  const daylight = process.env.DAYLIGHT === "1";
+  const out = resolve(here, "../../../generated/washroom", daylight ? "daylight" : "");
+  const { glb, project } = buildProject(Number(process.argv[2] ?? 512), Number(process.argv[3] ?? 128), {
+    painted: process.env.PAINTED === "1", grass: process.env.GRASS === "1",
+    trees: process.env.TREES === "1", daylight,
+  });
   mkdirSync(out, { recursive: true });
   writeFileSync(resolve(out, "washroom.glb"), glb);
   writeFileSync(resolve(out, "washroom.studio.json"), JSON.stringify(project, null, 2) + "\n");

@@ -84,6 +84,13 @@ export interface AmbientOcclusionSettings {
   intensity: number;
   /** How thick surfaces are taken to be behind what the camera sees, meters: thin parts then cast no halo on what is behind them. */
   thickness: number;
+  /**
+   * How the occlusion is found; absent is `gtao`. `horizon` searches the depth alone (`horizon-occlusion.ts`) and
+   * darkens the tone-mapped image, so a game drawing the same shader matches the viewer. Held only when not the default.
+   */
+  method?: "gtao" | "horizon";
+  /** The share of the sun shadow's hue the occlusion takes, 0 to 1; absent is 0. Held only when not 0. */
+  tint?: number;
 }
 
 export interface Lighting {
@@ -192,7 +199,7 @@ export const DEFAULT_LIGHTING: Lighting = {
       tintAlt: [0.04970656598412723, 0.07818742180518633, 0.6866853124353135],
       tintStrength: 0.22,
       wrap: 0.3,
-      noise: { scale: 1.1, edge: 0.07, amount: 0.6, seed: 7 },
+      noise: { scale: 1.1, edge: 0.004, amount: 0.015, seed: 7 },
     },
   }],
 };
@@ -403,7 +410,7 @@ export function parseLighting(value: unknown): Lighting {
   else if (root.version !== 1) fail("version", "must be 1");
   const environment = fields(root.environment, "environment", ["source", "intensity", "rotation"]);
   const ambient = fields(root.ambient, "ambient", ["sky", "ground", "intensity"]);
-  const occlusion = fields(root.ambientOcclusion, "ambientOcclusion", ["enabled", "radius", "intensity", "thickness"]);
+  const occlusion = fields(root.ambientOcclusion, "ambientOcclusion", ["enabled", "radius", "intensity", "thickness", "method", "tint"]);
   const lighting: Lighting = {
     version: 1,
     exposure: number(root.exposure, "exposure", base.exposure, 0, 100),
@@ -426,6 +433,10 @@ export function parseLighting(value: unknown): Lighting {
     },
     lights: [],
   };
+  const method = choice(occlusion.method, "ambientOcclusion.method", "gtao", ["gtao", "horizon"]);
+  if (method !== "gtao") lighting.ambientOcclusion.method = method;
+  const occlusionTint = number(occlusion.tint, "ambientOcclusion.tint", 0, 0, 1);
+  if (occlusionTint !== 0) lighting.ambientOcclusion.tint = occlusionTint;
   let lights: unknown[] = [undefined];
   if (root.lights !== undefined) {
     if (Array.isArray(root.lights)) lights = root.lights;

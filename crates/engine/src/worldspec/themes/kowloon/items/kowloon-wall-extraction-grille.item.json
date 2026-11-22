@@ -1,0 +1,9 @@
+{
+  "format":"itemspec","version":2,"id":"kowloon-wall-extraction-grille",
+  "parts":[{"id":"grille","generator":{"kind":"native","name":"kowloon/wall-extraction-grille","parameters":{}},
+    "slots":{"frame":"paint","blades":"blade-metal","hem":"lip","well":"dark","seal":"seal"}}],
+  "slots":{"paint":{"entry":"builtin:extraction-grille-frame"},"blade-metal":{"entry":"builtin:sign-lamp-aluminum"},
+    "lip":{"entry":"builtin:casement-nickel"},"dark":{"entry":"builtin:wall-cable"},"seal":{"entry":"builtin:wall-cable"}},
+  "attachments":[{"name":"wall","position":[0,0,0],"direction":[0,1,0]}],
+  "collision":"none"
+}

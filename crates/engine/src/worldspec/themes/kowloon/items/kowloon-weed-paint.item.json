@@ -1,0 +1,5 @@
+{
+  "format": "itemspec", "version": 1, "id": "kowloon-weed-paint",
+  "generator": { "kind": "glb", "asset": "kowloon-weed-paint.glb" },
+  "collision": "none"
+}

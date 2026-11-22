@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import { GpuBaker, type IntrinsicDomain } from "../../browser/renderer/bake.ts";
+import { GpuBaker, type IntrinsicDomain, type StackInput } from "../../browser/renderer/bake.ts";
 import { atlasLayouts, bakeGeometry, type AtlasLayout, type ProjectLayouts } from "../../browser/renderer/atlas.ts";
 import type { GraphInstance, NodeSpec, TargetSpec } from "../../browser/renderer/bake-graph.ts";
+import type { MaterialShading, Reads } from "../../browser/renderer/shade.ts";
 
 /**
  * The pass graph's node types on a real WebGL context, over synthetic targets: the separable blur (on any node) and
@@ -77,6 +78,86 @@ function mappingSpecs(gain: number, x: number, size: number): NodeSpec[] {
 }
 
 const held = new Map<string, GraphInstance>();
+
+/** A planar wall and an ordinary return with different coordinates, drawn into the same material atlas. */
+async function mixedWallMaps(tiled: boolean, returnX: number, mode = 2, anchorOffset = 0, compact = true, width = 24, faceWidth = 1,
+  zoneLayers?: { shortcut: boolean; counts: number[]; changeDuringBake?: boolean }) {
+  const points = [[0, 0, 0], [1, 0, 0], [0, 0, 1]];
+  const face = record([0, 0, 12, 12], 0, [8, 8], 3, points.map(([x, y, z]) => [x * faceWidth, y, z]));
+  face.splice(32, 6, 2 / width, 10 / 12, (2 + 8 * faceWidth) / width, 10 / 12, 2 / width, 2 / 12);
+  const edge = record([12, 0, 12, 12], 0, [8, 8], 0, points.map(([x, y, z]) => [x + returnX, y, z]));
+  const step = 0.125;
+  const layout = atlasLayouts({ gutter: 2, record: 38, records: new Float32Array([...face, ...edge]),
+    receivers: [{ id: "mix", material: "base", density: 8, offset: 0, triangles: 2, width, height: 12,
+      surface: [0, 0, step / 2, step / 2, step, 0, 0, step, step, 1] }] }).get("mix")!;
+  const inputs = "vec3 ms_world, ms_object, ms_normal; vec2 ms_surface, ms_uv; float ms_footprint, ms_uv_footprint; ivec2 ms_texel;";
+  const reads: Reads = { parameters: [], seed: false, images: [], edges: false, features: false,
+    sample: ["surface", "footprint"], cpuFields: [], planes: [], intrinsic: true };
+  const base: MaterialShading = {
+    parameters: [], seedValues: [], mapping: "world",
+    shader: { source: inputs + "vec3 ms_base_color, ms_emissive; float ms_metalness; void ms_evaluate(){ ms_base_color=vec3(ms_surface.x * 0.1 + 0.3, ms_surface.y * 0.2 + 0.2, 0.1); ms_metalness=ms_surface.y * 0.05 + 0.5; ms_emissive=vec3(0.02); }",
+      parameters: [], seeds: [], images: [], features: false, outputs: ["base_color", "metalness", "emissive"], live: [],
+      reads: { outputs: { base_color: reads, metalness: reads, emissive: compact ? { ...reads, sample: [] } : { ...reads, intrinsic: false } } } },
+  };
+  const layer: MaterialShading = { ...base, shader: { ...base.shader, outputs: ["roughness"], reads: undefined,
+    cpuFields: [{ name: "below.emissive", uniform: "msBelow", type: "vec3", parameters: [], seed: false, images: [], edges: false }],
+    source: inputs + "uniform highp sampler2D msBelow; float ms_roughness; void ms_evaluate(){ ms_roughness = clamp(ms_world.x * 0.2 + texelFetch(msBelow, ms_texel, 0).x * 12.5, 0.0, 1.0); }" } };
+  baker.intrinsicTiles = tiled;
+  const uniforms = { ...receiverUniforms, msMapping: { value: mode }, msAnchorFromWorld: { value: new THREE.Matrix4().makeTranslation(anchorOffset, 0, 0) } };
+  const geometry = bakeGeometry(layout);
+  const stack: StackInput = { layers: [{ id: "stack.1", shading: layer, uniforms, reads: { "base.emissive": "stack.base" }, receiver: "" }],
+    channels: { base_color: "stack.base", metalness: "stack.base", emissive: "stack.base", roughness: "stack.1" } };
+  if (zoneLayers) {
+    const planes = [["base_color", "vec3", "xyz"], ["roughness", "float", "x"], ["normal_offset", "vec3", "xyz"]] as const;
+    const cpuFields = planes.map(([channel, type]) => ({
+      name: "below." + channel, uniform: "prev_" + channel, type: type === "float" ? "scalar" as const : type,
+      parameters: [], seed: false, images: [], edges: false,
+    }));
+    const shading: MaterialShading = { ...base, shader: { ...base.shader, reads: undefined, parameters: [], zones: ["zone"],
+      outputs: planes.map(([channel]) => channel), passthroughWithoutZones: zoneLayers.shortcut, cpuFields,
+      source: inputs + "uniform int ms_zone_count;\n" + planes.map(([channel, type]) =>
+        `uniform highp sampler2D prev_${channel}; ${type} ms_${channel};`).join("\n") + "\nvoid ms_evaluate(){\n" +
+        planes.map(([channel, type, components]) =>
+          `ms_${channel} = texelFetch(prev_${channel}, ms_texel, 0).${components} + ${type}(ms_zone_count > 0 ? 0.1 : 0.0);`).join("\n") + "}",
+    } };
+    for (const count of zoneLayers.counts) {
+      const id = "stack." + (stack.layers.length + 1), inputs: Record<string, string> = {};
+      for (const [channel] of planes) {
+        if (stack.channels[channel]) inputs["base." + channel] = stack.channels[channel];
+        stack.channels[channel] = id;
+      }
+      stack.layers.push({ id, shading, uniforms: { ...uniforms, ms_zone_count: { value: count } }, reads: inputs, receiver: "" });
+    }
+  }
+  let changed = false;
+  const current = () => {
+    if (zoneLayers?.changeDuringBake && !changed) {
+      const count = stack.layers.at(-1)!.uniforms.ms_zone_count;
+      count.value = count.value ? 0 : 1;
+      changed = true;
+    }
+    return true;
+  };
+  const baked = await baker.bakeStack(base, uniforms, stack, { layout, geometry, extent: [1, 1], receiver: "" }, undefined, { current });
+  if (zoneLayers?.changeDuringBake) {
+    geometry.dispose();
+    if (baked) baker.releaseAtlasMaps(baked.maps);
+    if (baked || !changed) throw Error("A changed zone binding must abandon the stale graph");
+    return null;
+  }
+  if (!baked) throw Error("The wall bake was abandoned");
+  try {
+    const bytes = (id: string) => {
+      const samples = new Uint8Array(width * 12 * 4);
+      renderer.readRenderTargetPixels(baked.maps.nodes.node(id)!.target, 0, 0, width, 12, samples);
+      return [...samples];
+    };
+    const emission = new Uint16Array(width * 12 * 4);
+    renderer.readRenderTargetPixels(baked.maps.nodes.node("emissive")!.target, 0, 0, width, 12, emission);
+    return { base: bytes("base"), properties: bytes("properties"), normal: zoneLayers && bytes("normal"),
+      emissive: [...emission], drawn: baked.timings.drawn };
+  } finally { geometry.dispose(); baker.releaseAtlasMaps(baked.maps); }
+}
 async function realize(name: string, specs: NodeSpec[], bandTexels?: number): Promise<{ drawn: string[]; reused: number; bands: number }> {
   const result = await graph.realize(specs, held.get(name), { bandTexels });
   if (!result) throw new Error("the bake was abandoned");
@@ -86,6 +167,7 @@ async function realize(name: string, specs: NodeSpec[], bandTexels?: number): Pr
 
 Object.assign(window, { driver: {
   unavailable: () => baker.unavailable(),
+  mixedWallMaps,
   blur: async (gain: number, radius: number, bandTexels?: number) => {
     const made = await realize("blur", blurSpecs(gain, radius), bandTexels);
     return { ...made, width: WIDTH, height: HEIGHT, source: read(held.get("blur")!, "source"), rows: read(held.get("blur")!, "blurred:rows"), blurred: read(held.get("blur")!, "blurred") };

@@ -21,7 +21,7 @@ pub fn compile_packet(source: &str, revision: u32) -> Vec<u8> {
 pub struct Compiler {
     assets: BTreeMap<String, Vec<u8>>,
     session: superspec_engine::Session,
-    previous: Option<superspec_engine::Scene>,
+    preview: superspec_engine::worldspec::preview::Preview,
     staged: staged::StagedExport,
 }
 
@@ -59,23 +59,50 @@ impl Compiler {
 
     /// Sends complete metadata with only changed geometry and encoded assets.
     pub fn compile_update(&mut self, source: &str, revision: u32) -> Result<Vec<u8>, JsValue> {
-        let scene = self
-            .session
-            .compile(source, revision, &|name| {
-                self.assets
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| format!("Asset {name} was not supplied."))
-            })
-            .map_err(|e| {
-                JsValue::from_str(&format!(
-                    "{}:{} {} — {}",
-                    e.source.line, e.source.column, e.code, e.message
-                ))
-            })?;
-        let update = superspec_model::updates::encode(&scene, self.previous.as_ref());
-        self.previous = Some(scene);
-        Ok(update)
+        self.compile_update_against(source, revision, self.preview.revision(), None, None)
+    }
+
+    /// The browser may have discarded an update produced by this worker.
+    pub fn compile_update_against(
+        &mut self,
+        source: &str,
+        revision: u32,
+        base_revision: Option<u32>,
+        batch_spans: Option<bool>,
+        foliage_mass_refs: Option<bool>,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.preview_update(
+            source,
+            revision,
+            base_revision,
+            batch_spans,
+            foliage_mass_refs,
+        )
+        .map_err(|e| {
+            JsValue::from_str(&format!(
+                "{}:{} {} — {}",
+                e.source.line, e.source.column, e.code, e.message
+            ))
+        })
+    }
+
+    /// Returns an accepted scene update or a diagnostic scene packet. A rejection retains the baseline.
+    pub fn preview_packet(
+        &mut self,
+        source: &str,
+        revision: u32,
+        base_revision: Option<u32>,
+        batch_spans: Option<bool>,
+        foliage_mass_refs: Option<bool>,
+    ) -> Vec<u8> {
+        self.preview_update(
+            source,
+            revision,
+            base_revision,
+            batch_spans,
+            foliage_mass_refs,
+        )
+        .unwrap_or_else(|error| superspec_engine::result_packet(Err(error), revision))
     }
 
     /// Runs physical and sampled navigation checks without procedural material baking.
@@ -177,6 +204,33 @@ impl Compiler {
     pub fn export_plan(&self, source: &str) -> Result<Vec<u8>, JsValue> {
         let scene = export_scene(self, source, true)?;
         superspec_export::svg_plan(&scene, &Default::default()).map_err(|e| JsValue::from_str(&e))
+    }
+}
+
+impl Compiler {
+    fn preview_update(
+        &mut self,
+        source: &str,
+        revision: u32,
+        base_revision: Option<u32>,
+        batch_spans: Option<bool>,
+        foliage_mass_refs: Option<bool>,
+    ) -> Result<Vec<u8>, superspec_types::diagnostic::Diagnostic> {
+        self.preview.batch_spans = batch_spans.unwrap_or(false);
+        self.preview.foliage_mass_refs = foliage_mass_refs.unwrap_or(false);
+        self.preview.update(
+            &self.session,
+            source,
+            revision,
+            base_revision,
+            &|name| {
+                self.assets
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| format!("Asset {name} was not supplied."))
+            },
+            &|| false,
+        )
     }
 }
 

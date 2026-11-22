@@ -1,5 +1,6 @@
 //! UV1 generation preserves source ownership, material coordinates and canonical triangles.
 use superspec_model::{LightmapAtlas, Scene};
+use superspec_types::limits;
 
 /// Prepares independent lightmap buffers without modifying the canonical scene.
 pub fn prepare_lightmap(
@@ -149,7 +150,7 @@ fn unwrap_lightmap_sized(
             indices.len() - index_start,
         ));
     }
-    if output_positions.len() / 3 > 6_000_000 {
+    if output_positions.len() / 3 > limits::MAX_WORLD_VERTICES {
         return Err("Lightmap seam vertices exceed scene budget.".into());
     }
     if cancelled() {
@@ -183,8 +184,8 @@ fn unwrap_lightmap_sized(
 fn validate_ranges(scene: &Scene) -> Result<(), String> {
     let count = scene.positions.len() / 3;
     if !scene.positions.len().is_multiple_of(3)
-        || count > 6_000_000
-        || scene.indices.len() > 18_000_000
+        || count > limits::MAX_WORLD_VERTICES
+        || scene.indices.len() > limits::MAX_WORLD_INDICES
         || scene.normals.len() != count * 3
         || scene.colors.len() != count * 3
         || scene.uvs.len() != count * 2

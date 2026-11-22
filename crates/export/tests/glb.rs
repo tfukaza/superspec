@@ -58,6 +58,36 @@ fn values(doc: &Value, binary: &[u8], index: &Value) -> Vec<f32> {
         .collect()
 }
 
+fn index_values(doc: &Value, binary: &[u8], index: &Value) -> Vec<u32> {
+    let accessor = &doc["accessors"][index.as_u64().unwrap() as usize];
+    let view = &doc["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let start = view["byteOffset"].as_u64().unwrap() as usize;
+    let len = view["byteLength"].as_u64().unwrap() as usize;
+    let bytes = &binary[start..start + len];
+    let count = accessor["count"].as_u64().unwrap() as usize;
+    match accessor["componentType"].as_u64().unwrap() {
+        5123 => {
+            assert_eq!(bytes.len(), count * 2);
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| u32::from(u16::from_le_bytes(*b)))
+                .collect()
+        }
+        5125 => {
+            assert_eq!(bytes.len(), count * 4);
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| u32::from_le_bytes(*b))
+                .collect()
+        }
+        other => panic!("unexpected index component type {other}"),
+    }
+}
+
 #[test]
 fn glb_preserves_selected_geometry_pbr_images_sources_and_coordinate_contract() {
     let mut scene = model();
@@ -131,16 +161,7 @@ fn glb_preserves_selected_geometry_pbr_images_sources_and_coordinate_contract() 
             scene.colors[input.vertex_start * 3..(input.vertex_start + input.vertex_count) * 3]
         );
         let normals = values(&doc, binary, &attributes["NORMAL"]);
-        let accessor = &doc["accessors"][primitive["indices"].as_u64().unwrap() as usize];
-        assert_eq!(accessor["componentType"], 5125);
-        let view = &doc["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
-        let start = view["byteOffset"].as_u64().unwrap() as usize;
-        let indices: Vec<_> = binary[start..start + input.index_count * 4]
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| u32::from_le_bytes(*b))
-            .collect();
+        let indices = index_values(&doc, binary, &primitive["indices"]);
         assert_eq!(
             indices,
             scene.indices[input.index_start..input.index_start + input.index_count]
@@ -428,15 +449,7 @@ fn collision_delivery_omits_decoration_and_appearance_even_when_assets_are_unava
             scene.positions
                 [source.vertex_start * 3..(source.vertex_start + source.vertex_count) * 3]
         );
-        let accessor = &doc["accessors"][primitive["indices"].as_u64().unwrap() as usize];
-        let view = &doc["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
-        let start = view["byteOffset"].as_u64().unwrap() as usize;
-        let actual = binary[start..start + source.index_count * 4]
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| u32::from_le_bytes(*b))
-            .collect::<Vec<_>>();
+        let actual = index_values(&doc, binary, &primitive["indices"]);
         assert_eq!(
             actual,
             scene.indices[source.index_start..source.index_start + source.index_count]

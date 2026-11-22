@@ -1450,6 +1450,17 @@ impl Lower<'_> {
             return;
         };
         let at = &coverage.value.mark;
+        // Preserve the zero branch of an explicit coverage gate as a direct
+        // pass-through. A renderer can then prove the checked output is its input.
+        let gate = match &value.kind {
+            Expression::Call(name, args) if name == "select" => match args.as_slice() {
+                [condition, _, inactive] if matches!(inactive.kind, Expression::Number(0.0)) => {
+                    Some(condition.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        };
         let clamped = self.call_expr("clamp", vec![value, self.num(0., at), self.num(1., at)], at);
         self.out.declarations.push((
             "layer.coverage".into(),
@@ -1499,10 +1510,13 @@ impl Lower<'_> {
                 Blend::Min => self.call_expr("min", vec![beneath(), own.clone()], at),
             };
             let cover = self.name_expr("layer.coverage", at);
-            self.out.outputs.push((
-                ms.into(),
-                self.call_expr("mix", vec![beneath(), combined, cover], at),
-            ));
+            let blended = self.call_expr("mix", vec![beneath(), combined, cover], at);
+            let output = if let Some(condition) = &gate {
+                self.call_expr("select", vec![condition.clone(), blended, beneath()], at)
+            } else {
+                blended
+            };
+            self.out.outputs.push((ms.into(), output));
             blend.insert(ms.to_owned(), rule);
         }
         self.out.traits = Traits {

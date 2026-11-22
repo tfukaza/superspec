@@ -1,10 +1,10 @@
 /**
  * The MaterialSpec benchmark scene (tests/studio/washroom) in the built Material Studio: opens
- * the project through the production Wasm workers, checks every material landed on its meshes
+ * the project through the selected Studio host, checks every material landed on its meshes
  * and reports how long the scene took to load. RESOLUTION (default 256) sets the texture size
  * (above 512 the project is given the production profile, the only one that allows it);
  * SCREENSHOT names a PNG of the loaded viewport. LIGHTING names a JSON lighting record the project
- * then carries (see docs/plans/lighting-settings.md); without it the scene has the shipped look. BATCHES=0 builds the
+ * then carries (see docs/plans/lighting-settings.md). DAYLIGHT=1 adds the clerestory and a low-angle sun. BATCHES=0 builds the
  * scene without its instanced batch (the bolts), as it was before it had one; with QUERY containing gpuprobe the frame's
  * draw calls and triangles are reported, and with `animate=1` the time-driven mode's frame budget.
  */
@@ -20,6 +20,7 @@ const resolution = Number(process.env.RESOLUTION ?? 256);
 const server = createServer(async (request, response) => {
   try {
     const name = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+    if (name === "/favicon.ico") { response.writeHead(204).end(); return; }
     const path = resolve(root, name === "/" ? "index.html" : `.${name}`);
     if (!path.startsWith(root + sep)) { response.writeHead(403).end(); return; }
     response.setHeader("Content-Type", { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".png": "image/png" }[extname(path)] ?? "application/octet-stream");
@@ -33,7 +34,8 @@ try {
   const withBatches = process.env.BATCHES !== "0";
   // PAINTED=1 gives the slab the painted ground (roadmap stage 5) and checks that its shade boundary follows the sun.
   const painted = process.env.PAINTED === "1";
-  const { project } = buildProject(resolution, undefined, { batches: withBatches, painted });
+  const daylight = process.env.DAYLIGHT === "1";
+  const { project } = buildProject(resolution, undefined, { batches: withBatches, painted, daylight });
   // ONLY=id,id keeps just those materials, to see what each costs.
   const only = process.env.ONLY?.split(",");
   if (only) project.materials = project.materials.filter(material => only.includes(material.id));
@@ -70,7 +72,8 @@ try {
   const query = [process.env.QUERY, ...(painted ? ["gpuprobe", "ao=off"] : []),
     ...(process.env.CHECK_LIT_EDGES === "1" ? ["gpuprobe", "edgeboost=on"] : [])].filter(Boolean).join("&");
   if (painted) process.env.QUERY = query;
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html${query ? `?${query}` : ""}`);
+  const host = process.env.STUDIO_URL ?? ("http://127.0.0.1:" + server.address().port);
+  await page.goto(`${host}/material.html${query ? `?${query}` : ""}`);
   await ready();
 
   const before = Number(await page.locator("#viewport").getAttribute("data-input-revision") ?? 0);
@@ -129,7 +132,7 @@ try {
   const bindings = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.bindings ?? "{}"));
   const expected = Object.fromEntries(project.materials.flatMap(material => material.meshes.map(mesh => [mesh, material.id])));
   assert.deepEqual(bindings, expected, "every mesh shows its material");
-  if (!only) assert.equal(Object.keys(expected).length, materials.reduce((sum, material) => sum + material.meshes.length, 0) - (withBatches ? 0 : 1));
+  if (!only) assert.equal(Object.keys(expected).length, materials.reduce((sum, material) => sum + material.meshes.length, 0) + Number(daylight) - Number(!withBatches));
   // The scene's instanced batch: one instanced mesh for every bolt, drawn from the template's one bake.
   const drawnBatches = await page.evaluate(() => JSON.parse(document.querySelector("#viewport").dataset.batches ?? "[]"));
   if (withBatches && !only) {
@@ -228,7 +231,38 @@ try {
     await page.waitForFunction(from => Number(document.querySelector("#viewport").dataset.inputRevision ?? 0) > from, start, { timeout: 900000 });
     await ready();
     const control = page.getByRole("spinbutton", { name: label, exact: true });
+    const rejected = await control.evaluate(field => {
+      const host = document.querySelector("#viewport"), before = host.dataset.inputRevision, initial = field.value;
+      for (const value of ["", String(Number(field.max || 1000) + 1)]) {
+        field.value = value;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        field.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      field.value = initial;
+      return host.dataset.inputRevision === before;
+    });
+    assert.ok(rejected, "blank and out-of-range material values leave the accepted revision visible");
     start = await current();
+    if (Number(process.env.BENCH_DRAG_FRAMES) > 1) await control.evaluate((field, material) => {
+      const scene = window.__scene, view = document.querySelector("#viewport");
+      if (!scene) throw Error("BENCH_DRAG_FRAMES requires QUERY=gpuprobe.");
+      const receiver = scene.models.children.find(mesh => mesh.userData.shaded === material);
+      const geometry = receiver.geometry, draw = scene.draw, before = view.dataset.inputRevision;
+      const reading = window.__materialGesture = {};
+      field.addEventListener("input", () => { reading.start = performance.now(); }, { once: true, capture: true });
+      scene.draw = function (...args) {
+        draw.apply(this, args);
+        if (reading.start === undefined) return;
+        const bake = JSON.parse(view.dataset.sceneBake ?? "null");
+        const changed = receiver.geometry !== geometry || (view.dataset.inputRevision !== before && bake?.state === "baked" && bake.drawn > 0);
+        if (changed) reading.first ??= performance.now() - reading.start;
+        if (changed && bake?.state === "baked" && view.dataset.inputRevision !== before) {
+          reading.finished = performance.now() - reading.start;
+          scene.draw = draw;
+        }
+      };
+      reading.restore = () => { scene.draw = draw; };
+    }, material);
     const began = Date.now(), editFrom = await pageNow();
     await control.fill(value); await control.press("Tab");
     const shown = name => page.waitForFunction(([name, from]) => Number(document.querySelector("#viewport").dataset[name] ?? 0) > from, [name, start], { timeout: 900000 });
@@ -241,6 +275,63 @@ try {
     if (rebaked) Object.assign(edits[material], { baked: Date.now() - began, drawn: rebaked.drawn, reused: rebaked.reused, drawMs: rebaked.drawMs, fieldMs: rebaked.fieldMs,
       nodesDrawn: rebaked.nodesDrawn, nodesReused: rebaked.nodesReused, details: rebaked.details.join("; ") });
     edits[material].longTasks = await longTasks(editFrom);
+    // Drive the same numeric control as a continuous gesture. Count only renderer draws showing
+    // the new uniforms (or the finished maps); input events and generic animation ticks aren't draws.
+    const frames = Number(process.env.BENCH_DRAG_FRAMES ?? 0);
+    if (frames > 1) {
+      edits[material].singleFrame = await page.evaluate(() => {
+        const reading = window.__materialGesture;
+        reading.restore();
+        return { firstDrawMs: reading.first, finishedDrawMs: reading.finished };
+      });
+      // A freshly opened scene can still be compiling its per-pixel shaders after its maps
+      // appear. The discrete edit above includes that case. Begin the warm drag once ready.
+      await page.waitForFunction(() => JSON.parse(document.querySelector("#viewport").dataset.sceneBake).shaderReady,
+        undefined, { timeout: 120000 });
+      edits[material].gesture = await page.evaluate(async ({ material, label, frames }) => {
+        const scene = window.__scene, host = document.querySelector("#viewport");
+        if (!scene) throw Error("BENCH_DRAG_FRAMES requires QUERY=gpuprobe.");
+        const mesh = scene.models.children.find(object => object.userData.shaded === material);
+        if (!mesh) throw Error("Missing material receiver " + material);
+        const field = [...document.querySelectorAll('input[type="number"]')].find(input => input.getAttribute("aria-label") === label);
+        const draw = scene.draw, initialGeometry = mesh.geometry, before = Number(host.dataset.inputRevision);
+        const inputs = new Map(), draws = new Map();
+        const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+        const bake = () => JSON.parse(host.dataset.sceneBake ?? "null");
+        scene.draw = function (...args) {
+          draw.apply(this, args);
+          const rev = Number(host.dataset.inputRevision);
+          if (inputs.has(rev) && !draws.has(rev) && (mesh.geometry !== initialGeometry || bake()?.state === "baked")) {
+            draws.set(rev, performance.now());
+          }
+        };
+        try {
+          for (let i = 0; i < frames; i++) {
+            if (i) await frame();
+            inputs.set(before + i + 1, performance.now());
+            field.value = (0.11 + (i % 70) * 0.01).toFixed(2);
+            field.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          field.dispatchEvent(new Event("change", { bubbles: true }));
+          const last = inputs.get(before + frames);
+          do {
+            await frame();
+            if (performance.now() - last > 30000) throw Error("Material drag failed to settle.");
+          } while (Number(host.dataset.inputRevision) <= before || bake()?.state !== "baked");
+          await frame();
+          const times = [...draws.values()];
+          const stats = values => {
+            values.sort((a, b) => a - b);
+            const pct = p => values.length ? +values[Math.ceil(p * values.length) - 1].toFixed(1) : null;
+            return { p50: pct(.5), p95: pct(.95), max: pct(1) };
+          };
+          return { inputs: frames, drawn: times.length, acceptedRevisions: Number(host.dataset.inputRevision) - before,
+            inputToDrawMs: stats([...draws].map(([rev, time]) => time - inputs.get(rev))),
+            intervalMs: stats(times.slice(1).map((time, i) => time - times[i])), fps: times.length > 1 ? +(1000 * (times.length - 1) / (times.at(-1) - times[0])).toFixed(1) : null,
+            settledAfterLastInputMs: Math.round(performance.now() - last) };
+        } finally { scene.draw = draw; }
+      }, { material, label, frames });
+    }
   }
   console.log(`Edit latency (ms): ${JSON.stringify(edits)}`);
   if (profiler) await writeFile(process.env.PROFILE, JSON.stringify((await profiler.send("Profiler.stop")).profile));

@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 use superspec_model::{
+    batches::{InstanceBatch, Placement},
     composition::{Layer, Limits, WorldModel},
     instances::{IDENTITY, Instance, LocalMesh, Model},
 };
@@ -319,4 +320,251 @@ fn explicit_resource_identity_shares_ownership_and_rejects_conflicting_attribute
         &third.meshes["local"],
         &world.base_instances().unwrap().meshes["local"]
     ));
+}
+
+fn batch_item(id: &str, owner: &str, placements: usize) -> Model {
+    let mut source = item(id, 0.);
+    source.instances.clear();
+    source.batches.push(InstanceBatch {
+        id: id.into(),
+        object_id: owner.into(),
+        mesh: "local".into(),
+        placements: vec![Placement::default(); placements],
+        ..Default::default()
+    });
+    source
+}
+
+fn batch_bases(source: Model) -> [WorldModel; 2] {
+    [
+        WorldModel::from_scene(source.scene(1).unwrap()).unwrap(),
+        WorldModel::from_instances(source).unwrap(),
+    ]
+}
+
+#[test]
+fn batches_share_the_mesh_identity_namespace_and_owner_checks_before_layer_commit() {
+    let mut source = batch_item("grass", "garden", 2);
+    source.instances.push(item("tile", 0.).instances.remove(0));
+    for mut world in batch_bases(source) {
+        let before = world.scene(1).unwrap().packet();
+        let bytes = world.retained_bytes();
+        for bad in [
+            batch_item("grass", "distinct", 1),
+            batch_item("tile", "distinct", 1),
+            item("grass", 1.),
+            batch_item("pipe", "garden", 1),
+        ] {
+            assert!(world.append(bad).unwrap_err().contains("duplicate"));
+            assert!(world.layers().is_empty());
+            assert_eq!(world.retained_bytes(), bytes);
+        }
+        assert_eq!(world.scene(1).unwrap().packet(), before);
+        world.append(batch_item("flowers", "bed", 2)).unwrap();
+        assert_eq!(world.scene(2).unwrap().manifest.batches.len(), 2);
+    }
+}
+
+#[test]
+fn batch_geometry_counts_once_per_template_in_the_host_budget() {
+    for world in batch_bases(batch_item("grass", "garden", 12)) {
+        for (vertices, indices) in [(1, 3), (3, 1)] {
+            assert!(
+                world
+                    .clone()
+                    .with_limits(Limits {
+                        vertices,
+                        indices,
+                        ..Default::default()
+                    })
+                    .unwrap_err()
+                    .contains("geometry allowance")
+            );
+        }
+        let mut world = world
+            .with_limits(Limits {
+                vertices: 6,
+                indices: 6,
+                ..Default::default()
+            })
+            .unwrap();
+        world.append(item("tile", 0.)).unwrap();
+        let scene = world.scene(1).unwrap();
+        assert_eq!(scene.manifest.vertex_count, 3);
+        let batch = scene.manifest.batch_counts.unwrap();
+        assert_eq!((batch.vertices, batch.indices, batch.instances), (3, 3, 12));
+        let previous = scene.packet();
+        assert!(
+            world
+                .append(batch_item("flowers", "bed", 2))
+                .unwrap_err()
+                .contains("geometry allowance")
+        );
+        let mut larger = item("tile", 0.);
+        larger.mesh_artifacts.clear();
+        Arc::make_mut(larger.meshes.get_mut("local").unwrap())
+            .indices
+            .extend([0, 1, 2]);
+        assert!(
+            world
+                .replace_receivers(larger, ["tile".into()].into())
+                .unwrap_err()
+                .contains("geometry allowance")
+        );
+        assert_eq!(world.scene(1).unwrap().packet(), previous);
+    }
+}
+
+#[test]
+fn replacement_preserves_batch_only_materials_and_checks_image_conflicts_before_commit() {
+    let pixels = png(5);
+    let mut source = textured("tile", "grass.png", pixels.clone());
+    let material = source.instances[0].material.take();
+    let mut grass = batch_item("grass", "garden", 1).batches.pop().unwrap();
+    grass.material = material;
+    source.batches.push(grass);
+    for mut world in batch_bases(source) {
+        world
+            .replace_receivers(item("tile", 0.), ["tile".into()].into())
+            .unwrap();
+        let scene = world.scene(1).unwrap();
+        assert_eq!(
+            scene.manifest.batches[0].material.as_deref(),
+            Some("finish/grass.png")
+        );
+        assert_eq!(scene.manifest.materials[0].id, "finish/grass.png");
+        assert_eq!(scene.asset_bytes.as_slice(), pixels.as_ref());
+        assert!(
+            world
+                .append(textured("duplicate-image", "grass.png", png(12)))
+                .unwrap_err()
+                .contains("Conflicting composed image")
+        );
+        assert_eq!(world.layers().len(), 1);
+        assert_eq!(world.scene(1).unwrap().packet(), scene.packet());
+    }
+}
+
+#[test]
+fn batch_retention_charges_reserved_source_attributes_and_packed_scene_capacity() {
+    let small = batch_item("grass", "garden", 1);
+    let large = batch_item("grass", "garden", 2048);
+    let small_source = WorldModel::from_instances(small.clone())
+        .unwrap()
+        .retained_bytes();
+    let large_source = WorldModel::from_instances(large.clone())
+        .unwrap()
+        .retained_bytes();
+    assert!(large_source - small_source >= 2047 * std::mem::size_of::<Placement>());
+    let small_scene = small.scene(1).unwrap();
+    let large_scene = large.scene(1).unwrap();
+    let growth = (large_scene.batches.placements.capacity()
+        - small_scene.batches.placements.capacity())
+        * std::mem::size_of::<f32>();
+    assert!(
+        WorldModel::from_scene(large_scene)
+            .unwrap()
+            .retained_bytes()
+            - WorldModel::from_scene(small_scene)
+                .unwrap()
+                .retained_bytes()
+            >= growth
+    );
+    let mut source = batch_item("grass", "garden", 1);
+    let mut weights = Vec::with_capacity(4096);
+    weights.push(0.5);
+    source.batches[0].scalars.insert("weight".into(), weights);
+    assert!(
+        WorldModel::from_instances(source).unwrap().retained_bytes() - small_source >= 4096 * 4
+    );
+    let mut world = WorldModel::from_instances(item("tile", 0.))
+        .unwrap()
+        .with_limits(Limits {
+            retained_bytes: small_source + 32_000,
+            ..Default::default()
+        })
+        .unwrap();
+    let before = world.scene(1).unwrap().packet();
+    assert!(
+        world
+            .append(large)
+            .unwrap_err()
+            .contains("Retained world resource allowance")
+    );
+    assert!(world.layers().is_empty());
+    assert_eq!(world.scene(1).unwrap().packet(), before);
+}
+
+#[test]
+fn rejected_source_batch_data_has_the_same_diagnostic_at_admission_and_delivery() {
+    let mut named = batch_item("grass", "garden", 1);
+    named.batches[0]
+        .vertex_scalars
+        .insert("density".into(), vec![0.2; 2]);
+    let mut bounds = batch_item("grass", "garden", 1);
+    bounds.batches[0].placements[0].translation = [1e9, 0., 0.];
+    for source in [named, bounds] {
+        let delivery_error = source.scene(1).unwrap_err();
+        assert!(delivery_error.contains("grass"));
+        assert_eq!(
+            WorldModel::from_instances(source.clone()).unwrap_err(),
+            delivery_error
+        );
+        let mut world = WorldModel::from_instances(item("tile", 0.)).unwrap();
+        let before = world.scene(1).unwrap().packet();
+        assert_eq!(
+            world
+                .replace_receivers(source, ["tile".into()].into())
+                .unwrap_err(),
+            delivery_error
+        );
+        assert!(world.layers().is_empty());
+        assert_eq!(world.scene(1).unwrap().packet(), before);
+    }
+}
+
+#[test]
+fn implicit_foliage_level_identity_is_checked_before_appending_another_patch() {
+    let plant = |id: &str| {
+        let mut model = batch_item(id, id, 1);
+        let mut far = model.batches[0].clone();
+        far.id = format!("{id}-far");
+        model.batches.push(far);
+        for (level, batch) in model.batches.iter_mut().enumerate() {
+            batch.foliage = Some(serde_json::from_value(serde_json::json!({
+                "family":"grass", "patch":"shared", "level":level, "distance":level * 20, "far":100
+            })).unwrap());
+        }
+        model
+    };
+    for mut world in batch_bases(plant("first")) {
+        let previous = world.scene(1).unwrap().packet();
+        assert!(
+            world
+                .append(plant("second"))
+                .unwrap_err()
+                .contains("duplicate geometry LOD")
+        );
+        assert!(world.layers().is_empty());
+        assert_eq!(world.scene(1).unwrap().packet(), previous);
+    }
+}
+
+#[test]
+fn scene_admission_rejects_inconsistent_packed_batch_records() {
+    let mut model = batch_item("grass", "garden", 1);
+    model.instances.push(item("tile", 0.).instances.remove(0));
+    let scene = model.scene(1).unwrap();
+    for (label, mutate) in [
+        (
+            "identity",
+            (|b| b.id = "tile".into()) as fn(&mut superspec_model::batches::Batch),
+        ),
+        ("missing material", |b| b.material = Some("absent".into())),
+        ("range", |b| b.vertex_count = usize::MAX),
+    ] {
+        let mut invalid = scene.clone();
+        mutate(&mut invalid.manifest.batches[0]);
+        assert!(WorldModel::from_scene(invalid).unwrap_err().contains(label));
+    }
 }

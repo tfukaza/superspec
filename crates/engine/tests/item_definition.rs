@@ -247,6 +247,36 @@ fn imported(bytes: Arc<[u8]>) -> Result<item::GeneratedItem, item::ItemDiagnosti
 }
 
 #[test]
+fn nested_glb_converts_uv_origin_once_when_adopted() {
+    let (document, bytes, _) = fixture();
+    let glb = glb(document, bytes);
+    let paint = json!({"format":"itemspec","version":1,"id":"paint","generator":{"kind":"glb","asset":"paint.glb"}});
+    let assembly = |entry| {
+        json!({"format":"itemspec","version":2,"id":"assembly","parts":[
+            {"id":"inner","generator":{"kind":"item","entry":entry}}
+        ]})
+    };
+    let generated = item::generate(
+        &definition(&assembly("nested.item.json")),
+        &Values::new(),
+        &|name| match name {
+            "nested.item.json" => Ok(Arc::from(
+                assembly("paint.item.json").to_string().into_bytes(),
+            )),
+            "paint.item.json" => Ok(Arc::from(paint.to_string().into_bytes())),
+            "paint.glb" => Ok(glb.clone()),
+            _ => absent(name),
+        },
+        &|| false,
+    )
+    .unwrap();
+    for mesh in &generated.geometry.meshes {
+        assert_eq!(mesh.uvs, [[0., 1.], [1., 1.], [0., 0.]]);
+        assert_eq!(mesh.additional_uvs[&1], mesh.uvs);
+    }
+}
+
+#[test]
 fn glb_retains_shared_local_meshes_hierarchy_channels_and_affine_normals() {
     let (document, bytes, png) = fixture();
     let generated = imported(glb(document, bytes)).unwrap();
@@ -674,4 +704,40 @@ fn retained_item_charge_covers_extra_attributes_and_enforces_the_store_limit() {
         .insert("record".into(), json!({"payload":payload.clone()}));
     assert!(rich.retained_bytes() >= before + payload.len() * 3 + encoded_bytes);
     assert!(rich.retained_bytes() > rich.geometry.retained_bytes());
+}
+
+#[test]
+fn native_vertex_sharing_preserves_all_corner_attributes_and_unreferenced_bounds() {
+    let mut mesh = item::ItemMesh {
+        id: "seams".into(),
+        material_slot: "metal".into(),
+        positions: vec![[0., 0., 0.]; 8],
+        normals: vec![[0., 0., 1.]; 8],
+        uvs: vec![[0., 0.]; 8],
+        colors: vec![[1.; 4]; 8],
+        tangents: vec![[1., 0., 0., 1.]; 8],
+        additional_uvs: BTreeMap::from([(2, vec![[0., 1.]; 8])]),
+        indices: vec![0, 2, 3, 1, 4, 5, 1, 5, 6],
+    };
+    mesh.normals[2] = [0., 1., 0.];
+    let neighboring_uv = 1.0 + f64::EPSILON;
+    mesh.uvs[3][0] = neighboring_uv;
+    mesh.colors[4][2] = 0.5;
+    mesh.tangents[5][3] = -1.;
+    mesh.additional_uvs.get_mut(&2).unwrap()[6][1] = 0.;
+    mesh.positions[7] = [9.; 3];
+    mesh.share_vertices();
+    assert_eq!(mesh.positions.len(), 7);
+    assert_eq!(mesh.indices, [0, 1, 2, 0, 3, 4, 0, 4, 5]);
+    assert_eq!(mesh.positions[6], [9.; 3]);
+    assert_eq!(mesh.normals[1], [0., 1., 0.]);
+    assert_eq!(mesh.uvs[2], [neighboring_uv, 0.]);
+    assert_eq!(mesh.colors[3][2], 0.5);
+    assert_eq!(mesh.tangents[4][3], -1.);
+    assert_eq!(mesh.additional_uvs[&2][5], [0., 0.]);
+    mesh.tangents.clear();
+    mesh.additional_uvs.clear();
+    mesh.share_vertices();
+    assert_eq!(mesh.positions.len(), 5);
+    assert_eq!(mesh.indices, [0, 1, 2, 0, 3, 0, 0, 0, 0]);
 }

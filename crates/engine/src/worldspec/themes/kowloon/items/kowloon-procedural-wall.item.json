@@ -1,0 +1,83 @@
+{
+  "format": "itemspec",
+  "version": 2,
+  "id": "kowloon-procedural-wall",
+  "parameters": {
+    "width": {"type": "number", "default": 4, "min": 0.05, "max": 40, "unit": "m"},
+    "depth": {"type": "number", "default": 0.28, "min": 0.05, "max": 40, "unit": "m"},
+    "height": {"type": "number", "default": 2.2, "min": 0.05, "max": 30, "unit": "m"},
+    "seed": {"type": "integer", "default": 1, "min": 0, "max": 2147483647},
+    "dressing": {"type": "boolean", "default": true}
+  },
+  "derived": {
+    "pipeLeft": "random(seed, 11) < 0.5",
+    "pipeInset": "min(width * 0.24, 0.35 + 0.4 * random(seed, 12))",
+    "pipeX": "select(pipeLeft, pipeInset, width - pipeInset)",
+    "wireStart": "select(pipeLeft, pipeX + 0.20, pipeX - 0.20)",
+    "wireEnd": "select(pipeLeft, width - 0.17, 0.17)",
+    "wireZ": "height - min(height * 0.24, 0.34 + 0.22 * random(seed, 14))",
+    "noticeWidth": "min(width * 0.52, 1.4)",
+    "noticeHeight": "min(height * 0.49, 1.02)",
+    "noticeBias": "0.58 + 0.13 * random(seed, 15)"
+  },
+  "parts": [
+    {
+      "id": "slab",
+      "generator": {"kind": "native", "name": "kowloon/wall-slab",
+        "parameters": {"width": {"parameter": "width"}, "depth": {"parameter": "depth"}, "height": {"parameter": "height"}, "seed": {"parameter": "seed"}}
+      },
+      "slots": {"concrete": "concrete"}
+    },
+    {
+      "id": "drain",
+      "when": "dressing * (width >= 0.85) * (height >= 0.85)",
+      "generator": {"kind": "native", "name": "kowloon/downpipe",
+        "parameters": {
+          "height": {"expr": "height - 0.15"},
+          "radius": {"expr": "0.037 + 0.019 * random(seed, 13)"},
+          "color": {"choose": ["#827b6a", "#787971", "#a39c88"], "by": "random(seed, 17) * 3"},
+          "standoff": 0.019, "sides": 12, "clips": 0.92, "weight": 1.35
+        }
+      },
+      "placement": {"position": ["pipeX", 0, 0.075]},
+      "slots": {"metal": "metal"}
+    },
+    {
+      "id": "wires",
+      "when": "dressing * (width >= 1.05) * (height >= 1.15)",
+      "generator": {"kind": "native", "name": "kowloon/cable",
+        "parameters": {
+          "span": {"expr": "wireEnd - wireStart"},
+          "rise": {"expr": "0.14 * (random(seed, 18) - 0.5)"},
+          "sag": {"expr": "min(height * 0.075, 0.09 + width * 0.026)"},
+          "count": {"expr": "2 + (random(seed, 16) > 0.74)"},
+          "spread": 0.041, "radius": 0.009, "standoff": 0.036,
+          "color": "#c5b7a3", "boxes": "start", "seed": {"parameter": "seed"}
+        }
+      },
+      "placement": {"position": ["wireStart", 0, "wireZ"]},
+      "slots": {"cable": "cable", "metal": "metal"}
+    },
+    {
+      "id": "notices",
+      "when": "dressing * (width >= 0.9) * (height >= 0.9)",
+      "generator": {"kind": "native", "name": "kowloon/wall-notices",
+        "parameters": {"width": {"derived": "noticeWidth"}, "height": {"derived": "noticeHeight"}, "seed": {"parameter": "seed"}}
+      },
+      "placement": {"position": ["width * select(pipeLeft, noticeBias, 1 - noticeBias)", 0, "min(height * 0.49, 1.52)"]},
+      "slots": {"posters": "posters"}
+    }
+  ],
+  "slots": {
+    "concrete": {"entry": "builtin:concrete"},
+    "metal": {"entry": "builtin:metal"},
+    "cable": {"entry": "builtin:wall-cable"},
+    "posters": {"entry": "builtin:wall-posters"}
+  },
+  "attachments": [
+    {"name": "base-left", "position": [0, 0, 0], "direction": [0, -1, 0]},
+    {"name": "base-right", "position": ["width", 0, 0], "direction": [0, -1, 0]},
+    {"name": "head", "position": ["width / 2", "depth / 2", "height"], "direction": [0, 0, 1]}
+  ],
+  "collision": "none"
+}

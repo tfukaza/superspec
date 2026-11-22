@@ -1,5 +1,6 @@
 //! Owned scene composition shared by editor hosts and WorldSpec adapters.
 mod admission;
+mod retention;
 mod world;
 use crate::{Asset, Mesh, Scene};
 pub use admission::Limits;
@@ -72,7 +73,8 @@ fn ranges(scene: &Scene) -> Result<(), String> {
             return Err("Invalid scene composition asset range.".into());
         }
     }
-    crate::batches::check(scene)
+    crate::batches::check(scene)?;
+    crate::lod::check(scene)
 }
 
 fn image_pixels(scene: &Scene, asset: &Asset) -> Result<usize, String> {
@@ -101,6 +103,14 @@ fn same_triangles(a: &Scene, am: &Mesh, b: &Scene, bm: &Mesh) -> bool {
             let bp = (bm.vertex_start + bi as usize) * 3;
             a.positions[ap..ap + 3] == b.positions[bp..bp + 3]
         })
+}
+
+// Visual replacement keeps every base batch alongside the surviving and replaced receiver meshes.
+fn receiver_materials<'a>(
+    meshes: impl Iterator<Item = Option<&'a str>>,
+    base_batches: impl Iterator<Item = Option<&'a str>>,
+) -> BTreeSet<&'a str> {
+    meshes.chain(base_batches).flatten().collect()
 }
 
 /// Replaces selected visual receivers while retaining structural metadata, collision IDs and source ranges.
@@ -162,9 +172,11 @@ pub fn replace_receivers(
     base.manifest
         .mesh_tangents
         .extend(replacement.manifest.mesh_tangents.clone());
-    if output.positions.len() / 3 > 6_000_000 || output.indices.len() > 18_000_000 {
-        return Err("Composed scene exceeds its geometry allowance.".into());
-    }
+    Limits::default().geometry(
+        output.positions.len() / 3,
+        output.indices.len(),
+        crate::batches::BatchUsage::scene(&base),
+    )?;
     for material in &replacement.manifest.materials {
         if let Some(existing) = base
             .manifest
@@ -179,22 +191,13 @@ pub fn replace_receivers(
             base.manifest.materials.push(material.clone());
         }
     }
-    // Batches are not receivers: they stay as the base has them, with the materials they use.
-    let used: BTreeSet<_> = output
-        .manifest
-        .meshes
-        .iter()
-        .filter_map(|mesh| mesh.material.clone())
-        .chain(
-            base.manifest
-                .batches
-                .iter()
-                .filter_map(|batch| batch.material.clone()),
-        )
-        .collect();
+    let used = receiver_materials(
+        output.manifest.meshes.iter().map(|m| m.material.as_deref()),
+        base.manifest.batches.iter().map(|b| b.material.as_deref()),
+    );
     base.manifest
         .materials
-        .retain(|material| used.contains(&material.id));
+        .retain(|m| used.contains(m.id.as_str()));
     let required: BTreeSet<String> = base
         .manifest
         .materials
@@ -268,7 +271,22 @@ pub fn prefixed(mut scene: Scene, prefix: &str) -> Scene {
     for batch in &mut scene.manifest.batches {
         rename(&mut batch.id);
         rename(&mut batch.object_id);
+        if let Some(template) = &mut batch.template {
+            rename(template);
+        }
+        if let Some(foliage) = &mut batch.foliage {
+            rename(&mut foliage.patch);
+        }
     }
+    crate::lod::prefix_placements(&mut scene.manifest.geometry_lods, prefix);
+    scene.manifest.batch_placement_owners =
+        std::mem::take(&mut scene.manifest.batch_placement_owners)
+            .into_iter()
+            .map(|(group, mut owners)| {
+                owners.iter_mut().for_each(rename);
+                (format!("{prefix}{group}"), owners)
+            })
+            .collect();
     scene.manifest.colliders.iter_mut().for_each(rename);
     scene.manifest.decals.iter_mut().for_each(rename);
     scene.manifest.mesh_tangents = std::mem::take(&mut scene.manifest.mesh_tangents)
@@ -294,22 +312,39 @@ pub fn prefixed(mut scene: Scene, prefix: &str) -> Scene {
 pub fn append(mut base: Scene, addition: Scene) -> Result<Scene, String> {
     ranges(&base)?;
     ranges(&addition)?;
+    if addition
+        .manifest
+        .geometry_lods
+        .iter()
+        .any(|added| base.manifest.geometry_lods.iter().any(|g| g.id == added.id))
+    {
+        return Err("Composed scenes contain duplicate geometry LOD groups.".into());
+    }
+    base.manifest
+        .geometry_lods
+        .extend(addition.manifest.geometry_lods.iter().cloned());
     if let (Some(base), Some(addition)) =
         (&base.manifest.architecture, &addition.manifest.architecture)
     {
+        let owners: BTreeSet<_> = base
+            .objects
+            .iter()
+            .map(|object| object.id.as_str())
+            .collect();
         if addition
             .objects
             .iter()
-            .any(|object| base.objects.iter().any(|old| old.id == object.id))
+            .any(|object| owners.contains(object.id.as_str()))
         {
             return Err("Composed scenes contain duplicate source owner identities.".into());
         }
     }
+    let mesh_ids: BTreeSet<_> = base.manifest.meshes.iter().map(|m| m.id.as_str()).collect();
     if addition
         .manifest
         .meshes
         .iter()
-        .any(|added| base.manifest.meshes.iter().any(|mesh| mesh.id == added.id))
+        .any(|added| mesh_ids.contains(added.id.as_str()))
     {
         return Err("Composed scenes contain duplicate mesh identities.".into());
     }
@@ -317,7 +352,7 @@ pub fn append(mut base: Scene, addition: Scene) -> Result<Scene, String> {
         .manifest
         .batches
         .iter()
-        .any(|added| base.manifest.meshes.iter().any(|mesh| mesh.id == added.id))
+        .any(|added| mesh_ids.contains(added.id.as_str()))
         || base.manifest.batches.iter().any(|batch| {
             addition
                 .manifest
@@ -328,12 +363,41 @@ pub fn append(mut base: Scene, addition: Scene) -> Result<Scene, String> {
     {
         return Err("Composed scenes use one identity for a mesh and a batch.".into());
     }
-    base.append_batches(&addition)?;
-    if base.positions.len() / 3 + addition.positions.len() / 3 > 6_000_000
-        || base.indices.len() + addition.indices.len() > 18_000_000
+    // Independently authored batches may use the same object ID with different draw orders.
+    // Keep provenance only where it still describes every template batch of that owner.
+    let template_owners = |scene: &Scene| {
+        scene
+            .manifest
+            .batches
+            .iter()
+            .filter(|b| b.template.is_some())
+            .map(|b| b.object_id.clone())
+            .collect::<BTreeSet<_>>()
+    };
+    if !addition.manifest.batches.is_empty()
+        && !(base.manifest.batch_placement_owners.is_empty()
+            && addition.manifest.batch_placement_owners.is_empty())
     {
-        return Err("Composed scene exceeds its geometry allowance.".into());
+        let previous = template_owners(&base);
+        for id in template_owners(&addition) {
+            let incoming = addition.manifest.batch_placement_owners.get(&id);
+            if previous.contains(&id) {
+                if base.manifest.batch_placement_owners.get(&id) != incoming {
+                    base.manifest.batch_placement_owners.remove(&id);
+                }
+            } else if let Some(owners) = incoming {
+                base.manifest
+                    .batch_placement_owners
+                    .insert(id, owners.clone());
+            }
+        }
     }
+    Limits::default().geometry(
+        base.positions.len() / 3 + addition.positions.len() / 3,
+        base.indices.len() + addition.indices.len(),
+        crate::batches::BatchUsage::scene(&base).plus(crate::batches::BatchUsage::scene(&addition)),
+    )?;
+    base.append_batches(&addition)?;
     for material in &addition.manifest.materials {
         if let Some(existing) = base.manifest.materials.iter().find(|m| m.id == material.id) {
             if existing != material {

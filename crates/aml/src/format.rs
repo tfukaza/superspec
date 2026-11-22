@@ -20,6 +20,11 @@ fn value(value: &Value) -> Result<String, String> {
             .map(|n| number(*n))
             .collect::<Result<Vec<_>, _>>()
             .map(|v| v.join(" ")),
+        Value::PlanPoints(points) => points
+            .iter()
+            .map(|p| Ok(format!("{} {}", number(p[0])?, number(p[1])?)))
+            .collect::<Result<Vec<_>, String>>()
+            .map(|v| v.join("; ")),
         Value::Points(points) => points
             .iter()
             .map(|p| {

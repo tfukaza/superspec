@@ -111,6 +111,7 @@ fn shell(
     coat: &str,
     look: &Interior,
     tiled: bool,
+    roast_wall: bool,
     density: f64,
 ) -> Result<(), String> {
     let (x0, x1, floor, head, back) = (p.x0, p.x1, p.floor, p.head, -p.depth);
@@ -192,11 +193,44 @@ fn shell(
             [-1., 0., 0.],
             shade(wash, 0.94),
         )?;
+        let mut rear_start = z0;
+        if roast_wall && z0 == dado && (dado - floor - 1.5).abs() < 0.001 {
+            // A soft deposit immediately above the ceramic. Shade the plaster itself
+            // so the feathered edge receives the same lighting as the rest of the wall.
+            let fade = 0.035_f64.min(z1 - z0);
+            let repeat = d.repeat(coat);
+            let tint = super::super::pen::Tint::Field(&|point| {
+                let t = ((point[2] - z0) / fade).clamp(0., 1.);
+                let grain = crate::materialspec::noise::value_noise(point[0] * 4., 0., 317.);
+                let amount = (1. - t) * (0.04 + 0.07 * grain);
+                Ok([
+                    wash[0] * (1. - amount * 0.78),
+                    wash[1] * (1. - amount),
+                    wash[2] * (1. - amount * 1.2),
+                ])
+            });
+            d.pen.face(
+                d.mesh,
+                coat,
+                &[
+                    [x0, back, z0],
+                    [x1, back, z0],
+                    [x1, back, z0 + fade],
+                    [x0, back, z0 + fade],
+                ],
+                [0., 1., 0.],
+                &tint,
+                repeat,
+                None,
+                None,
+            )?;
+            rear_start += fade;
+        }
         d.face(
             coat,
             &[
-                [x0, back, z0],
-                [x1, back, z0],
+                [x0, back, rear_start],
+                [x1, back, rear_start],
                 [x1, back, z1],
                 [x0, back, z1],
             ],
@@ -324,6 +358,7 @@ pub fn draw(d: &mut Fixture<'_, '_>, r: &Request<'_>) -> Result<Vec<Proposal>, S
         r.coat,
         &trade.interior(&mut rng),
         tiled,
+        trade == Trade::Roast && !(room.width >= 4.4 && room.depth >= 5.2),
         r.kit.settings().weathering.texture_density.clamp(16., 128.),
     )?;
     let signs = shopfront(

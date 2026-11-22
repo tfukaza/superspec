@@ -1,0 +1,46 @@
+<!doctype html><meta charset="utf-8">
+<canvas></canvas>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector("canvas"), preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true;
+const camera = new THREE.PerspectiveCamera(90, 1, 0.04, 300);
+const scene = new THREE.Scene();
+const url = new URLSearchParams(location.search).get("asset");
+const { scene: model } = await new GLTFLoader().loadAsync(url);
+scene.add(model);
+const lighting = model.userData.worldSpecLighting;
+if (lighting?.version !== 1) throw Error("Missing WorldSpec lighting for the reflection capture");
+renderer.toneMapping = { aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.NoToneMapping }[lighting.toneMapping];
+renderer.toneMappingExposure = lighting.exposure;
+const rgb = values => new THREE.Color().fromArray(values);
+const ambient = lighting.ambient;
+scene.add(new THREE.HemisphereLight(rgb(ambient.sky), rgb(ambient.ground), ambient.intensity));
+scene.background = rgb(model.userData.worldSpecEnvironment?.sky?.horizon ?? model.userData.klali?.sky?.horizon ?? ambient.sky);
+for (const source of lighting.lights.filter(l => l.kind === "directional")) {
+  const sun = new THREE.DirectionalLight(rgb(source.color), source.intensity);
+  const [x, y, z] = source.direction;
+  sun.position.set(x, z, -y).normalize().multiplyScalar(70);
+  sun.castShadow = source.castsShadow;
+  Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, far: 160 });
+  sun.shadow.camera.updateProjectionMatrix();
+  sun.shadow.mapSize.set(2048, 2048);
+  scene.add(sun, sun.target);
+}
+model.traverse(mesh => {
+  if (!mesh.isMesh) return;
+  mesh.receiveShadow = true;
+  mesh.castShadow = [mesh.material].flat().some(m => m.userData.castsShadow !== false);
+});
+window.captureFace = (center, direction, size) => {
+  renderer.setSize(size, size, false);
+  camera.up.set(0, direction[1] ? 0 : 1, direction[1] ? 1 : 0);
+  camera.position.fromArray(center);
+  camera.lookAt(new THREE.Vector3(...center).add(new THREE.Vector3(...direction)));
+  renderer.render(scene, camera);
+  return { data: renderer.domElement.toDataURL(), quaternion: camera.quaternion.toArray() };
+};
+</script>

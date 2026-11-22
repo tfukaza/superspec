@@ -6,6 +6,8 @@ use std::{
 };
 use superspec_types::{diagnostic::SourceLocation, material::Material};
 
+use superspec_types::limits;
+
 pub const IDENTITY: [f64; 16] = [
     1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
 ];
@@ -50,6 +52,7 @@ pub struct Model {
     /// A repeated identity must represent every attribute exactly, not merely the same shape.
     pub mesh_artifacts: BTreeMap<String, String>,
     pub instances: Vec<Instance>,
+    pub geometry_lods: Vec<superspec_types::lod::GeometryLodGroup>,
     /// Instanced batches (`crate::batches`): each names a mesh of `meshes` and is delivered
     /// unexpanded, beside the placements above.
     pub batches: Vec<crate::batches::InstanceBatch>,
@@ -104,10 +107,21 @@ pub fn transform_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
 
 pub fn transform_normal(matrix: &[f64; 16], normal: [f64; 3]) -> Result<[f64; 3], String> {
     let determinant = determinant(matrix)?;
+    normal_from_cofactors(&normal_cofactors(matrix), determinant, normal)
+}
+
+fn normal_cofactors(matrix: &[f64; 16]) -> [[f64; 3]; 3] {
     let a = [matrix[0], matrix[1], matrix[2]];
     let b = [matrix[4], matrix[5], matrix[6]];
     let c = [matrix[8], matrix[9], matrix[10]];
-    let cofactors = [cross(b, c), cross(c, a), cross(a, b)];
+    [cross(b, c), cross(c, a), cross(a, b)]
+}
+
+fn normal_from_cofactors(
+    cofactors: &[[f64; 3]; 3],
+    determinant: f64,
+    normal: [f64; 3],
+) -> Result<[f64; 3], String> {
     let result: [f64; 3] = std::array::from_fn(|axis| {
         (cofactors[0][axis] * normal[0]
             + cofactors[1][axis] * normal[1]
@@ -125,13 +139,13 @@ impl LocalMesh {
     pub fn validate(&self) -> Result<(), String> {
         let count = self.positions.len();
         if count == 0
-            || count > 750_000
+            || count > limits::MAX_LOCAL_MESH_VERTICES
             || self.normals.len() != count
             || self.uvs.len() != count
             || self.colors.len() != count
             || self.indices.is_empty()
             || !self.indices.len().is_multiple_of(3)
-            || self.indices.len() > 4_500_000
+            || self.indices.len() > limits::MAX_LOCAL_MESH_INDICES
             || self.indices.iter().any(|i| *i as usize >= count)
         {
             return Err(
@@ -172,16 +186,46 @@ impl LocalMesh {
 }
 
 impl Model {
-    /// Creates fresh target buffers. The shared meshes, placements and maps are never modified.
-    pub fn scene(&self, revision: u32) -> Result<Scene, String> {
-        if self.meshes.len() > 16_384
-            || self.instances.len() > 16_384
+    /// Scope this copy's render and picking identities to its WorldSpec placement.
+    /// Local geometry, material and image identities remain shareable across copies.
+    pub fn place_under(&mut self, owner: &str) {
+        let prefix = format!("{owner}/");
+        for instance in &mut self.instances {
+            instance.id.insert_str(0, &prefix);
+            instance.object_id = owner.to_owned();
+        }
+        for batch in &mut self.batches {
+            batch.id.insert_str(0, &prefix);
+            batch.object_id = owner.to_owned();
+            if let Some(id) = &mut batch.template {
+                id.insert_str(0, &prefix);
+            }
+            if let Some(foliage) = &mut batch.foliage {
+                foliage.patch.insert_str(0, &prefix);
+            }
+        }
+        self.decals = std::mem::take(&mut self.decals)
+            .into_iter()
+            .map(|id| format!("{prefix}{id}"))
+            .collect();
+        crate::lod::prefix_placements(&mut self.geometry_lods, &prefix);
+    }
+
+    pub(crate) fn check_resource_counts(&self) -> Result<(), String> {
+        if self.meshes.len() > limits::MAX_MODEL_RECORDS_PER_KIND
+            || self.instances.len() > limits::MAX_MODEL_RECORDS_PER_KIND
             || self.batches.len() > crate::batches::MAX_BATCHES
-            || self.materials.len() > 16_384
-            || self.images.len() > 16_384
+            || self.materials.len() > limits::MAX_SCENE_MATERIALS
+            || self.images.len() > limits::MAX_SCENE_IMAGES
         {
             return Err("Instance model exceeds its resource/placement allowance.".into());
         }
+        Ok(())
+    }
+
+    /// Creates fresh target buffers. The shared meshes, placements and maps are never modified.
+    pub fn scene(&self, revision: u32) -> Result<Scene, String> {
+        self.check_resource_counts()?;
         if self.mesh_artifacts.iter().any(|(mesh, artifact)| {
             !self.meshes.contains_key(mesh) || artifact.is_empty() || artifact.len() > 4096
         }) {
@@ -190,6 +234,7 @@ impl Model {
         let mut scene = Scene::empty(revision, "superspec-instance-model-v1");
         scene.manifest.id = self.id.clone();
         scene.manifest.name = self.name.clone();
+        scene.manifest.geometry_lods = self.geometry_lods.clone();
         let mut image_pixels = 0usize;
         for (id, image) in &self.images {
             if id.is_empty()
@@ -258,9 +303,11 @@ impl Model {
                     instance.id
                 ));
             }
-            let mirrored = determinant(&instance.transform)? < 0.;
-            if scene.positions.len() / 3 + mesh.positions.len() > 1_500_000
-                || scene.indices.len() + mesh.indices.len() > 9_000_000
+            let determinant = determinant(&instance.transform)?;
+            let mirrored = determinant < 0.;
+            let cofactors = normal_cofactors(&instance.transform);
+            if scene.positions.len() / 3 + mesh.positions.len() > limits::MAX_MODEL_VERTICES
+                || scene.indices.len() + mesh.indices.len() > limits::MAX_MODEL_INDICES
             {
                 return Err(
                     "Expanded instance model exceeds its delivery geometry allowance.".into(),
@@ -277,7 +324,7 @@ impl Model {
                         "Transformed instance leaves the supported coordinate range.".into(),
                     );
                 }
-                let normal = transform_normal(&instance.transform, mesh.normals[i])?;
+                let normal = normal_from_cofactors(&cofactors, determinant, mesh.normals[i])?;
                 for axis in 0..3 {
                     bounds[0][axis] = bounds[0][axis].min(point[axis]);
                     bounds[1][axis] = bounds[1][axis].max(point[axis]);
@@ -352,8 +399,14 @@ impl Model {
             let mesh = self.meshes.get(&batch.mesh).ok_or_else(|| {
                 format!("Batch {} references missing mesh {}.", batch.id, batch.mesh)
             })?;
-            scene.add_batch(batch, mesh)?;
+            scene.insert_batch(batch, mesh)?;
         }
+        if !self.batches.is_empty() {
+            // Ordered once, after all of them.
+            crate::batches::sort(&mut scene);
+            scene.manifest.batch_counts = Some(scene.batches.counts());
+        }
+        crate::lod::project_foliage(&mut scene)?;
         scene.manifest.success = true;
         let mut objects = BTreeMap::new();
         for instance in &self.instances {

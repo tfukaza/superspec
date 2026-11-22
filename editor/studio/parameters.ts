@@ -3,7 +3,8 @@ import type { Parameter, ParameterValue } from "../../browser/runtime/authoring.
 /** Creates controls from the compiler's public declarations, retaining focus while values are regenerated. */
 export class ParameterControls {
   private signature = "";
-  constructor(private readonly host: HTMLElement, private readonly change: (name: string, value: ParameterValue) => void) {}
+  constructor(private readonly host: HTMLElement, private readonly change: (name: string, value: ParameterValue) => void,
+    private readonly liveInput: () => boolean = () => false) {}
 
   /** A declaration change replaces controls; value-only changes update their existing inputs. */
   show(parameters: Parameter[], values: Record<string, ParameterValue>): void {
@@ -25,7 +26,7 @@ export class ParameterControls {
     }
   }
 
-  /** Each field commits typed values; Rust remains responsible for range and semantic validation. */
+  /** Keep incomplete numeric edits in the control until every component is a valid typed value. */
   private control(parameter: Parameter): HTMLElement {
     const row = document.createElement("div"); row.className = "parameter";
     const displayName = parameter.label ?? parameter.name;
@@ -53,13 +54,21 @@ export class ParameterControls {
       if (parameter.min !== undefined) input.min = String(parameter.min);
       if (parameter.max !== undefined) input.max = String(parameter.max);
       input.step = String(parameter.step ?? (parameter.type === "integer" ? 1 : 0.01));
-      input.addEventListener("change", () => {
+      const commit = () => {
         const siblings = [...inputs.querySelectorAll<HTMLInputElement>("input")];
+        // The increment controls the arrow keys. MaterialSpec admits any finite scalar inside its range.
+        if (siblings.some(item => item.type === "number" && (!Number.isFinite(item.valueAsNumber)
+          || item.validity.rangeUnderflow || item.validity.rangeOverflow
+          || (parameter.type === "integer" && !Number.isInteger(item.valueAsNumber))))) return;
         let value: ParameterValue = input.valueAsNumber;
         if (count > 1) value = siblings.map(item => item.valueAsNumber);
         if (input.type === "checkbox") value = input.checked;
         if (input.type === "color") value = input.value;
         this.change(parameter.name, value);
+      };
+      input.addEventListener("change", commit);
+      input.addEventListener("input", () => {
+        if (this.liveInput() && (input.type === "color" || input.type === "number")) commit();
       });
       inputs.append(input);
     }

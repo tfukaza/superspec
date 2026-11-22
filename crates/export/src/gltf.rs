@@ -1,5 +1,8 @@
 //! glTF 2.0: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+use superspec_types::limits;
+mod buffer;
 use crate::{Options, Purpose, tangents::material_tangents};
+use buffer::Buffer;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,80 +40,6 @@ struct Metadata<'a> {
     /// The scene's whole lighting record, for consumers that honor more than punctual lights.
     #[serde(skip_serializing_if = "Option::is_none")]
     lighting: Option<&'a superspec_types::lighting::Lighting>,
-}
-
-struct Buffer<'a, 'cancel> {
-    bytes: Vec<u8>,
-    views: Vec<Value>,
-    accessors: Vec<Value>,
-    options: &'a Options<'cancel>,
-}
-impl Buffer<'_, '_> {
-    fn view(&mut self, bytes: &[u8], target: Option<u32>) -> Result<usize, String> {
-        let padding = (4 - self.bytes.len() % 4) % 4;
-        let length = self
-            .bytes
-            .len()
-            .checked_add(padding)
-            .and_then(|n| n.checked_add(bytes.len()))
-            .ok_or("Export size overflow.")?;
-        self.options.check(length)?;
-        self.bytes.resize(self.bytes.len() + padding, 0);
-        let mut view = json!({"buffer":0,"byteOffset":self.bytes.len(),"byteLength":bytes.len()});
-        if let Some(target) = target {
-            view["target"] = json!(target);
-        }
-        self.views.push(view);
-        self.bytes.extend_from_slice(bytes);
-        Ok(self.views.len() - 1)
-    }
-    fn floats(&mut self, values: &[f32], components: usize, bounds: bool) -> Result<usize, String> {
-        self.attribute(values, components, bounds, Some(34962))
-    }
-    /// A float accessor; per-instance data is no vertex attribute, so its view has no target.
-    fn attribute(
-        &mut self,
-        values: &[f32],
-        components: usize,
-        bounds: bool,
-        target: Option<u32>,
-    ) -> Result<usize, String> {
-        self.options.check(
-            self.bytes
-                .len()
-                .checked_add(values.len() * 4)
-                .ok_or("Export size overflow.")?,
-        )?;
-        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let view = self.view(&bytes, target)?;
-        let mut accessor = json!({"bufferView":view,"componentType":5126,"count":values.len()/components,"type":match components {1=>"SCALAR",2=>"VEC2",3=>"VEC3",4=>"VEC4",_=>unreachable!()}});
-        if bounds {
-            let mut minimum = vec![f32::INFINITY; components];
-            let mut maximum = vec![f32::NEG_INFINITY; components];
-            for (i, v) in values.iter().enumerate() {
-                minimum[i % components] = minimum[i % components].min(*v);
-                maximum[i % components] = maximum[i % components].max(*v);
-            }
-            accessor["min"] = json!(minimum);
-            accessor["max"] = json!(maximum);
-        }
-        self.accessors.push(accessor);
-        Ok(self.accessors.len() - 1)
-    }
-    fn indices(&mut self, values: &[u32]) -> Result<usize, String> {
-        self.options.check(
-            self.bytes
-                .len()
-                .checked_add(values.len() * 4)
-                .ok_or("Export size overflow.")?,
-        )?;
-        let bytes: Vec<_> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        let view = self.view(&bytes, Some(34963))?;
-        self.accessors.push(
-            json!({"bufferView":view,"componentType":5125,"count":values.len(),"type":"SCALAR"}),
-        );
-        Ok(self.accessors.len() - 1)
-    }
 }
 
 fn linear(color: &str) -> Result<[f64; 3], String> {
@@ -157,10 +86,12 @@ fn check_material(material: &Material) -> Result<(), String> {
 /// Checks public scene ranges before indexing; selected geometry may never silently disappear.
 fn selected<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Vec<&'a Mesh>, String> {
     options.check(0)?;
+    superspec_model::lod::check(scene)?;
+    let (alternate_meshes, _) = superspec_model::lod::alternate_ids(&scene.manifest.geometry_lods);
     let vertices = scene.manifest.vertex_count;
     if !scene.manifest.success
-        || vertices > 6_000_000
-        || scene.manifest.index_count > 6_000_000
+        || vertices > limits::MAX_WORLD_VERTICES
+        || scene.manifest.index_count > limits::MAX_WORLD_INDICES
         || scene.positions.len() != vertices * 3
         || scene.normals.len() != vertices * 3
         || scene.colors.len() != vertices * 3
@@ -191,7 +122,7 @@ fn selected<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Vec<&'a Mesh>
             return Err("Duplicate scene mesh identity.".into());
         }
         if !(if options.purpose == Purpose::Collision {
-            colliders.contains(mesh.id.as_str())
+            colliders.contains(mesh.id.as_str()) && !alternate_meshes.contains(mesh.id.as_str())
         } else {
             mesh.visible
         }) {
@@ -449,6 +380,7 @@ struct Plan<'a> {
 fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String> {
     let selected = selected(scene, options)?;
     superspec_model::batches::check(scene)?;
+    let (_, alternate_batches) = superspec_model::lod::alternate_ids(&scene.manifest.geometry_lods);
     let batches: Vec<&Batch> = scene
         .manifest
         .batches
@@ -456,6 +388,7 @@ fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String>
         .filter(|batch| {
             if options.purpose == Purpose::Collision {
                 batch.collision == Collision::Instances
+                    && !alternate_batches.contains(batch.id.as_str())
             } else {
                 batch.visible
             }
@@ -470,7 +403,7 @@ fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String>
             return Err("Duplicate export image identity.".into());
         }
     }
-    let materials: BTreeMap<_, _> = scene
+    let mut materials: BTreeMap<_, _> = scene
         .manifest
         .materials
         .iter()
@@ -479,12 +412,36 @@ fn plan<'a>(scene: &'a Scene, options: &Options<'_>) -> Result<Plan<'a>, String>
     if materials.len() != scene.manifest.materials.len() {
         return Err("Duplicate export material identity.".into());
     }
-    let used: BTreeSet<_> = selected
+    let mut used: BTreeSet<_> = selected
         .iter()
         .filter_map(|m| m.material.as_deref())
         .chain(batches.iter().filter_map(|b| b.material.as_deref()))
         .collect();
     let roles = if options.purpose == Purpose::Visual {
+        for material in scene
+            .manifest
+            .materials
+            .iter()
+            .filter(|m| !m.lods.is_empty())
+        {
+            if !used.contains(material.id.as_str()) {
+                continue;
+            }
+            material.validate()?;
+            for level in &material.lods {
+                let alternate = level.material.as_ref();
+                if materials
+                    .insert(alternate.id.as_str(), alternate)
+                    .is_some_and(|prior| prior != alternate)
+                {
+                    return Err(format!(
+                        "Conflicting LOD material identity {} on {}.",
+                        alternate.id, material.id
+                    ));
+                }
+                used.insert(alternate.id.as_str());
+            }
+        }
         texture_roles(&used, &materials)
     } else {
         BTreeMap::new()
@@ -535,6 +492,69 @@ pub fn encode_texture(source: &[u8], kind: ktx2::Kind) -> Result<Vec<u8>, String
 /// https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_mesh_gpu_instancing
 const INSTANCING: &str = "EXT_mesh_gpu_instancing";
 
+/// Lower variants exist in the document but are reachable only through the optional extension.
+/// Core glTF therefore draws the authored near fallback exactly once, including plain-node batches.
+fn geometry_lods(scene: &Scene, nodes: &mut Vec<Value>) -> Result<Vec<usize>, String> {
+    if scene.manifest.geometry_lods.is_empty() {
+        return Ok((0..nodes.len()).collect());
+    }
+    let mut by_mesh = BTreeMap::<&str, Vec<usize>>::new();
+    let mut by_batch = BTreeMap::<&str, Vec<usize>>::new();
+    for (index, node) in nodes.iter().enumerate() {
+        if let Some(id) = node["extras"]["meshId"].as_str() {
+            by_mesh.entry(id).or_default().push(index);
+        }
+        if let Some(id) = node["extras"]["batchId"].as_str() {
+            by_batch.entry(id).or_default().push(index);
+        }
+    }
+    let mut grouped = BTreeSet::new();
+    let mut groups = Vec::new();
+    for group in &scene.manifest.geometry_lods {
+        let mut levels = Vec::new();
+        for (level_index, level) in group.levels.iter().enumerate() {
+            let mut children = Vec::new();
+            for (ids, mapping) in [(&level.meshes, &by_mesh), (&level.batches, &by_batch)] {
+                for id in ids {
+                    let emitted = mapping.get(id.as_str()).ok_or_else(|| {
+                        format!(
+                            "Geometry LOD {} references unemitted geometry {id}.",
+                            group.id
+                        )
+                    })?;
+                    children.extend_from_slice(emitted);
+                    grouped.extend(emitted.iter().copied());
+                }
+            }
+            levels
+                .push(json!({"name":format!("{}:lod:{level_index}",group.id),"children":children}));
+        }
+        groups.push((group, levels));
+    }
+    let mut roots: Vec<usize> = (0..nodes.len()).filter(|i| !grouped.contains(i)).collect();
+    // Release node-borrowing lookup tables before appending group nodes.
+    drop(by_mesh);
+    drop(by_batch);
+    for (group, mut levels) in groups {
+        let near = nodes.len();
+        levels[0]["extensions"] =
+            json!({"MSFT_lod":{"ids":(near+1..near+levels.len()).collect::<Vec<_>>()}});
+        levels[0]["extras"] = json!({"worldSpecLod":{"version":1,"distances":group.levels.iter().map(|l|l.distance).collect::<Vec<_>>()}});
+        if group.levels.iter().all(|l| l.screen_coverage.is_some()) {
+            levels[0]["extras"]["MSFT_screencoverage"] = json!(
+                group
+                    .levels
+                    .iter()
+                    .map(|l| l.screen_coverage.unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+        roots.push(near);
+        nodes.extend(levels);
+    }
+    Ok(roots)
+}
+
 /// Writes the selected instanced batches: each batch's mesh once, then its instances. A visual
 /// export with `Instancing::Extension` gives a batch one node with `EXT_mesh_gpu_instancing`
 /// (TRANSLATION, ROTATION and SCALE accessors; the `instance` values as `_INSTANCE` and the tints
@@ -554,6 +574,7 @@ fn write_batches(
     let options = buffer.options;
     let visual = options.purpose == Purpose::Visual;
     let extension = visual && options.instancing == crate::Instancing::Extension;
+    let (_, alternate_batches) = superspec_model::lod::alternate_ids(&scene.manifest.geometry_lods);
     for batch in batches {
         options.check(0)?;
         let view = scene.batches.view(batch);
@@ -640,7 +661,8 @@ fn write_batches(
         let mesh = meshes.len();
         meshes.push(json!({"name":batch.id,"primitives":[primitive]}));
         let count = batch.instance_count;
-        let collidable = batch.collision == Collision::Instances;
+        let collidable = batch.collision == Collision::Instances
+            && !alternate_batches.contains(batch.id.as_str());
         if extension {
             let column = |buffer: &mut Buffer<'_, '_>, start: usize, components: usize| {
                 let values: Vec<f32> = view
@@ -689,6 +711,9 @@ fn write_batches(
                 }
                 let mut extras = json!({"batchId":batch.id,"instance":index,
                     "objectId":batch.object_id,"collidable":collidable});
+                if let Some(foliage) = batch.foliage.as_ref().filter(|_| visual) {
+                    extras["foliage"] = json!(foliage);
+                }
                 if index == 0 {
                     extras["source"] = json!(batch.source);
                 }
@@ -733,12 +758,8 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         roles,
     } = plan(scene, options)?;
     let visual = options.purpose == Purpose::Visual;
-    let mut buffer = Buffer {
-        bytes: vec![],
-        views: vec![],
-        accessors: vec![],
-        options,
-    };
+    let mut buffer = Buffer::new(options);
+    let (alternate_meshes, _) = superspec_model::lod::alternate_ids(&scene.manifest.geometry_lods);
     let mut materials = vec![];
     let mut material_indices = BTreeMap::new();
     let mut images = vec![];
@@ -875,6 +896,23 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
             material_indices.insert(id, materials.len());
             materials.push(entry);
         }
+        for (&id, &index) in &material_indices {
+            let levels = &source_materials[id].lods;
+            if levels.is_empty() {
+                continue;
+            }
+            let ids: Vec<_> = levels
+                .iter()
+                .map(|level| material_indices[level.material.id.as_str()])
+                .collect();
+            materials[index]["extensions"]["MSFT_lod"] = json!({"ids":ids});
+            let coverage: Vec<_> = levels
+                .iter()
+                .map(|level| level.screen_coverage)
+                .chain([0.])
+                .collect();
+            materials[index]["extras"]["MSFT_screencoverage"] = json!(coverage);
+        }
     }
     let mut meshes = vec![];
     let mut nodes = vec![];
@@ -926,7 +964,12 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
                     .material
                     .as_deref()
                     .and_then(|id| source_materials.get(id))
-                    .is_some_and(|m| m.normal_texture.is_some())
+                    .is_some_and(|m| {
+                        m.normal_texture.is_some()
+                            || m.lods
+                                .iter()
+                                .any(|lod| lod.material.normal_texture.is_some())
+                    })
             {
                 attributes["TANGENT"] =
                     json!(buffer.floats(&material_tangents(scene, mesh, options)?, 4, false)?);
@@ -944,7 +987,7 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         }
         let index = meshes.len();
         meshes.push(json!({"name":mesh.id,"primitives":[primitive]}));
-        nodes.push(json!({"name":mesh.id,"mesh":index,"extras":{"meshId":mesh.id,"objectId":mesh.object_id,"source":mesh.source,"collidable":scene.manifest.colliders.contains(&mesh.id)}}));
+        nodes.push(json!({"name":mesh.id,"mesh":index,"extras":{"meshId":mesh.id,"objectId":mesh.object_id,"source":mesh.source,"collidable":scene.manifest.colliders.contains(&mesh.id) && !alternate_meshes.contains(mesh.id.as_str())}}));
     }
     let instanced = write_batches(
         scene,
@@ -963,8 +1006,13 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
     };
     let (lights, light_nodes) = lighting.map(crate::lighting::punctual).unwrap_or_default();
     nodes.extend(light_nodes);
+    let children = if visual {
+        geometry_lods(scene, &mut nodes)?
+    } else {
+        (0..nodes.len()).collect()
+    };
     let root = nodes.len();
-    nodes.push(json!({"name":scene.manifest.id,"rotation":[-std::f64::consts::FRAC_1_SQRT_2,0.,0.,std::f64::consts::FRAC_1_SQRT_2],"children":(0..root).collect::<Vec<_>>() }));
+    nodes.push(json!({"name":scene.manifest.id,"rotation":[-std::f64::consts::FRAC_1_SQRT_2,0.,0.,std::f64::consts::FRAC_1_SQRT_2],"children":children }));
     let mut document = json!({"asset":{"version":"2.0","generator":"SuperSpec Rust"},"scene":0,"scenes":[{"nodes":[root]}],"nodes":nodes,"meshes":meshes,
         "buffers":[{"byteLength":buffer.bytes.len()}],"bufferViews":buffer.views,"accessors":buffer.accessors});
     if !lights.is_empty() {
@@ -980,6 +1028,15 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
             json!([{"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}]);
     }
     let mut extensions = vec![];
+    if ["nodes", "materials"].iter().any(|key| {
+        document[*key].as_array().is_some_and(|items| {
+            items
+                .iter()
+                .any(|v| v["extensions"]["MSFT_lod"].is_object())
+        })
+    }) {
+        extensions.push("MSFT_lod");
+    }
     if emissive_strength {
         extensions.push("KHR_materials_emissive_strength");
     }

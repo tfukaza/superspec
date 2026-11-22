@@ -16,6 +16,11 @@ pub type Transform = [[f64; 3]; 4];
 /// The texel densities a slot may declare, in texels per meter (those a bake request accepts).
 const MIN_DENSITY: f64 = 1.;
 const MAX_DENSITY: f64 = 100_000.;
+const MAX_PARAMETERS: usize = 128;
+const MAX_MATERIAL_SLOTS: usize = 128;
+const MAX_ATTACHMENTS: usize = 256;
+const MAX_LAYERS_PER_SLOT: usize = 16;
+const MAX_ITEM_LOD_ALTERNATIVES: usize = 7;
 pub fn identity() -> Transform {
     Matrix::default().0
 }
@@ -63,8 +68,20 @@ pub struct ItemDefinition {
     /// density for the slot, its material or a mesh comes first.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub densities: BTreeMap<String, f64>,
+    /// Authored render alternatives. The ordinary definition remains level zero;
+    /// each later level overrides only declared geometry controls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lods: Vec<ItemLodDefinition>,
     #[serde(skip)]
     pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemLodDefinition {
+    /// Camera distance in meters at which this alternative becomes eligible.
+    pub distance: f64,
+    pub parameters: Values,
 }
 
 /// An authored feature: a polyline in item definition coordinates given to one part's
@@ -784,7 +801,10 @@ pub struct RouteDefinition {
     pub section: SectionDefinition,
     #[serde(default)]
     pub wall_thickness: Scalar,
-    pub points: Vec<[Scalar; 3]>,
+    pub points: RoutePoints,
+    /// Grid of offsets from each straight leg's centerline to its mounting face.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports: Option<ParameterReference>,
     #[serde(default)]
     pub bend_radius: Scalar,
     /// Sides around a round section.
@@ -799,8 +819,16 @@ pub struct RouteDefinition {
     pub capped: Switch,
     #[serde(default)]
     pub fittings: Vec<FittingDefinition>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub omit_unfittable_repeats: bool,
     /// Starts the route at another part's attachment; `points` are then relative to it.
     pub from: Option<AttachmentReference>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RoutePoints {
+    Inline(Vec<[Scalar; 3]>),
+    Parameter(ParameterReference),
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1052,7 +1080,10 @@ impl ItemDefinition {
                 "Item ID must be a bounded nonempty identifier.",
             ));
         }
-        if self.parameters.len() > 128 || self.slots.len() > 128 || self.attachments.len() > 256 {
+        if self.parameters.len() > MAX_PARAMETERS
+            || self.slots.len() > MAX_MATERIAL_SLOTS
+            || self.attachments.len() > MAX_ATTACHMENTS
+        {
             return Err(fail(
                 &self.source,
                 "/",
@@ -1112,6 +1143,50 @@ impl ItemDefinition {
                 "Transform exceeds item coordinate limits.",
             ));
         }
+        if self.lods.len() > MAX_ITEM_LOD_ALTERNATIVES {
+            return Err(fail(
+                &self.source,
+                "/lods",
+                "ITEM_LOD",
+                "An item has at most seven render alternatives.",
+            ));
+        }
+        let mut previous_distance = 0.;
+        for (index, level) in self.lods.iter().enumerate() {
+            let pointer = format!("/lods/{index}");
+            if !level.distance.is_finite()
+                || level.distance <= previous_distance
+                || level.distance > 1e6
+            {
+                return Err(fail(
+                    &self.source,
+                    &format!("{pointer}/distance"),
+                    "ITEM_LOD",
+                    "LOD distances must be finite, positive and strictly increasing, at most 1000000 meters.",
+                ));
+            }
+            previous_distance = level.distance;
+            if level.parameters.is_empty() || level.parameters.len() > 64 {
+                return Err(fail(
+                    &self.source,
+                    &format!("{pointer}/parameters"),
+                    "ITEM_LOD",
+                    "A render alternative overrides from one to 64 geometry controls.",
+                ));
+            }
+            for (name, value) in &level.parameters {
+                if !self.parameters.get(name).is_some_and(|parameter| {
+                    parameter.role == Role::Geometry && parameter.accepts(value)
+                }) {
+                    return Err(fail(
+                        &self.source,
+                        &format!("{pointer}/parameters/{}", super::pointer_key(name)),
+                        "ITEM_LOD",
+                        "A render alternative must name a geometry control and satisfy its declared type, range and choices.",
+                    ));
+                }
+            }
+        }
         match &self.collision {
             Collision::Shape(CollisionShape::Box { center, size })
                 if center
@@ -1143,6 +1218,21 @@ impl ItemDefinition {
             _ => {}
         }
         Ok(values)
+    }
+
+    /// The source and effective controls for one render-only alternative. Collision,
+    /// attachments and editor handles of the canonical item are never replaced by it.
+    pub fn render_alternative(
+        &self,
+        level: &ItemLodDefinition,
+        overrides: &Values,
+    ) -> (Self, Values) {
+        let mut definition = self.clone();
+        definition.lods.clear();
+        definition.collision = Collision::default();
+        let mut parameters = overrides.clone();
+        parameters.extend(level.parameters.clone());
+        (definition, parameters)
     }
 
     pub(super) fn parameter<'a>(
@@ -1535,7 +1625,7 @@ impl ItemDefinition {
         let mut result = BTreeMap::new();
         for (slot, layers) in &self.layers {
             let pointer = format!("/layers/{}", super::pointer_key(slot));
-            if !bounded_name(slot) || layers.len() > 16 {
+            if !bounded_name(slot) || layers.len() > MAX_LAYERS_PER_SLOT {
                 return Err(fail(
                     &self.source,
                     &pointer,

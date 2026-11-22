@@ -5,12 +5,14 @@
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use superspec_engine::authoring::{
-    Diagnostic, Mapping, MaterialAssignment, ModelSource, Project, ProjectOutput, Session,
+    Diagnostic, Mapping, MaterialAssignment, ModelSource, Project, ProjectOutput, Request, Session,
 };
 use superspec_geometry::image;
 
 const WALL: &str = include_str!("../src/itemspec/definition/fixtures/washroom-wall.item.json");
 const PIPE: &str = include_str!("../src/itemspec/definition/fixtures/washroom-pipe.item.json");
+const PROCEDURAL_WALL: &str =
+    include_str!("../src/worldspec/themes/kowloon/items/kowloon-procedural-wall.item.json");
 
 /// Reads `base` and `sill`, so a wall's receivers are given those features.
 const FOLLOWS: &str = "material 1;
@@ -86,6 +88,140 @@ fn assignment(id: &str, entry: &str) -> MaterialAssignment {
         entry: entry.into(),
         ..MaterialAssignment::default()
     }
+}
+
+#[test]
+fn standalone_item_shape_precedes_the_procedural_finish() {
+    let source = json!({
+        "format": "itemspec", "version": 1, "id": "pipe",
+        "generator": {"kind": "pipe", "length": 2.0, "radius": 0.1, "segments": 8, "wallThickness": 0.01},
+        "slots": {"surface": {"entry": "finish.ms"}}, "collision": "mesh"
+    });
+    let mut request = Request {
+        kind: "item-geometry".into(),
+        entry: "pipe.item.json".into(),
+        source: source.to_string(),
+        resolution: 64,
+        ..Default::default()
+    };
+    let mut session = Session::default();
+    let shape = session.build(&request, 1, &asset, &|| false).unwrap();
+    assert!(shape.model.images.is_empty());
+    request.kind = "item".into();
+    assert!(session.build(&request, 1, &asset, &|| false).is_err());
+    request.modules.insert("finish.ms".into(), PLAIN.into());
+    let complete = session.build(&request, 1, &asset, &|| false).unwrap();
+    assert_eq!(
+        shape.metadata["geometryKey"],
+        complete.metadata["geometryKey"]
+    );
+    assert!(!complete.model.images.is_empty());
+    let fresh = Session::default()
+        .build(&request, 1, &asset, &|| false)
+        .unwrap();
+    assert_eq!(
+        complete.scene(1).unwrap().packet(),
+        fresh.scene(1).unwrap().packet()
+    );
+}
+
+#[test]
+fn procedural_wall_delivers_the_catalog_and_leaves_the_wall_center_clean() {
+    let request = Request {
+        kind: "item".into(),
+        entry: "procedural-wall.item.json".into(),
+        source: PROCEDURAL_WALL.into(),
+        parameters: BTreeMap::from([
+            ("width".into(), json!(7.)),
+            ("depth".into(), json!(0.5)),
+            ("height".into(), json!(3.3)),
+        ]),
+        ..Default::default()
+    };
+    let mut session = Session::default();
+    let images = session.library_assets(&request);
+    for name in ["concrete-shared-normal.png", "posters-atlas.jpg"] {
+        assert!(images.contains(&format!("superspec-material:{name}")));
+    }
+    let assets = |name: &str| {
+        if images.iter().any(|image| image == name) {
+            Ok(notice())
+        } else {
+            Err(format!("Unexpected image {name}"))
+        }
+    };
+    let build = |session: &mut Session, request: &Request, revision| {
+        session
+            .build(request, revision, &assets, &|| false)
+            .unwrap_or_else(|errors| panic!("{}", messages(errors)))
+    };
+    let output = build(&mut session, &request, 1);
+    assert_eq!(
+        output
+            .model
+            .materials
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "builtin:concrete",
+            "builtin:metal",
+            "builtin:wall-cable",
+            "builtin:wall-posters"
+        ]
+    );
+    for material in output.model.materials.values() {
+        for name in material.companions() {
+            assert!(output.model.images.contains_key(name));
+        }
+    }
+    let slab = output
+        .model
+        .instances
+        .iter()
+        .find(|i| i.material.as_deref() == Some("builtin:concrete"))
+        .unwrap();
+    let concrete = &output.model.meshes[&slab.mesh];
+    for i in &output.model.instances {
+        assert!(!i.collidable);
+        let mesh = &output.model.meshes[&i.mesh];
+        for [x, y, z] in &mesh.positions {
+            let x = x + i.transform[12];
+            let z = z + i.transform[14];
+            assert!((0. ..=7.).contains(&x) && (0. ..=3.3).contains(&z), "{i:?}");
+            if i.id != slab.id {
+                assert!(*y < 1e-10, "dressing must sit on the front face");
+            }
+        }
+    }
+    let dark_at = |z: f64| {
+        concrete
+            .positions
+            .iter()
+            .zip(&concrete.normals)
+            .zip(&concrete.colors)
+            .filter(|((position, normal), _)| (position[2] - z).abs() < 1e-9 && normal[1] < -0.99)
+            .any(|(_, color)| color[0] < 0.84)
+    };
+    assert!(dark_at(0.) && dark_at(3.3));
+    assert!(
+        concrete
+            .positions
+            .iter()
+            .zip(&concrete.colors)
+            .filter(|(p, _)| p[2] >= 0.62 && p[2] <= 3.3 - 0.85)
+            .all(|(_, color)| *color == [1.; 3])
+    );
+
+    let mut bare = request;
+    bare.parameters.insert("dressing".into(), json!(false));
+    let output = build(&mut session, &bare, 2);
+    assert_eq!(output.model.instances.len(), 1);
+    assert_eq!(output.model.materials.len(), 1);
+    assert_eq!(
+        output.model.meshes.values().next().unwrap().colors,
+        concrete.colors
+    );
 }
 
 /// The washroom wall and pipe fixtures as two items of one scene.
@@ -192,6 +328,91 @@ fn part<'a>(metadata: &'a Value, item: &str, part: &str) -> &'a Value {
 }
 
 #[test]
+fn weed_variants_share_pigment_and_normals_across_placements_and_seed_edits() {
+    let mut project = washroom();
+    project.modules.insert(
+        "weed.item.json".into(),
+        include_str!("../src/worldspec/themes/kowloon/items/kowloon-weed.item.json").into(),
+    );
+    project.modules.insert(
+        "kowloon-weed-paint.item.json".into(),
+        include_str!("../src/worldspec/themes/kowloon/items/kowloon-weed-paint.item.json").into(),
+    );
+    project.modules.insert(
+        "kowloon-weed-seam.item.json".into(),
+        include_str!("../src/worldspec/themes/kowloon/items/kowloon-weed-seam.item.json").into(),
+    );
+    project.models = vec![
+        item("seam", "weed.item.json", &[], [0.; 3]),
+        item("wall", "weed.item.json", &[], [1., 0., 0.]),
+    ];
+    project.models[0]
+        .parameters
+        .insert("variant".into(), json!("seam"));
+    let mut session = Session::default();
+    for revision in 1..=2 {
+        project.models[0]
+            .parameters
+            .insert("seed".into(), json!(revision));
+        let output = session
+            .build_project(
+                &project,
+                revision,
+                &|name| {
+                    if name == "kowloon-weed-paint.glb" {
+                        Ok(Arc::from(
+                            include_bytes!(
+                                "../src/worldspec/themes/kowloon/items/kowloon-weed-paint.glb"
+                            )
+                            .as_slice(),
+                        ))
+                    } else {
+                        asset(name)
+                    }
+                },
+                &|| false,
+            )
+            .unwrap();
+        let scene = output.scene(revision as u32).unwrap();
+        let paint: Vec<_> = scene
+            .manifest
+            .meshes
+            .iter()
+            .filter(|m| m.id.contains("/underpainting/"))
+            .collect();
+        assert_eq!(paint.len(), 2);
+        let seam = paint.iter().find(|m| m.id.starts_with("seam/")).unwrap();
+        let mound = paint.iter().find(|m| m.id.starts_with("wall/")).unwrap();
+        assert!(seam.bounds[1][2] < 0.55 * mound.bounds[1][2]);
+        assert_eq!(paint[0].material, paint[1].material);
+        let material = scene
+            .manifest
+            .materials
+            .iter()
+            .find(|m| Some(&m.id) == paint[0].material.as_ref())
+            .unwrap();
+        for texture in [&material.texture, &material.normal_texture] {
+            assert!(
+                scene
+                    .manifest
+                    .assets
+                    .iter()
+                    .any(|a| Some(&a.id) == texture.as_ref())
+            );
+        }
+        assert_ne!(material.texture, material.normal_texture);
+        assert_eq!(material.normal_scale, Some(0.56));
+        assert_eq!(scene.manifest.assets.len(), 2);
+        for mesh in paint {
+            assert_eq!(
+                scene.manifest.mesh_tangents[&mesh.id].len(),
+                mesh.vertex_count
+            );
+        }
+    }
+}
+
+#[test]
 fn a_scene_places_items_and_bakes_a_material_per_slot() {
     let project = washroom();
     let output = Session::default()
@@ -278,6 +499,163 @@ fn a_scene_places_items_and_bakes_a_material_per_slot() {
             .unwrap(),
     );
     assert!(error.contains("chrome, which is not a material"), "{error}");
+}
+
+#[test]
+fn warm_receiver_layouts_match_cold_after_resize_and_reject_invalid_profile() {
+    let mut project = washroom();
+    let mut session = Session::default();
+    let before = session
+        .project_layouts(&project, 1, &asset, &|| false)
+        .unwrap();
+    project.models[0]
+        .parameters
+        .insert("width".into(), json!(2.701));
+    let warm = session
+        .project_layouts(&project, 2, &asset, &|| false)
+        .unwrap();
+    let cold = Session::default()
+        .project_layouts(&project, 2, &asset, &|| false)
+        .unwrap();
+    assert_ne!(before.records, warm.records);
+    assert_eq!(warm.records, cold.records);
+    assert_eq!(
+        serde_json::to_value(&warm).unwrap(),
+        serde_json::to_value(&cold).unwrap()
+    );
+    project.resolution = 1024;
+    project.profile = superspec_engine::authoring::Profile::Production;
+    session
+        .project_layouts(&project, 3, &asset, &|| false)
+        .unwrap();
+    project.profile = superspec_engine::authoring::Profile::Preview;
+    let errors = session
+        .project_layouts(&project, 4, &asset, &|| false)
+        .unwrap_err();
+    assert!(messages(errors).contains("Resolution must be"));
+    project.resolution = 32;
+    assert_eq!(
+        session
+            .project_layouts(&project, 5, &asset, &|| false)
+            .unwrap()
+            .records,
+        cold.records
+    );
+    project.mapping = superspec_engine::authoring::Mapping::Anchored;
+    let front = "wall/part/wall/wall/front".to_owned();
+    project.texel_densities.insert(front.clone(), 8.);
+    let anchored = session
+        .project_layouts(&project, 6, &asset, &|| false)
+        .unwrap();
+    project.anchors.insert(
+        front.clone(),
+        superspec_engine::authoring::Anchor {
+            origin: [0.04, 0., 0.],
+            u: [1., 0., 0.],
+            v: [0., 0., 1.],
+        },
+    );
+    let shifted = session
+        .project_layouts(&project, 7, &asset, &|| false)
+        .unwrap();
+    let cold = Session::default()
+        .project_layouts(&project, 7, &asset, &|| false)
+        .unwrap();
+    let surface = |layouts: &superspec_engine::authoring::ProjectLayouts| {
+        layouts
+            .receivers
+            .iter()
+            .find(|r| r.id == front)
+            .unwrap()
+            .surface
+            .clone()
+    };
+    assert_ne!(surface(&anchored), surface(&shifted));
+    assert_eq!(shifted.records, cold.records);
+    assert_eq!(
+        serde_json::to_value(&shifted).unwrap(),
+        serde_json::to_value(&cold).unwrap()
+    );
+}
+
+#[test]
+fn feature_edits_keep_chart_coordinates_and_validate_warm_receivers() {
+    let mut project = washroom();
+    let mut session = Session::default();
+    let baseline = session
+        .project_layouts(&project, 1, &asset, &|| false)
+        .unwrap();
+    let front = "wall/part/wall/wall/front";
+    project.features.insert(
+        front.into(),
+        vec![superspec_engine::materialspec::program::NamedFeature {
+            name: "stain".into(),
+            points: vec![[0., 0., 0.], [0.2, 0., 0.3]],
+            closed: false,
+            zone: None,
+        }],
+    );
+    let edited = session
+        .project_layouts(&project, 2, &asset, &|| false)
+        .unwrap();
+    assert_eq!(baseline.records, edited.records);
+    assert_eq!(
+        serde_json::to_value(&baseline).unwrap(),
+        serde_json::to_value(edited).unwrap()
+    );
+
+    project.features.get_mut(front).unwrap()[0].name = "invalid name".into();
+    let warm = session
+        .project_layouts(&project, 3, &asset, &|| false)
+        .unwrap_err();
+    let cold = Session::default()
+        .project_layouts(&project, 3, &asset, &|| false)
+        .unwrap_err();
+    assert_eq!(warm[0].source_name, project.entry);
+    assert!(warm[0].message.contains(front) && warm[0].message.contains("invalid name"));
+    assert_eq!(warm[0].message, cold[0].message);
+}
+
+#[test]
+fn compact_gpu_layouts_preserve_face_maps_and_all_triangle_records() {
+    let mut project = washroom();
+    project
+        .mappings
+        .insert("concrete".into(), Mapping::Anchored);
+    project.texel_density = Some(8.);
+    let mut session = Session::default();
+    let prepared = session
+        .prepare_project(&project, 1, &asset, &|| false)
+        .unwrap();
+    let compact = session
+        .layouts_prepared_with_surface_maps(&prepared, true, &|| false)
+        .unwrap();
+    let full = session.layouts_prepared(&prepared, &|| false).unwrap();
+    assert_eq!(full.records, compact.records);
+    let mut kept = 0;
+    let mut omitted = 0;
+    for (ordinary, sparse) in full.receivers.iter().zip(&compact.receivers) {
+        assert_eq!(ordinary.id, sparse.id);
+        let end = ordinary.offset + ordinary.triangles * full.record;
+        let triangles = &full.records[ordinary.offset..end];
+        let expected: Vec<_> = ordinary
+            .surface
+            .chunks_exact(10)
+            .filter(|chart| {
+                triangles.chunks_exact(full.record).any(|triangle| {
+                    triangle[7] == 3.
+                        && triangle[0] == chart[0] as f32
+                        && triangle[1] == chart[1] as f32
+                })
+            })
+            .flatten()
+            .copied()
+            .collect();
+        assert_eq!(sparse.surface, expected);
+        kept += expected.len();
+        omitted += ordinary.surface.len() - expected.len();
+    }
+    assert!(kept > 0 && omitted > 0);
 }
 
 #[test]

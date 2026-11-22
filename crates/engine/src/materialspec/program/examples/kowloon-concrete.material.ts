@@ -4,14 +4,14 @@
 // bounds, two meters per study UV unit. Seams, cutouts, holes, grime and ground weathering apply
 // to walls; `ground` switches to the study's slab relief.
 import {
-  defineMaterial, param, vec2, vec3, add, sub, mul, div, mix, abs, max, min, floor, smoothstep,
+  defineMaterial, param, chippedShoulder, vec2, vec3, add, sub, mul, div, mix, abs, max, min, floor, smoothstep,
   softThreshold, select, and, not, ge, lt, gt, length, pow, valueNoise, variedColor,
   sampleColor, seed, creaseDistance, creaseNormal, dot, world, object, normal, footprint,
   boundsMin, boundsMax, neg, grazingFalloff, scaleSpecular,
 } from "@superspec/material/v1";
 import type { Scalar, Vec2, Vec3 } from "@superspec/material/v1";
 import {
-  fractal, fracture, contour, shoulder, pigment, cellRandom, boxDistance, topGrime, domainWarp, modulo,
+  fractal, fracture, mottledContour, shoulder, pigment, cellRandom, boxDistance, topGrime, domainWarp, modulo, illustrateWithBreakup,
 } from "./kowloon-noise.material";
 
 // Study controls.
@@ -23,6 +23,8 @@ const darknessB = param.scalar({ default: 0.1, range: [0, 0.8], label: "Concrete
 const blendScale = param.scalar({ default: 9, range: [0.2, 16], label: "Blend frequency" });
 const blendContrast = param.scalar({ default: 1, range: [1, 8], label: "Blend contrast" });
 const jaggedness = param.scalar({ default: 0.8, range: [0, 2], label: "Edge jaggedness" });
+const mottlingBreakup = param.scalar({ default: 0, range: [0, 1], label: "Mottling edge breakup" });
+const aggregateFinish = param.scalar({ default: 0, range: [0, 1], label: "Fine aggregate relief" });
 const chipScale = param.scalar({ default: 0.24, range: [0.04, 0.8], unit: "m", label: "Chip pattern scale" });
 const chipAmount = param.scalar({ default: 0.22, range: [0, 1], label: "Chip amount" });
 const intactRoughness = param.scalar({ default: 0.3, range: [0, 1], label: "Intact roughness" });
@@ -31,6 +33,8 @@ const chipRelief = param.scalar({ default: 0.0035, range: [0, 0.006], unit: "m",
 const creaseWear = param.bool({ default: true, label: "Edge wear" });
 const edgeWidth = param.scalar({ default: 0.014, range: [0.002, 0.05], unit: "m", label: "Edge width" });
 const edgeAngle = param.scalar({ default: 35, range: [1, 179], unit: "deg", label: "Sharpest flat angle" });
+const edgeChipping = param.scalar({ default: 0.5, range: [0, 1], label: "Edge chipping" });
+const edgeContrast = param.scalar({ default: 1, range: [0, 3], label: "Edge wear contrast" });
 const edgeSpecular = param.scalar({ default: 0.18, range: [0, 1], label: "Exposed arris specular" });
 const cutouts = param.bool({ default: true, label: "Repair cutouts" });
 const holes = param.bool({ default: true, label: "Form-tie holes" });
@@ -40,10 +44,20 @@ const dampness = param.scalar({ default: 0.5, range: [0, 1], label: "Ground damp
 const plaster = param.bool({ default: false, label: "Plaster coat" });
 const plasterChips = param.bool({ default: true, label: "Plaster loss" });
 const ground = param.bool({ default: false, label: "Ground slab" });
+// Illustrated finish: photographic grain flattened toward the source means, so the darkness and
+// blend fields read as flat painted patches, then warm and cool torn patches and brush dabs.
+const flatten = param.scalar({ default: 0, range: [0, 1], label: "Flatten photo grain" });
+const illustration = param.scalar({ default: 0, range: [0, 1], label: "Illustrated patches" });
+const patchScale = param.scalar({ default: 1.4, range: [0.2, 6], unit: "m", label: "Patch size" });
+const warmTint = param.vec3({ default: vec3(1.1, 0.97, 0.86), range: [0, 2], label: "Warm patch tint" });
+const coolTint = param.vec3({ default: vec3(0.92, 0.95, 1.06), range: [0, 2], label: "Cool patch tint" });
+const brushStrokes = param.scalar({ default: 0.5, range: [0, 1], label: "Brush dabs" });
 
 // The study's recorded linear means of its two source images.
 const meanA = vec3(0.37286770477657405, 0.3662141145046476, 0.3582086447939772);
 const meanB = vec3(0.20798059217157364, 0.20320214220777086, 0.18970546072187944);
+// The linear mean of the plaster image (building-plaster-plain.png).
+const plasterMean = vec3(0.7364711472602083, 0.6666688006220737, 0.5692678345895021);
 
 // Face-centered coordinates on the receiver face's dominant plane, as the study maps each face.
 const facing = abs(normal);
@@ -58,15 +72,15 @@ const aboveBase = select(lt(normal.z, -0.5), 1, sub(world.z, boundsMin.z));
 const wall = not(ground);
 
 // Two varied source images with darkness fields, an eroded blend and pigment drift.
-const sampleA = select(variation, variedColor("textures/concrete-plain.png", studyUv, seed("concrete-a"), 0.32, 1), sampleColor("textures/concrete-plain.png", studyUv));
+const sampleA = mix(select(variation, variedColor("textures/concrete-plain.png", studyUv, seed("concrete-a"), 0.32, 1), sampleColor("textures/concrete-plain.png", studyUv)), meanA, flatten);
 const uvB = add(mul(studyUv, 1.13), vec2(3.7, 11.2));
 const sampleB = mul(
-  select(variation, variedColor("textures/concrete-fine-sand.png", uvB, seed("concrete-b"), 0.32, 1), sampleColor("textures/concrete-fine-sand.png", uvB)),
+  mix(select(variation, variedColor("textures/concrete-fine-sand.png", uvB, seed("concrete-b"), 0.32, 1), sampleColor("textures/concrete-fine-sand.png", uvB)), meanB, flatten),
   mix(vec3(1), div(meanA, meanB), 0.9),
 );
-const darkA = contour(fracture(add(mul(noiseUv, 5.4), vec2(5.3, 17.1)), jaggedness, seed("dark-a")), 0.035);
-const darkB = contour(fracture(add(mul(noiseUv, 8.28), vec2(73.4, 29.6)), jaggedness, seed("dark-b")), 0.035);
-const blend = contour(fracture(add(mul(noiseUv, blendScale), vec2(113.2, 67.8)), jaggedness, seed("blend")), div(0.045, blendContrast));
+const darkA = mottledContour(fracture(add(mul(noiseUv, 5.4), vec2(5.3, 17.1)), jaggedness, seed("dark-a")), meters, 0.035, mottlingBreakup, seed("dark-a"));
+const darkB = mottledContour(fracture(add(mul(noiseUv, 8.28), vec2(73.4, 29.6)), jaggedness, seed("dark-b")), meters, 0.035, mottlingBreakup, seed("dark-b"));
+const blend = mottledContour(fracture(add(mul(noiseUv, blendScale), vec2(113.2, 67.8)), jaggedness, seed("blend")), meters, div(0.045, blendContrast), mottlingBreakup, seed("blend"));
 const layered = pigment(
   mix(mul(sampleA, sub(1, mul(darknessA, darkA))), mul(sampleB, sub(1, mul(darknessB, darkB))), blend),
   noiseUv, hueAmount, hueAngle, seed("pigment"),
@@ -121,7 +135,7 @@ const plasterField = add(plasterBroad, mul(mul(plasterDetail(plasterP), jaggedne
 const exposedHeight = select(plaster, select(plasterChips, smoothstep(0.598, 0.602, plasterField), 0), 1);
 const exposedColor = select(plaster, select(plasterChips, softThreshold(plasterField, 0.6, 0.004), 0), 1);
 const plasterColor = pigment(
-  mul(variedColor("superspec-material:building-plaster-plain.png", studyUv, seed("plaster-image"), 0.32, 1), sub(1, mul(darknessA, fractal(add(mul(studyUv, vec2(3.7, 2.8)), 19.2), seed("plaster-mottling"))))),
+  mul(mix(variedColor("superspec-material:building-plaster-plain.png", studyUv, seed("plaster-image"), 0.32, 1), plasterMean, flatten), sub(1, mul(darknessA, fractal(add(mul(studyUv, vec2(3.7, 2.8)), 19.2), seed("plaster-mottling"))))),
   noiseUv, hueAmount, hueAngle, seed("pigment"),
 );
 const plasterHeight = mul(add(add(0.004, mul(valueNoise(mul(studyUv, 480), seed("plaster-grain")), 0.00016)), mul(fractal(mul(studyUv, 65), seed("plaster-fine")), 0.00035)), sub(1, exposedHeight));
@@ -159,28 +173,46 @@ const mossHeight = mul(moss, add(0.0005, mul(groundGrain, 0.0016)));
 const creaseLimit = add(mul(edgeWidth, 2.5), footprint);
 const creaseNearest = creaseDistance("convex", edgeAngle, creaseLimit);
 const edgePockets = fractal(add(add(mul(vec2(object.x, object.y), 13), mul(vec2(7.9, 15.3), object.z)), 37.2), seed("edge-pockets"));
-const edgeGrit = valueNoise(add(mul(vec2(object.x, object.y), 170), mul(vec2(99, 211), object.z)), seed("edge-grit"));
+const rawEdgeGrit = valueNoise(add(mul(vec2(object.x, object.y), 170), mul(vec2(99, 211), object.z)), seed("edge-grit"));
+// Average sub-texel grit before it perturbs the height-derived normal.
+const edgeGrit = mix(rawEdgeGrit, 0.5, smoothstep(0.002, 0.006, footprint));
 const edgeField = add(edgePockets, mul(sub(edgeGrit, 0.5), 0.08));
-const edgeChips = smoothstep(0.54, 0.75, edgeField);
-const edgeShoulder = select(creaseWear, mul(shoulder(creaseNearest, mul(edgeWidth, mix(0.6, 2.5, edgeChips))), edgeChips), 0);
+// The chipped share of an arris: 0.5 is the study's, 1 chips nearly all of it.
+const chipShoulder = chippedShoulder({ distance: creaseNearest, width: edgeWidth, amount: edgeChipping,
+  field: edgeField, grit: edgeGrit, depth: 0.006 });
+const edgeShoulder = select(creaseWear, chipShoulder.coverage, 0);
 const edgeGroove = select(creaseWear, mul(shoulder(creaseNearest, mul(edgeWidth, 0.34)), smoothstep(0.4, 0.66, edgeField)), 0);
-const edgeDarkness = add(mul(0.16, edgeGroove), mul(0.2, edgeShoulder));
-const edgeHeight = mul(mul(-0.006, edgeShoulder), add(0.5, mul(0.5, edgeGrit)));
+const edgeDarkness = mul(add(mul(0.16, edgeGroove), mul(0.2, edgeShoulder)), edgeContrast);
+const edgeHeight = select(creaseWear, chipShoulder.height, 0);
 const roundOver = select(creaseWear, sub(1, smoothstep(0, edgeWidth, creaseNearest)), 0);
-const arris = mul(edgeSpecular, mul(roundOver, sub(1, moss)));
+// Intact stretches of an exposed corner burnish under contact. Broken pockets
+// stay matte. This variation survives a bake into ordinary glTF roughness.
+const burnish = mix(1, mix(0.22, 1, smoothstep(0.32, 0.66, edgeField)), aggregateFinish);
+const arris = mul(mul(edgeSpecular, burnish), mul(roundOver, sub(1, moss)));
 const creaseMiddle = creaseNormal("convex", edgeAngle, add(edgeWidth, footprint));
 // The adjacent face's normal: the receiver normal reflected across the crease's middle normal.
 const creaseAdjacent = sub(mul(creaseMiddle, mul(2, dot(creaseMiddle, normal))), normal);
 
 // Color composition, in the study's order.
 const relieved = add(mul(repaired, sub(1, min(reliefDarkness, 0.85))), mul(vec3(0.012, 0.011, 0.009), reliefExposed));
-const coated = select(plaster, mix(plasterColor, relieved, exposedColor), relieved);
+const coated = illustrateWithBreakup(select(plaster, mix(plasterColor, relieved, exposedColor), relieved),
+  meters, illustration, patchScale, warmTint, coolTint, brushStrokes, jaggedness, seed("illustration"), mottlingBreakup);
+// Top-edge runoff follows upright faces. A slab cap or soffit has no downhill path in its plane.
+const runoffSlope = sub(1, smoothstep(0.5, 0.95, facing.z));
 const grimed = mul(coated, sub(vec3(1), mul(vec3(0.68, 0.72, 0.76), select(and(grime, wall),
-  mul(pow(topGrime(div(meters.x, 8), topDistance), 0.75), sub(1, smoothstep(0.85, 1, topDistance))), 0))));
+  mul(runoffSlope, mul(pow(topGrime(div(meters.x, 8), topDistance), 0.75), sub(1, smoothstep(0.85, 1, topDistance)))), 0))));
 const chipped = mul(grimed, mix(1, add(0.59, mul(chipGrain, 0.29)), chipShaded));
 const stained = mix(mul(chipped, mix(vec3(1), vec3(0.19, 0.16, 0.13), stain)), vec3(0.073, 0.091, 0.022), moss);
-const finished = mul(stained, sub(1, edgeDarkness));
+const finished = mul(stained, sub(1, min(edgeDarkness, 0.85)));
 
+// Sparse cavities and exposed sand in the paste, sampled in metres. Ease out
+// sub-texel relief on distant charts before differentiating height for normals.
+const sand = valueNoise(mul(meters, 220), seed("cement-sand"));
+const poreNoise = valueNoise(mul(meters, 92), seed("cement-pores"));
+const pore = smoothstep(0.72, 0.87, add(poreNoise, mul(sub(sand, 0.5), 0.2)));
+const resolvedAggregate = mul(aggregateFinish, sub(1, smoothstep(0.002, 0.009, footprint)));
+const aggregateHeight = mul(resolvedAggregate, sub(mul(sub(sand, 0.5), 0.00018), mul(pore, 0.00072)));
+const aggregatePigment = mul(resolvedAggregate, sub(mul(sub(sand, 0.5), 0.034), mul(pore, 0.055)));
 const surfaceHeight = add(add(add(
   select(plaster, add(mul(reliefHeight, exposedHeight), plasterHeight), reliefHeight),
   chipHeight), mossHeight), edgeHeight);
@@ -189,10 +221,11 @@ const intact = mix(intactRoughness, 0.96, select(plaster, sub(1, exposedColor), 
 export default defineMaterial({
   name: "Kowloon concrete",
   base: {
-    baseColor: clamp01(finished),
-    roughness: mix(mix(intact, chippedRoughness, chipShaded), 0.95, moss),
+    baseColor: clamp01(mul(finished, add(1, aggregatePigment))),
+    roughness: mix(mul(mix(mix(intact, chippedRoughness, chipShaded), 0.95, moss), sub(1, mul(0.45, arris))),
+      0.94, mul(0.22, mul(pore, resolvedAggregate))),
     metalness: 0,
-    height: surfaceHeight,
+    height: add(surfaceHeight, aggregateHeight),
     // The study's post-relief round-over: the bumped normal plus the adjacent face's normal,
     // weighted by distance to the crease, renormalized (concrete_normal.glsl).
     normalOffset: mul(creaseAdjacent, roundOver),

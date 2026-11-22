@@ -1,0 +1,19 @@
+{
+  "white": {"color": "c7bdab", "texture": "building-plaster-plain.png"},
+  "shell": {"color": "b2a48f", "texture": "building-plaster-plain.png"},
+  "floor": {"color": "aaa497", "texture": "concrete-shared.png"},
+  "pave": {"color": "e2e0db", "texture": "ground-asphalt.png"},
+  "concrete": {"color": "999184", "texture": "concrete-shared.png"},
+  "dark": {"color": "454847", "texture": "wall-metal-weathered.png"},
+  "orange": {"color": "a35e3d"},
+  "red": {"color": "98503e"},
+  "blue": {"color": "597583"},
+  "sky": {"color": "8aabb0"},
+  "teal": {"color": "637e72", "texture": "wall-ceramic-weathered.png"},
+  "yellow": {"color": "af9453"},
+  "green": {"color": "4f4937"},
+  "wood": {"color": "886d56"},
+  "lamp": {"color": "f6e6b9"},
+  "boardformed-concrete": {"color": "afa89c", "texture": "concrete-shared.png", "repeat": 0.5, "roughness": 0.91},
+  "roof": {"color": "737777", "texture": "roofing.png"}
+}

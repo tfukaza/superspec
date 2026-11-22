@@ -43,7 +43,14 @@ try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
   const errors = [];
   page.on("pageerror", error => errors.push(error.message));
-  page.on("console", message => { if (message.type() === "error") errors.push(message.text()); });
+  let testingInvalidDecal = false;
+  page.on("console", message => {
+    if (message.type() !== "error") return;
+    // The native transport reports the deliberately rejected decal edit as HTTP 422.
+    if (testingInvalidDecal && /\/api\/session\/[^/]+\/shade-layouts$/.test(message.location().url)
+      && message.text().includes("422 (Unprocessable Entity)")) return;
+    errors.push(message.text());
+  });
   const viewport = name => page.evaluate(name => document.querySelector("#viewport").dataset[name], name);
   const json = async name => JSON.parse(await viewport(name) ?? "null");
   const state = () => page.locator("#status").getAttribute("data-state");
@@ -125,7 +132,8 @@ try {
   };
   let quadScale;
 
-  await page.goto(`http://127.0.0.1:${server.address().port}/material.html?${process.env.QUERY ?? "ao=off&gpuprobe&shadows=off"}`);
+  const host = process.env.STUDIO_URL ?? `http://127.0.0.1:${server.address().port}`;
+  await page.goto(`${host}/material.html?${process.env.QUERY ?? "ao=off&gpuprobe&shadows=off"}`);
   await ready();
   const opened = Date.now();
   await page.locator("#open-project").setInputFiles({ name: "washroom-items.studio.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(project)) });
@@ -163,6 +171,19 @@ try {
   await page.locator("#item-overlays").uncheck();
   const before = await shot("items-default");
 
+  const millimeter = await setControl("wall-tall", "width", 2.701);
+  assert.equal(millimeter.edit.value, 2.701);
+  assert.deepEqual(millimeter.items["wall-tall"].rebuilt, ["wall"]);
+  for (const id of ["duct", "pipe", "bench", "drain"]) {
+    assert.deepEqual(millimeter.items[id], start[id]);
+    assert.ok(drawn(millimeter.status).every(mesh => !mesh.startsWith(id + "/")), id + " kept its maps");
+  }
+  console.log("Wall resize by 1 mm: " + JSON.stringify({
+    shown: millimeter.shown, baked: millimeter.baked, resizedReceivers: drawn(millimeter.status),
+    mapsDrawn: millimeter.status.drawn, mapsReused: millimeter.status.reused,
+    passesDrawn: millimeter.status.nodesDrawn, passesReused: millimeter.status.nodesReused,
+  }));
+
   // Check 1: widening the wall. Only the panel is generated again; the tile panels, and every other item, are kept.
   const wide = await setControl("wall-tall", "width", 3.2);
   assert.deepEqual(wide.items["wall-tall"].rebuilt, ["wall"]);
@@ -170,7 +191,7 @@ try {
   assert.notEqual(wide.items["wall-tall"].parts.wall, start["wall-tall"].parts.wall);
   for (const id of Object.keys(start)) if (id !== "wall-tall") assert.deepEqual(wide.items[id], start[id], `${id} is untouched by a wall edit`);
   const wideDrawn = drawn(wide.status);
-  console.log(`Wall width 2.7 to 3.2 m: shown ${wide.shown} ms, baked ${wide.baked} ms; engine edit ${wide.edit.ms} ms; bakes drawn ${wide.status.drawn}, reused ${wide.status.reused} (nodes ${wide.status.nodesDrawn} drawn, ${wide.status.nodesReused} reused); drawn: ${wideDrawn.join(", ")}`);
+  console.log(`Wall width 2.701 to 3.2 m: shown ${wide.shown} ms, baked ${wide.baked} ms; engine edit ${wide.edit.ms} ms; bakes drawn ${wide.status.drawn}, reused ${wide.status.reused} (nodes ${wide.status.nodesDrawn} drawn, ${wide.status.nodesReused} reused); drawn: ${wideDrawn.join(", ")}`);
   const after = await shot("items-wall-wide");
   // The part of the wall that existed before, clear of its old end: world x 0.05 to 2.0 on the plane y = 0 (in front of
   // it stand the tile, the window and the decals), up to the underside of the duct.
@@ -273,6 +294,7 @@ try {
   // Check 4: lowering the sill until the window reaches the stencilled number. The error names the decal in the
   // definition and the last valid scene stays.
   const lastValid = await revision();
+  testingInvalidDecal = true;
   const field = page.getByRole("spinbutton", { name: "wall-tall windowSill", exact: true });
   await field.fill("0.7"); await field.press("Tab");
   await page.waitForFunction(() => document.querySelector("#status")?.dataset.state === "error", {}, { timeout: 900000 });
@@ -288,6 +310,7 @@ try {
   await finding.dispatchEvent("click");
   const selection = await page.evaluate(() => { const code = document.querySelector("#code"); return code.value.slice(code.selectionStart, code.selectionEnd); });
   assert.match(selection, /^\{\s*"id": "number"/);
+  testingInvalidDecal = false;
   await field.fill("0.95"); await field.press("Tab");
   await page.waitForFunction(from => Number(document.querySelector("#viewport").dataset.inputRevision ?? 0) > from, lastValid, { timeout: 900000 });
   await ready(); await baked();

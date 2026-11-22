@@ -1,0 +1,18 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-ceiling-bulkhead",
+  "parts": [{
+    "id": "oval-housing",
+    "generator": {"kind": "native", "name": "kowloon/ceiling-bulkhead", "parameters": {}},
+    "placement": {"position": [0, 0, 0], "rotation": [180, 0, 0]},
+    "slots": {"casting": "spun", "gasket-return": "spun", "casting-foot": "enamel", "guard": "enamel", "rim": "spun", "spun-body": "spun", "fastener": "metal", "seal": "rubber", "slot": "rubber", "lens": "prism"}
+  }],
+  "slots": {
+    "prism": {"entry": "builtin:bulkhead-prismatic-glass"},
+    "enamel": {"entry": "builtin:fixture-enamel"},
+    "metal": {"entry": "builtin:brushed-metal"},
+    "spun": {"entry": "builtin:bulkhead-spun-metal"},
+    "rubber": {"entry": "builtin:wall-cable"}
+  },
+  "attachments": [{"name":"ceiling","position":[0,0,0],"direction":[0,0,1]}],
+  "collision": "none"
+}

@@ -1,0 +1,9 @@
+{
+  "format":"itemspec", "version":2, "id":"kowloon-passage-sign-lamp",
+  "parts":[{"id":"folded-hood","generator":{"kind":"native","name":"kowloon/passage-sign-lamp","parameters":{}},
+    "slots":{"hood":"enamel","backplate":"enamel","trim":"aluminum","glass":"opal","flutes":"ribs","seal":"gasket"}}],
+  "slots":{"enamel":{"entry":"builtin:casement-surround"},"aluminum":{"entry":"builtin:sign-lamp-aluminum"},
+    "opal":{"entry":"builtin:sign-lamp-opal"},"ribs":{"entry":"builtin:sign-lamp-flutes"},"gasket":{"entry":"builtin:wall-cable"}},
+  "attachments":[{"name":"wall","position":[0,0,0],"direction":[0,1,0]}],
+  "collision":"none"
+}

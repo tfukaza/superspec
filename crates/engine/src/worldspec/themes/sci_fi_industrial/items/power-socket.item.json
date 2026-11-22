@@ -1,0 +1,7 @@
+{
+  "format": "itemspec",
+  "version": 1,
+  "id": "industrial-power-socket",
+  "generator": { "kind": "glb", "asset": "power-socket.glb" },
+  "collision": "none"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@superspec/three",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/types/adapters/three/src/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "three": ">=0.185.0 <0.187.0"
+  },
+  "scripts": {
+    "prepack": "node build.mjs && tsc -p tsconfig.json"
+  }
+}

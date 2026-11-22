@@ -1,0 +1,90 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-ceiling-girder",
+  "parameters": {
+    "length": {"type": "number", "unit": "m", "min": 1.6, "max": 20, "default": 4},
+    "soffitGap": {"type": "number", "unit": "m", "min": 0, "max": 1, "default": 0},
+    "hangerStations": {"type": "grid", "default": []}
+  },
+  "derived": {"hangers": "count(hangerStations) * (soffitGap >= 0.05)"},
+  "parts": [
+    {
+      "id": "flange",
+      "repeat": [{"name": "row", "count": 2}],
+      "generator": {"kind": "box", "size": ["length - 0.036", 0.16, 0.014], "bevel": 0.0025, "bevelSegments": 2, "bevelAxis": "x"},
+      "placement": {"position": [0.018, -0.08, "-0.20 + row * 0.186"]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "web",
+      "generator": {"kind": "box", "size": ["length - 0.036", 0.010, 0.172]},
+      "placement": {"position": [0.018, -0.005, -0.186]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "bearing",
+      "repeat": [{"name": "end", "count": 2}],
+      "generator": {"kind": "box", "size": [0.018, 0.23, 0.58], "bevel": 0.003, "bevelSegments": 2, "bevelAxis": "x"},
+      "placement": {"position": ["end * (length - 0.018)", -0.115, -0.58]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "knee",
+      "repeat": [{"name": "end", "count": 2}],
+      "generator": {
+        "kind": "route", "section": {"kind": "rect", "width": 0.06, "height": 0.045},
+        "points": [["end * length + (1 - 2 * end) * 0.015", 0, -0.53], ["end * length + (1 - 2 * end) * 0.62", 0, -0.195]],
+        "up": [0, 0, 1], "capped": true
+      },
+      "slots": {"body": "steel", "end": "steel"}
+    },
+    {
+      "id": "soffit-foot",
+      "repeat": [{"name": "station", "count": "hangers"}],
+      "generator": {"kind": "box", "size": [0.17, 0.26, 0.012], "bevel": 0.001, "bevelAxis": "z"},
+      "placement": {"position": ["cell(hangerStations, station, 0) - 0.085", -0.13, "soffitGap - 0.012"]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "flange-seat",
+      "repeat": [{"name": "station", "count": "hangers"}],
+      "generator": {"kind": "box", "size": [0.14, 0.16, 0.012], "bevel": 0.001, "bevelAxis": "z"},
+      "placement": {"position": ["cell(hangerStations, station, 0) - 0.07", -0.08, 0]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "hanger-strap",
+      "repeat": [{"name": "station", "count": "hangers"}, {"name": "side", "count": 2}],
+      "generator": {"kind": "box", "size": [0.045, 0.01, "soffitGap - 0.024"]},
+      "placement": {"position": ["cell(hangerStations, station, 0) - 0.0225", "(side - 0.5) * 0.126 - 0.005", 0.012]},
+      "slots": {"top": "steel", "bottom": "steel", "side": "steel"}
+    },
+    {
+      "id": "soffit-anchor",
+      "repeat": [{"name": "station", "count": "hangers"}, {"name": "side", "count": 2}],
+      "generator": {
+        "kind": "route", "section": {"kind": "round", "radius": 0.012}, "segments": 6,
+        "points": [[0, 0, "soffitGap - 0.022"], [0, 0, "soffitGap - 0.011"]],
+        "up": [0, 1, 0], "capped": true
+      },
+      "placement": {"position": ["cell(hangerStations, station, 0)", "(side - 0.5) * 0.209", 0]},
+      "slots": {"body": "steel", "end": "steel"}
+    },
+    {
+      "id": "anchor",
+      "repeat": [{"name": "end", "count": 2}, {"name": "column", "count": 2}, {"name": "row", "count": 2}],
+      "generator": {
+        "kind": "route", "section": {"kind": "round", "radius": 0.014}, "segments": 6,
+        "points": [["end * length + (1 - 2 * end) * 0.017", 0, 0], ["end * length + (1 - 2 * end) * 0.031", 0, 0]],
+        "up": [0, 0, 1], "capped": true
+      },
+      "placement": {"position": [0, "(column - 0.5) * 0.166", "-0.521 + row * 0.443"]},
+      "slots": {"body": "steel", "end": "steel"}
+    }
+  ],
+  "slots": {"steel": {"entry": "builtin:metal"}},
+  "attachments": [
+    {"name": "bearing-start", "position": [0, 0, 0], "direction": [-1, 0, 0]},
+    {"name": "bearing-end", "position": ["length", 0, 0], "direction": [1, 0, 0]}
+  ],
+  "collision": "none"
+}

@@ -1,0 +1,7 @@
+{
+  "format": "itemspec",
+  "version": 1,
+  "id": "industrial-power-plug",
+  "generator": { "kind": "glb", "asset": "power-plug.glb" },
+  "collision": "none"
+}

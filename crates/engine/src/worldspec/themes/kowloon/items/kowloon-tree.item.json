@@ -2,16 +2,19 @@
   "format": "itemspec",
   "version": 2,
   "id": "kowloon-tree",
-  "parameters": {},
+  "parameters": {
+    "level": { "type": "integer", "role": "geometry", "default": 1, "min": 0, "max": 2 }
+  },
   "parts": [
     {
       "id": "tree",
       "generator": {
         "kind": "native",
         "name": "kowloon/street-tree",
-        "parameters": {}
+        "parameters": { "level": { "parameter": "level" } }
       }
     }
   ],
-  "collision": "none"
+  "collision": "none",
+  "lods": [ { "distance": 45, "parameters": { "level": 2 } } ]
 }

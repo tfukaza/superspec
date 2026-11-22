@@ -25,9 +25,8 @@ struct Level {
     rgb: Vec<[f32; 3]>,
 }
 
-/// Lazily built pyramids, one per shared image, kept while that image is alive. Clones share the
-/// cache. Entries are keyed by the image's allocation, which cannot be reused while the entry's
-/// weak reference to it exists.
+/// Clones share the cache. A weak image reference reserves its address until a
+/// miss prunes unused pyramids or the session clears the cache.
 #[derive(Clone, Default)]
 pub struct MipCache(Arc<Mutex<BTreeMap<usize, (Weak<Image>, Arc<Pyramid>)>>>);
 
@@ -38,6 +37,13 @@ impl fmt::Debug for MipCache {
 }
 
 impl MipCache {
+    pub(crate) fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+    }
+
     pub(super) fn pyramid(&self, image: &Arc<Image>) -> Arc<Pyramid> {
         let mut cache = self
             .0
@@ -52,7 +58,6 @@ impl MipCache {
                 return pyramid.clone();
             }
         }
-        // Images that are gone take their pyramids with them.
         cache.retain(|_, (owner, _)| owner.strong_count() > 0);
         let pyramid = Arc::new(Pyramid::build(image));
         cache.insert(address, (Arc::downgrade(image), pyramid.clone()));
@@ -254,6 +259,24 @@ pub(super) fn varied(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn clearing_a_shared_cache_releases_its_pyramids() {
+        let image = Arc::new(Image {
+            width: 2,
+            height: 2,
+            rgba: vec![255; 16],
+        });
+        let cache = MipCache::default();
+        let clone = cache.clone();
+        let retained = Arc::downgrade(&cache.pyramid(&image));
+        drop(image);
+        assert!(retained.upgrade().is_some());
+        clone.clear();
+        assert!(retained.upgrade().is_none());
+    }
+
     #[test]
     fn integer_wrapping_equals_the_floating_point_remainder() {
         let float = |v: f64, size: usize| v.rem_euclid(size as f64) as usize % size;

@@ -91,7 +91,10 @@ pub fn tiles(
             [width, y, height],
             [0., y, height],
         ];
-        let coordinates = points.map(|p| [(p[0] + offset) / 3.6, p[2] / 1.8]);
+        // The atlas has ten courses vertically. Fit whole courses between the
+        // panel boundaries so plaster and countertop transitions land on grout.
+        let courses = (height / 0.18).round().max(1.);
+        let coordinates = points.map(|p| [(p[0] + offset) / 3.6, (p[2] / height) * courses / 10.]);
         return d.pen.face(
             d.mesh,
             "restaurant-tiles",

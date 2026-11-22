@@ -1,8 +1,10 @@
 import type { FindingDiagnostic, ReviewFinding } from "./validation.ts";
-import { MAX_SCENE_IMAGE_BYTES } from "./limits.ts";
+import { MAX_BATCHES, MAX_BATCH_ATTRIBUTE_FLOATS, MAX_BATCH_INDICES, MAX_BATCH_VERTICES, MAX_INSTANCES, MAX_MATERIAL_LOD_ALTERNATIVES, MAX_SCENE_IMAGES, MAX_SCENE_IMAGE_BYTES } from "./limits.ts";
+import { validateGeometryLods } from "./geometry-lods.ts";
 /** Version-three preview data uses Z-up meters, sRGB material colors and linear RGB vertex multipliers. */
 export interface SourceLocation { line: number; column: number; offset: number; end?: number }
 export interface SceneMesh {
+  worldSpecOutline?: boolean;
   id: string; objectId: string; source: SourceLocation; material: string | null; visible: boolean;
   vertexStart: number; vertexCount: number; indexStart: number; indexCount: number;
   bounds: [number[], number[]];
@@ -15,6 +17,7 @@ export interface SceneMesh {
  * A batch is render-only unless `collision` is `instances`; it is never listed in `Manifest.colliders`.
  */
 export interface SceneBatch {
+  worldSpecOutline?: boolean;
   id: string; objectId: string; source: SourceLocation; material: string | null; template?: string; visible: boolean;
   collision: "none" | "instances";
   vertexStart: number; vertexCount: number; indexStart: number; indexCount: number;
@@ -126,23 +129,37 @@ export function batchAttribute(buffers: BatchBuffers, batch: SceneBatch, attribu
 export function batchByteLength(counts: BatchCounts | undefined): number {
   return counts ? 4 * (counts.vertices * 11 + counts.indices + counts.instances * PLACEMENT_FLOATS + counts.values * 4 + counts.tints * 3 + (counts.attributes ?? 0)) : 0;
 }
+const littleEndian = new Uint8Array(new Uint32Array([1]).buffer)[0] === 1;
+
+/** Copy little-endian words into an owned numeric buffer, including unaligned payloads after image data. */
+export function copyPacketWords(view: DataView, offset: number, target: Float32Array | Uint32Array, start = 0, count = target.length): void {
+  if (offset < 0 || offset + count * 4 > view.byteLength) throw new RangeError("Scene words exceed their payload.");
+  if (littleEndian) {
+    const source = new Uint8Array(view.buffer, view.byteOffset + offset, count * 4);
+    new Uint8Array(target.buffer, target.byteOffset + start * 4, source.length).set(source);
+  } else {
+    for (let i = 0; i < count; i++) target[start + i] = target instanceof Uint32Array ? view.getUint32(offset + i * 4, true) : view.getFloat32(offset + i * 4, true);
+  }
+}
+
 /** Reads a batch section (little-endian, as `Scene::packet` writes it) starting at `offset`. */
 export function readBatches(view: DataView, offset: number, counts: BatchCounts): BatchBuffers {
   let cursor = offset;
   const floats = (count: number): Float32Array => {
     const values = new Float32Array(count);
-    for (let i = 0; i < count; i++) values[i] = view.getFloat32(cursor + i * 4, true);
+    copyPacketWords(view, cursor, values);
     cursor += count * 4;
     return values;
   };
   const positions = floats(counts.vertices * 3), normals = floats(counts.vertices * 3), uvs = floats(counts.vertices * 2), colors = floats(counts.vertices * 3);
   const indices = new Uint32Array(counts.indices);
-  for (let i = 0; i < indices.length; i++) indices[i] = view.getUint32(cursor + i * 4, true);
+  copyPacketWords(view, cursor, indices);
   cursor += indices.byteLength;
   return { positions, normals, uvs, colors, indices, placements: floats(counts.instances * PLACEMENT_FLOATS), values: floats(counts.values * 4), tints: floats(counts.tints * 3),
     attributes: floats(counts.attributes ?? 0) };
 }
 export interface Manifest {
+  geometryLods?: import("./geometry-lods.ts").GeometryLodGroup[];
   lighting?: unknown;
   architecture?: { metadata?: { kind: string; attributes: Record<string, unknown> }[] };
   schemaVersion: 3; revision: number; success: boolean; id: string; name: string;
@@ -158,10 +175,13 @@ export interface Manifest {
   decals?: string[];
   /** Instanced batches, ascending by identity, with the lengths of their buffers; both absent without batches. */
   batches?: SceneBatch[]; batchCounts?: BatchCounts;
+  /** Template batch owner to source placement IDs in instance order. */
+  batchPlacementOwners?: Record<string, string[]>;
   meshTangents?: Record<string, number[][]>;
   vertexCount: number; indexCount: number;
 }
 export interface SceneMaterial {
+  lods?: { screenCoverage: number; material: SceneMaterial }[];
   id: string; color: string; repeat: number; roughness: number; metalness: number;
   emissive: string | null; emissiveStrength: number | null;
   texture: string | null; normalTexture: string | null; normalScale: number | null;
@@ -190,6 +210,8 @@ export type LiveArgument = { value: number } | { texture: string; channel: numbe
 export interface LiveOperation { id: string; stage: string; requires: string[]; arguments: Record<string, LiveArgument> }
 export interface ScenePacket {
   manifest: Manifest; positions: Float32Array; normals: Float32Array; uvs: Float32Array; colors: Float32Array; indices: Uint32Array; assets: Uint8Array;
+  /** A compiler-confirmed source-only edit against this exact revision, checked by the delta decoder. */
+  retainedFrom?: number;
   assetIdentities?: Map<string, Promise<string>>;
   /** Present exactly when the manifest has batches. */
   batches?: BatchBuffers;
@@ -205,13 +227,13 @@ export function validateManifestHeader(manifest: Manifest): void {
     || !integer(manifest.assetByteCount) || !Array.isArray(manifest.assets)
     || !Array.isArray(manifest.diagnostics)) throw new Error("Unsupported scene manifest.");
   if (manifest.vertexCount > 16_000_000 || manifest.indexCount > 48_000_000 || manifest.assetByteCount > MAX_SCENE_IMAGE_BYTES
-    || manifest.meshes.length > 100_000 || manifest.assets.length > 16_384) throw new Error("Scene exceeds preview allocation limits.");
+    || manifest.meshes.length > 100_000 || manifest.assets.length > MAX_SCENE_IMAGES) throw new Error("Scene exceeds preview allocation limits.");
   const counts = manifest.batchCounts;
   if ((manifest.batches !== undefined && !Array.isArray(manifest.batches)) || Boolean(manifest.batches?.length) !== (counts !== undefined)
     || (counts !== undefined && (![counts.vertices, counts.indices, counts.instances, counts.values, counts.tints].every(integer)
-      || manifest.batches!.length > 4096 || counts.vertices > 1_500_000 || counts.indices > 9_000_000 || counts.instances > 1_000_000
+      || manifest.batches!.length > MAX_BATCHES || counts.vertices > MAX_BATCH_VERTICES || counts.indices > MAX_BATCH_INDICES || counts.instances > MAX_INSTANCES
       || counts.values > counts.instances || counts.tints > counts.instances
-      || (counts.attributes !== undefined && (!integer(counts.attributes) || counts.attributes > 64_000_000))))) throw new Error("Unsupported scene batches.");
+      || (counts.attributes !== undefined && (!integer(counts.attributes) || counts.attributes > MAX_BATCH_ATTRIBUTE_FLOATS))))) throw new Error("Unsupported scene batches.");
 }
 
 /** Rejects malformed or unsupported packets before any renderer allocations. */
@@ -230,25 +252,12 @@ export function decodePacket(buffer: ArrayBuffer): ScenePacket {
   const uvs = new Float32Array(manifest.vertexCount * 2);
   const colors = new Float32Array(manifest.vertexCount * 3);
   const indices = new Uint32Array(manifest.indexCount);
-  // Explicit endian reads also support big-endian hosts; arrays own memory beyond the input's lifetime.
-  for (let i = 0; i < positions.length; i++) {
-    positions[i] = view.getFloat32(payload + i * 4, true);
-    normals[i] = view.getFloat32(payload + positions.byteLength + i * 4, true);
-    if (!Number.isFinite(positions[i]) || !Number.isFinite(normals[i])) throw new Error("Nonfinite mesh data.");
+  let batchOffset = payload;
+  for (const channel of [positions, normals, uvs, colors, indices]) {
+    copyPacketWords(view, batchOffset, channel);
+    batchOffset += channel.byteLength;
   }
-  for (let i = 0; i < uvs.length; i++) {
-    uvs[i] = view.getFloat32(payload + positions.byteLength * 2 + i * 4, true);
-    if (!Number.isFinite(uvs[i])) throw new Error("Nonfinite UV data.");
-  }
-  const colorOffset = payload + positions.byteLength * 2 + uvs.byteLength;
-  for (let i = 0; i < colors.length; i++) {
-    colors[i] = view.getFloat32(colorOffset + i * 4, true);
-    if (!Number.isFinite(colors[i]) || colors[i] < 0) throw new Error("Invalid linear vertex color.");
-  }
-  const indexOffset = colorOffset + colors.byteLength;
-  for (let i = 0; i < indices.length; i++) indices[i] = view.getUint32(indexOffset + i * 4, true);
   // Instanced batches lie between the indices and the assets.
-  const batchOffset = indexOffset + indices.byteLength;
   const batches = manifest.batchCounts ? readBatches(view, batchOffset, manifest.batchCounts) : undefined;
   const assets = new Uint8Array(buffer.slice(batchOffset + batchBytes));
   return validatePacket({ manifest, positions, normals, uvs, colors, indices, assets, ...(batches ? { batches } : {}) });
@@ -260,7 +269,9 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
   validateManifestHeader(manifest);
   if (positions.length !== manifest.vertexCount * 3 || normals.length !== positions.length || uvs.length !== manifest.vertexCount * 2
     || colors.length !== positions.length || indices.length !== manifest.indexCount || assets.length !== manifest.assetByteCount) throw new Error("Scene arrays do not match their manifest.");
-  if (![positions, normals, uvs, colors].every(array => array.every(Number.isFinite)) || colors.some(value => value < 0)) throw new Error("Invalid scene numeric data.");
+  if (!finiteChannel(positions) || !finiteChannel(normals)) throw new Error("Nonfinite mesh data.");
+  if (!finiteChannel(uvs)) throw new Error("Nonfinite UV data.");
+  if (!finiteChannel(colors, true)) throw new Error("Invalid linear vertex color.");
   const assetIds = new Set<string>();
   let assetEnd = 0;
   for (const asset of manifest.assets) {
@@ -271,8 +282,8 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
   }
   if (assetEnd !== assets.length) throw new Error("Incomplete asset ranges.");
   const materialIds = new Set<string>();
-  for (const material of manifest.materials) {
-    if (typeof material.id !== "string" || materialIds.has(material.id) || !/^#[0-9a-f]{6}$/i.test(material.color)
+  const checkMaterial = (material: SceneMaterial, ids: Set<string>, nested = false): void => {
+    if (!material || typeof material !== "object" || typeof material.id !== "string" || nested && !material.id || ids.has(material.id) || !/^#[0-9a-f]{6}$/i.test(material.color)
       || !factor(material.roughness) || !factor(material.metalness)) throw new Error("Invalid material.");
     if (!Number.isFinite(material.repeat) || material.repeat <= 0
       || [material.texture, material.normalTexture, material.metallicRoughnessTexture, material.heightTexture, material.emissiveTexture ?? null, material.occlusionTexture ?? null].some(id => id !== null && !assetIds.has(id))
@@ -291,12 +302,25 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
         || !material.program.source.includes("void ms_evaluate()") || typeof material.program.painted !== "string"
         || !Array.isArray(material.program.uniforms) || !material.program.uniforms.every(uniform => Array.isArray(uniform.value) && uniform.value.every(Number.isFinite))
         || !Array.isArray(material.program.inputs)))) throw new Error("Invalid material program.");
-    materialIds.add(material.id);
-  }
+    ids.add(material.id);
+    if (material.lods !== undefined) {
+      if (!Array.isArray(material.lods) || material.lods.length > MAX_MATERIAL_LOD_ALTERNATIVES || nested && material.lods.length)
+        throw new Error(`Invalid material LOD list for ${material.id}.`);
+      const alternatives = new Set([material.id]); let coverage = 1;
+      for (const level of material.lods) {
+        if (!level || typeof level !== "object" || !Number.isFinite(level.screenCoverage)
+            || !(level.screenCoverage > 0 && level.screenCoverage < coverage)) throw new Error(`Invalid material LOD coverage for ${material.id}.`);
+        coverage = level.screenCoverage;
+        checkMaterial(level.material, alternatives, true);
+      }
+    }
+  };
+  for (const material of manifest.materials) checkMaterial(material, materialIds);
   const meshIds = new Set<string>();
   let vertices = 0, elements = 0;
   for (const mesh of manifest.meshes) {
     if (typeof mesh.id !== "string" || meshIds.has(mesh.id) || typeof mesh.objectId !== "string" || !mesh.objectId || typeof mesh.visible !== "boolean"
+      || (mesh.worldSpecOutline !== undefined && typeof mesh.worldSpecOutline !== "boolean")
       || !location(mesh.source) || !integer(mesh.vertexCount) || !integer(mesh.indexCount)
       || mesh.vertexStart !== vertices || mesh.indexStart !== elements || mesh.indexCount % 3
       || vertices + mesh.vertexCount > manifest.vertexCount || elements + mesh.indexCount > manifest.indexCount
@@ -312,6 +336,7 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
     || manifest.colliders.some(id => !meshIds.has(id)) || new Set(manifest.colliders).size !== manifest.colliders.length
     || (!manifest.success && (vertices !== 0 || elements !== 0 || manifest.diagnostics.length === 0))) throw new Error("Incomplete scene manifest.");
   validateBatches(packet, meshIds, materialIds);
+  validateGeometryLods(manifest);
   if (manifest.meshTangents !== undefined) {
     if (!manifest.meshTangents || typeof manifest.meshTangents !== "object" || Array.isArray(manifest.meshTangents)) throw new Error("Invalid tangent metadata.");
     const counts = new Map(manifest.meshes.map(mesh => [mesh.id, mesh.vertexCount]));
@@ -332,18 +357,33 @@ export function validatePacket(packet: ScenePacket): ScenePacket {
 function validateBatches(packet: ScenePacket, meshIds: ReadonlySet<string>, materialIds: ReadonlySet<string>): void {
   const { manifest, batches } = packet;
   const counts = manifest.batchCounts;
+  if (manifest.batchPlacementOwners !== undefined) {
+    const owners = manifest.batchPlacementOwners;
+    if (!owners || typeof owners !== "object" || Array.isArray(owners)) throw new Error("Invalid batch placement owners.");
+    const used = new Set<string>();
+    for (const b of manifest.batches ?? []) {
+      if (!b.template || !Object.hasOwn(owners, b.objectId)) continue;
+      const list = owners[b.objectId];
+      if (!Array.isArray(list) || list.length !== b.instanceCount) throw new Error("Invalid batch placement owners.");
+      if (!used.has(b.objectId) && (list.some(id => typeof id !== "string" || !id) || new Set(list).size !== list.length))
+        throw new Error("Invalid batch placement owners.");
+      used.add(b.objectId);
+    }
+    if (used.size !== Object.keys(owners).length) throw new Error("Unknown template batch placement owner.");
+  }
   if (!counts) { if (batches) throw new Error("Scene batch data has no manifest."); return; }
   if (!batches || batches.positions.length !== counts.vertices * 3 || batches.normals.length !== counts.vertices * 3
     || batches.uvs.length !== counts.vertices * 2 || batches.colors.length !== counts.vertices * 3 || batches.indices.length !== counts.indices
     || batches.placements.length !== counts.instances * PLACEMENT_FLOATS || batches.values.length !== counts.values * 4
     || batches.tints.length !== counts.tints * 3 || batches.attributes.length !== (counts.attributes ?? 0)) throw new Error("Scene batch arrays do not match their manifest.");
-  if (![batches.positions, batches.normals, batches.uvs, batches.colors, batches.placements, batches.values, batches.tints, batches.attributes].every(array => array.every(Number.isFinite))
-    || batches.colors.some(value => value < 0) || batches.tints.some(value => value < 0)) throw new Error("Invalid batch numeric data.");
+  if (![batches.positions, batches.normals, batches.uvs, batches.placements, batches.values, batches.attributes].every(channel => finiteChannel(channel))
+    || !finiteChannel(batches.colors, true) || !finiteChannel(batches.tints, true)) throw new Error("Invalid batch numeric data.");
   let vertices = 0, elements = 0, instances = 0, values = 0, tints = 0, named = 0, previous: string | undefined;
   const bounds = (value: unknown): boolean => Array.isArray(value) && value.length === 2
     && value.every(point => Array.isArray(point) && point.length === 3 && point.every(Number.isFinite));
   for (const batch of manifest.batches!) {
     if (typeof batch.id !== "string" || !batch.id || meshIds.has(batch.id) || (previous !== undefined && !(previous < batch.id))
+      || (batch.worldSpecOutline !== undefined && typeof batch.worldSpecOutline !== "boolean")
       || typeof batch.objectId !== "string" || !batch.objectId || typeof batch.visible !== "boolean" || !location(batch.source)
       || !["none", "instances"].includes(batch.collision) || (batch.material !== null && !materialIds.has(batch.material))
       || (batch.template !== undefined && (typeof batch.template !== "string" || !batch.template))
@@ -374,6 +414,11 @@ function validateBatches(packet: ScenePacket, meshIds: ReadonlySet<string>, mate
     if (batch.tintStart !== undefined) tints += batch.instanceCount;
   }
   if (vertices !== counts.vertices || elements !== counts.indices || instances !== counts.instances || values !== counts.values || tints !== counts.tints || named !== (counts.attributes ?? 0)) throw new Error("Batch records do not cover their buffers.");
+}
+
+function finiteChannel(values: Float32Array, nonnegative = false): boolean {
+  for (let i = 0; i < values.length; i++) if (!Number.isFinite(values[i]) || (nonnegative && values[i] < 0)) return false;
+  return true;
 }
 
 /** Counts and revisions are unsigned, exactly representable integers. */

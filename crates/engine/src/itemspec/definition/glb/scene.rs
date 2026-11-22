@@ -1,3 +1,4 @@
+use super::super::limits::{MAX_SOURCE_INDICES, MAX_SOURCE_TRIANGLES, MAX_SOURCE_VERTICES};
 use super::{Package, accessor::Data, materials::name};
 use crate::itemspec::definition::{
     ItemDiagnostic, ItemGeometry, ItemMesh, ItemNode, check_cancelled,
@@ -107,7 +108,11 @@ impl Package {
                     attributes
                         .get(name)
                         .map(|index| {
-                            self.accessor(self.index(index, &pointer)?, 500_000, cancelled)
+                            self.accessor(
+                                self.index(index, &pointer)?,
+                                MAX_SOURCE_VERTICES,
+                                cancelled,
+                            )
                         })
                         .transpose()
                 };
@@ -128,10 +133,16 @@ impl Package {
                 }
                 source_vertices = source_vertices
                     .checked_add(positions.len())
-                    .filter(|n| *n <= 500_000)
-                    .ok_or_else(|| self.error(&pointer, "Item exceeds 500000 local vertices."))?;
+                    .filter(|n| *n <= MAX_SOURCE_VERTICES)
+                    .ok_or_else(|| {
+                        self.error(
+                            &pointer,
+                            format!("Item exceeds {MAX_SOURCE_VERTICES} local vertices."),
+                        )
+                    })?;
                 let raw_indices = if let Some(index) = primitive.get("indices") {
-                    let data = self.accessor(self.index(index, &pointer)?, 750_000, cancelled)?;
+                    let data =
+                        self.accessor(self.index(index, &pointer)?, MAX_SOURCE_INDICES, cancelled)?;
                     if data.components != 1
                         || data.normalized
                         || !matches!(data.kind, 5121 | 5123 | 5125)
@@ -166,7 +177,7 @@ impl Package {
                         raw_indices
                     }
                     5 | 6 => {
-                        if raw_indices.len() < 3 || raw_indices.len() > 250_002 {
+                        if raw_indices.len() < 3 || raw_indices.len() > MAX_SOURCE_TRIANGLES + 2 {
                             return Err(self.error(
                                 &pointer,
                                 "Triangle strip/fan count exceeds its allowance.",
@@ -204,8 +215,13 @@ impl Package {
                 };
                 triangles = triangles
                     .checked_add(indices.len() / 3)
-                    .filter(|n| *n <= 250_000)
-                    .ok_or_else(|| self.error(&pointer, "Item exceeds 250000 source triangles."))?;
+                    .filter(|n| *n <= MAX_SOURCE_TRIANGLES)
+                    .ok_or_else(|| {
+                        self.error(
+                            &pointer,
+                            format!("Item exceeds {MAX_SOURCE_TRIANGLES} source triangles."),
+                        )
+                    })?;
                 let normals = if let Some(data) = attribute("NORMAL")? {
                     if data.components != 3
                         || data.kind != 5126
@@ -331,19 +347,24 @@ impl Package {
                     material_slot,
                 };
                 if !attributes.contains_key("NORMAL") {
-                    if mesh.indices.len() > 500_000 - vertices {
+                    if mesh.indices.len() > MAX_SOURCE_VERTICES - vertices {
                         return Err(self.error(
                             &pointer,
-                            "Flat-normal corners exceed 500000 local vertices.",
+                            format!(
+                                "Flat-normal corners exceed {MAX_SOURCE_VERTICES} local vertices."
+                            ),
                         ));
                     }
                     flat_normals(&mut mesh);
                 }
                 vertices = vertices
                     .checked_add(mesh.positions.len())
-                    .filter(|n| *n <= 500_000)
+                    .filter(|n| *n <= MAX_SOURCE_VERTICES)
                     .ok_or_else(|| {
-                        self.error(&pointer, "Item exceeds 500000 generated local vertices.")
+                        self.error(
+                            &pointer,
+                            format!("Item exceeds {MAX_SOURCE_VERTICES} generated local vertices."),
+                        )
                     })?;
                 meshes.push(mesh);
             }

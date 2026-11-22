@@ -1,0 +1,47 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-hosted-window",
+  "parameters": {
+    "width": {"type":"number","default":1.05,"min":0.4,"max":4,"unit":"m"},
+    "height": {"type":"number","default":1.2,"min":0.4,"max":3,"unit":"m"},
+    "open": {"type":"boolean","default":false}
+  },
+  "parts": [
+    {
+      "id":"frame-rail", "repeat":[{"name":"end","count":2}],
+      "generator":{"kind":"box","size":["width",0.072,0.046],"bevel":0.0035,"bevelSegments":2,"bevelAxis":"x"},
+      "placement":{"position":["-width / 2",-0.036,"end * (height - 0.046)"]},
+      "slots":{"top":"enamel","bottom":"enamel","side":"enamel"}
+    },
+    {
+      "id":"frame-jamb", "repeat":[{"name":"end","count":2}],
+      "generator":{"kind":"box","size":["height - 0.092",0.072,0.046],"bevel":0.0035,"bevelSegments":2,"bevelAxis":"x"},
+      "placement":{"position":["-width / 2 + 0.046 + end * (width - 0.046)",-0.036,0.046],"rotation":[0,-90,0]},
+      "slots":{"top":"enamel","bottom":"enamel","side":"enamel"}
+    },
+    {
+      "id":"hinge-plate", "repeat":[{"name":"end","count":2}],
+      "generator":{"kind":"box","size":[0.036,0.006,0.069],"bevel":0.001,"bevelAxis":"z"},
+      "placement":{"position":["-width / 2 + 0.011",-0.042,"0.114 + end * (height - 0.297)"]},
+      "slots":{"top":"hardware","bottom":"hardware","side":"hardware"}
+    },
+    {
+      "id":"hinge-knuckle","repeat":[{"name":"end","count":2},{"name":"knuckle","count":2}],
+      "generator":{"kind":"route","section":{"kind":"round","radius":0.008},"segments":10,"points":[[0,0,0],[0,0,0.020]],"up":[0,1,0],"capped":true},
+      "placement":{"position":["-width / 2 + 0.048",-0.040,"0.114 + end * (height - 0.297) + knuckle * 0.049"]},
+      "slots":{"body":"hardware","end":"hardware"}
+    },
+    {
+      "id":"sash", "generator":{"kind":"item","entry":"kowloon-hosted-window-sash.item.json",
+        "parameters":{"width":{"expr":"width - 0.096"},"height":{"expr":"height - 0.096"}}},
+      "placement":{"position":["-width / 2 + 0.048",-0.040,0.048],"rotation":[0,0,"select(open,-90,0)"]},
+      "slots":{"enamel":"enamel","glass":"glass","hardware":"hardware"}
+    }
+  ],
+  "slots":{
+    "enamel":{"entry":"builtin:casement-enamel"},
+    "glass":{"entry":"builtin:display-glass"},
+    "hardware":{"entry":"builtin:casement-nickel"}
+  },
+  "attachments":[{"name":"hinge","position":["-width / 2 + 0.048",-0.040,0.048],"direction":[0,0,1]}],
+  "collision":"mesh"
+}

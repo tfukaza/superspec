@@ -32,10 +32,9 @@ async function initializeRuntime(): Promise<void> {
     await initialize({ module_or_path: wasmUrl });
   }
 }
-self.onmessage = async (event: MessageEvent<{ source: string; revision: number; assets?: Record<string, Uint8Array>; format?: "scene" | "update" | "glb" | "glb-png" | "validate" }>) => {
+self.onmessage = async (event: MessageEvent<{ source: string; revision: number; baseRevision?: number; assets?: Record<string, Uint8Array>; format?: "scene" | "update" | "glb" | "glb-png" | "validate" }>) => {
   const { source, revision } = event.data;
   try {
-    // Start initialization inside the guarded request so immediate fetch failures are always handled.
     await (ready ??= initializeRuntime());
     const start = performance.now();
     // Each request owns a complete asset snapshot; replacements never count old and new entries together.
@@ -53,8 +52,6 @@ self.onmessage = async (event: MessageEvent<{ source: string; revision: number; 
     }
     const update = event.data.format === "update";
     const glb = event.data.format === "glb" || event.data.format === "glb-png";
-    // KTX2 textures are the default; the codec module loads on the first KTX2 export only.
-    // KTX2 exports stage the scene here and encode their textures in parallel workers.
     let bytes: Uint8Array;
     if (event.data.format === "glb") {
       const staged = compiler;
@@ -62,12 +59,14 @@ self.onmessage = async (event: MessageEvent<{ source: string; revision: number; 
       const textures = await encodeTextures(jobs, index => staged.staged_texture(index),
         (done, total) => self.postMessage({ revision, progress: { encoded: done, textures: total } }));
       bytes = staged.finish_glb(textures.encoded, textures.lengths);
+    } else if (update) {
+      bytes = compiler.preview_packet(source, revision, event.data.baseRevision, true, true);
     } else {
-      bytes = glb ? compiler.export_glb(source, false, false) : update ? compiler.compile_update(source, revision) : compiler.compile(source, revision);
+      bytes = glb ? compiler.export_glb(source, false, false) : compiler.compile(source, revision);
     }
     const compileMs = performance.now() - start;
     // wasm-bindgen returns an owned copy, not a view of mutable Wasm linear memory.
-    self.postMessage({ revision, buffer: bytes.buffer, update, compileMs, workers, cacheStats: JSON.parse(compiler.cache_stats()), bakeStats: JSON.parse(compiler.bake_stats()) }, { transfer: [bytes.buffer] });
+    self.postMessage({ revision, buffer: bytes.buffer, compileMs, workers, cacheStats: JSON.parse(compiler.cache_stats()), bakeStats: JSON.parse(compiler.bake_stats()) }, { transfer: [bytes.buffer] });
   } catch (error) {
     self.postMessage({ revision, error: error instanceof Error ? error.message : String(error) });
   } finally {

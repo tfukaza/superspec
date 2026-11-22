@@ -5,13 +5,124 @@ use crate::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use superspec_geometry::{
-    Matrix, Solid, image,
+    Matrix, Solid,
     math::{cross, sub, unit},
 };
 use superspec_model::instances::{IDENTITY, ImageResource, Instance, LocalMesh, Model};
+use superspec_types::lod::{GeometryLodGroup, GeometryLodLevel};
 use superspec_types::{diagnostic::SourceLocation, material::Material};
+
+fn render_level(model: &Model, distance: f64) -> GeometryLodLevel {
+    GeometryLodLevel {
+        distance,
+        meshes: model
+            .instances
+            .iter()
+            .filter(|instance| instance.visible)
+            .map(|instance| instance.id.clone())
+            .collect(),
+        batches: model
+            .batches
+            .iter()
+            .filter(|batch| batch.visible)
+            .map(|batch| batch.id.clone())
+            .collect(),
+        screen_coverage: None,
+    }
+}
+
+/// Local render alternatives own their mesh identities; shared material/image IDs
+/// retain their meaning and may merge only when their values agree exactly.
+fn append_render_level(
+    base: &mut Model,
+    mut alternate: Model,
+    prefix: &str,
+    distance: f64,
+) -> Result<GeometryLodLevel, String> {
+    for (id, material) in &alternate.materials {
+        if base
+            .materials
+            .get(id)
+            .is_some_and(|original| original != material)
+        {
+            return Err(format!("Render alternative changes shared material {id}."));
+        }
+    }
+    for (id, image) in &alternate.images {
+        if base.images.get(id).is_some_and(|original| {
+            original.mime != image.mime
+                || original.bytes != image.bytes
+                || original.pixels != image.pixels
+        }) {
+            return Err(format!("Render alternative changes shared image {id}."));
+        }
+    }
+    let renamed = |id: &str| format!("{prefix}{id}");
+    alternate.meshes = alternate
+        .meshes
+        .into_iter()
+        .map(|(id, mesh)| (renamed(&id), mesh))
+        .collect();
+    alternate.mesh_artifacts = alternate
+        .mesh_artifacts
+        .into_iter()
+        .map(|(id, key)| (renamed(&id), key))
+        .collect();
+    for instance in &mut alternate.instances {
+        instance.id = renamed(&instance.id);
+        instance.mesh = renamed(&instance.mesh);
+        instance.collidable = false;
+    }
+    for batch in &mut alternate.batches {
+        batch.id = renamed(&batch.id);
+        batch.mesh = renamed(&batch.mesh);
+        batch.template = batch.template.as_ref().map(|id| renamed(id));
+        batch.collision = superspec_model::batches::Collision::None;
+    }
+    alternate.decals = alternate
+        .decals
+        .into_iter()
+        .map(|id| renamed(&id))
+        .collect();
+    let existing_instances: BTreeSet<_> = base
+        .instances
+        .iter()
+        .map(|instance| instance.id.as_str())
+        .collect();
+    let existing_batches: BTreeSet<_> =
+        base.batches.iter().map(|batch| batch.id.as_str()).collect();
+    if alternate
+        .meshes
+        .keys()
+        .any(|id| base.meshes.contains_key(id))
+        || alternate
+            .instances
+            .iter()
+            .any(|instance| existing_instances.contains(instance.id.as_str()))
+        || alternate
+            .batches
+            .iter()
+            .any(|batch| existing_batches.contains(batch.id.as_str()))
+    {
+        return Err(format!(
+            "Render alternative identity prefix {prefix} conflicts with existing geometry."
+        ));
+    }
+    let level = render_level(&alternate, distance);
+    base.meshes.extend(alternate.meshes);
+    base.mesh_artifacts.extend(alternate.mesh_artifacts);
+    base.instances.extend(alternate.instances);
+    base.batches.extend(alternate.batches);
+    base.materials.extend(alternate.materials);
+    base.images.extend(alternate.images);
+    base.decals.extend(alternate.decals);
+    Ok(level)
+}
 
 impl From<ItemDiagnostic> for Diagnostic {
     fn from(value: ItemDiagnostic) -> Self {
@@ -42,7 +153,109 @@ fn location() -> SourceLocation {
     }
 }
 
+fn catalog_entry(material: &crate::materialspec::program::MaterialRequest) -> Option<&str> {
+    material
+        .entry
+        .starts_with("builtin:")
+        .then_some(material.entry.as_str())
+}
+
 impl Session {
+    /// Bind the catalog's material and all its texture companions to the item model.
+    fn bind_catalog_slot(
+        &self,
+        catalog: &str,
+        material_id: &str,
+        model: &mut Model,
+        assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
+    ) -> Result<(), String> {
+        if model.materials.contains_key(material_id) {
+            return Ok(());
+        }
+        let mut material = superspec_catalog::material(catalog)
+            .ok_or_else(|| format!("Unknown shipped material {catalog}."))?;
+        for texture in material.companions() {
+            if model.images.contains_key(texture) {
+                continue;
+            }
+            let bytes = assets(texture).map_err(|error| format!("{texture}: {error}"))?;
+            let decoded = self.validate_image(&bytes)?;
+            model.images.insert(
+                texture.to_owned(),
+                ImageResource {
+                    mime: decoded.mime,
+                    bytes,
+                    pixels: decoded.width * decoded.height,
+                },
+            );
+        }
+        material.id = material_id.to_owned();
+        model.materials.insert(material.id.clone(), material);
+        Ok(())
+    }
+
+    /// Publish embedded textures under content IDs in both single-item and project scenes.
+    fn import_resources(
+        &self,
+        generated: &definition::GeneratedItem,
+        model: &mut Model,
+        select: impl Fn(&str, &definition::ImportedMaterial) -> bool,
+    ) -> Result<BTreeMap<String, String>, String> {
+        let mut image_ids = BTreeMap::new();
+        let mut material_ids = BTreeMap::new();
+        for image in &generated.geometry.images {
+            let decoded = self.validate_image(&image.bytes)?;
+            let id = format!("studio/import/image/{:x}", Sha256::digest(&image.bytes));
+            image_ids.insert(image.id.clone(), id.clone());
+            model.images.insert(
+                id,
+                ImageResource {
+                    mime: decoded.mime,
+                    bytes: image.bytes.clone(),
+                    pixels: decoded.width * decoded.height,
+                },
+            );
+        }
+        for (id, material) in &generated.geometry.imported_materials {
+            if !select(id, material)
+                || !generated
+                    .geometry
+                    .nodes
+                    .iter()
+                    .flat_map(|node| &node.meshes)
+                    .any(|index| generated.geometry.meshes[*index].material_slot == *id)
+            {
+                continue;
+            }
+            material.ensure_scene_compatible()?;
+            let mut material = material.material();
+            for image in [
+                &mut material.texture,
+                &mut material.normal_texture,
+                &mut material.metallic_roughness_texture,
+                &mut material.height_texture,
+                &mut material.emissive_texture,
+                &mut material.occlusion_texture,
+            ] {
+                if let Some(name) = image {
+                    *name = image_ids
+                        .get(name)
+                        .ok_or_else(|| {
+                            format!("Imported material references unknown image {name}.")
+                        })?
+                        .clone();
+                }
+            }
+            material.id.clear();
+            material.id = format!(
+                "studio/import/material/{:x}",
+                Sha256::digest(serde_json::to_vec(&material).unwrap())
+            );
+            material_ids.insert(id.clone(), material.id.clone());
+            model.materials.insert(material.id.clone(), material);
+        }
+        Ok(material_ids)
+    }
     pub(super) fn item(
         &mut self,
         request: &Request,
@@ -123,66 +336,16 @@ impl Session {
         .checked()
         .and_then(|matrix| matrix.inverse().map(|_| matrix))
         .map_err(&fail)?;
-        let mut image_ids = BTreeMap::new();
-        let mut material_ids = BTreeMap::new();
         let mut model = Model {
             id: format!("studio/item/{}", generated.id),
             name: generated.id.clone(),
             ..Default::default()
         };
-        for image in &generated.geometry.images {
-            let decoded = image::decode(&image.bytes).map_err(&fail)?;
-            let id = format!("studio/import/image/{:x}", Sha256::digest(&image.bytes));
-            image_ids.insert(image.id.clone(), id.clone());
-            model.images.insert(
-                id,
-                ImageResource {
-                    mime: decoded.mime,
-                    bytes: image.bytes.clone(),
-                    pixels: decoded.width * decoded.height,
-                },
-            );
-        }
-        for (id, material) in &generated.geometry.imported_materials {
-            if generated.materials.contains_key(id)
-                || !generated
-                    .geometry
-                    .nodes
-                    .iter()
-                    .flat_map(|node| &node.meshes)
-                    .any(|index| generated.geometry.meshes[*index].material_slot == *id)
-            {
-                continue;
-            }
-            material.ensure_scene_compatible().map_err(&fail)?;
-            let mut material = material.material();
-            for image in [
-                &mut material.texture,
-                &mut material.normal_texture,
-                &mut material.metallic_roughness_texture,
-                &mut material.height_texture,
-                &mut material.emissive_texture,
-                &mut material.occlusion_texture,
-            ] {
-                if let Some(name) = image {
-                    *name = image_ids
-                        .get(name)
-                        .ok_or_else(|| {
-                            fail(format!(
-                                "Imported material references unknown image {name}."
-                            ))
-                        })?
-                        .clone();
-                }
-            }
-            material.id.clear();
-            material.id = format!(
-                "studio/import/material/{:x}",
-                Sha256::digest(serde_json::to_vec(&material).unwrap())
-            );
-            material_ids.insert(id.clone(), material.id.clone());
-            model.materials.insert(material.id.clone(), material);
-        }
+        let mut material_ids = self
+            .import_resources(&generated, &mut model, |id, _| {
+                !generated.materials.contains_key(id)
+            })
+            .map_err(&fail)?;
         let imported = matches!(definition.generator, definition::Generator::Glb { .. });
         let selected_meshes: std::collections::BTreeSet<_> = generated
             .geometry
@@ -219,7 +382,7 @@ impl Session {
             {
                 definition::delivery_tangents(mesh).map_err(&fail)?
             } else {
-                vec![]
+                mesh.tangents.clone()
             };
             let local = LocalMesh {
                 positions: mesh.positions.clone(),
@@ -243,7 +406,15 @@ impl Session {
                 ),
             );
             model.meshes.insert(mesh.id.clone(), Arc::new(local));
-            if !material_ids.contains_key(&mesh.material_slot) {
+            if let Some(catalog) = generated
+                .materials
+                .get(&mesh.material_slot)
+                .and_then(catalog_entry)
+            {
+                self.bind_catalog_slot(catalog, catalog, &mut model, assets)
+                    .map_err(&fail)?;
+                material_ids.insert(mesh.material_slot.clone(), catalog.to_owned());
+            } else if !material_ids.contains_key(&mesh.material_slot) {
                 material_ids.insert(mesh.material_slot.clone(), mesh.material_slot.clone());
                 model.materials.insert(
                     mesh.material_slot.clone(),
@@ -257,23 +428,28 @@ impl Session {
         let transforms = generated.geometry.world_transforms().map_err(&fail)?;
         let mut receiver_transforms = BTreeMap::new();
         let mut mesh_slots = BTreeMap::new();
-        // Each receiver's pattern anchor: its part's, under the placement, in world meters.
+        // Keep the first part/anchor in definition order, as in ItemSpec lookup.
+        let parts_by_node: BTreeMap<_, _> = generated
+            .geometry
+            .parts
+            .iter()
+            .rev()
+            .map(|p| (p.node, p))
+            .collect();
+        let anchors_by_part: BTreeMap<_, _> = generated
+            .geometry
+            .anchors
+            .iter()
+            .rev()
+            .map(|a| (a.part.as_str(), a))
+            .collect();
         let mut anchors = request.anchors.clone();
         for (index, (node, transform)) in
             generated.geometry.nodes.iter().zip(&transforms).enumerate()
         {
-            let anchor = generated
-                .geometry
-                .parts
-                .iter()
-                .find(|part| part.node == index)
-                .and_then(|part| {
-                    generated
-                        .geometry
-                        .anchors
-                        .iter()
-                        .find(|anchor| anchor.part == part.id)
-                })
+            let anchor = parts_by_node
+                .get(&index)
+                .and_then(|part| anchors_by_part.get(part.id.as_str()))
                 .map(|anchor| super::Anchor {
                     origin: placement.point(anchor.origin),
                     u: placement.direction(anchor.u),
@@ -304,9 +480,14 @@ impl Session {
             }
         }
         collision(&mut model, &generated, placement).map_err(&fail)?;
-        if !generated.materials.is_empty() {
+        // Shape drafts keep imported and catalog finishes. Procedural receiver maps
+        // are evaluated by the full build, which reuses this exact geometry node.
+        if request.kind != "item-geometry" && !generated.materials.is_empty() {
             let scene = model.scene(revision as u32).map_err(&fail)?;
             for (slot, material) in &generated.materials {
+                if catalog_entry(material).is_some() {
+                    continue;
+                }
                 let receivers: Vec<_> = scene
                     .manifest
                     .meshes
@@ -405,6 +586,35 @@ impl Session {
             })
             .collect::<Result<Vec<_>, String>>()
             .map_err(&fail)?;
+        if !definition.lods.is_empty() {
+            let mut levels = vec![render_level(&model, 0.)];
+            for (index, level) in definition.lods.iter().enumerate() {
+                let (alternative, parameters) =
+                    definition.render_alternative(level, &request.parameters);
+                let mut alternate_request = request.clone();
+                alternate_request.source =
+                    serde_json::to_string(&alternative).map_err(|error| fail(error.to_string()))?;
+                alternate_request.parameters = parameters;
+                let alternate = self.item(&alternate_request, revision, assets, cancelled)?;
+                let prefix = format!("lod{}/", index + 1);
+                let transforms: BTreeMap<String, [f64; 16]> =
+                    serde_json::from_value(alternate.metadata["receiverTransforms"].clone())
+                        .map_err(|error| fail(error.to_string()))?;
+                receiver_transforms.extend(
+                    transforms
+                        .into_iter()
+                        .map(|(id, t)| (format!("{prefix}{id}"), t)),
+                );
+                levels.push(
+                    append_render_level(&mut model, alternate.model, &prefix, level.distance)
+                        .map_err(&fail)?,
+                );
+            }
+            model.geometry_lods.push(GeometryLodGroup {
+                id: format!("{}/lod", generated.id),
+                levels,
+            });
+        }
         Ok(Output {
             model,
             metadata: json!({"parameters":parameters,"attachments":attachments,"collision":collision_name,"materials":generated.materials,"meshSlots":mesh_slots,"receiverTransforms":receiver_transforms,"geometryKey":generated.geometry_key,"provenance":generated.provenance,"dependencies":generated.provenance.assets.keys().collect::<Vec<_>>()}),
@@ -640,6 +850,11 @@ impl Session {
             scene_features: Vec::new(),
             metadata: serde_json::Value::Null,
         };
+        let textured_slots = self
+            .import_resources(&generated, &mut placed.model, |slot, material| {
+                !matches!(slot, "lettering" | "board") && !material.textures.is_empty()
+            })
+            .map_err(&fail)?;
         // Features that reach beyond their part: every receiver of the item near enough is
         // given them, and those of scene reach are handed on for the other items' receivers.
         let reaching: Vec<Reaching> = geometry
@@ -669,42 +884,45 @@ impl Session {
                 ])?,
             })
         };
-        // The part each node belongs to; a version 1 item is one part named after its only node.
-        let part_of = |node: usize| {
-            geometry
-                .parts
-                .iter()
-                .find(|part| part.node == node)
-                .map(|part| (part.id.as_str(), part.geometry_key.as_str()))
-                .unwrap_or(("item", generated.geometry_key.as_str()))
-        };
+        let parts_by_node: BTreeMap<_, _> =
+            geometry.parts.iter().rev().map(|p| (p.node, p)).collect();
+        let anchors_by_part: BTreeMap<_, _> = geometry
+            .anchors
+            .iter()
+            .rev()
+            .map(|a| (a.part.as_str(), a))
+            .collect();
+        let mut features_by_part = BTreeMap::<_, Vec<_>>::new();
+        for (feature, placed_feature) in geometry
+            .features
+            .iter()
+            .zip(super::item_features(&geometry.features, &world))
+        {
+            features_by_part
+                .entry(feature.part.as_str())
+                .or_default()
+                .push(placed_feature);
+        }
         let transforms = geometry.world_transforms().map_err(&fail)?;
         let mut parts = Vec::new();
         for (index, (node, transform)) in geometry.nodes.iter().zip(&transforms).enumerate() {
-            let (part, key) = part_of(index);
-            let features = super::item_features(
-                &geometry
-                    .features
-                    .iter()
-                    .filter(|feature| feature.part == part)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                &world,
-            );
-            let part_anchor = geometry
-                .anchors
-                .iter()
-                .find(|anchor| anchor.part == part)
+            let (part, key) = parts_by_node
+                .get(&index)
+                .map(|p| (p.id.as_str(), p.geometry_key.as_str()))
+                .unwrap_or(("item", generated.geometry_key.as_str()));
+            let features = features_by_part
+                .get(part)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let part_anchor = anchors_by_part
+                .get(part)
+                .copied()
                 .map(&anchor)
                 .transpose()
                 .map_err(&fail)?;
             let mut meshes = Vec::new();
             for &mesh_index in &node.meshes {
                 let mesh = &geometry.meshes[mesh_index];
-                // Tangents would need a delivered basis.
-                if !mesh.tangents.is_empty() {
-                    return Err(fail("A placed item has plain generated meshes.".into()));
-                }
                 let count = mesh.positions.len();
                 // The resource is named by its part's key, so an unchanged part shares its
                 // meshes with every later build and placement.
@@ -731,33 +949,28 @@ impl Session {
                             vec![[1.; 3]; count]
                         },
                         indices: mesh.indices.clone(),
-                        tangents: vec![],
+                        tangents: mesh.tangents.clone(),
                     }),
                 );
-                let material = format!("studio/item/slot/{}", mesh.material_slot);
+                let catalog = generated
+                    .materials
+                    .get(&mesh.material_slot)
+                    .and_then(catalog_entry)
+                    .filter(|_| !model.slots.contains_key(&mesh.material_slot));
+                let material = catalog
+                    .map(str::to_owned)
+                    .or_else(|| textured_slots.get(&mesh.material_slot).cloned())
+                    .unwrap_or_else(|| format!("studio/item/slot/{}", mesh.material_slot));
                 // A sign's slots are the shipped catalog materials (the glyph atlas and the
-                // board) unless the project binds them; their images come from the assets.
-                let shipped = match mesh.material_slot.as_str() {
-                    "lettering" => superspec_catalog::material("builtin:lettering"),
-                    "board" => superspec_catalog::material("builtin:signboard"),
+                // board). Keep their existing local aliases.
+                let catalog = catalog.or(match mesh.material_slot.as_str() {
+                    "lettering" => Some("builtin:lettering"),
+                    "board" => Some("builtin:signboard"),
                     _ => None,
-                };
-                if let Some(texture) = shipped.as_ref().and_then(|m| m.texture.as_ref()) {
-                    if !placed.model.images.contains_key(texture) {
-                        let bytes =
-                            assets(texture).map_err(|error| fail(format!("{texture}: {error}")))?;
-                        // Validated once per content: a project's items are placed several
-                        // times for one request (bindings, composition, layouts, field bakes).
-                        let decoded = self.validate_image(&bytes).map_err(&fail)?;
-                        placed.model.images.insert(
-                            texture.clone(),
-                            ImageResource {
-                                mime: decoded.mime,
-                                bytes: bytes.clone(),
-                                pixels: decoded.width * decoded.height,
-                            },
-                        );
-                    }
+                });
+                if let Some(catalog) = catalog {
+                    self.bind_catalog_slot(catalog, &material, &mut placed.model, assets)
+                        .map_err(&fail)?;
                 }
                 placed
                     .model
@@ -769,9 +982,6 @@ impl Session {
                             .get(&mesh.material_slot)
                             .map(|imported| imported.material())
                             .unwrap_or_default();
-                        if let Some(shipped) = shipped.clone() {
-                            value = shipped;
-                        }
                         value.id = material.clone();
                         value
                     });
@@ -800,7 +1010,7 @@ impl Session {
                             + transform[12 + row]
                     })
                 }));
-                let mut features = features.clone();
+                let mut features = features.to_vec();
                 if !reaching.is_empty() {
                     let (near, dropped) = reached(&reaching, Some(part), &bounds);
                     features.extend(near);
@@ -933,6 +1143,69 @@ impl Session {
             "reachDropped": reach_dropped,
             "meshSlots": placed.slots.iter().map(|(id, slot)| (format!("{prefix}{id}"), slot.clone())).collect::<BTreeMap<_, _>>(),
         });
+        if !parsed.lods.is_empty() {
+            let mut levels = vec![render_level(&placed.model, 0.)];
+            for (index, level) in parsed.lods.iter().enumerate() {
+                let (alternative, parameters) = parsed.render_alternative(level, &model.parameters);
+                let relative = format!("lod{}/", index + 1);
+                let mut alternate_source = model.clone();
+                alternate_source.id = format!("{}/lod{}", model.id, index + 1);
+                alternate_source.source = Some(
+                    serde_json::to_string(&alternative).map_err(|error| fail(error.to_string()))?,
+                );
+                alternate_source.parameters = parameters;
+                let alternate = self.place_item(
+                    project,
+                    &alternate_source,
+                    &format!("{prefix}{relative}"),
+                    assets,
+                    cancelled,
+                )?;
+                levels.push(
+                    append_render_level(
+                        &mut placed.model,
+                        alternate.model,
+                        &relative,
+                        level.distance,
+                    )
+                    .map_err(&fail)?,
+                );
+                placed.slots.extend(
+                    alternate
+                        .slots
+                        .into_iter()
+                        .map(|(id, slot)| (format!("{relative}{id}"), slot)),
+                );
+                placed.transforms.extend(
+                    alternate
+                        .transforms
+                        .into_iter()
+                        .map(|(id, transform)| (format!("{relative}{id}"), transform)),
+                );
+                placed.features.extend(
+                    alternate
+                        .features
+                        .into_iter()
+                        .map(|(id, features)| (format!("{relative}{id}"), features)),
+                );
+                placed.anchors.extend(
+                    alternate
+                        .anchors
+                        .into_iter()
+                        .map(|(id, anchor)| (format!("{relative}{id}"), anchor)),
+                );
+                placed.bounds.extend(
+                    alternate
+                        .bounds
+                        .into_iter()
+                        .map(|(id, bounds)| (format!("{relative}{id}"), bounds)),
+                );
+            }
+            placed.model.geometry_lods.push(GeometryLodGroup {
+                id: format!("{}/lod", generated.id),
+                levels,
+            });
+        }
         Ok(placed)
     }
 }

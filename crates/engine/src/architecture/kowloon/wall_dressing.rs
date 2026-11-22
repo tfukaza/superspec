@@ -326,8 +326,8 @@ impl Compiler<'_> {
         Ok(jobs)
     }
     pub(super) fn render_walls(
-        &mut self,
-        scene: &mut Scene,
+        &self,
+        visuals: &mut VisualOutput<'_>,
         jobs: Vec<Job>,
         theme: &mut ThemeState,
         execution: &Execution<'_>,
@@ -343,7 +343,7 @@ impl Compiler<'_> {
             }
             self.bake_visual(
                 execution,
-                scene,
+                visuals,
                 &mut job.drawing,
                 &job.host,
                 &job.rule,

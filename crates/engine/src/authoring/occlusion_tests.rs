@@ -986,10 +986,11 @@ mod washroom {
     fn washroom() -> Washroom {
         let project = project();
         let mut session = Session::default();
-        let (model, transforms) = session
-            .compose_models(&project, 1, &asset, &|| false)
+        let prepared = session
+            .prepare_project(&project, 1, &asset, &|| false)
             .unwrap_or_else(|e| panic!("{e:?}"));
-        let scene = model.scene_cancellable(1, &|| false).unwrap();
+        let scene = prepared.scene;
+        let transforms = prepared.transforms;
         let occluders = Occluders::from_scene(&scene).unwrap();
         let mut found = Vec::new();
         for (name, material) in [("slab", "concrete-slab"), ("wall-tall", "concrete-walls")] {

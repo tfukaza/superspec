@@ -131,6 +131,7 @@ fn build(open: bool) -> Scene {
                         market_trays: false,
                     },
                     restaurant: superspec_engine::worldspec::themes::kowloon::shop::roast::Assets {
+                        hero_props: false,
                         food: true,
                         metal: true,
                         surfaces: true,

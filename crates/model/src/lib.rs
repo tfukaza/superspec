@@ -4,6 +4,7 @@ pub mod batches;
 pub mod composition;
 pub mod instances;
 pub mod lighting;
+pub mod lod;
 pub mod review;
 pub mod theme;
 pub mod updates;
@@ -86,9 +87,16 @@ pub struct Manifest {
     pub ground_plans: Vec<theme::ground::Plan>,
     pub materials: Vec<Material>,
     pub meshes: Vec<Mesh>,
+    /// Authored render alternatives; higher levels never add canonical collision.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub geometry_lods: Vec<superspec_types::lod::GeometryLodGroup>,
     /// Instanced batches, ascending by identity; their data is in `Scene::batches`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub batches: Vec<batches::Batch>,
+    /// Source placement of each instance in a set of template batches. Batches with a
+    /// common object ID share the same instance order, so its provenance is stored once.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub batch_placement_owners: std::collections::BTreeMap<String, Vec<String>>,
     /// Lengths of the batch buffers; present exactly when the scene has batches.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_counts: Option<batches::Counts>,
@@ -107,6 +115,60 @@ pub struct Manifest {
     pub index_count: usize,
     pub assets: Vec<Asset>,
     pub asset_byte_count: usize,
+}
+
+impl Manifest {
+    /// Visit every delivered AML source range, including ranges used for picking and findings.
+    pub fn visit_sources_mut<E>(
+        &mut self,
+        mut visit: impl FnMut(&mut SourceLocation) -> Result<(), E>,
+    ) -> Result<(), E> {
+        fn nodes<E>(
+            list: &mut [Node],
+            visit: &mut impl FnMut(&mut SourceLocation) -> Result<(), E>,
+        ) -> Result<(), E> {
+            for node in list {
+                visit(&mut node.source)?;
+                nodes(&mut node.children, visit)?;
+            }
+            Ok(())
+        }
+        if let Some(context) = &mut self.architecture {
+            nodes(&mut context.metadata, &mut visit)?;
+            nodes(&mut context.declarations, &mut visit)?;
+            for object in &mut context.objects {
+                visit(&mut object.source)?;
+            }
+            for volume in &mut context.volumes {
+                visit(&mut volume.source)?;
+            }
+            for connection in &mut context.connections {
+                visit(&mut connection.source)?;
+            }
+        }
+        nodes(&mut self.openings, &mut visit)?;
+        for mesh in &mut self.meshes {
+            visit(&mut mesh.source)?;
+        }
+        for batch in &mut self.batches {
+            visit(&mut batch.source)?;
+        }
+        for diagnostic in &mut self.diagnostics {
+            visit(&mut diagnostic.source)?;
+        }
+        for finding in &mut self.reviews {
+            visit(&mut finding.diagnostic.source)?;
+        }
+        if let Some(report) = &mut self.validation {
+            for diagnostic in &mut report.diagnostics {
+                visit(&mut diagnostic.source)?;
+            }
+            for finding in &mut report.reviews {
+                visit(&mut finding.diagnostic.source)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -189,7 +251,9 @@ impl Scene {
                 ground_plans: vec![],
                 materials: vec![],
                 meshes: vec![],
+                geometry_lods: vec![],
                 batches: vec![],
+                batch_placement_owners: Default::default(),
                 batch_counts: None,
                 mesh_tangents: Default::default(),
                 colliders: vec![],

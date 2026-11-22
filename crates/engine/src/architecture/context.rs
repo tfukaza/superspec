@@ -50,12 +50,17 @@ impl Compiler<'_> {
                 .resolution
                 .nodes
                 .iter()
-                .map(|n| Object {
+                .enumerate()
+                .map(|(index, n)| Object {
                     id: n.id.clone(),
                     source_id: n.source.id.clone(),
                     kind: n.source.kind.clone(),
                     source: n.source.source.clone(),
-                    matrix: n.matrix.0,
+                    matrix: self
+                        .window_fits
+                        .get(&index)
+                        .map_or(n.matrix, |fit| fit.matrix)
+                        .0,
                     instances: n.instances.clone(),
                     assemblies: n.assemblies.clone(),
                     contributors: vec![],

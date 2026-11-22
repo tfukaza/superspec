@@ -16,7 +16,7 @@ import { PNG } from "pngjs";
 
 const PERIOD = 4;
 const LONGEST = 2.8;
-const width = Number(process.argv[2] ?? 2048), height = Number(process.argv[3] ?? 1024);
+const width = Number(process.argv[2] ?? 4096), height = Number(process.argv[3] ?? 2048);
 
 /** A lattice hash in [0, 1). */
 function hash(x, y, seed) {

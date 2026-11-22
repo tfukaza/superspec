@@ -1,3 +1,4 @@
+use super::limits::{MAX_SOURCE_INDICES, MAX_SOURCE_VERTICES, PlacedGeometry};
 use super::{Collision, ItemDiagnostic, Transform, Values, fail};
 use crate::materialspec::program::MaterialRequest;
 use serde::{Serialize, Serializer};
@@ -26,51 +27,69 @@ pub struct ItemMesh {
 }
 
 impl ItemMesh {
-    /// Names every vertex once: vertices that are the same in every attribute (to the bit) become
-    /// one, the first of them, and the indices name it. Nothing a triangle's corner holds
-    /// changes, so nothing drawn or baked from the mesh does; a generator that emits each
-    /// triangle's or quad's corners anew (a pile of small boxes, a sheet of quads) holds a
-    /// third to a half fewer vertices after. Vertices no index names stay.
+    /// Index equal native mesh corners in source vertex order. Include every
+    /// populated vertex stream so UV, normal, color and tangent seams survive.
+    /// Distinct unreferenced vertices still contribute to the mesh bounds.
     pub fn share_vertices(&mut self) {
+        self.index_vertices(true);
+    }
+
+    pub(super) fn index_vertices(&mut self, preserve_signed_zero: bool) {
         let count = self.positions.len();
-        let whole = |length: usize| length == count;
-        if count < 2 || !whole(self.normals.len()) {
+        let optional = |len| len == 0 || len == count;
+        if count < 2
+            || self.normals.len() != count
+            || !optional(self.uvs.len())
+            || !optional(self.colors.len())
+            || !optional(self.tangents.len())
+            || self.additional_uvs.values().any(|uvs| uvs.len() != count)
+            || self.indices.iter().any(|&index| index as usize >= count)
+        {
+            // Leave malformed streams intact for the caller's validation.
             return;
         }
-        let bits =
-            |values: &[f64], key: &mut Vec<u64>| key.extend(values.iter().map(|v| v.to_bits()));
-        let mut first: std::collections::HashMap<Vec<u64>, u32> =
-            std::collections::HashMap::with_capacity(count);
-        let mut kept: Vec<usize> = Vec::with_capacity(count);
-        let mut renamed: Vec<u32> = Vec::with_capacity(count);
-        for at in 0..count {
-            let mut key = Vec::with_capacity(16);
-            bits(&self.positions[at], &mut key);
-            bits(&self.normals[at], &mut key);
-            if whole(self.uvs.len()) {
-                bits(&self.uvs[at], &mut key);
+        // The common native mesh has position, normal, UV and color. Use a
+        // fixed-size key so indexing it needs no per-vertex heap allocation.
+        // Transforming a face can produce either sign of zero for the same
+        // geometric value. Keep the first corner's original attributes.
+        let bits = |v: f64| {
+            if !preserve_signed_zero && v == 0. {
+                0
+            } else {
+                v.to_bits()
             }
-            if whole(self.colors.len()) {
-                bits(&self.colors[at], &mut key);
-            }
-            if whole(self.tangents.len()) {
-                bits(&self.tangents[at], &mut key);
-            }
-            for uvs in self.additional_uvs.values().filter(|uvs| whole(uvs.len())) {
-                bits(&uvs[at], &mut key);
-            }
-            let name = *first.entry(key).or_insert_with(|| {
-                kept.push(at);
-                kept.len() as u32 - 1
-            });
-            renamed.push(name);
-        }
+        };
+        let (kept, renamed) = if self.tangents.is_empty() && self.additional_uvs.is_empty() {
+            vertex_remap(count, |at| {
+                (
+                    self.positions[at].map(bits),
+                    self.normals[at].map(bits),
+                    self.uvs.get(at).copied().unwrap_or_default().map(bits),
+                    self.colors.get(at).copied().unwrap_or_default().map(bits),
+                )
+            })
+        } else {
+            vertex_remap(count, |at| {
+                self.positions[at]
+                    .iter()
+                    .chain(&self.normals[at])
+                    .chain(self.uvs.get(at).into_iter().flatten())
+                    .chain(self.colors.get(at).into_iter().flatten())
+                    .chain(self.tangents.get(at).into_iter().flatten())
+                    .chain(self.additional_uvs.values().flat_map(|uvs| &uvs[at]))
+                    .map(|&v| bits(v))
+                    .collect::<Vec<_>>()
+            })
+        };
         if kept.len() == count {
             return;
         }
         fn keep<T: Copy>(values: &mut Vec<T>, kept: &[usize], count: usize) {
             if values.len() == count {
-                *values = kept.iter().map(|at| values[*at]).collect();
+                for (to, &from) in kept.iter().enumerate() {
+                    values[to] = values[from];
+                }
+                values.truncate(kept.len());
             }
         }
         keep(&mut self.positions, &kept, count);
@@ -82,22 +101,37 @@ impl ItemMesh {
             keep(uvs, &kept, count);
         }
         for index in &mut self.indices {
-            if let Some(name) = renamed.get(*index as usize) {
-                *index = *name;
-            }
+            *index = renamed[*index as usize];
         }
     }
 }
+fn vertex_remap<K: Eq + std::hash::Hash>(
+    count: usize,
+    key: impl Fn(usize) -> K,
+) -> (Vec<usize>, Vec<u32>) {
+    let mut first = std::collections::HashMap::with_capacity(count);
+    let mut kept = Vec::with_capacity(count);
+    let renamed = (0..count)
+        .map(|at| {
+            *first.entry(key(at)).or_insert_with(|| {
+                kept.push(at);
+                (kept.len() - 1) as u32
+            })
+        })
+        .collect();
+    (kept, renamed)
+}
+
 /// Preserves the tangent basis of a normal-mapped glTF primitive before delivery
 /// adapters change UV conventions. Authored tangents take precedence. Otherwise
 /// derive the basis from the original UVs, including mirrored chart handedness.
 pub fn delivery_tangents(mesh: &ItemMesh) -> Result<Vec<[f64; 4]>, String> {
     let count = mesh.positions.len();
-    if count > 500_000
+    if count > MAX_SOURCE_VERTICES
         || mesh.normals.len() != count
         || mesh.uvs.len() != count
         || !mesh.indices.len().is_multiple_of(3)
-        || mesh.indices.len() > 750_000
+        || mesh.indices.len() > MAX_SOURCE_INDICES
         || mesh.indices.iter().any(|i| *i as usize >= count)
     {
         return Err("Invalid tangent source geometry.".into());
@@ -603,21 +637,13 @@ impl ItemGeometry {
     pub fn flattened(&self) -> Result<Vec<ItemMesh>, String> {
         let transforms = self.world_transforms()?;
         let mut result = Vec::new();
-        let mut triangles = 0usize;
-        let mut vertices = 0usize;
+        let mut placed = PlacedGeometry::default();
         for (node, matrix) in self.nodes.iter().zip(transforms) {
             let inverse = matrix.inverse()?;
             for &index in &node.meshes {
                 let source = self.meshes.get(index).ok_or("Unknown item mesh.")?;
-                vertices = vertices
-                    .checked_add(source.positions.len())
-                    .filter(|n| *n <= 1_000_000)
-                    .ok_or("Placed item vertex allowance exceeded.")?;
+                placed.add(&node.id, source.positions.len(), source.indices.len() / 3)?;
                 let mut mesh = source.clone();
-                triangles = triangles
-                    .checked_add(mesh.indices.len() / 3)
-                    .filter(|n| *n <= 1_000_000)
-                    .ok_or("Placed item triangle allowance exceeded.")?;
                 mesh.id = format!("{}/{}", node.id, mesh.id);
                 for position in &mut mesh.positions {
                     *position = matrix.point(*position);
@@ -654,19 +680,11 @@ impl ItemGeometry {
     pub(super) fn measure(&mut self) -> Result<(), String> {
         let transforms = self.world_transforms()?;
         let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-        let mut count = 0usize;
-        let mut triangles = 0usize;
+        let mut placed = PlacedGeometry::default();
         for (node, matrix) in self.nodes.iter().zip(transforms) {
             for &index in &node.meshes {
                 let mesh = self.meshes.get(index).ok_or("Unknown item mesh.")?;
-                count = count
-                    .checked_add(mesh.positions.len())
-                    .filter(|n| *n <= 1_000_000)
-                    .ok_or("Placed item vertex allowance exceeded.")?;
-                triangles = triangles
-                    .checked_add(mesh.indices.len() / 3)
-                    .filter(|n| *n <= 1_000_000)
-                    .ok_or("Placed item triangle allowance exceeded.")?;
+                placed.add(&node.id, mesh.positions.len(), mesh.indices.len() / 3)?;
                 for p in &mesh.positions {
                     let p = matrix.point(*p);
                     if p.iter().any(|v| !v.is_finite() || v.abs() > 1e7) {
@@ -679,7 +697,7 @@ impl ItemGeometry {
                 }
             }
         }
-        if count == 0 || triangles == 0 {
+        if placed.vertices == 0 || placed.triangles == 0 {
             return Err("Item contains no visible triangle geometry.".into());
         }
         self.bounds = bounds;

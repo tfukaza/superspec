@@ -2,6 +2,7 @@
 use crate::{Mesh, Scene};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use superspec_types::limits;
 use superspec_types::{architecture::V3, material::Material};
 
 #[derive(Clone, Copy, Debug)]
@@ -103,8 +104,8 @@ impl Scene {
         }
         if pixels > crate::MAX_SCENE_IMAGE_PIXELS
             || byte_count > crate::MAX_SCENE_IMAGE_BYTES
-            || material_ids.len() > 16384
-            || asset_ids.len() > 16384
+            || material_ids.len() > limits::MAX_SCENE_MATERIALS
+            || asset_ids.len() > limits::MAX_SCENE_IMAGES
             || identity_bytes > 16 * 1024 * 1024
         {
             return Err(format!(
@@ -160,12 +161,12 @@ impl Scene {
             .manifest
             .vertex_count
             .checked_add(drawing.vertices().len())
-            .is_none_or(|n| n > 6_000_000)
+            .is_none_or(|n| n > limits::MAX_WORLD_VERTICES)
             || self
                 .manifest
                 .index_count
                 .checked_add(drawing.indices().len())
-                .is_none_or(|n| n > 6_000_000)
+                .is_none_or(|n| n > limits::MAX_WORLD_INDICES)
         {
             return Err("Scene visual geometry budget exceeded.".into());
         }

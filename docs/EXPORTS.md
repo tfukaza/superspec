@@ -6,6 +6,7 @@ right-handed Z-up metres. glTF and the game manifest use Y-up metres.
 
 ```sh
 superspec build projects/my-level/level.aml --out generated/my-level --json
+superspec build projects/my-level/level.aml --out generated/portable --portable --json
 superspec build projects/my-level/level.aml --out generated/fbx --blender /path/to/blender --json
 superspec game-export projects/my-level/level.aml --out generated/game --json
 ```
@@ -15,9 +16,26 @@ Default artifacts include `scene.glb`, `scene.gltf`, `scene.bin`, `collision.glb
 `scene.json` references the sibling encoded image blob. `game.json` identifies
 visual and collision files and supplies transformed markers and player dimensions.
 
+For a live build directory, open `game.json` once and resolve its `visual`,
+`collision` and `artifacts` paths relative to that file. The CLI publishes each
+complete generation under `superspec-generations/<sha256>/`, then atomically
+replaces `game.json`. A reader can finish loading a generation across the next
+build. The CLI keeps older generations and reports all current generation files
+and flat aliases in its JSON artifact list. The flat filenames remain available
+for tools that consume completed builds. Opening independent flat aliases during
+a build can span two generations.
+
 UV1 generation runs by default. `--no-uv` skips unwrapping. The portable unwrapper
 preserves geometry ownership and existing material UVs, duplicates seam vertices
 and packs one shared lightmap page. Oversized or unsupported input fails explicitly.
+
+## Portable glTF
+
+Pass `--portable` to `superspec glb` or `superspec build` when the importer
+expects ordinary glTF mesh nodes and PNG or JPEG textures. Repeated placements
+reference shared mesh data through ordinary nodes. An importer can apply its
+own batching and LOD policy. The output uses standard PBR material channels,
+with SuperSpec's additional lighting and render records available as optional data.
 
 ## Texture formats
 
@@ -52,6 +70,36 @@ compressed in GPU memory; the 8 x 3.2 m Kowloon study scene at 2048 px is 16.3 M
 
 The codec is the vendored `third_party/basisu_c_sys` (see its `PROVENANCE.md`): native builds need
 a C++17 compiler; no other tools are required.
+
+## Authored levels of detail
+
+Geometry alternatives use `superspec_types::lod::GeometryLodGroup` in the shared
+model and delivered `geometryLods` manifest record. Each level references actual
+mesh placements or instance batches and carries its starting distance in metres.
+The first level starts at zero. Missing, hidden, duplicated or overlapping
+references fail validation; these records do not invent geometry or imply culling.
+
+GLB export writes optional `MSFT_lod` node and material chains. Only near nodes
+are reachable through the ordinary scene graph, and ordinary mesh primitives
+retain their near material binding. Lower geometry nodes and material texture
+companions stay in the file for supporting consumers. Node extras carry
+`worldSpecLod: {version: 1, distances: [0, ...]}`; authored coverage thresholds
+use `MSFT_screencoverage`. Additional render levels never add collision, even if
+an input accidentally marks them collidable. Native and Wasm call the same model
+and exporter code.
+
+The Kowloon packer preserves declared native GLB graphs through its mesh merging
+and material finishing stages. Each placement receives its own node/LOD graph
+while sharing exact, content-addressed geometry and image bytes. This preservation
+path accepts static, self-contained SuperSpec GLBs with PNG/JPEG textures, node
+instancing, emissive strength and authored LODs. It rejects unsupported extensions,
+animation, skins, morph targets and compressed-only images explicitly; use
+`--textures png` for these city inputs. Authored prototypes keep their supplied
+materials instead of receiving the packer's optional finish substitutions.
+GI reads only the default scene, and automatic city index streams leave complete
+authored chains alone. The illustrated street-tree pack keeps its existing bark
+level 1 and painted canopy near, then uses authored bark level 2 at its recorded
+distance; the portable painted canopy currently has one level.
 
 ## Size limits
 

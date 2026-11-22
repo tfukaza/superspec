@@ -89,7 +89,7 @@ fn paving_stone(
 /// the last three unbound to show them plain. Anchor: bottom-centre of
 /// the opening on the wall plane; the room lies behind the wall (+Y) and is as wide as the
 /// opening. Parameters: `trade` (`provisions` | `grocer` | `greengrocer` | `hardware` |
-/// `herbalist`, `provisions`), `width` (m, 1.8–40, 3), `height` (m from the floor to the
+/// `herbalist` | `roast`, `provisions`), `width` (m, 1.8–40, 3), `height` (m from the floor to the
 /// opening's head, 2–10, 2.7), `depth` (m, 2.4–20, 3.1), `floor` (m of threshold above the
 /// anchor, 0.03), `storey` (m of the ground storey, at least 0.5 above the head, 3.35),
 /// `shutter` (#758077), `hanging` (goods hung across the opening, true), `hangClear` and
@@ -111,6 +111,7 @@ pub(super) fn shop_room(
             "greengrocer",
             "hardware",
             "herbalist",
+            "roast",
         ],
     )?;
     let width = a.number("width", 3.)?;
@@ -120,7 +121,7 @@ pub(super) fn shop_room(
     let storey = a.number("storey", 3.35)?;
     let shutter = a.color("shutter", "#758077")?;
     // `hanging`: goods hung on strings across the whole opening, under its head (true).
-    let hanging = a.boolean("hanging", true)?;
+    let hanging = a.boolean("hanging", !matches!(trade, shop::shell::Trade::Roast))?;
     // `hangClear`: m below the head that only the cords cross, so the goods hang beneath an
     // awning's edge (0–3, 0). `hangDrop`: m below the head the longest reach (0.4–4; by
     // default to 1.05 m above the floor at most, 0.8 m below the clear length). Over the way
@@ -186,10 +187,11 @@ pub(super) fn shop_room(
     let assets = shop::shell::Assets {
         room: shelf_assets,
         restaurant: shop::roast::Assets {
-            food: false,
-            metal: false,
-            surfaces: false,
-            tiles: false,
+            hero_props: atlas,
+            food: atlas,
+            metal: atlas,
+            surfaces: atlas,
+            tiles: atlas,
         },
     };
     let output = draw(cancelled, |mesh| {
@@ -226,24 +228,44 @@ pub(super) fn shop_room(
                     |drop| drop - 0.2,
                 )
                 .max(shortest);
-            // The long pieces at the sides stop 0.3 m above the floor.
             let sides = hang_sides.min((height - 0.5 - drop).max(0.));
-            // Over the way in nothing comes lower than 2 m above the floor.
-            let headroom = (height - 2.2).max(0.);
-            // Three rows, overlapping: a near-continuous wall of goods under the head.
-            shop::provisions::hung(
-                &mut on(mesh, inside)?,
-                &shop::provisions::Hang {
-                    line: [0.2, width - 0.2, 0.16, height - 0.2],
-                    clear: clear.min(drop),
-                    drop,
-                    way: (width >= 3.).then_some([width / 2. - 0.6, width / 2. + 0.6, headroom]),
-                    rows: 3,
-                    bold,
-                    sides,
-                },
-                &mut kit.rng(&format!("{key}/front-goods"))?,
-            )?;
+            let mut front = on(mesh, inside)?;
+            let mut rng = kit.rng(&format!("{key}/front-goods"))?;
+            if atlas && matches!(trade, shop::shell::Trade::Provisions) {
+                // Each jamb gets a short row of sealed pouches and clips. Keep the
+                // opening's center clear and frame the shelves on either side.
+                let clear = clear.min(drop);
+                let anchor = height - 0.2 - clear;
+                let reach = drop + sides - clear;
+                for (x, length) in [(0.27, 0.51_f64), (width - 0.29, 0.35)] {
+                    shop::snack_string::string(
+                        &mut front,
+                        [x, 0.19, anchor],
+                        length.min(reach),
+                        &mut rng,
+                        true,
+                    )?;
+                }
+            } else {
+                let headroom = (height - 2.2).max(0.);
+                shop::provisions::hung(
+                    &mut front,
+                    &shop::provisions::Hang {
+                        line: [0.2, width - 0.2, 0.16, height - 0.2],
+                        clear: clear.min(drop),
+                        drop,
+                        way: (width >= 3.).then_some([
+                            width / 2. - 0.6,
+                            width / 2. + 0.6,
+                            headroom,
+                        ]),
+                        rows: 3,
+                        bold,
+                        sides,
+                    },
+                    &mut rng,
+                )?;
+            }
         }
         Ok(())
     })?;
@@ -254,11 +276,17 @@ pub(super) fn shop_room(
             "concrete",
             "tube-light",
             "grocer-props",
+            "market-hero-props",
             "snack-packet",
             "market-apple",
             "market-trays",
             "shop-register",
             "posters",
+            "restaurant-food",
+            "kitchen-metal",
+            "kitchen-worktop",
+            "restaurant-surfaces",
+            "restaurant-tiles",
         ],
         fade,
     );
@@ -391,7 +419,11 @@ pub(super) fn street_stock(
             atlas,
         )
     })?;
-    Ok(as_stock(output, &["grocer-props"], fade))
+    Ok(as_stock(
+        output,
+        &["grocer-props", "market-hero-props", "snack-packet"],
+        fade,
+    ))
 }
 
 /// `kowloon/pavement`: a raised pavement along a wall: seeded paving stones on a bed, a kerb
@@ -2589,21 +2621,24 @@ pub(super) fn road(
     })
 }
 
-/// Static street-tree item, using TreeSpec's trunk, branches and backing canopy.
+/// Static street-tree item. Its established near appearance deliberately uses
+/// TreeSpec tier 1; the item owner may select tier 2 as its authored far alternative.
 pub(super) fn street_tree(
     name: &str,
     values: &Values,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<NativeOutput, String> {
     use crate::{itemspec::definition::ItemMesh, treespec::tree};
-    Arguments::new(name, values).finish()?;
+    let mut arguments = Arguments::new(name, values);
+    let level = arguments.integer("level", 1, 0..=2)?;
+    arguments.finish()?;
     let def = tree::parse(
         "street.tree.json",
         include_str!("../../../../treespec/fixtures/street.tree.json"),
     )
     .map_err(|e| e.to_string())?;
     let tree = tree::generate(&def, cancelled).map_err(|e| e.to_string())?;
-    let lod = &tree.lods[1];
+    let lod = &tree.lods[level];
     let crown = lod
         .hull_mesh
         .ok_or("Street tree requires a backing canopy.")?;

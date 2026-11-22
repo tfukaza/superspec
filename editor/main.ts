@@ -1,14 +1,18 @@
 import * as THREE from "three";
 import { CityAppearance } from "./city-appearance.ts";
+import { PlacementPreview } from "./placement-preview.ts";
+import { renamedSelection } from "./rename-preview.ts";
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, megabytes } from "../browser/model/limits.ts";
 import "./style.css";
 import sample from "./starter.aml?raw";
+import kowloonBench from "./demos/kowloon-bench.aml?raw";
 import { readAmlSelection, type AmlSelection } from "./open-aml.ts";
-import { BrowserCompiler } from "../browser/runtime/compiler.ts";
-import { decodePacket } from "../browser/model/packet.ts";
+import { worldCompiler } from "./compiler-host.ts";
+import type { SceneMesh } from "../browser/model/packet.ts";
 import { SceneUpdates } from "../browser/model/updates.ts";
 import { RustScene } from "../browser/renderer/scene.ts";
 import type { ValidationReport } from "../browser/model/validation.ts";
+import { connectAuthoringGraphics } from "./graphics-controls.ts";
 
 const source = document.querySelector<HTMLTextAreaElement>("#aml")!;
 const status = document.querySelector<HTMLOutputElement>("#status")!;
@@ -26,17 +30,32 @@ let assetImport = 0;
 let pendingOpen: (AmlSelection & { revision: number }) | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const cityAppearance = new CityAppearance();
+const placement = new PlacementPreview();
+let displayedSource = "";
+let inspected: SceneMesh | undefined;
+let renamedMesh: string | undefined;
+function selectionLabel(name?: string): void {
+  selection.textContent = inspected ? `${name ?? inspected.id} · source ${inspected.source.line}:${inspected.source.column}` : "Click a model to inspect its source.";
+}
 window.addEventListener("pagehide", () => cityAppearance.close(), { once: true });
 const scene = new RustScene(viewport, mesh => {
-  selection.textContent = mesh ? `${mesh.id} · source ${mesh.source.line}:${mesh.source.column}` : "Click a model to inspect its source.";
+  inspected = mesh;
+  renamedMesh = undefined;
+  selectionLabel();
 });
-if (new URLSearchParams(location.search).has("gpuprobe")) Object.assign(window, { __scene: scene, __three: THREE });
+connectAuthoringGraphics(document.querySelector<HTMLElement>("#graphics-profile")!, scene, profile => {
+  if (profile.diagnostics.instrumentation.gpuProbe) Object.assign(window, { __three: THREE });
+});
 document.querySelector("#walk")!.addEventListener("click", () => scene.toggleWalk());
+viewport.addEventListener("footprintgeometryframe", event => {
+  if ((event as CustomEvent<number>).detail === revision && status.dataset.state === "compiling")
+    status.textContent = "Showing regenerated building · Updating surface details…";
+});
 viewport.addEventListener("walkstatus", event => { selection.textContent = (event as CustomEvent<string>).detail; });
 const walkHelper = document.querySelector<HTMLSelectElement>("#walk-helper")!;
 walkHelper.addEventListener("change", () => scene.setWalkHelper(walkHelper.value));
 viewport.addEventListener("walkstop", () => { walkHelper.value = "off"; });
-const compiler = new BrowserCompiler(async result => {
+const compiler = worldCompiler(async result => {
   if (result.revision !== revision) return;
   status.dataset.workers = String(result.workers ?? 1);
   try {
@@ -56,15 +75,23 @@ const compiler = new BrowserCompiler(async result => {
       return;
     }
     if (result.error || !result.buffer) throw new Error(result.error ?? "Compiler returned no scene.");
-    const packet = result.update ? updates.decode(result.buffer) : decodePacket(result.buffer);
+    const packet = updates.decodePreview(result.buffer);
     if (packet.manifest.revision !== revision) throw new Error("Scene revision mismatch.");
     if (!packet.manifest.success) {
-      diagnostics.textContent = packet.manifest.diagnostics.map(d => `${d.source.line}:${d.source.column} ${d.code} — ${d.message}`).join("\n");
+      showFindings({ success: false, diagnostics: packet.manifest.diagnostics }, !pendingOpen || pendingOpen.source === source.value);
       showError();
       return;
     }
+    const selectedAfterRename = renamedMesh;
+    const selectionRevision = scene.selectionRevision;
     status.textContent = `Preparing preview · Rust compilation ${(result.compileMs ?? 0).toFixed(1)} ms…`;
-    if (!await cityAppearance.apply(scene, packet, () => revision === result.revision)) return;
+    if (!cityAppearance.retain(scene, packet)) {
+      const current = () => revision === result.revision;
+      // A lightweight draw of the exact regenerated shape may finish between the lot preview and the material pass.
+      void scene.previewFootprintGeometry(packet, current).catch(() => { /* The full material pipeline remains active. */ });
+      if (!await cityAppearance.apply(scene, packet, current)) return;
+    }
+    if (result.revision !== revision) return;
     if (pendingOpen?.revision === result.revision) {
       source.value = pendingOpen.source;
       for (const name of Object.keys(assets)) delete assets[name];
@@ -72,6 +99,9 @@ const compiler = new BrowserCompiler(async result => {
       for (const id of ["#assets", "#asset-folder"]) document.querySelector<HTMLInputElement>(id)!.value = "";
       pendingOpen = undefined;
     }
+    placement.accept(source.value, packet.manifest);
+    displayedSource = source.value;
+    if (selectedAfterRename && selectionRevision === scene.selectionRevision && packet.manifest.meshes.some(mesh => mesh.id === selectedAfterRename)) scene.select(selectedAfterRename);
     title.textContent = packet.manifest.name;
     showFindings({ success: true, diagnostics: packet.manifest.diagnostics, reviews: packet.manifest.reviews });
     status.dataset.state = "ready";
@@ -86,12 +116,13 @@ const compiler = new BrowserCompiler(async result => {
 });
 
 /** Each finding opens its AML range and spatial inspection target. */
-function showFindings(report: ValidationReport): void {
+function showFindings(report: ValidationReport, currentSource = true): void {
   diagnostics.replaceChildren();
   if (report.error) diagnostics.append(report.error, "\n");
   for (const finding of report.diagnostics) {
     const button = document.createElement("button");
     button.textContent = `${finding.source.line}:${finding.source.column} ${finding.severity} ${finding.code} — ${finding.message}`;
+    button.disabled = !currentSource;
     button.style.whiteSpace = "pre-wrap";
     button.style.textAlign = "left";
     button.addEventListener("click", () => {
@@ -112,7 +143,7 @@ function showFindings(report: ValidationReport): void {
   }
 }
 
-const exporter = new BrowserCompiler(result => {
+const exporter = worldCompiler(result => {
   if (result.revision !== revision || status.dataset.state !== "ready") return;
   exportButton.disabled = status.dataset.state !== "ready";
   if (result.error || !result.buffer) {
@@ -129,6 +160,9 @@ const exporter = new BrowserCompiler(result => {
 
 /** Makes retained older geometry visibly stale without destroying it. */
 function showError(): void {
+  if (renamedMesh) selectionLabel();
+  renamedMesh = undefined;
+  scene.previewPlacements([], revision);
   pendingOpen = undefined;
   exporter.cancelPending();
   exportButton.disabled = true;
@@ -138,49 +172,79 @@ function showError(): void {
 }
 
 /** Coalesces typing while terminating obsolete Wasm work immediately. */
-function edit(): void {
+function edit(previewPlacement = false): void {
   pendingOpen = undefined;
   assetImport++;
   revision++;
+  const name = previewPlacement ? renamedSelection(displayedSource, source.value, inspected) : undefined;
+  if (name || renamedMesh) selectionLabel(name);
+  renamedMesh = name;
+  const moves = previewPlacement ? placement.moves(source.value) : [];
+  const moved = scene.previewPlacements(moves, revision);
   clearTimeout(timer);
+  cityAppearance.cancelPendingLayouts();
   compiler.cancelPending();
   exporter.cancelPending();
   exportButton.disabled = true;
   validateButton.disabled = true;
   exportStatus.textContent = "";
   status.dataset.state = "compiling";
-  status.textContent = `Compiling revision ${revision}…${viewport.dataset.revision ? " Previous scene remains visible." : ""}`;
-  timer = setTimeout(() => compiler.compile(source.value, revision, assets), 150);
+  const preview = moved && moves.some(move => move.footprint) ? "footprint" : moved ? "placement" : name ? "name" : undefined;
+  status.textContent = preview ? `Previewing ${preview} · Compiling revision ${revision}…` : `Compiling revision ${revision}…${viewport.dataset.revision ? " Previous scene remains visible." : ""}`;
+  // An admitted drag already identifies a valid placement. Allow three idle
+  // 60 Hz frames to coalesce pointer input before regenerating its geometry.
+  timer = setTimeout(() => {
+    compiler.compile(source.value, revision, assets, "scene", updates.revision);
+    if (moved) cityAppearance.prepareFootprint(moves);
+  }, moved ? 50 : 150);
 }
 
 source.value = sample;
 
-/** Publishes a selected source and companions only after their scene compiles and displays. */
-async function openAml(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  if (!input.files?.length) return;
+/** Publishes a source and companions only after their scene compiles and displays. */
+async function openAml(read: (isCurrent: () => boolean) => AmlSelection | Promise<AmlSelection>): Promise<void> {
   const generation = ++assetImport;
   const startingRevision = ++revision;
+  if (renamedMesh) selectionLabel();
+  renamedMesh = undefined;
+  scene.previewPlacements([], revision);
   pendingOpen = undefined;
   clearTimeout(timer);
+  cityAppearance.cancelPendingLayouts();
   compiler.cancelPending();
   exporter.cancelPending();
   exportButton.disabled = true;
   validateButton.disabled = true;
   status.dataset.state = "compiling";
   status.textContent = "Opening AML… Previous scene remains visible.";
+  const isCurrent = () => generation === assetImport && startingRevision === revision;
   try {
-    const selection = await readAmlSelection(Array.from(input.files), () => generation === assetImport && startingRevision === revision);
-    if (generation !== assetImport || startingRevision !== revision) return;
-    pendingOpen = { ...selection, revision };
-    compiler.compile(selection.source, revision, selection.assets);
+    const selection = await read(isCurrent);
+    if (!isCurrent()) return;
+    // Textareas normalize Windows line endings. Compile the identical text so diagnostics and placement ranges line up.
+    pendingOpen = { ...selection, source: selection.source.replace(/\r\n?/g, "\n"), revision };
+    compiler.compile(pendingOpen.source, revision, selection.assets);
   } catch (error) {
-    if (generation === assetImport && startingRevision === revision) { diagnostics.textContent = String(error); showError(); }
-  } finally {
-    input.value = "";
+    if (isCurrent()) { diagnostics.textContent = String(error); showError(); }
   }
 }
-for (const id of ["#open-aml", "#open-folder"]) document.querySelector<HTMLInputElement>(id)!.addEventListener("change", openAml);
+for (const id of ["#open-aml", "#open-folder"]) {
+  const input = document.querySelector<HTMLInputElement>(id)!;
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files ?? []);
+    if (files.length) await openAml(isCurrent => readAmlSelection(files, isCurrent));
+    input.value = "";
+  });
+}
+document.querySelector("#open-bench-demo")!.addEventListener("click", () => {
+  void openAml(() => ({ source: kowloonBench, assets: {} }));
+});
+document.querySelector("#open-modern-industrial-demo")!.addEventListener("click", () => {
+  void openAml(async isCurrent => {
+    const { modernIndustrialDemo } = await import("./demos/modern-industrial.ts");
+    return modernIndustrialDemo(isCurrent);
+  });
+});
 /** Reads a complete asset selection before publishing it; newer selections supersede older reads. */
 async function importAssets(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
@@ -221,7 +285,7 @@ document.querySelector("#clear-assets")!.addEventListener("click", () => {
   exporter.reset();
   edit();
 });
-source.addEventListener("input", edit);
+source.addEventListener("input", () => edit(true));
 document.querySelector("#restart")!.addEventListener("click", () => { compiler.reset(); edit(); });
 document.querySelector("#download")!.addEventListener("click", () => {
   const url = URL.createObjectURL(new Blob([source.value], { type: "application/xml" }));

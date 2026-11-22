@@ -1,0 +1,9 @@
+.graphics-control-row{display:inline-flex;flex:0 0 auto;align-items:center;gap:10px;color:#e8e4da;white-space:nowrap}
+.graphics-control-row>label:not(.button):not(.check){display:inline-flex;flex-direction:row;align-items:center;gap:6px;color:inherit;font-size:inherit}
+.graphics-control-row select,.graphics-control-row input{font:inherit;color:inherit;background:#263a32;border:1px solid #718277;border-radius:4px;padding:4px}
+.graphics-controls{position:relative}
+.graphics-controls summary{cursor:pointer;white-space:nowrap}
+.graphics-controls form{position:absolute;z-index:2;top:calc(100% + 10px);right:0;display:grid;gap:10px;width:max-content;padding:14px;border:1px solid #718277;border-radius:5px;background:#172220;box-shadow:0 6px 20px #0005}
+.graphics-controls form label:not(.button):not(.check){display:grid;grid-template-columns:1fr 110px;align-items:center;gap:14px;color:inherit;font-size:inherit}
+.graphics-controls form button{justify-self:end}
+.graphics-profile-error:not([hidden]){display:block;color:#ffbd9f;white-space:normal}

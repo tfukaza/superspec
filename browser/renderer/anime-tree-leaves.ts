@@ -1,16 +1,12 @@
 import * as THREE from "three";
-import { ANIME_SHADE_GLSL, ANIME_VERTEX_GLSL, crownShade, generator, type Crown } from "./anime-tree-crown.ts";
+import { ANIME_SHADE_GLSL, ANIME_VERTEX_GLSL, coverageAlpha, crownShade, generator, type Crown } from "./anime-tree-crown.ts";
+import { blurCanopyCards, canopyPaintStrength, sprigAtlasRgba, sprigAtlasSize, sprigGrid, sprigLength, sprigWidth } from "./canopy-paint.ts";
 
 /**
- * Illustrated tree, look `leaves`: every leaf is geometry. At each station of the crown (anime-tree-crown.ts) stands a
- * whorl of pointed leaves spreading from the twig like the ribs of an umbrella, or a fan of them to one side, plus one
- * at its tip, each leaf its own length, width and tilt; a leaf is one instance of a six-cornered outline (four
- * triangles) that turns about its own length to show its width to the camera, so it never thins to a line, with no
- * texture and no cutout: its edges are the mesh's, antialiased as any mesh is. A whole leaf takes one step of the ramp
- * from the light at its middle (the cluster's puffy normal and occlusion there) and its own jitter, with a slightly
- * lighter tip, a darker half and a broad soft midrib. On stations open to the sky, a few small highlight leaves stand
- * above the whorl: lighter than the ramp gives where they are in the light. A leaf never draws shorter than
- * `atMinimum.x` pixels, so far crowns are still made of shapes.
+ * Illustrated street canopy. Whorls of two-triangle cards rotate about their
+ * length to face the camera. Each carries a sprig of seven or nine leaflets.
+ * Occluded whorls take a wider brush and their neighbours' filtered pigment
+ * and normals. The offline impostor normal bake keeps its geometric leaf stamp.
  */
 export interface LeafOptions {
   /** A leaf's length in meters and its width over its length. */
@@ -24,16 +20,30 @@ export interface LeafOptions {
   bake?: THREE.IUniform<number>;
 }
 
+let stamp: THREE.DataTexture | undefined;
+function coverageStamp(): THREE.DataTexture {
+  if (stamp) return stamp;
+  stamp = new THREE.DataTexture(sprigAtlasRgba(), sprigAtlasSize, sprigAtlasSize);
+  stamp.minFilter = THREE.LinearMipmapLinearFilter;
+  stamp.magFilter = THREE.LinearFilter;
+  stamp.colorSpace = THREE.SRGBColorSpace;
+  stamp.generateMipmaps = true;
+  stamp.needsUpdate = true;
+  return stamp;
+}
+
 const VERTEX = /* glsl */`
 attribute vec4 iOrigin;
 attribute vec4 iAlong;
 attribute vec4 iShade;
 attribute vec3 iTone;
-attribute vec2 iRim;
+attribute vec3 iRim;
 uniform float atKeep;
 varying vec2 vUv;
+varying vec2 vCoverageUv;
 varying float vLight;
 varying float vWarm;
+varying float vPaint;
 varying vec3 vNormal;
 varying float vOcclusion;
 varying vec3 vToCamera;
@@ -54,8 +64,16 @@ void main() {
   float grow = max(inversesqrt(atKeep), atPixel(origin) * atMinimum.x / iOrigin.w);
   // A slight droop toward its tip, and a flutter there in the wind.
   vec3 tip = vec3(0.0, 0.0, -0.1 * position.y * position.y * iOrigin.w) + atSway(origin, iTone.y + 0.37, 0.6 * position.y);
-  vec3 world = origin + (along * (position.y * iOrigin.w) + across * (position.x * iAlong.w)) * grow + tip;
   vUv = vec2(position.x + 0.5, position.y);
+  vec2 extent = vec2(1.0);
+  vCoverageUv = vUv;
+#ifndef AT_SINGLE
+  extent = vec2(${sprigWidth}, ${sprigLength});
+  float brush = floor(iRim.z / ${canopyPaintStrength} * ${sprigGrid - 1}.0 + 0.5);
+  float sprig = min(floor(iRim.y * ${sprigGrid}.0), ${sprigGrid - 1}.0);
+  vCoverageUv = (vec2(brush, sprig) + vUv) / ${sprigGrid}.0;
+#endif
+  vec3 world = origin + (along * (((position.y - 0.5) * extent.y + 0.5) * iOrigin.w) + across * (position.x * extent.x * iAlong.w)) * grow + tip;
   vNormal = normalize(mat3(modelMatrix) * iShade.xyz);
   vOcclusion = iShade.w;
   vJitter = iTone.x;
@@ -67,35 +85,56 @@ void main() {
   float underside = 0.04 + 0.62 * pow(rim, 1.6) + (iTone.x - 0.5) * 0.18 - 0.22 * iShade.w;
   vLight = mix(vLight, clamp(underside, 0.0, 1.0), below * 0.85);
   vWarm = below * rim * rim * step(0.8, iRim.y) * clamp(sun.z * 1.6, 0.0, 1.0);
+  vPaint = iRim.z * (1.0 - smoothstep(0.4, 0.7, vLight));
   vToCamera = toCamera;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
 }`;
 
 const FRAGMENT = /* glsl */`
 uniform float atBake;
+uniform sampler2D atCoverage;
+uniform bool atUseCoverage;
 varying vec2 vUv;
+varying vec2 vCoverageUv;
 varying float vLight;
 varying vec3 vNormal;
 varying float vOcclusion;
 varying vec3 vToCamera;
 varying float vJitter;
 varying float vWarm;
+varying float vPaint;
 ${ANIME_SHADE_GLSL}
 void main() {
 #ifdef AT_DEPTH
+#ifndef AT_SINGLE
+  if (texture2D(atCoverage, vCoverageUv).a < 0.5) discard;
+#endif
   gl_FragColor = vec4(1.0);
 #else
   // Within the leaf: a lighter tip, a darker half, a broad soft midrib.
-  float inside = (vUv.y - 0.5) * 0.07 - step(0.5, vUv.x) * 0.04 - (1.0 - smoothstep(0.03, 0.12, abs(vUv.x - 0.5))) * 0.07;
+  float inside = (vUv.y - 0.5) * 0.07;
+#ifdef AT_SINGLE
+  inside -= step(0.5, vUv.x) * 0.04 + (1.0 - smoothstep(0.03, 0.12, abs(vUv.x - 0.5))) * 0.07;
+#endif
+  inside *= 1.0 - vPaint;
   if (atBake > 0.5) {
     // An impostor's texels: the light's normal in the view's frame and the leaf's own shift of light, or its occlusion.
     vec3 n = normalize(mat3(viewMatrix) * vNormal);
     gl_FragColor = atBake < 1.5 ? vec4(n.xy * 0.5 + 0.5, clamp(vJitter + inside * 2.0, 0.0, 1.0), 1.0) : vec4(vOcclusion, n.z * 0.5 + 0.5, 0.0, 1.0);
     return;
   }
-  vec3 colour = atRampColour(clamp(vLight + inside, 0.0, 1.0));
+  vec3 colour = atRampColour(clamp(vLight + inside, 0.0, 1.0), vPaint);
   colour = mix(colour, atRamp[6] * vec3(1.06, 1.0, 0.78), vWarm * 0.8);
-  gl_FragColor = vec4(atBackLight(colour, vNormal, vToCamera, vOcclusion), 1.0);
+  vec4 stamp = texture2D(atCoverage, vCoverageUv);
+  float coverage = stamp.a;
+  if (coverage < (atUseCoverage ? 0.02 : 0.5)) discard;
+  // A broad feather spans many pixels, but 4x MSAA has only five coverage
+  // values. Distribute adjacent levels between pixels so it reads as a wash.
+  if (atUseCoverage && coverage < 0.98) {
+    float noise = fract(52.9829189 * fract(dot(floor(gl_FragCoord.xy), vec2(0.06711056, 0.00583715))));
+    coverage = clamp(coverage + 0.24 * (noise - 0.5), 0.0, 1.0);
+  }
+  gl_FragColor = vec4(atBackLight(colour * stamp.rgb, vNormal, vToCamera, vOcclusion), atUseCoverage ? coverage : 1.0);
   #include <colorspace_fragment>
 #endif
 }`;
@@ -119,7 +158,7 @@ export function animeLeaves(crown: Crown, uniforms: Record<string, THREE.IUnifor
     shades.push(shade.normal.x, shade.normal.y, shade.normal.z, Math.min(1, boost > 0 ? shade.occlusion * 0.6 : shade.occlusion + buried));
     tones.push(random(), phase, boost);
     // How far out in its cluster the leaf is (flat, in the cluster's radii), and whether it catches the sun from beneath.
-    rims.push(Math.min(1, Math.hypot((middle.x - cluster.centre.x) / cluster.radii.x, (middle.y - cluster.centre.y) / cluster.radii.y)), random());
+    rims.push(Math.min(1, Math.hypot((middle.x - cluster.centre.x) / cluster.radii.x, (middle.y - cluster.centre.y) / cluster.radii.y)), random(), 0);
   };
   for (const station of crown.stations) {
     const cluster = crown.clusters[station.cluster];
@@ -150,36 +189,48 @@ export function animeLeaves(crown: Crown, uniforms: Record<string, THREE.IUnifor
       }
     }
   }
+  if (!options.bake) {
+    blurCanopyCards(origins, shades, tones, length).forEach((weight, i) => { rims[i * 3 + 2] = weight; });
+  }
   // Instances in a random order, so that the first so many of them are an even thinning of the crown: far off, only
   // they are drawn (see `FAR_LEAVES`).
   const count = tones.length / 3, order = Array.from({ length: count }, (_, i) => i);
   for (let i = count - 1; i > 0; i--) { const j = Math.floor(random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
   const shuffled = (values: number[], size: number) => { const out = new Float32Array(values.length); order.forEach((from, to) => out.set(values.slice(from * size, from * size + size), to * size)); return out; };
-  // A pointed leaf from its foot along +y, one unit long and one wide: six corners, a fan of four triangles.
   const geometry = new THREE.InstancedBufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute([0, 0, 0, 0.44, 0.26, 0, 0.36, 0.62, 0, 0, 1, 0, -0.36, 0.62, 0, -0.44, 0.26, 0], 3));
-  geometry.setIndex([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5]);
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(options.bake
+    ? [0, 0, 0, 0.44, 0.26, 0, 0.36, 0.62, 0, 0, 1, 0, -0.36, 0.62, 0, -0.44, 0.26, 0]
+    : [-0.5, 0, 0, 0.5, 0, 0, 0.5, 1, 0, -0.5, 1, 0], 3));
+  geometry.setIndex(options.bake ? [0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5] : [0, 1, 2, 0, 2, 3]);
   geometry.setAttribute("iOrigin", new THREE.InstancedBufferAttribute(shuffled(origins, 4), 4));
   geometry.setAttribute("iAlong", new THREE.InstancedBufferAttribute(shuffled(alongs, 4), 4));
   geometry.setAttribute("iShade", new THREE.InstancedBufferAttribute(shuffled(shades, 4), 4));
   geometry.setAttribute("iTone", new THREE.InstancedBufferAttribute(shuffled(tones, 3), 3));
-  geometry.setAttribute("iRim", new THREE.InstancedBufferAttribute(shuffled(rims, 2), 2));
+  geometry.setAttribute("iRim", new THREE.InstancedBufferAttribute(shuffled(rims, 3), 3));
   geometry.instanceCount = count;
   const keep = { value: 1 };
-  const all = { ...uniforms, atBake: options.bake ?? { value: 0 }, atKeep: keep };
-  const material = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide });  const mesh = new THREE.Mesh(geometry, material);
+  const all = { ...uniforms, atBake: options.bake ?? { value: 0 }, atKeep: keep,
+    atCoverage: { value: options.bake ? null : coverageStamp() }, atUseCoverage: { value: false } };
+  const defines = options.bake ? { AT_SINGLE: 1 } : {};
+  const material = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, defines, alphaToCoverage: !options.bake });
+  if (!options.bake) coverageAlpha(material);
+  const mesh = new THREE.Mesh(geometry, material);
   mesh.name = "anime/leaves";
-  mesh.customDepthMaterial = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, defines: { AT_DEPTH: 1 } });
+  mesh.customDepthMaterial = new THREE.ShaderMaterial({ uniforms: all, vertexShader: VERTEX, fragmentShader: FRAGMENT, side: THREE.DoubleSide, defines: { ...defines, AT_DEPTH: 1 } });
   // The view's camera sets how many leaves are drawn, by its distance from the crown (the sun's shadow pass, drawn with
   // its orthographic camera, keeps what the view last drew).
   const centre = crown.centre.clone();
-  mesh.onBeforeRender = (_renderer, _scene, camera) => {
+  const antialias = new WeakMap<THREE.WebGLRenderer, boolean>();
+  mesh.onBeforeRender = (renderer, _scene, camera) => {
+    const target = renderer.getRenderTarget();
+    if (!target && !antialias.has(renderer)) antialias.set(renderer, !!renderer.getContextAttributes().antialias);
+    all.atUseCoverage.value = target ? target.samples > 1 : antialias.get(renderer)!;
     if (!(camera as THREE.PerspectiveCamera).isPerspectiveCamera || options.bake) return;
     const share = farShare(camera.position.distanceTo(centre));
     keep.value = share;
     geometry.instanceCount = Math.max(1, Math.ceil(count * share));
   };
-  mesh.userData.animeTree = { instances: count, triangles: count * 4 };
+  mesh.userData.animeTree = { instances: count, triangles: count * (options.bake ? 4 : 2) };
   return mesh;
 }
 

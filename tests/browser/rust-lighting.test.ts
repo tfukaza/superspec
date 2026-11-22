@@ -124,7 +124,7 @@ test("page parameters override the record without changing it", () => {
   assert.deepEqual(shadow.tint.map(channel => Math.round(channel * 1e6) / 1e6), [1, 1, 1]);
   assert.deepEqual(shadow.tintAlt, [0, 0, 0]);
   assert.equal(shadow.noise.seed, 11);
-  assert.equal(shadow.noise.amount, 0.6, "an unreadable value leaves the record's");
+  assert.equal(shadow.noise.amount, 0.015, "an unreadable value leaves the record's");
   assert.deepEqual(tuned.ambientOcclusion, { enabled: true, radius: 0.8, intensity: 4, thickness: 0.2 });
   // An overridden record is still a valid one.
   assert.doesNotThrow(() => parseLighting(tuned));

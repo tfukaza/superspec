@@ -100,6 +100,57 @@ fn failure(project: &Project) -> String {
     }
 }
 
+#[test]
+fn authored_material_lods_keep_the_receiver_and_deliver_the_lower_recipe() {
+    let mut project = Project {
+        entry: "paint.ms".into(),
+        modules: BTreeMap::from([
+            (
+                "paint.ms".into(),
+                "material 1; output base_color = vec3(0.8,0.1,0.1); output roughness = 0.25;"
+                    .into(),
+            ),
+            (
+                "distant.ms".into(),
+                "material 1; output base_color = vec3(0.1,0.2,0.6); output roughness = 0.8;".into(),
+            ),
+        ]),
+        resolution: 32,
+        ..Project::default()
+    };
+    let before = build(&project).unwrap().scene(1).unwrap();
+    project.material_lods = serde_json::from_value(serde_json::json!({
+        "paint.ms":[{"screenCoverage":0.2,"entry":"distant.ms","resolution":16}]
+    }))
+    .unwrap();
+    let after = build(&project).unwrap().scene(1).unwrap();
+    assert_eq!(before.positions, after.positions);
+    assert_eq!(before.indices, after.indices);
+    assert_eq!(before.uvs, after.uvs);
+    let main = &after.manifest.materials[0];
+    let level = &main.lods[0];
+    assert_eq!(level.screen_coverage, 0.2);
+    assert_ne!(main.texture, level.material.texture);
+    assert!(level.material.lods.is_empty());
+    assert!(
+        main.companions()
+            .contains(&level.material.texture.as_deref().unwrap())
+    );
+    let image = after
+        .manifest
+        .assets
+        .iter()
+        .find(|a| Some(&a.id) == level.material.texture.as_ref())
+        .unwrap();
+    let bytes = &after.asset_bytes[image.byte_start..image.byte_start + image.byte_length];
+    let decoded = superspec_geometry::image::decode(bytes).unwrap();
+    assert_eq!(decoded.width.max(decoded.height), 16);
+    project.material_lods.get_mut("paint.ms").unwrap()[0].entry = Some("missing.ms".into());
+    assert!(failure(&project).contains("missing.ms"));
+    project.material_lods.get_mut("paint.ms").unwrap()[0].screen_coverage = 0.;
+    assert!(failure(&project).contains("screenCoverage"));
+}
+
 fn mesh_ids(project: &Project) -> Vec<String> {
     let output = build(&Project {
         materials: vec![],
@@ -122,6 +173,55 @@ fn models_compose_under_their_own_identities() {
     // Both scenes name an element `wall`; the prefixes keep their meshes apart.
     let walls: Vec<_> = ids.iter().filter(|id| id.ends_with("/wall")).collect();
     assert_eq!(walls.len(), 2, "{ids:?}");
+}
+
+#[test]
+fn world_places_two_independent_item_chains_with_their_authored_finish() {
+    use serde_json::json;
+    let definition = json!({"format":"itemspec","version":1,"id":"pipe",
+        "parameters":{"segments":{"type":"integer","role":"geometry","default":16,"min":3,"max":32}},
+        "generator":{"kind":"pipe","length":1,"radius":0.12,"segments":{"parameter":"segments"},"capped":true},
+        "slots":{"surface":{"entry":"paint.ms","parameters":{},"seed":1}},
+        "lods":[{"distance":12,"parameters":{"segments":6}}],"collision":"mesh"});
+    let project: Project = serde_json::from_value(json!({
+        "schemaVersion":1,"kind":"world","entry":"scene.aml","resolution":32,
+        "modules":{"scene.aml":"<architecture version=\"1\" id=\"room\"><box id=\"slab\" width=\"4\" height=\"0.2\" depth=\"2\"/></architecture>",
+            "pipe.item.json":definition.to_string(),
+            "paint.ms":"material 1; output base_color = vec3(0.2,0.5,0.3);",
+            "far.ms":"material 1; output base_color = vec3(0.1,0.3,0.2);"},
+        "world":{"items":[{"id":"left","entry":"pipe.item.json"},{"id":"right","entry":"pipe.item.json",
+            "transform":[[1,0,0],[0,1,0],[0,0,1],[3,0,0]]}],
+            "materialLods":{"paint.ms":[{"screenCoverage":0.2,"entry":"far.ms"}]}}
+    })).unwrap();
+    let scene = build(&project).unwrap().scene(1).unwrap();
+    assert_eq!(scene.manifest.geometry_lods.len(), 2);
+    for owner in ["item/left/", "item/right/"] {
+        let group = scene
+            .manifest
+            .geometry_lods
+            .iter()
+            .find(|g| g.id.starts_with(owner))
+            .unwrap();
+        for (i, level) in group.levels.iter().enumerate() {
+            for id in &level.meshes {
+                assert!(id.starts_with(owner));
+                let mesh = scene
+                    .manifest
+                    .meshes
+                    .iter()
+                    .find(|mesh| &mesh.id == id)
+                    .unwrap();
+                assert_eq!(scene.manifest.colliders.contains(id), i == 0);
+                let material = scene
+                    .manifest
+                    .materials
+                    .iter()
+                    .find(|m| Some(&m.id) == mesh.material.as_ref())
+                    .unwrap();
+                assert_eq!(material.lods.len(), 1);
+            }
+        }
+    }
 }
 
 #[test]

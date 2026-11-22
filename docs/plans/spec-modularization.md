@@ -285,15 +285,58 @@ Keep a generation-runtime session for the open world or editor. Begin with the e
 | Material source or an imported SDK helper | Recompile dependent material modules and refresh affected shader resources or bakes. Reuse artifacts whose effective dependencies still match. |
 | A concrete source map or a parameter used by its bake | Rebuild the affected material artifacts and update their bindings. Reuse physical geometry and navigation where the edit has no physical effect. |
 | A grime source texture or appearance parameter | Update affected appearance resources or baked compositions. Reuse unchanged receiver mappings, geometry and physical data. |
-| A runoff source edge, receiver slope or gravity direction | Update dependent mapping and coverage, plus compositions that bake those inputs. Reuse shared grime textures. A slope edit that changes physical geometry also updates the dependent LevelSpec data. |
+| A runoff source edge, receiver slope or gravity direction | Update dependent mapping and coverage, plus compositions that bake those inputs. Reuse shared grime textures. A slope edit that changes physical geometry also updates dependent collision and check results. |
 | An export format or target-specific packaging option | Reuse the generated model. Refresh affected export preparation, target-dependent bakes and encoded artifacts. |
-| A movement profile or navigation bake setting | Refresh the affected LevelSpec navmesh and checks. Reuse canonical collision, item meshes and materials. |
+| A sampled navigation check setting | Refresh the affected check results. Reuse canonical collision, item meshes and materials. Game-specific navigation consumes the exported collision downstream. |
 | One pipe's dimensions or placement | Update that item and the receivers or nearby placement plans that read its geometry. Reuse unrelated hosts and shared material bakes. |
 | An AML opening or a theme-wide placement rule | Recompute dependent geometry, surveys and planning. Refresh physical checks for affected inputs when the edit changes collision or walkable surfaces. |
 
-Watch AML, material source modules and imports, saved presets and item definitions, imported assets and theme settings. Apply each change to a new input revision. Cancel or supersede obsolete work and keep the last valid preview until the latest revision succeeds. Source compilation errors retain the prior valid material and expose diagnostics at the relevant source location. Start by publishing complete scene packets through the existing worker while reusing generation inside the session. Add resource or mesh deltas keyed by stable IDs if measurement shows packet transfer or GPU upload is a bottleneck. Stage those updates together so the viewer sees a consistent revision.
-
 Changes to the Rust compiler or generation kernels require rebuilding Wasm and replacing the worker, then reopening the current scene or editor with its authored inputs and view state. Material source edits go through the material compilation path; whether that requires a Wasm rebuild depends on the selected authoring language and compiler design. Parameter edits use the live session when the compiled material supports them. Reuse persisted artifacts only when their implementation identities still match. Start with a compiler build fingerprint for implementation-dependent artifacts. Narrow it to individual modules, recipes or generators if development profiling shows excessive invalidation.
+
+### WorldSpec live session interface
+
+Define an internal WorldSpec session for a future live editor. LevelSpec publishes
+AML and relative companions. WorldSpec edits a local draft of those inputs, applies
+the selected theme and delivers a scene. The editor owns its text buffer, undo,
+selection and camera. WorldSpec owns source admission, regeneration and the
+accepted scene. Saving an AML draft and exporting a scene are explicit actions.
+
+| Operation | Contract |
+| --- | --- |
+| Open | Accept the AML entry, companion resolver and theme selection. Return a draft revision and schedule its preview. |
+| Update draft | Apply a batch against an explicit base draft revision. Allow a full AML replacement or text edits, companion upserts/removals and theme or preset changes. For text edits, define the offset encoding and reject overlapping or out-of-range edits. A stale base leaves the draft intact and returns the current revision for resynchronization. |
+| Regenerate | Request preview of a draft, optionally with a scope such as an AML object, host or recipe to refresh. WorldSpec expands the scope to all affected dependents. An explicit refresh reruns the selected producers and can reuse downstream artifacts whose effective inputs still match. |
+| Read preview | Return revision-tagged progress, structured source diagnostics and a complete accepted scene or a delta from a known accepted revision. A consumer missing that baseline can request a complete scene. |
+| Export | Pin the selected accepted revision and its inputs, then run the production WorldSpec build for the requested target. Report the revision and published artifacts. |
+
+Draft and scene revisions advance independently. A malformed edit still produces
+a new draft and source-linked diagnostics so the next keystroke can repair it.
+The last accepted scene stays visible. Coalesce rapid edits at the host boundary
+and cancel superseded work cooperatively. Only the requested current revision can
+replace the preview. Publish render, collision and check results as a consistent
+revision, with separate statuses for each. Keep stable object identities so the
+editor can retain selection when an object survives regeneration.
+
+Treat source changes, regeneration and scene delivery as separate contracts.
+Initially a text patch can reconstruct and reparse the AML through the shared
+reader. Reuse the existing Rust session to avoid rebuilding unaffected producers.
+WorldSpec derives invalidation from authored references, companion identities and
+theme queries, including spatial dependencies across hosts. For example, moving a
+ceiling duct can change adjacent routing and clearances. When a producer lacks
+reliable dependency data, expand the rebuild to its enclosing stage. Reuse the
+existing scene packet and update transport for native and Wasm hosts as their
+capabilities allow. The Wasm host already accepts full AML and can emit a scene
+update with only changed geometry and encoded assets. That transport is
+independent of how much source the editor submitted or work the compiler reused.
+
+Prove the interface before adding new editor controls. In the washroom scene,
+change a concrete finish, a duct span and an opening. Check unaffected job reuse
+and compare each accepted result with a clean build of the same inputs. Submit
+rapid edits, an invalid draft followed by a repair and a stale-base update. Verify
+that recovery preserves the last valid preview, that a lost scene-delta baseline
+can recover with a full scene and that production export uses the pinned inputs
+even when a later edit arrives. Measure time to the first updated frame and record
+which jobs and GPU resources changed.
 
 ### Measuring and tuning a theme
 

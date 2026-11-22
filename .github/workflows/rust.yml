@@ -25,6 +25,13 @@ jobs:
       - run: cargo check --workspace --all-targets --locked
       - run: cargo test --workspace --no-fail-fast --locked -- --test-threads=1
       - run: cargo build -p superspec-cli --release --locked
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:native-viewer
+      - run: npm run test:native-studio
       - name: Native command smoke without Node
         shell: pwsh
         run: |
@@ -49,6 +56,10 @@ jobs:
       - run: cargo build -p superspec-wasm --target wasm32-unknown-unknown --release --locked
       - run: wasm-bindgen --target web --out-dir generated/wasm target/wasm32-unknown-unknown/release/superspec_wasm.wasm
       - run: npm ci
+      - run: npm run build:native-viewer
+      - run: npm run test:native-studio
+        env:
+          CHECK_WASM_PARITY: "1"
       - run: npm run build:rust-ui
       - run: npm run check
       - run: node --test tests/browser/rust-packet.test.ts tests/browser/rust-updates.test.ts

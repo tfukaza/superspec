@@ -51,6 +51,23 @@ an instance model.
 - Source decoding, baked pixels, geometry binding and packet/GPU publication have
   separate costs and cache boundaries. Report cold and warm results separately.
 
+## Compiler and delivery follow-up
+
+| Boundary | Decision | Failure covered |
+| --- | --- | --- |
+| Dependency planning | Inspect borrowed graph nodes, record the longest input path with each computed key, and retain just the execution order, keys and reverse edges in the finished plan. | A 129-node chain exceeded the limit in one traversal order and passed in another. Both input orderings now produce source-linked errors, including when the nodes have no requested output. |
+| Artifact lifetime | Scope cache access to lookup and publication. A separate producer gate preserves the existing allocation limit, and resetting the store invalidates results from the previous generation. | Production and cancellation callbacks can inspect the cache, and resetting during production cannot repopulate the cleared store. |
+| Material bake distribution | Preserve the configured worker mode on reset and clear pending jobs, returned rows and retained image mips. Keep content keys stable across resets and scope share response keys to the reporting generation. | Delayed rows for a cleared bake cannot attach to a new request with the same content. |
+| Architectural dressing | Give theme planning read-only physical inputs and a diagnostics sink. After review, give architectural dressing only material binding, render geometry and visual provenance operations. Compose ItemSpec models separately, where authored item collision can be admitted by the model. | Dressing retains canonical colliders, review findings and their source data while appending visible geometry. |
+| Composition | Check native instance batches in the same model admission step as ordinary instances, including template ownership, material dependencies, placements and buffer costs. | Duplicate identities or excessive geometry fail before delivery. Replacing visual receivers keeps resources still used by another batch. |
+| Browser compiler | Keep cancellation tied to HTTP body consumption and deliver source rejection packets with ranges in both native and Wasm preview. | An old response cannot replace a newer edit after the headers arrived. An invalid draft leaves the accepted scene available and exposes the findings for that draft. |
+| Distribution and export | Include adapter and vendored compiler source in the source manifest. Publish immutable companions and update the entry after they are available. | Reinstalling tooling does not change source identity. An existing generation remains readable while a newer build is published. |
+
+In 32 paired native Windows runs, median graph planning fell from 0.66 to
+0.48 ms for 256 nodes and from 8.57 to 6.40 ms for 1,536 nodes. Keys, execution
+order and checked dependency invalidation sets matched in both workloads. The
+test used warmed synthetic graphs and timed planning alone. [Measurements](../../generated/runtime-performance/dependency-plan-comparison/result.json) · [Harness](../../generated/runtime-performance/dependency-plan-comparison/src/main.rs)
+
 ## Follow-up slice decisions
 
 These decisions were recorded before implementing the source-extension seam and

@@ -17,10 +17,13 @@ pub(crate) enum Artifact {
     /// A decoded source image, keyed by its encoded bytes so parameter edits reuse it.
     Image(Arc<crate::materialspec::program::Image>),
     Receiver(Arc<crate::authoring::receiver::Atlas>),
+    Layout(Arc<crate::authoring::ChartRecords>),
     Material(Arc<crate::authoring::material::BakedReceiver>),
+    MaterialMip(String, superspec_model::instances::ImageResource),
     Item(Arc<crate::itemspec::definition::GeneratedItem>),
     Raster(crate::materialspec::bake::BakedMaterial),
     Binding(Arc<crate::itemspec::mesh::BoundMesh>),
+    Foliage(Arc<[crate::treespec::batches::FoliageBatch]>),
 }
 
 /// Bounded in-memory artifact reuse shared by native preview and the browser worker.
@@ -35,7 +38,7 @@ pub struct Session {
     images: RefCell<ImageCache>,
     pub(crate) producer_states: ProducerStates,
     /// Rows of material bakes evaluated by other sessions, when a host distributes them.
-    pub(crate) distribution: crate::authoring::material::Distribution,
+    pub(crate) distribution: RefCell<crate::authoring::material::Distribution>,
     /// Mip levels of decoded material images, shared by every material that samples them.
     pub(crate) mips: crate::materialspec::program::MipCache,
     /// The items a scene project placed last, by model identity, so that an edit regenerates
@@ -82,6 +85,8 @@ impl Session {
         self.begin_build();
         self.runtime.clear();
         self.producer_states.clear();
+        self.distribution.borrow_mut().reset();
+        self.mips.clear();
         self.images.borrow_mut().clear();
         self.programs.borrow_mut().clear();
         self.placed_items.borrow_mut().clear();

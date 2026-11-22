@@ -21,7 +21,7 @@ export class FoliageVisibility {
   }
 
   /** Returns true only when the renderer needs to repack instance buffers. */
-  update(frustum: Frustum, eye: Vector3): boolean {
+  update(frustum: Frustum, eye: Vector3, lodBias: number | false = 1): boolean {
     if (this.bounds && (!frustum.intersectsBox(this.bounds) || this.bounds.distanceToPoint(eye) >= this.far)) {
       if (this.allHidden) return false;
       for (const tile of this.tiles.keys()) this.chosen.set(tile, -1);
@@ -34,7 +34,13 @@ export class FoliageVisibility {
       let level = -1;
       if (frustum.intersectsBox(box)) {
         const distance = box.distanceToPoint(eye);
-        if (distance < this.far) for (const [index, start] of this.starts) if (start <= distance) level = index;
+        if (distance < this.far) {
+          if (lodBias === false) level = this.starts[0]?.[0] ?? -1;
+          else {
+            const lodDistance = distance / lodBias;
+            for (const [index, start] of this.starts) if (start <= lodDistance) level = index;
+          }
+        }
       }
       if (level >= 0) this.allHidden = false;
       if (this.chosen.get(tile) !== level) {

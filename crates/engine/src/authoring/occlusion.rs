@@ -509,10 +509,11 @@ impl Session {
         }
         // Item models bind their slots' meshes to materials (`Session::resolve_items`), and
         // those meshes are receivers like any other.
-        let resolved = self.resolve_items(project, assets, cancelled)?;
+        let (resolved, placements) = self.resolve_items(project, assets, cancelled)?;
         let project = resolved.as_ref().map_or(project, |items| &items.project);
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
-        let (model, transforms) = self.compose_models(project, revision, assets, cancelled)?;
+        let (model, transforms) =
+            self.compose_models(project, placements, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
             .map_err(&fail)?;
@@ -1067,9 +1068,9 @@ fn trace(
     Ok((values, rays))
 }
 
-/// A bounding volume hierarchy over triangles, split at the median of the widest axis. It only
-/// answers whether a ray meets anything, which does not depend on the order of its triangles.
-struct Bvh {
+/// Triangle hierarchy split at the median of the widest axis. Occlusion queries stop at
+/// the first blocker; a diffuse gather needs the nearest surface and its material.
+pub(crate) struct Bvh {
     nodes: Vec<Node>,
     /// A corner and the two edges leaving it, in leaf order.
     triangles: Vec<Triangle>,
@@ -1089,6 +1090,10 @@ const LEAF: usize = 4;
 
 impl Bvh {
     fn new(triangles: Vec<Triangle>) -> Self {
+        Self::ordered(triangles).0
+    }
+
+    pub(crate) fn ordered(triangles: Vec<Triangle>) -> (Self, Vec<u32>) {
         let centers: Vec<V3> = triangles
             .iter()
             .map(|t| std::array::from_fn(|axis| t[0][axis] + t[1][axis] + t[2][axis]))
@@ -1119,7 +1124,7 @@ impl Bvh {
                 [a, sub(b, a), sub(c, a)]
             })
             .collect();
-        Self { nodes, triangles }
+        (Self { nodes, triangles }, order)
     }
 
     fn split(
@@ -1187,11 +1192,46 @@ impl Bvh {
         Self::split(triangles, centers, order, nodes, children + 1, middle, end);
     }
 
-    /// Whether the ray from `origin` along the unit `direction` meets a triangle (either face)
-    /// between [`NEAR`] and `reach` meters.
-    fn blocked(&self, origin: V3, direction: V3, reach: f64) -> bool {
+    /// Visit leaf triangles whose node can contain a point within `reach`.
+    /// The caller performs its own exact test on the triangle in leaf order.
+    pub(super) fn any_near(&self, p: V3, reach: f64, test: impl Fn(usize) -> bool) -> bool {
         if self.nodes.is_empty() {
             return false;
+        }
+        let mut stack = [0u32; 64];
+        let mut depth = 1;
+        while depth > 0 {
+            depth -= 1;
+            let node = &self.nodes[stack[depth] as usize];
+            if (0..3).any(|i| p[i] < node.low[i] - reach || p[i] > node.high[i] + reach) {
+                continue;
+            }
+            if node.count == 0 {
+                stack[depth] = node.first;
+                stack[depth + 1] = node.first + 1;
+                depth += 2;
+            } else if (node.first..node.first + node.count).any(|index| test(index as usize)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether the ray from `origin` along the unit `direction` meets a triangle (either face)
+    /// between [`NEAR`] and `reach` meters.
+    pub(crate) fn blocked(&self, origin: V3, direction: V3, reach: f64) -> bool {
+        self.trace::<true>(origin, direction, reach).is_some()
+    }
+
+    pub(crate) fn trace<const ANY: bool>(
+        &self,
+        origin: V3,
+        direction: V3,
+        mut reach: f64,
+    ) -> Option<(usize, f64)> {
+        let mut hit = None;
+        if self.nodes.is_empty() {
+            return None;
         }
         let inverse = direction.map(|v| 1. / v);
         // Median splits halve a node, so 64 levels hold any admitted scene.
@@ -1222,8 +1262,10 @@ impl Bvh {
                 depth += 2;
                 continue;
             }
-            for [corner, first, second] in
-                &self.triangles[node.first as usize..(node.first + node.count) as usize]
+            for (offset, [corner, first, second]) in self.triangles
+                [node.first as usize..(node.first + node.count) as usize]
+                .iter()
+                .enumerate()
             {
                 let p = cross(direction, *second);
                 let determinant = dot(*first, p);
@@ -1243,11 +1285,15 @@ impl Bvh {
                 }
                 let t = dot(*second, q) * scale;
                 if t > NEAR && t < reach {
-                    return true;
+                    reach = t;
+                    hit = Some((node.first as usize + offset, t));
+                    if ANY {
+                        return hit;
+                    }
                 }
             }
         }
-        false
+        hit
     }
 }
 

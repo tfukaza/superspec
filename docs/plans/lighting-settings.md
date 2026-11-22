@@ -77,7 +77,9 @@ records); Rust types in `superspec-types`, carried by the scene in `superspec-mo
     "radius": 0.35,                   // meters: how far around a point occluders are sought
     "intensity": 2.0,                 // up to 1: share of the occlusion that darkens the
                                       // image; above 1 (to 4): creases deepen further
-    "thickness": 0.5                  // meters: how thick surfaces are taken to be
+    "thickness": 0.5,                 // meters: how thick surfaces are taken to be
+    "method": "gtao",                 // optional: "gtao" (default) | "horizon", see below
+    "tint": 0                         // optional, 0 to 1: share of the sun shadow's hue it takes
   },
   "painted": {                        // optional; how the image's finishing treats shading: painted
     "toneMapping": false,             // exposure and tone curve skip painted materials
@@ -103,8 +105,8 @@ records); Rust types in `superspec-types`, carried by the scene in `superspec-mo
       "wrap": 0.3,                    // softness of the lit/unlit boundary on a surface
       "noise": {
         "scale": 1.1,                 // meters: feature size, in the light's plane
-        "edge": 0.07,                 // meters: displacement of the shadow edge
-        "amount": 0.6,                // variation of darkness and hue inside the shadow
+        "edge": 0.004,                // meters: displacement of the shadow edge
+        "amount": 0.015,              // variation of darkness and hue inside the shadow
         "seed": 7
       }
     }
@@ -118,6 +120,18 @@ from the first draft because the draft misread the viewer: the environment's tur
 +Z is 0 (the viewer's quarter turn only stands the Y-up room upright, which is the
 renderer's business), and ambient occlusion has the shipped radius 0.35, intensity 2
 and a `thickness`.
+
+`ambientOcclusion.method` and `ambientOcclusion.tint` are written only when they differ
+from their defaults (`gtao`, 0), so records and exports that never set them keep their
+bytes. `gtao` is the viewer's denoised ground-truth occlusion with its short-range contact
+term, darkening the scene before tone mapping. `horizon` searches eight jittered directions
+of the depth alone with a quadratic falloff over `radius` plus `thickness`, and darkens the
+tone-mapped image by up to 0.8 (`intensity` scales it), so contact shading under small props
+survives on bright sunlit ground. It is the shader in `browser/renderer/horizon-occlusion.ts`,
+which a game renderer can draw from the depth it already keeps: Klali's map renderer carries
+a byte-for-byte copy, and the Kowloon city record (`city-lighting.json`) selects it so a level
+looks the same in the game and the WorldSpec viewer. `tint` moves the darkening toward the
+sun shadow's tone (its `tint` at its `tintStrength`, brightest channel 1) as it deepens.
 
 Conventions: meters, right-handed Z-up, radians, linear RGB in [0, 1], intensities as
 three.js-style scalar multipliers. Every field but `version` has a default, so

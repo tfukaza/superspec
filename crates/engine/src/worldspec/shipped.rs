@@ -4,7 +4,7 @@ use crate::{Scene, Session, architecture::kowloon::Kowloon};
 use std::sync::Mutex;
 use superspec_types::diagnostic::Diagnostic;
 
-pub(crate) use super::themes::kowloon::city::stock_images;
+pub(crate) use super::themes::kowloon::city::{prop_images, stock_images};
 
 /// The shipped theme's fixtures as ItemSpec native generators (`kowloon/...`).
 pub fn item_generators() -> std::sync::Arc<dyn crate::itemspec::definition::NativeGenerators> {

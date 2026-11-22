@@ -18,6 +18,8 @@ use superspec_geometry::{
 };
 use superspec_types::rng::SeededRng;
 
+mod finish;
+
 fn on<'a, 'c>(d: &'a mut Fixture<'_, 'c>, pen: Pen) -> Fixture<'a, 'c> {
     Fixture {
         pen,
@@ -448,19 +450,24 @@ fn ware(
     }
 }
 
-/// Packs one shelf with facings of the given wares, front row only.
+/// Packs shelf facings in product groups, with a selective second row behind glass.
 fn fill(
     d: &mut Fixture<'_, '_>,
     shelf: &furniture::Shelf,
     wares: &[Ware],
     rng: &mut SeededRng,
     fullness: f64,
+    catalog: bool,
 ) -> Result<(), String> {
     let mut x = shelf.x0;
     while x < shelf.x1 - 0.06 {
         d.mesh.spend_work(1)?;
         let kind = rng.pick(wares);
-        let (size, stack) = kind.size();
+        let (mut size, stack) = kind.size();
+        if catalog && kind == Ware::Bottles {
+            // Fit the rounded shoulders and neck under actual shelf clearances.
+            size[2] = 0.248;
+        }
         let scale = rng.float(0.86, 1.);
         let [w, depth, h] = size.map(|v| v * scale);
         let facings = rng.integer(2, 5);
@@ -485,7 +492,12 @@ fn fill(
             accented(rng, &LABELS, 0.05)
         };
         let setback = rng.float(0., (shelf.depth - depth).clamp(0., 0.03));
-        for _ in 0..facings {
+        let rear_row = catalog
+            && kind == Ware::Bottles
+            && shelf.z >= 0.4
+            && shelf.z < 2.1
+            && setback + 2.2 * depth < shelf.depth;
+        for facing in 0..facings {
             if x + w > shelf.x1 {
                 break;
             }
@@ -494,15 +506,23 @@ fn fill(
             } else {
                 levels.saturating_sub(1).max(1)
             };
-            ware(
-                d,
-                kind,
-                [x + w / 2., shelf.y + setback, shelf.z],
-                [w, depth, h],
-                high,
-                [label, body],
-                rng,
-            )?;
+            let at = [x + w / 2., shelf.y + setback, shelf.z];
+            if catalog {
+                finish::shelf_pack(d, kind, at, [w, depth, h], high, [label, body], rng)?;
+                if rear_row && facing + 1 < facings && x + w * 1.2 < shelf.x1 {
+                    finish::shelf_pack(
+                        d,
+                        kind,
+                        [at[0] + 0.18 * w, at[1] + 1.14 * depth, at[2]],
+                        [w, depth, h],
+                        1,
+                        [label, shade(body, 0.95)],
+                        rng,
+                    )?;
+                }
+            } else {
+                ware(d, kind, at, [w, depth, h], high, [label, body], rng)?;
+            }
             x += w + 0.004;
         }
         x += rng.float(0.003, 0.012);
@@ -523,15 +543,7 @@ fn plastic_crate(
 ) -> Result<(), String> {
     let [x, y, z] = at;
     if catalog {
-        grocer_props::fitted_crate(
-            d,
-            [x + w / 2., y + depth / 2., z],
-            [w, depth, h],
-            &grocer_props::Options {
-                tint: color,
-                ..Default::default()
-            },
-        )?;
+        return finish::crate_stock(d, at, [w, depth, h], color, open, loaded);
     } else {
         d.cuboid("paint", at, [x + w, y + depth, z + h], color, "df")?;
         let dark = shade(color, 0.42);
@@ -609,20 +621,16 @@ fn carton(
 ) -> Result<(), String> {
     let [x, y, z] = at;
     if catalog {
-        let variant =
-            1 + (w * 1000.).round() as usize % grocer_props::variants("stock-box")?.max(1);
-        return grocer_props::draw(
+        let stamp_seed = super::super::wall::finish_seed(&format!("{}/{w:.3}/{h:.3}", d.pen.part));
+        let variant = stamp_seed as usize % grocer_props::variants("stock-box")?;
+        return finish::carton(
             d,
-            "stock-box",
-            [x + w / 2., y + depth / 2., z],
+            at,
             [w, depth, h],
-            0.,
-            &grocer_props::Options {
-                variant,
-                ..Default::default()
-            },
-        )
-        .map(|_| ());
+            color.map(|value| 0.91 + value * 0.15),
+            variant,
+            true,
+        );
     }
     d.cuboid("paint", at, [x + w, y + depth, z + h], color, "df")?;
     let tape = shade(color, 1.22);
@@ -660,17 +668,6 @@ enum Pile {
 /// `reach` high: plastic crates of one or two colours, the top one open, loaded with bottles or
 /// carrying a carton; or cartons, each a little smaller and turned. Returns its width.
 fn pile(
-    d: &mut Fixture<'_, '_>,
-    kind: Pile,
-    at: V3,
-    across: f64,
-    reach: f64,
-    rng: &mut SeededRng,
-) -> Result<f64, String> {
-    pile_finish(d, kind, at, across, reach, rng, false)
-}
-
-fn pile_finish(
     d: &mut Fixture<'_, '_>,
     kind: Pile,
     at: V3,
@@ -754,69 +751,78 @@ fn pile_finish(
 }
 
 /// A plastic bucket (or a nest of them) standing at `at`.
-fn bucket(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Result<(), String> {
+fn bucket(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    rng: &mut SeededRng,
+    detailed: bool,
+    hero: bool,
+) -> Result<(), String> {
     let color = tone(rng, &PLASTICS);
     let nest = rng.integer(1, 3);
+    if hero {
+        return super::hero_props::bucket(d, at, 0.18, 0.31, -0.18);
+    }
     for i in 0..nest {
         let z = at[2] + i as f64 * 0.07;
         let own = shade(color, 1. - i as f64 * 0.06);
-        forms::lathe(
-            d,
-            "paint",
-            [at[0], at[1], z],
-            &[[0.125, 0.], [0.168, 0.27], [0.18, 0.275], [0.18, 0.31]],
-            &forms::Tints::Bands(&[
-                Tint::Color(own),
-                Tint::Color(own),
-                Tint::Color(shade(own, 1.25)),
-            ]),
-            8,
-            None,
-        )?;
+        let base = [at[0], at[1], z];
+        let draw = if detailed {
+            super::wares::detailed_bucket
+        } else {
+            super::wares::bucket
+        };
+        draw(d, base, 0.18 / 1.05, 0.31, own)?;
     }
-    d.disc(
-        "paint",
-        [at[0], at[1], at[2] + (nest - 1) as f64 * 0.07 + 0.26],
-        0.165,
-        [0., 0., 1.],
-        shade(color, 0.3),
-        8,
-    )
+    Ok(())
 }
 
 /// A broom leaning back against whatever stands behind `foot`: a long handle and a wide head
 /// of bristles under its coloured stock.
-fn broom(d: &mut Fixture<'_, '_>, foot: V3, rng: &mut SeededRng) -> Result<(), String> {
+fn broom(
+    d: &mut Fixture<'_, '_>,
+    foot: V3,
+    rng: &mut SeededRng,
+    detailed: bool,
+) -> Result<(), String> {
     let [x, y, z] = foot;
     let lean = rng.float(0.14, 0.22);
     let slide = rng.float(-0.1, 0.1);
-    d.bar(
-        "paint",
-        [x, y, z + 0.2],
-        [x + slide, y + lean, z + rng.float(1.4, 1.6)],
-        0.038,
-        srgb("#c2a56c"),
-    )?;
+    let tip = [x + slide, y + lean, z + rng.float(1.4, 1.6)];
+    let bristle = tone(rng, &["#c9a85a", "#b89a55", "#a58a4a"]);
+    let stock = tone(rng, &["#a8554a", "#557f66", "#71899a"]);
+    if detailed {
+        return finish::broom(d, foot, tip, bristle, stock);
+    }
+    d.bar("paint", [x, y, z + 0.2], tip, 0.038, srgb("#c2a56c"))?;
     d.cuboid(
         "paint",
         [x - 0.17, y - 0.04, z],
         [x + 0.17, y + 0.04, z + 0.17],
-        tone(rng, &["#c9a85a", "#b89a55", "#a58a4a"]),
+        bristle,
         "d",
     )?;
     d.cuboid(
         "paint",
         [x - 0.18, y - 0.045, z + 0.17],
         [x + 0.18, y + 0.045, z + 0.23],
-        tone(rng, &["#a8554a", "#557f66", "#71899a"]),
+        stock,
         "d",
     )
 }
 
 /// A plastic stool standing at `at` (the centre of its foot).
-fn stool(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Result<(), String> {
-    let [x, y, z] = at;
+fn stool(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    rng: &mut SeededRng,
+    detailed: bool,
+) -> Result<(), String> {
     let color = tone(rng, &["#a8554a", "#71899a", "#d6cba8", "#557f66"]);
+    if detailed {
+        return super::hero_props::jade_stool(d, at, [0.388, 0.388, 0.475], 0.);
+    }
+    let [x, y, z] = at;
     let (seat, spread, high) = (0.15, 0.18, 0.44);
     for (sx, sy) in [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)] {
         d.bar(
@@ -1240,29 +1246,43 @@ fn wire_rack(
     [w, depth, h]: V3,
     levels: usize,
     rng: &mut SeededRng,
+    catalog: bool,
 ) -> Result<(), String> {
     let steel = srgb("#8a8f86");
     // Stout posts and shelves: a rack of thin wire would vanish from across a street.
     for x in [0.015, w - 0.015] {
         for y in [0.015, depth - 0.015] {
-            d.bar("paint", [x, y, 0.], [x, y, h], 0.03, steel)?;
+            if catalog {
+                finish::rack_post(d, [x, y, 0.], h, steel)?;
+            } else {
+                d.bar("paint", [x, y, 0.], [x, y, h], 0.03, steel)?;
+            }
         }
     }
     let pitch = (h - 0.14) / levels as f64;
     for level in 0..=levels {
         let z = 0.12 + level as f64 * pitch;
-        d.cuboid(
-            "paint",
-            [0., 0., z - 0.024],
-            [w, depth, z],
-            shade(steel, 0.9),
-            if z > 1.45 { "fu" } else { "fd" },
-        )?;
+        if catalog {
+            finish::rack_deck(d, [w, depth, z], steel)?;
+        } else {
+            d.cuboid(
+                "paint",
+                [0., 0., z - 0.024],
+                [w, depth, z],
+                shade(steel, 0.9),
+                if z > 1.45 { "fu" } else { "fd" },
+            )?;
+        }
         if level == levels {
+            if catalog {
+                finish::rack_top(d, [w, depth, z])?;
+            }
             break;
         }
         let wares: &[Ware] = if level == 0 {
             &[Ware::Boxes, Ware::BigJars, Ware::Bags]
+        } else if catalog {
+            &[Ware::Bottles, Ware::Bottles, Ware::Jars, Ware::Tins]
         } else {
             &[Ware::Tins, Ware::Jars, Ware::Bottles, Ware::Boxes]
         };
@@ -1279,16 +1299,27 @@ fn wire_rack(
             wares,
             rng,
             0.97,
+            catalog,
         )?;
     }
     Ok(())
 }
 
-fn shelf_wares(z: f64, height: f64) -> &'static [Ware] {
+fn shelf_wares(z: f64, height: f64, catalog: bool) -> &'static [Ware] {
     if z < 0.55 {
         &[Ware::Boxes, Ware::TallBoxes, Ware::BigJars, Ware::Bags]
     } else if z > height - 0.75 {
         &[Ware::Boxes, Ware::Boxes, Ware::TallBoxes, Ware::Tins]
+    } else if catalog {
+        &[
+            Ware::Bottles,
+            Ware::Jars,
+            Ware::Bottles,
+            Ware::Boxes,
+            Ware::Bottles,
+            Ware::Tins,
+            Ware::Bottles,
+        ]
     } else {
         &[
             Ware::Tins,
@@ -1305,13 +1336,14 @@ fn shelf_wares(z: f64, height: f64) -> &'static [Ware] {
 /// A provisions shop fitted to any room, packed: shelf banks to the ceiling along the back
 /// (one per 3 m) and both side walls, a counter where there is room, a display rack,
 /// crates and cartons stacked on the floor either side of the way in, buckets, brooms and a
-/// stool, and up to three tube lights (slot `tube-light`). Goods are low-detail (see above).
+/// stool, and up to three tube lights (slot `tube-light`).
 pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
     room.validate()?;
     // Dark, oiled timber, older than the reference shop's.
     let wood = srgb("#4f3f2d");
     let timber = &room.kit.settings().timber;
     let root = d.pen.clone();
+    let catalog = room.assets.grocer_props;
     let (w, depth, h) = (room.width, room.depth, room.height);
     let tall = (h - 0.08).min(3.6);
     let levels = (((tall - 0.1) / 0.31).round() as usize).clamp(4, 11);
@@ -1336,8 +1368,18 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
             timber,
         )?;
         let mut rng = room.stream(&format!("back-stock-{i}"))?;
+        // The entrance-facing banks carry the reusable package charts. Keep
+        // the outer banks lightweight in unusually wide authored shops.
+        let detailed = catalog && (banks <= 3 || i.abs_diff(banks / 2) <= 1);
         for shelf in &shelves {
-            fill(&mut bank, shelf, shelf_wares(shelf.z, tall), &mut rng, 0.97)?;
+            fill(
+                &mut bank,
+                shelf,
+                shelf_wares(shelf.z, tall, detailed),
+                &mut rng,
+                0.97,
+                detailed,
+            )?;
         }
     }
     let side = (depth - 1.25).min(2.4);
@@ -1359,7 +1401,14 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
             )?;
             let mut rng = room.stream(&format!("side-stock-{name}"))?;
             for shelf in &shelves {
-                fill(&mut bank, shelf, shelf_wares(shelf.z, tall), &mut rng, 0.95)?;
+                fill(
+                    &mut bank,
+                    shelf,
+                    shelf_wares(shelf.z, tall, catalog),
+                    &mut rng,
+                    0.95,
+                    catalog,
+                )?;
             }
         }
     }
@@ -1383,6 +1432,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
             &[Ware::Jars, Ware::BigJars, Ware::Boxes, Ware::Tins],
             &mut room.stream("counter-stock")?,
             0.7,
+            catalog,
         )?;
         fittings::stool(d, [w - 2.4, depth - 1.75, 0.], shade(wood, 1.15))?;
     }
@@ -1417,6 +1467,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
             [display, 0.36, (h - 0.55).min(2.1)],
             6,
             &mut room.stream("display")?,
+            catalog,
         )?;
     }
     let mut x = if display >= 0.9 {
@@ -1424,6 +1475,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
     } else {
         inset
     };
+    let floor_catalog = catalog && w <= 8.;
     while x < w - inset - 0.45 {
         if x + 0.58 > way0 && x < way1 {
             x = way1;
@@ -1442,7 +1494,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
         }
         let y = rng.float(0.3, 0.55);
         let reach = rng.float(0.65, 1.1);
-        let width = pile(d, kind, [x, y, 0.], across, reach, &mut rng)?;
+        let width = pile(d, kind, [x, y, 0.], across, reach, &mut rng, floor_catalog)?;
         if rng.chance(0.4) && depth > 3. {
             pile(
                 d,
@@ -1451,6 +1503,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
                 across,
                 rng.float(0.9, 1.6),
                 &mut rng,
+                floor_catalog,
             )?;
         }
         x += width + rng.float(0.03, 0.14);
@@ -1467,12 +1520,19 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
             0.58,
             rng.float(0.5, 1.2),
             &mut rng,
+            floor_catalog,
         )?;
         x += width + rng.float(0.15, 0.7);
     }
     if w >= 2.6 {
-        bucket(d, [inset + 0.2, 1.05, 0.], &mut rng)?;
-        broom(d, [w - inset - 0.25, 1., 0.], &mut rng)?;
+        bucket(
+            d,
+            [inset + 0.2, 1.05, 0.],
+            &mut rng,
+            room.assets.grocer_props,
+            false,
+        )?;
+        broom(d, [w - inset - 0.25, 1., 0.], &mut rng, catalog)?;
     }
     Ok(())
 }
@@ -1555,7 +1615,7 @@ pub(crate) fn street_fitted(
         } else {
             rng.float(0.95, 1.55)
         };
-        let stood = pile_finish(
+        let stood = pile(
             &mut on(d, facing(x, out)?),
             sort,
             [0.; 3],
@@ -1569,7 +1629,7 @@ pub(crate) fn street_fitted(
             // carton here and there.
             if rng.chance(0.9) {
                 let low = rng.float(0.3, 0.68);
-                pile_finish(
+                pile(
                     &mut on(d, facing(x, (out + 0.4).min(1.))?),
                     if rng.chance(0.85) {
                         Pile::Crates
@@ -1586,7 +1646,7 @@ pub(crate) fn street_fitted(
         } else if !behind && rng.chance(0.5) {
             // A heap's second row in front is half as high.
             let low = rng.float(0.35, 0.7);
-            pile_finish(
+            pile(
                 &mut on(d, facing(x + rng.float(0., 0.08), (out + 0.4).min(1.))?),
                 if sort == Pile::Crates && kind != Street::Crates {
                     Pile::Cartons
@@ -1607,14 +1667,26 @@ pub(crate) fn street_fitted(
             d,
             facing(rack_start + i as f64 * 0.9, 0.93)?.into_part(&format!("rack-{i}"))?,
         );
+        let height = rng.float(1.65, 1.85);
         wire_rack(
             &mut rack,
-            [0.82, 0.36, rng.float(1.65, 1.85)],
+            [0.82, 0.36, height],
             5,
             &mut kit.rng(&format!("{key}/rack-{i}"))?,
+            catalog,
         )?;
         // Goods hung on the rack's front.
-        if rng.chance(0.6) {
+        let hang = rng.chance(0.6);
+        if catalog {
+            let x = if i % 2 == 0 { 0.10 } else { 0.72 };
+            snack_string::string(
+                &mut rack,
+                [x, 0.03, height - 0.035],
+                if hang { 0.41 } else { 0.30 },
+                &mut kit.rng(&format!("{key}/rack-hung-{i}"))?,
+                true,
+            )?;
+        } else if hang {
             hung(
                 &mut rack,
                 &Hang {
@@ -1632,14 +1704,41 @@ pub(crate) fn street_fitted(
     }
     if shop && way1 < width {
         // By the way in: buckets and a stool at its sides, brooms leaning on the stock.
-        bucket(&mut on(d, facing(way0 + 0.2, 0.86)?), [0.; 3], &mut rng)?;
+        bucket(
+            &mut on(d, facing(way0 + 0.2, 0.86)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+            catalog,
+        )?;
         if rng.chance(0.6) {
-            bucket(&mut on(d, facing(way0 + 0.22, 0.44)?), [0.; 3], &mut rng)?;
+            bucket(
+                &mut on(d, facing(way0 + 0.22, 0.44)?),
+                [0.; 3],
+                &mut rng,
+                catalog,
+                false,
+            )?;
         }
-        stool(&mut on(d, facing(way1 - 0.2, 0.6)?), [0.; 3], &mut rng)?;
-        broom(&mut on(d, facing(way0 - 0.2, 1.04)?), [0.; 3], &mut rng)?;
+        stool(
+            &mut on(d, facing(way1 - 0.2, 0.6)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+        )?;
+        broom(
+            &mut on(d, facing(way0 - 0.2, 1.04)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+        )?;
         if racks == 0 || way1 + 0.5 < rack_start {
-            broom(&mut on(d, facing(way1 + 0.25, 1.04)?), [0.; 3], &mut rng)?;
+            broom(
+                &mut on(d, facing(way1 + 0.25, 1.04)?),
+                [0.; 3],
+                &mut rng,
+                catalog,
+            )?;
         }
     } else if shop && width >= 2.4 {
         let at = if racks > 0 {
@@ -1648,47 +1747,73 @@ pub(crate) fn street_fitted(
             width - 0.3
         };
         if at > way1 + 0.2 || racks == 0 {
-            bucket(&mut on(d, facing(at, 0.85)?), [0.; 3], &mut rng)?;
+            bucket(
+                &mut on(d, facing(at, 0.85)?),
+                [0.; 3],
+                &mut rng,
+                catalog,
+                catalog,
+            )?;
         }
-        broom(&mut on(d, facing(width - 0.2, 0.2)?), [0.; 3], &mut rng)?;
+        broom(
+            &mut on(d, facing(width - 0.2, 0.2)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+        )?;
     }
     if kind == Street::Mixed && width >= 1.2 {
-        broom(&mut on(d, facing(width - 0.2, 0.16)?), [0.; 3], &mut rng)?;
-        bucket(&mut on(d, facing(0.2, 0.9)?), [0.; 3], &mut rng)?;
+        broom(
+            &mut on(d, facing(width - 0.2, 0.16)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+        )?;
+        bucket(
+            &mut on(d, facing(0.2, 0.9)?),
+            [0.; 3],
+            &mut rng,
+            catalog,
+            false,
+        )?;
     }
     if dolly {
         let mut truck = on(d, root.into_part("dolly")?.moved([0.12, 0.24, 0.])?);
-        let ivory = srgb("#cfc2a2");
-        for x in [0., 0.4] {
-            truck.tube(
+        if catalog {
+            finish::hand_truck(&mut truck)?;
+        } else {
+            let ivory = srgb("#cfc2a2");
+            for x in [0., 0.4] {
+                truck.tube(
+                    "paint",
+                    &[[x, 0., 0.15], [x, 0., 1.38], [x, 0.16, 1.46]],
+                    0.022,
+                    ivory,
+                    5,
+                )?;
+                truck.disc(
+                    "paint",
+                    [x, 0.1, 0.12],
+                    0.12,
+                    [if x > 0.2 { 1. } else { -1. }, 0., 0.],
+                    srgb("#343632"),
+                    8,
+                )?;
+            }
+            for z in [0.32, 0.76, 1.24] {
+                truck.bar("paint", [0., 0., z], [0.4, 0., z], 0.03, ivory)?;
+            }
+            truck.cuboid(
                 "paint",
-                &[[x, 0., 0.15], [x, 0., 1.38], [x, 0.16, 1.46]],
-                0.022,
-                ivory,
-                5,
-            )?;
-            truck.disc(
-                "paint",
-                [x, 0.1, 0.12],
-                0.12,
-                [if x > 0.2 { 1. } else { -1. }, 0., 0.],
-                srgb("#343632"),
-                8,
+                [-0.02, 0., 0.06],
+                [0.42, 0.33, 0.095],
+                srgb("#55665c"),
+                "",
             )?;
         }
-        for z in [0.32, 0.76, 1.24] {
-            truck.bar("paint", [0., 0., z], [0.4, 0., z], 0.03, ivory)?;
-        }
-        truck.cuboid(
-            "paint",
-            [-0.02, 0., 0.06],
-            [0.42, 0.33, 0.095],
-            srgb("#55665c"),
-            "",
-        )?;
         // Its load of cartons leans back on the frame.
         let mut load = on(d, facing(0.14, 0.56)?);
-        pile_finish(
+        pile(
             &mut load,
             Pile::Cartons,
             [0., 0., 0.095],

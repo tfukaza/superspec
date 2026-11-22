@@ -139,6 +139,72 @@ try {
   assert.notEqual(wall2.intrinsic, wall.intrinsic);
   check(wall2, 0.5, 1, 2, "wall after the change"); check(slab2, 0.5, 2, 2, "slab after the change");
 
+  const mixedMaps = (...args) => page.evaluate(args => window.driver.mixedWallMaps(...args), args);
+  const full = await mixedMaps(false, 2), mixed = await mixedMaps(true, 2);
+  assert.deepEqual(mixed.base, full.base);
+  assert.deepEqual(mixed.properties, full.properties);
+  assert.ok(mixed.drawn.includes("tile/0,0/base_color"));
+  // The left wall reveals one more column of its reserved surface. The ordinary return
+  // beside it stays in place. Compare every byte, including the exposed strip and gutters.
+  const cropped = await mixedMaps(true, 2, 2, 0, true, 24, 0.75);
+  const revealed = await mixedMaps(true, 2, 2, 0, true, 24, 0.875);
+  const revealedDirect = await mixedMaps(false, 2, 2, 0, true, 24, 0.875);
+  assert.deepEqual(revealed.base, cropped.base);
+  assert.deepEqual(revealed.base, revealedDirect.base);
+  assert.deepEqual(revealed.properties, revealedDirect.properties);
+  assert.ok(!revealed.drawn.some(id => id.startsWith("tile/") || id === "stack.base/base_color" || id === "base"),
+    "changing the UV crop keeps the stock tile, remapped plane and composed color");
+  // The right chart's material and grime both change when its physical sample position changes.
+  const changed = await mixedMaps(true, 3), direct = await mixedMaps(false, 3);
+  assert.deepEqual(changed.base, direct.base);
+  assert.deepEqual(changed.properties, direct.properties);
+  assert.ok(!changed.drawn.some(id => id.startsWith("tile/")), "resizing the return reuses the stock tile");
+  assert.ok(!changed.drawn.includes("emissive") && !changed.drawn.includes("stack.base/emissive"), "a spatially constant stack channel reuses its plane and final map");
+  const pixel = (x, channel) => (6 * 24 + x) * 4 + channel;
+  assert.ok(changed.base[pixel(18, 0)] > mixed.base[pixel(18, 0)]);
+  assert.ok(changed.properties[pixel(18, 1)] > mixed.properties[pixel(18, 1)]);
+  assert.equal(changed.base[pixel(6, 0)], mixed.base[pixel(6, 0)]);
+
+  // The same single texel feeds the emissive output and a weathering layer's below.emissive.
+  // Widen the destination atlas to force new maps of both. The reference evaluates the same
+  // expression over a full-size plane, including the uncovered area behind the charts.
+  const expanded = await mixedMaps(true, 3, 2, 0, true, 32);
+  const fullPlane = await mixedMaps(true, 3, 2, 0, false, 32);
+  assert.ok(!expanded.drawn.includes("stack.base/emissive"));
+  assert.ok(fullPlane.drawn.includes("stack.base/emissive"));
+  assert.deepEqual(expanded.emissive, fullPlane.emissive);
+  assert.deepEqual(expanded.properties, fullPlane.properties);
+  assert.ok(expanded.emissive[(6 * 32 + 6) * 4] > 0);
+  assert.equal(expanded.emissive[(6 * 32 + 26) * 4], 0);
+
+  // Fittings receive new part anchors during footprint edits even when their charts stay fixed.
+  for (const mode of [0, 1, 2, 3]) {
+    const before = await mixedMaps(false, 3, mode), shifted = await mixedMaps(false, 3, mode, 0.5);
+    if (mode === 3) {
+      assert.notDeepEqual(shifted.base, before.base);
+      assert.ok(shifted.drawn.includes("base"));
+    } else {
+      assert.deepEqual(shifted.base, before.base);
+      assert.deepEqual(shifted.properties, before.properties);
+      assert.deepEqual(shifted.drawn, []);
+    }
+  }
+
+  // Two independent zone layers can pass through a preceding layer, the base, or a default
+  // channel (normal_offset). Read the actual composed textures through every combination.
+  for (const counts of [[0, 0], [1, 0], [0, 1], [1, 1], [0, 0]]) {
+    const run = shortcut => mixedMaps(true, 2, 2, 0, true, 32, 1, { shortcut, counts });
+    const optimized = await run(true), reference = await run(false);
+    for (const channel of ["base", "properties", "normal"]) assert.deepEqual(optimized[channel], reference[channel]);
+    counts.forEach((count, index) => {
+      if (!count) assert.ok(!optimized.drawn.some(id => id.startsWith("stack." + (index + 2) + "/")), "an empty layer aliases its inputs");
+    });
+  }
+  for (const count of [0, 1]) {
+    assert.equal(await mixedMaps(true, 41 + count, 2, 0, true, 32, 1,
+      { shortcut: true, counts: [count], changeDuringBake: true }), null);
+  }
+
   assert.equal(errors.length, 0, errors.join("\n"));
   const renderer = await page.evaluate(() => { const gl = document.querySelector("canvas").getContext("webgl2"); const info = gl.getExtension("WEBGL_debug_renderer_info"); return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); });
   console.log(`Bake graph nodes passed on ${renderer}: blur within ${Math.max(worstRows, worst).toExponential(1)} of the Gaussian, mapping within ${worstMapping.toExponential(1)}; ${JSON.stringify(await page.evaluate(() => window.driver.stats()))}.`);

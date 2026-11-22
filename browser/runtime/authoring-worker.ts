@@ -289,7 +289,8 @@ async function handle(message: AuthoringMessage): Promise<void> {
       return;
     }
     const builtAt = performance.now();
-    const answer = shading ? active.shade_project(encoded, requestId)
+    const includePacket = !("includeScenePacket" in request) || request.includeScenePacket !== false;
+    const answer = shading ? active.shade_project(encoded, requestId, includePacket)
       : await distributed(active, images, () => whole ? active.preview_project(encoded, requestId) : active.build(encoded, requestId));
     const answeredAt = performance.now();
     const result = JSON.parse(answer);
@@ -297,24 +298,28 @@ async function handle(message: AuthoringMessage): Promise<void> {
       self.postMessage({ requestId, diagnostics: result.diagnostics });
       return;
     }
-    const bytes = active.packet();
+    const bytes = includePacket ? active.packet() : undefined;
+    const packet = bytes ? { packet: bytes.buffer } : {};
+    const transfer = bytes ? [bytes.buffer] : [];
     if (shading && "layouts" in request && request.layouts) {
       // The receivers' atlases as the CPU bake lays them out, for a GPU bake in UV space. A scene the layout refuses
       // (a degenerate receiver) is still shown per pixel: the reason travels with the result.
       const parsedAt = performance.now();
-      const reply = JSON.parse(active.layout_project(encoded, requestId));
+      const layoutText = active.layout_project(encoded, requestId, request.latticeSurfaceMapsOnly);
+      const reply = JSON.parse(layoutText);
       if (reply.success) {
         const records = active.layout_records();
         // The worker's share of a scene's opening, milliseconds: the project as text, the engine's description of it
         // (the text read by the engine included), that answer read back, and the layouts.
         const timings = { encodeMs: Math.round(encodedAt - started), describeMs: Math.round(answeredAt - builtAt), readMs: Math.round(parsedAt - answeredAt),
           layoutMs: Math.round(performance.now() - parsedAt), projectBytes: encoded.length, answerBytes: answer.length };
-        self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, layouts: { ...reply.layouts, records }, timings }, { transfer: [bytes.buffer, records.buffer] });
+        const responseBytes = answer.length + layoutText.length + records.byteLength + (bytes?.byteLength ?? 0);
+        self.postMessage({ requestId, metadata: result.metadata, ...packet, responseBytes, layouts: { ...reply.layouts, records }, timings }, { transfer: [...transfer, records.buffer] });
         return;
       }
       result.metadata.layoutError = (reply.diagnostics as { message: string }[]).map(finding => finding.message).join("\n");
     }
-    self.postMessage({ requestId, metadata: result.metadata, packet: bytes.buffer, ...(occlusion ? { occlusion } : {}) }, { transfer: [bytes.buffer] });
+    self.postMessage({ requestId, metadata: result.metadata, ...packet, ...(occlusion ? { occlusion } : {}) }, { transfer });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     let diagnostics: unknown;

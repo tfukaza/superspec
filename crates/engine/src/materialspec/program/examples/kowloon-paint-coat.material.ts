@@ -10,7 +10,7 @@
 // texture, ringed by a thin dark line of lifted paint. A slot that follows neither has none. The coat also thins to
 // the render along exposed arrises (`arrisWear`), broken along their length.
 import { defineLayer, param, smoothstep, step, floor, abs, min, max, hash, valueNoise, featureDistance, creaseDistance, select, lt, clamp, add, mul, sub, div, vec2, vec3, mix, seed, surface } from "@superspec/material/v1";
-import { fractal, domainWarp } from "./kowloon-noise.material";
+import { fractal, domainWarp, illustrate } from "./kowloon-noise.material";
 
 const color = param.vec3({ default: vec3(0.78, 0.71, 0.55), range: [0, 1], label: "Paint colour" });
 const amount = param.scalar({ default: 1, range: [0, 1], label: "Paint amount" });
@@ -23,6 +23,14 @@ const peelInset = param.scalar({ default: 0.05, range: [0.01, 0.3], unit: "m", l
 const bare = param.vec3({ default: vec3(0.2, 0.195, 0.18), range: [0, 1], label: "Bare render tone" });
 const bareCover = param.scalar({ default: 0, range: [0, 1], label: "Bare render toned down" });
 const arrisWear = param.scalar({ default: 0, range: [0, 1], label: "Paint worn off the arrises" });
+const arrisWidth = param.scalar({ default: 0.035, range: [0.01, 0.15], unit: "m", label: "Arris wear width" });
+// Illustrated finish: the mottle becomes flat, crisp-edged tone patches, under warm and cool torn
+// patches and brush dabs (kowloon-noise's `illustrate`).
+const illustration = param.scalar({ default: 0, range: [0, 1], label: "Illustrated patches" });
+const illustratedSize = param.scalar({ default: 2.4, range: [0.2, 6], unit: "m", label: "Illustrated patch size" });
+const warmTint = param.vec3({ default: vec3(1.1, 0.97, 0.86), range: [0, 2], label: "Warm patch tint" });
+const coolTint = param.vec3({ default: vec3(0.92, 0.95, 1.06), range: [0, 2], label: "Cool patch tint" });
+const brushStrokes = param.scalar({ default: 0.5, range: [0, 1], label: "Brush dabs" });
 
 const at = mul(vec2(surface.x, surface.y), patchScale);
 const warped = add(at, mul(domainWarp(mul(at, 1.3), seed("paint-warp")), 0.5));
@@ -62,10 +70,12 @@ const peeled = smoothstep(peelThreshold, add(peelThreshold, 0.008), peelField);
 // The lifted edge: a thin dark line just outside the bare patch.
 const lifted = mul(sub(1, peeled), smoothstep(sub(peelThreshold, 0.075), sub(peelThreshold, 0.014), peelField));
 // Arrises: the coat thins to the render within a few centimetres of an exposed edge, in broken lengths.
-const arris = creaseDistance("exposed", 35, 0.06);
-const worn = mul(mul(arrisWear, sub(1, smoothstep(0.008, 0.035, arris))),
+const arris = creaseDistance("exposed", 35, add(arrisWidth, 0.025));
+const worn = mul(mul(arrisWear, sub(1, smoothstep(div(mul(arrisWidth, 8), 35), arrisWidth, arris))),
   smoothstep(0.45, 0.62, valueNoise(mul(flat, vec2(9, 3.5)), seed("paint-arris"))));
-const coat = mul(mul(mix(mul(color, sub(1, mul(0.14, unevenness))), color, smoothstep(0.3, 0.7, mottle)), sub(1, mul(0.22, rim))),
+const mottled = mix(smoothstep(0.3, 0.7, mottle), smoothstep(0.49, 0.51, mottle), illustration);
+const coat = mul(mul(illustrate(mix(mul(color, sub(1, mul(0.14, unevenness))), color, mottled), flat, illustration, illustratedSize,
+  warmTint, coolTint, brushStrokes, 0.8, seed("paint-illustration")), sub(1, mul(0.22, rim))),
   sub(1, mul(0.62, lifted)));
 
 export default defineLayer({

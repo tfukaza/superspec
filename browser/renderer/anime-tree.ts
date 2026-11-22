@@ -10,7 +10,7 @@ import { animeBark } from "./anime-tree-bark.ts";
 /**
  * Illustrated trees (prototype): looks that draw a plant's mass (`FoliageMass`) as distinct leaves on its twigs
  * instead of the painted mass (painted-mass.ts), compared in generated/verification/anime-tree:
- * - `leaves`: every leaf an instance of a small leaf-shaped mesh, in whorls along the twigs (anime-tree-leaves.ts);
+ * - `leaves`: whorls of painted sprig cards, sharp on exposed twigs and soft in dense shade (anime-tree-leaves.ts);
  * - `sprays`: many small cards, each a painted spray of leaves, at the stations of the twigs (anime-tree-sprays.ts);
  * - `shells`: a leaf-patterned lumpy ellipsoid for each cluster, with sprays standing out of it (anime-tree-shells.ts);
  * - `impostors`: a card for each cluster showing a pre-drawn cluster of leaves, relit (anime-tree-impostors.ts).

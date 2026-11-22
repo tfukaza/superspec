@@ -163,6 +163,8 @@ enum PartShape {
     Item {
         entry: String,
         key: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        gltf_uv: bool,
         #[serde(skip_serializing)]
         prepared: Opaque<PreparedItem>,
     },
@@ -309,8 +311,8 @@ impl PreparedPart {
         }
         result
     }
-    pub(super) fn key(&self) -> &str {
-        &self.key
+    pub(super) fn identity(&self) -> (String, String) {
+        (self.id.clone(), self.key.clone())
     }
     /// The prepared sub-item of an item part.
     pub(super) fn sub_item(&self) -> Option<&PreparedItem> {
@@ -765,6 +767,7 @@ pub(super) fn prepare(
                         PartShape::Item {
                             entry,
                             key: prepared.geometry_key.clone(),
+                            gltf_uv: matches!(prepared.definition.generator, Generator::Glb { .. }),
                             prepared: Opaque(std::sync::Arc::new(prepared)),
                         },
                         &[],
@@ -1124,13 +1127,52 @@ impl PreparedPart {
     }
     fn build(&self, cancelled: &dyn Fn() -> bool) -> Result<Built, String> {
         match &self.shape {
-            PartShape::Item { prepared, .. } => {
+            PartShape::Item {
+                prepared, gltf_uv, ..
+            } => {
                 let item = prepared.0.build(cancelled).map_err(|e| e.to_string())?;
-                let meshes = item.flattened().map_err(|e| e.to_string())?;
+                let mut meshes = item.flattened().map_err(|e| e.to_string())?;
+                // A raw glTF uses top-origin UVs. Once adopted its geometry has the
+                // enclosing procedural item's bottom-origin UV convention.
+                if *gltf_uv {
+                    for mesh in &mut meshes {
+                        if item
+                            .geometry
+                            .imported_materials
+                            .get(&mesh.material_slot)
+                            .is_some_and(|m| m.textures.contains_key("normal"))
+                        {
+                            mesh.tangents = super::delivery_tangents(mesh)?;
+                        }
+                        for set in
+                            std::iter::once(&mut mesh.uvs).chain(mesh.additional_uvs.values_mut())
+                        {
+                            for uv in set {
+                                uv[1] = 1. - uv[1];
+                            }
+                        }
+                    }
+                }
+                // Each GLB numbers its images from zero. Use content identities when
+                // crossing that file boundary, including in the materials that name them.
+                let mut images = item.geometry.images.clone();
+                let mut image_ids = BTreeMap::new();
+                if *gltf_uv {
+                    for image in &mut images {
+                        let id = format!("image/{:x}", Sha256::digest(&image.bytes));
+                        image_ids.insert(std::mem::replace(&mut image.id, id.clone()), id);
+                    }
+                }
                 let mut materials = BTreeMap::new();
                 for (slot, material) in &item.geometry.imported_materials {
                     if let Some(target) = self.slot(slot) {
-                        materials.entry(target).or_insert_with(|| material.clone());
+                        let mut material = material.clone();
+                        for texture in material.textures.values_mut() {
+                            if let Some(id) = image_ids.get(&texture.image) {
+                                texture.image = id.clone();
+                            }
+                        }
+                        materials.entry(target).or_insert(material);
                     }
                 }
                 let features = item
@@ -1149,7 +1191,7 @@ impl PreparedPart {
                 Ok(Built {
                     meshes: self.adopt(meshes),
                     materials,
-                    images: item.geometry.images.clone(),
+                    images,
                     features,
                 })
             }
@@ -1162,7 +1204,12 @@ impl PreparedPart {
                 // A generator's meshes name each vertex once, however it emitted them.
                 let mut meshes = output.meshes;
                 for mesh in &mut meshes {
-                    mesh.share_vertices();
+                    mesh.index_vertices(
+                        native
+                            .generators
+                            .0
+                            .preserve_signed_zero(&mesh.material_slot),
+                    );
                 }
                 Ok(Built {
                     meshes: self.adopt(meshes),
@@ -1301,7 +1348,11 @@ impl PreparedPart {
                 return Err("Sub-item and native parts are built by their owner.".into());
             }
         }
-        Ok(surfaces.into_meshes(&self.id, &self.slots))
+        let mut meshes = surfaces.into_meshes(&self.id, &self.slots);
+        for mesh in &mut meshes {
+            mesh.index_vertices(false);
+        }
+        Ok(meshes)
     }
 
     /// Where the part sits in its item: part coordinates to item definition coordinates.
@@ -1490,6 +1541,20 @@ pub(super) fn build(
             v: matrix.direction(anchor.v),
             normal: covector(anchor.normal).map_err(failure)?,
         });
+    }
+    if let Some(previous) = previous.filter(|g| !g.images.is_empty()) {
+        let needed: std::collections::BTreeSet<_> = geometry
+            .imported_materials
+            .values()
+            .flat_map(|m| m.textures.values().map(|t| t.image.as_str()))
+            .collect();
+        for image in &previous.images {
+            if needed.contains(image.id.as_str())
+                && !geometry.images.iter().any(|known| known.id == image.id)
+            {
+                geometry.images.push(image.clone());
+            }
+        }
     }
     Ok((geometry, built))
 }

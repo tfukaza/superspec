@@ -3,10 +3,12 @@ mod item;
 mod layout;
 pub(crate) mod material;
 pub mod occlusion;
+pub mod occlusion_store;
 mod project;
 pub(crate) mod receiver;
 pub mod recipe;
 pub(crate) use item::PlacedItemState;
+pub(crate) use layout::ChartRecords;
 pub use layout::{LAYOUT_RECORD, PreparedProject, ProjectFields, ProjectLayouts, ReceiverLayout};
 pub use material::{FieldBake, PendingBake};
 pub use project::{
@@ -106,6 +108,8 @@ pub struct Request {
     pub entry: String,
     pub source: String,
     pub modules: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub material_lods: program::MaterialLodSources,
     pub parameters: BTreeMap<String, serde_json::Value>,
     pub seed: u32,
     pub resolution: usize,
@@ -278,6 +282,7 @@ impl Default for Request {
             entry: "main.ms".into(),
             source: String::new(),
             modules: BTreeMap::new(),
+            material_lods: BTreeMap::new(),
             parameters: BTreeMap::new(),
             seed: 0,
             resolution: 128,
@@ -369,7 +374,7 @@ impl Session {
                         .map(|material| material.entry.clone()),
                 )
                 .collect()
-        } else if request.kind == "item" {
+        } else if matches!(request.kind.as_str(), "item" | "item-geometry") {
             crate::itemspec::definition::parse(&request.entry, &request.source)
                 .map(|mut definition| {
                     definition.slots.extend(request.slot_overrides.clone());
@@ -385,6 +390,15 @@ impl Session {
         };
         let mut names = std::collections::BTreeSet::new();
         for entry in entries {
+            if matches!(request.kind.as_str(), "item" | "item-geometry")
+                && let Some(material) = superspec_catalog::material(&entry)
+            {
+                names.extend(material.companions().into_iter().map(str::to_owned));
+                continue;
+            }
+            if request.kind == "item-geometry" {
+                continue;
+            }
             let source = if entry == request.entry {
                 Some(request.source.clone())
             } else {
@@ -431,7 +445,9 @@ impl Session {
         self.begin_authoring(revision, &request.entry)?;
         match request.kind.as_str() {
             "material" => self.material(request, revision, assets, cancelled),
-            "item" | "import-glb" => self.item(request, revision, assets, cancelled),
+            "item" | "item-geometry" | "import-glb" => {
+                self.item(request, revision, assets, cancelled)
+            }
             _ => Err(vec![Diagnostic::message(
                 &request.entry,
                 "Unknown authoring request kind.",
@@ -460,7 +476,14 @@ impl Session {
     }
 
     fn program(&mut self, request: &Request) -> Result<Arc<Program>, Vec<Diagnostic>> {
-        let mut modules = request.modules.clone();
+        // A Studio project can carry both ItemSpec definitions and MaterialSpec
+        // modules. Only material sources belong in the program's source budget.
+        let mut modules: BTreeMap<_, _> = request
+            .modules
+            .iter()
+            .filter(|(name, _)| !name.ends_with(".item.json"))
+            .map(|(name, source)| (name.clone(), source.clone()))
+            .collect();
         modules.insert(request.entry.clone(), request.source.clone());
         if let Some(cached) = self.programs.get_mut().iter().find(|cached| {
             cached.entry == request.entry

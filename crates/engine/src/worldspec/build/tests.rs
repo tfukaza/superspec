@@ -176,13 +176,11 @@ impl ThemeAdapter for MarkerTheme<'_> {
     }
     fn plan(
         &mut self,
-        _: &mut PhysicalBuild<'_>,
-        scene: &mut Scene,
+        _: &PhysicalBuild<'_>,
+        _: &mut Vec<Diagnostic>,
         _: &PhysicalOutput,
         _: &RenderSurfaces,
     ) -> Result<(), Diagnostic> {
-        assert!(scene.manifest.architecture.is_none());
-        assert!(!scene.manifest.colliders.is_empty());
         self.events.borrow_mut().push("plan");
         Ok(())
     }
@@ -197,23 +195,25 @@ impl ThemeAdapter for MarkerTheme<'_> {
     }
     fn publish(
         &mut self,
-        physical: &mut PhysicalBuild<'_>,
-        scene: &mut Scene,
+        physical: &PhysicalBuild<'_>,
+        visuals: &mut VisualOutput<'_>,
     ) -> Result<(), Diagnostic> {
         self.events.borrow_mut().push("publish");
-        assert!(scene.manifest.success);
         let material = Material {
             id: "marker-finish".into(),
             color: "#44aaee".into(),
             texture: self.textured.then(|| "marker.png".into()),
             ..Default::default()
         };
-        scene.manifest.materials.push(material);
-        scene
-            .append_visual(
+        visuals
+            .ensure_material(&material)
+            .map_err(|e| physical.root().fail("MARKER_VISUAL", e))?;
+        visuals
+            .append(
                 "host",
                 &Triangle::default(),
                 &BTreeMap::from([("finish".into(), "marker-finish".into())]),
+                &[] as &[crate::materialspec::bake::BakedMaterial],
             )
             .map_err(|e| physical.root().fail("MARKER_VISUAL", e))?;
         if self.failure == Failure::Publish {
@@ -328,4 +328,163 @@ fn adapter_asset_errors_use_its_source_and_cancelled_asset_loads_cannot_publish(
         compile_with_assets(&mut theme, &cancelled, &phases, &|_| Ok(png.clone())).unwrap();
     assert_eq!(recovered.manifest.assets.len(), 1);
     assert_eq!(recovered.asset_bytes, png);
+}
+
+struct HostedItem {
+    collidable: bool,
+    texture: Option<&'static str>,
+}
+
+impl ThemeAdapter for HostedItem {
+    fn place_items<'build>(
+        &self,
+        physical: &'build PhysicalBuild<'_>,
+        items: ItemOutput<'build>,
+    ) -> Result<ItemOutput<'build>, Diagnostic> {
+        use superspec_model::instances::{IDENTITY, Instance, LocalMesh, Model};
+        let triangle = Triangle::default().vertices;
+        let model = Model {
+            meshes: BTreeMap::from([(
+                "triangle".into(),
+                std::sync::Arc::new(LocalMesh {
+                    positions: triangle.iter().map(|v| v.position).collect(),
+                    normals: triangle.iter().map(|v| v.normal).collect(),
+                    uvs: triangle.iter().map(|v| v.uv).collect(),
+                    colors: triangle.iter().map(|v| v.color).collect(),
+                    indices: vec![0, 1, 2],
+                    tangents: Vec::new(),
+                }),
+            )]),
+            instances: vec![Instance {
+                id: "host/finish".into(),
+                object_id: "host".into(),
+                mesh: "triangle".into(),
+                material: None,
+                transform: IDENTITY,
+                source: physical.root().source.clone(),
+                visible: true,
+                collidable: self.collidable,
+            }],
+            ..Default::default()
+        };
+        let fail = |e: String| physical.root().fail("TEST_ITEM", e);
+        let mut items = items.attach_visual("host", model).map_err(fail)?;
+        let owners = ["host".into()].into();
+        let source = physical.root();
+        items
+            .bind_slots(
+                source,
+                &owners,
+                |_| Some("item-finish".into()),
+                |id| {
+                    Some(Material {
+                        id: id.into(),
+                        texture: self.texture.map(str::to_owned),
+                        ..Default::default()
+                    })
+                },
+            )
+            .map_err(fail)?;
+        // Swallow a failed lookup deliberately: it must leave every previous binding usable.
+        items
+            .bind_slots(source, &owners, |_| Some("absent".into()), |_| None)
+            .unwrap_err();
+        Ok(items)
+    }
+}
+
+#[test]
+fn item_bindings_are_scoped_to_new_meshes_and_hosted_parts_preserve_physical_review() {
+    let cancelled = AtomicBool::new(false);
+    let phases = RefCell::new(vec![]);
+    let base = compile(&mut NoTheme, &cancelled, &phases).unwrap();
+    let protected = serde_json::to_value(&base.manifest.meshes).unwrap();
+    let scene = compile(
+        &mut HostedItem {
+            collidable: false,
+            texture: None,
+        },
+        &cancelled,
+        &phases,
+    )
+    .unwrap();
+    assert_eq!(physical(&base), physical(&scene));
+    assert_eq!(
+        protected,
+        serde_json::to_value(&scene.manifest.meshes[..base.manifest.meshes.len()]).unwrap()
+    );
+    assert_eq!(
+        scene.manifest.meshes.last().unwrap().material.as_deref(),
+        Some("item-finish")
+    );
+    assert_eq!(
+        scene
+            .manifest
+            .materials
+            .iter()
+            .map(|m| m.id.as_str())
+            .filter(|id| *id == "item-finish")
+            .count(),
+        1
+    );
+    let error = compile(
+        &mut HostedItem {
+            collidable: true,
+            texture: None,
+        },
+        &cancelled,
+        &phases,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "TEST_ITEM");
+    assert!(error.message.contains("render-only"));
+}
+
+#[test]
+fn item_slot_companions_are_published_after_placement() {
+    let cancelled = AtomicBool::new(false);
+    let phases = RefCell::new(vec![]);
+    let mut theme = HostedItem {
+        collidable: false,
+        texture: Some("fixture.png"),
+    };
+    let missing = compile(&mut theme, &cancelled, &phases).unwrap_err();
+    assert_eq!(missing.code, "AML_ASSET");
+    assert!(missing.message.contains("fixture.png"));
+    let bytes = superspec_geometry::image::encode(&superspec_geometry::image::Image {
+        width: 1,
+        height: 1,
+        rgba: vec![130, 140, 150, 255],
+        mime: "image/png",
+    })
+    .unwrap();
+    let scene = compile_with_assets(&mut theme, &cancelled, &phases, &|name| {
+        assert_eq!(name, "fixture.png");
+        Ok(bytes.clone())
+    })
+    .unwrap();
+    assert_eq!(scene.manifest.assets.len(), 1);
+    assert_eq!(scene.manifest.assets[0].id, "fixture.png");
+    assert_eq!(scene.asset_bytes, bytes);
+}
+
+#[test]
+fn visual_material_reuse_requires_the_same_definition() {
+    let mut scene = Scene::empty(1, "fixture");
+    let material = Material {
+        id: "fixture".into(),
+        ..Default::default()
+    };
+    let mut visuals = VisualOutput(&mut scene);
+    visuals.ensure_material(&material).unwrap();
+    visuals.ensure_material(&material).unwrap();
+    let mut conflict = material.clone();
+    conflict.color = "#ff00aa".into();
+    assert!(
+        visuals
+            .ensure_material(&conflict)
+            .unwrap_err()
+            .contains("fixture")
+    );
+    assert_eq!(scene.manifest.materials, [material]);
 }

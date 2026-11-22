@@ -1,3 +1,4 @@
+import { MAX_PROJECT_MODELS, MAX_PROJECT_MATERIAL_ASSIGNMENTS } from "../../browser/model/limits.ts";
 import { MAX_COMPANION_BYTES, MAX_COMPANIONS, MAX_FILE_BYTES, MAX_PROJECT_FILE_BYTES, megabytes } from "../../browser/model/limits.ts";
 import type { AuthoringProject, SourceEdge } from "../../browser/runtime/authoring.ts";
 import { ASSET_DIRECTORY, PROJECT_ENTRY, isArchive, readArchive, writeArchive } from "./archive.ts";
@@ -29,14 +30,16 @@ export const ARCHIVE_THRESHOLD = 64 * 1024 * 1024;
 export function projectFile(project: StudioProject, threshold = ARCHIVE_THRESHOLD): { name: string; content: Blob } {
   const bytes = Object.values(project.assets).reduce((sum, asset) => sum + asset.length, 0);
   if (bytes <= threshold) return { name: `${project.kind}.project.json`, content: new Blob([serializeProject(project)], { type: "application/json" }) };
-  const names = Object.keys(project.assets);
+  return { name: project.kind + ".studio.zip", content: authoringArchive(project) };
+}
+
+/** An authoring request and its binary companions, using the saved project archive format. */
+export function authoringArchive(input: { assets: Record<string, Uint8Array> }): Blob {
+  const names = Object.keys(input.assets);
   const paths = Object.fromEntries(names.map((name, index) => [name, archivePath(name, index)]));
-  const document = JSON.stringify({ ...project, assets: paths }, null, 2) + "\n";
-  return {
-    name: `${project.kind}.studio.zip`,
-    content: writeArchive([{ name: PROJECT_ENTRY, bytes: new TextEncoder().encode(document) },
-      ...names.map(name => ({ name: paths[name], bytes: project.assets[name] }))]),
-  };
+  const document = JSON.stringify({ ...input, assets: paths });
+  return writeArchive([{ name: PROJECT_ENTRY, bytes: new TextEncoder().encode(document) },
+    ...names.map(name => ({ name: paths[name], bytes: input.assets[name] }))]);
 }
 
 /** Companion names become entry paths when they are plain relative paths, so archives unpack cleanly. */
@@ -142,7 +145,7 @@ function admit(value: SerializedProject, assets: Record<string, Uint8Array>): St
 function parseScene(value: SerializedProject, assets: Record<string, Uint8Array>): void {
   const identity = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(id);
   const models = value.models ?? [], materials = value.materials ?? [];
-  if (!Array.isArray(models) || models.length > 16 || !Array.isArray(materials) || materials.length > 64) throw new Error("Project models or materials exceed their limits.");
+  if (!Array.isArray(models) || models.length > MAX_PROJECT_MODELS || !Array.isArray(materials) || materials.length > MAX_PROJECT_MATERIAL_ASSIGNMENTS) throw new Error("Project models or materials exceed their limits.");
   if ((models.length || materials.length) && value.schemaVersion !== 2) throw new Error("Models and materials need a version 2 project.");
   const ids = new Set<string>();
   for (const model of models) {
@@ -194,6 +197,7 @@ export function download(name: string, content: string | ArrayBuffer | Blob, typ
 /** Copies mutable draft state so an asynchronous open can commit atomically. */
 export function copyProject(project: StudioProject): StudioProject {
   return { ...project, modules: { ...project.modules }, parameters: structuredClone(project.parameters),
+    ...(project.materialLods && { materialLods: structuredClone(project.materialLods) }),
     assets: { ...project.assets }, base: { ...project.base }, target: { ...project.target }, domain: [...project.domain],
     edges: structuredClone(project.edges), gravity: [...project.gravity],
     ...(project.models ? { models: structuredClone(project.models) } : {}),

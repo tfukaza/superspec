@@ -1,5 +1,5 @@
 //! Persistent inputs and ordered visual edits; expansion belongs to delivery.
-use super::admission::{self, Admission, Limits};
+use super::admission::{Admission, Limits};
 use crate::{
     Scene,
     instances::{LocalMesh, Model},
@@ -55,7 +55,7 @@ impl WorldModel {
             scene.reserve_image_pixels(pixels - scene.image_pixels())?;
         }
         let scene = Arc::new(scene);
-        let admission = Admission::scene(scene.clone())?;
+        let admission = Admission::from_validated_scene(scene.clone())?;
         let mut output = Self {
             base: Base::Scene(scene),
             layers: vec![],
@@ -80,6 +80,7 @@ impl WorldModel {
         };
         let model = output.share_meshes(model)?;
         output.admission = Admission::model(&model)?;
+        output.admission.check(output.limits)?;
         output.publish_meshes(&model);
         output.base = Base::Instances(Arc::new(model));
         output.retained_bytes = output.charge(&output.admission, None, None)?;
@@ -242,7 +243,7 @@ impl WorldModel {
             .iter()
             .flat_map(|model| model.mesh_artifacts.values().map(String::as_str))
             .collect();
-        let mut bytes = admission::retained_bytes(
+        let mut bytes = super::retention::retained_bytes(
             self.base_scene().map(|scene| scene.as_ref()),
             models.iter().copied(),
         );

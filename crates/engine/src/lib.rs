@@ -56,14 +56,38 @@ pub fn library_assets(source: &str) -> String {
         if document.metadata.iter().any(|node| {
             node.kind == "city" && node.children.iter().any(|child| child.kind == "building")
         }) {
-            images.extend(worldspec::shipped::stock_images());
+            let restaurant = document
+                .metadata
+                .iter()
+                .filter(|n| n.kind == "city")
+                .flat_map(|city| &city.children)
+                .any(|n| n.text("front-trade") == Some("roast"));
+            images.extend(worldspec::shipped::stock_images(restaurant));
+        }
+        let roles: std::collections::BTreeSet<_> = document
+            .metadata
+            .iter()
+            .filter(|node| node.kind == "city")
+            .flat_map(|city| city.children.iter().map(|child| child.kind.as_str()))
+            .collect();
+        images.extend(roles.into_iter().flat_map(worldspec::shipped::prop_images));
+        fn has_window(node: &superspec_types::architecture::Node) -> bool {
+            node.kind == "window" || node.children.iter().any(has_window)
+        }
+        if document
+            .elements
+            .iter()
+            .chain(document.declarations.values())
+            .any(has_window)
+        {
+            images.extend(worldspec::shipped::prop_images("hosted-window"));
         }
         for node in document
             .declarations
             .values()
             .filter(|n| n.kind == "material")
         {
-            if let Ok(material) = superspec_aml::material::Material::read(node) {
+            if let Ok(material) = superspec_aml::material_catalog::registered_material(node) {
                 images.extend(
                     material
                         .companions()

@@ -3,6 +3,8 @@
 // derivatives where the baker propagates a footprint, so a preview is close, not identical.
 uniform sampler2D ms_features;
 uniform int ms_feature_count;
+// Optional table of candidate row ranges after the feature rows. Zero keeps the portable full scan.
+uniform int ms_feature_selectors;
 uniform vec3 ms_gravity;
 uniform vec3 ms_bounds_min;
 uniform vec3 ms_bounds_max;
@@ -190,9 +192,15 @@ float ms_segment(vec3 point, vec3 start, vec3 end) {
   float t = squared > 0.0 ? clamp(dot(point - start, along) / squared, 0.0, 1.0) : 0.0;
   return length(point - start - along * t);
 }
+ivec2 ms_feature_range(int selector) {
+  if (ms_feature_selectors == 0) return ivec2(0, ms_feature_count);
+  if (selector >= ms_feature_selectors) return ivec2(0);
+  return ivec2(texelFetch(ms_features, ivec2(selector % 3, ms_feature_count + selector / 3), 0).xy);
+}
 float ms_crease_distance(int selector, float minimum, float limit) {
   float nearest = limit;
-  for (int i = 0; i < ms_feature_count; i++) {
+  ivec2 rows = ms_feature_range(selector);
+  for (int i = rows.x; i < rows.y; i++) {
     vec4 a = texelFetch(ms_features, ivec2(0, i), 0), b = texelFetch(ms_features, ivec2(1, i), 0);
     if (ms_selected(a.w, b.w, selector, minimum)) nearest = min(nearest, ms_segment(ms_world, a.xyz, b.xyz));
   }
@@ -201,7 +209,8 @@ float ms_crease_distance(int selector, float minimum, float limit) {
 vec3 ms_crease_normal(int selector, float minimum, float limit) {
   float nearest = limit;
   vec3 chosen = ms_normal;
-  for (int i = 0; i < ms_feature_count; i++) {
+  ivec2 rows = ms_feature_range(selector);
+  for (int i = rows.x; i < rows.y; i++) {
     vec4 a = texelFetch(ms_features, ivec2(0, i), 0), b = texelFetch(ms_features, ivec2(1, i), 0), n = texelFetch(ms_features, ivec2(2, i), 0);
     if (n.w < 0.5 || !ms_selected(a.w, b.w, selector, minimum) || dot(n.xyz, ms_normal) <= 0.0) continue;
     float gap = ms_segment(ms_world, a.xyz, b.xyz);
@@ -212,7 +221,8 @@ vec3 ms_crease_normal(int selector, float minimum, float limit) {
 vec3 ms_crease_tangent(int selector, float minimum, float limit) {
   float nearest = limit;
   vec3 chosen = vec3(0.0);
-  for (int i = 0; i < ms_feature_count; i++) {
+  ivec2 rows = ms_feature_range(selector);
+  for (int i = rows.x; i < rows.y; i++) {
     vec4 a = texelFetch(ms_features, ivec2(0, i), 0), b = texelFetch(ms_features, ivec2(1, i), 0);
     if (!ms_selected(a.w, b.w, selector, minimum)) continue;
     float gap = ms_segment(ms_world, a.xyz, b.xyz);

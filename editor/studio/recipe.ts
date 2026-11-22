@@ -1,5 +1,5 @@
 import type { AuthoringDiagnostic, ParameterValue } from "../../browser/runtime/authoring.ts";
-import type { Catalog, EditOp, Entry, Patch, RecipeInspection, RecipeTools, Span } from "../../browser/runtime/recipe.ts";
+import type { Catalog, EditOp, Entry, Patch, RecipeInspection, RecipeClient, Span } from "../../browser/runtime/recipe.ts";
 import { download } from "./project.ts";
 
 /** What the panel needs from its studio: current text, a way to apply patches, and current overrides. */
@@ -78,7 +78,7 @@ export class RecipePanel {
   private signature = "";
   private readonly message = element("p", "recipe-message");
 
-  constructor(private readonly host: HTMLElement, private readonly tools: RecipeTools, private readonly io: RecipeHost) {
+  constructor(private readonly host: HTMLElement, private readonly tools: RecipeClient, private readonly io: RecipeHost) {
     this.message.setAttribute("role", "alert");
   }
 
@@ -96,6 +96,8 @@ export class RecipePanel {
     const generation = ++this.generation;
     const source = this.source();
     const { module } = source;
+    // Parameter overrides and item placements do not change recipe spans or dependencies.
+    const retained = this.inspected && same(this.inspected, source) ? this.inspection : undefined;
     this.inspected = undefined;
     if (this.controls) this.controls.disabled = true;
     if (!module.endsWith(".material.ts")) {
@@ -104,7 +106,7 @@ export class RecipePanel {
       return;
     }
     const { revision: _revision, ...request } = source;
-    const result = await this.tools.inspect(request);
+    const result = retained ? { success: true as const, inspection: retained } : await this.tools.inspect(request);
     if (generation !== this.generation || !this.matches(source)) return;
     if (!result.success) {
       this.signature = "";

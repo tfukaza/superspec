@@ -1,0 +1,12 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-weed",
+  "parameters": {
+    "seed": { "type": "integer", "default": 1, "min": 0, "max": 31 },
+    "variant": { "type": "choice", "default": "mound", "choices": ["mound", "seam"] }
+  },
+  "parts": [
+    { "id": "underpainting", "generator": { "kind": "item", "entry": ["kowloon-weed-paint.item.json", "kowloon-weed-seam.item.json"], "pick": "variant" } },
+    { "id": "shoots", "generator": { "kind": "native", "name": "kowloon/weed-blades", "parameters": { "seed": { "parameter": "seed" }, "variant": { "parameter": "variant" } } } }
+  ],
+  "collision": "none"
+}

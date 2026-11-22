@@ -1,6 +1,7 @@
 //! Kowloon producer admission and compatibility counters; artifacts belong to the session runtime.
 use super::{bake::BakedMaterial, mesh::BoundMesh};
 pub use crate::runtime::cache::Stats;
+use crate::treespec::batches::FoliageBatch;
 use crate::{
     assets::identities::Identities,
     runtime::{
@@ -10,7 +11,13 @@ use crate::{
     },
     session::Artifact,
 };
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+const PLANTS: Retention = Retention {
+    name: "kowloon-plant",
+    bytes: 32 * 1024 * 1024,
+    entries: 16,
+};
 
 const RASTERS: Retention = Retention {
     name: "kowloon-raster",
@@ -40,6 +47,9 @@ pub struct Cache {
     runtime: Arc<Runtime<Artifact>>,
     images: Identities,
     stats: Stats,
+    /// The item compiler has its own revision counter and bounded geometry cache.
+    /// Its jobs must never advance the parent world compilation's cancellation epoch.
+    city_items: Option<Arc<Mutex<crate::Session>>>,
 }
 impl Default for Cache {
     fn default() -> Self {
@@ -52,7 +62,11 @@ impl Cache {
             runtime,
             images: Identities::default(),
             stats: Stats::default(),
+            city_items: None,
         }
+    }
+    pub(crate) fn city_items(&mut self) -> Arc<Mutex<crate::Session>> {
+        self.city_items.get_or_insert_with(Default::default).clone()
     }
     pub fn stats(&self) -> Stats {
         let mut stats = self.stats;
@@ -62,6 +76,20 @@ impl Cache {
     }
     pub fn image(&mut self, bytes: &[u8]) -> u64 {
         self.images.image(bytes)
+    }
+    pub(super) fn plant(&mut self, key: &[u8; 32]) -> Option<Arc<[FoliageBatch]>> {
+        if let Some(value) = self.runtime.lookup(PLANTS, key)
+            && let Artifact::Foliage(levels) = value.as_ref()
+        {
+            self.stats.plant_hits += 1;
+            return Some(levels.clone());
+        }
+        self.stats.plant_misses += 1;
+        None
+    }
+    pub(super) fn retain_plant(&self, key: [u8; 32], levels: Arc<[FoliageBatch]>, bytes: usize) {
+        self.runtime
+            .retain(PLANTS, key, Artifact::Foliage(levels), bytes, false);
     }
     pub(crate) fn binding(&mut self, key: &[u8; 32]) -> Option<Arc<BoundMesh>> {
         let value = self

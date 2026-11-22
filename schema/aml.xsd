@@ -87,6 +87,8 @@
     <xs:attribute name="repeat" type="xs:double"/>
     <xs:attribute name="roughness" type="xs:double"/>
     <xs:attribute name="metalness" type="xs:double"/>
+    <xs:attribute name="emissive" type="xs:string"/>
+    <xs:attribute name="emissive-strength" type="xs:double"/>
     <xs:attribute name="texture" type="xs:string"/>
     <xs:attribute name="normal-texture" type="xs:string"/>
     <xs:attribute name="normal-scale" type="xs:double"/>
@@ -594,6 +596,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -655,6 +658,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -716,6 +720,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -777,6 +782,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -838,6 +844,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -899,6 +906,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -960,6 +968,7 @@
       <xs:element ref="opening"/>
       <xs:element ref="panel"/>
       <xs:element ref="glazing"/>
+      <xs:element ref="window"/>
       <xs:element ref="infill"/>
       <xs:element ref="frame"/>
       <xs:element ref="box"/>
@@ -1049,6 +1058,18 @@
   <xs:element name="roof" type="slabType"/>
   <xs:element name="canopy" type="slabType"/>
   <xs:element name="glazing" type="panelType"/>
+  <xs:element name="window">
+    <xs:complexType>
+      <xs:attribute name="id" type="xs:string" use="required"/>
+      <xs:attribute name="opening" type="xs:string" use="required"/>
+      <xs:attribute name="open" type="xs:boolean" default="false"/>
+      <xs:attribute name="label" type="xs:string"/>
+      <xs:attribute name="group" type="xs:string"/>
+      <xs:attribute name="visible" type="xs:boolean"/>
+      <xs:attribute name="collidable" type="xs:boolean"/>
+      <xs:attribute name="dynamic" type="xs:boolean"/>
+    </xs:complexType>
+  </xs:element>
   <xs:element name="infill" type="panelType"/>
   <xs:element name="frame" type="panelType"/>
   <xs:element name="wedge" type="boxType"/>
@@ -1127,18 +1148,58 @@
     <xs:attribute name="count" type="xs:positiveInteger"/>
     <xs:attribute name="step" type="xs:string"/>
   </xs:complexType>
+  <xs:complexType name="cityLinearFixture"><xs:complexContent><xs:extension base="cityPlacement">
+    <xs:attribute name="length" type="xs:double"/>
+  </xs:extension></xs:complexContent></xs:complexType>
   <xs:complexType name="cityStrip"><xs:complexContent><xs:extension base="cityPlacement">
     <xs:attribute name="length" type="xs:double"/><xs:attribute name="width" type="xs:double"/>
   </xs:extension></xs:complexContent></xs:complexType>
+  <xs:complexType name="cityPlant"><xs:complexContent><xs:extension base="cityPlacement">
+    <xs:attribute name="scale" type="xs:double"/>
+  </xs:extension></xs:complexContent></xs:complexType>
   <xs:element name="city"><xs:complexType><xs:choice minOccurs="0" maxOccurs="unbounded">
+    <xs:element name="ceiling-bulkhead" type="cityPlacement"/>
+    <xs:element name="wall-extraction-grille" type="cityPlacement"/>
+    <xs:element name="passage-sign-lamp" type="cityPlacement"/>
+    <xs:element name="utility-cabinet"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="seed"><xs:simpleType><xs:restriction base="xs:nonNegativeInteger"><xs:maxInclusive value="2147483647"/></xs:restriction></xs:simpleType></xs:attribute>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
+    <xs:element name="ceiling-twin-strip"><xs:complexType><xs:complexContent>
+      <xs:extension base="cityLinearFixture"><xs:attribute name="enclosed" type="xs:boolean"/></xs:extension>
+    </xs:complexContent></xs:complexType></xs:element>
+    <xs:element name="ceiling-girder"><xs:complexType><xs:complexContent><xs:extension base="cityLinearFixture">
+      <xs:attribute name="soffitGap" type="xs:double"/><xs:attribute name="hangerStations" type="xs:string"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
+    <xs:element name="pipe-run"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="points" type="xs:string"/><xs:attribute name="supports" type="xs:string"/><xs:attribute name="radius" type="xs:double"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
+    <xs:element name="duct-run"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="points" type="xs:string"/><xs:attribute name="supports" type="xs:string"/><xs:attribute name="width" type="xs:double"/><xs:attribute name="height" type="xs:double"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
+    <xs:element name="grass-field"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
+      <xs:attribute name="src" type="xs:string" use="required"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
     <xs:element name="pillar" type="cityConcreteMember"/><xs:element name="wall" type="cityConcreteMember"/>
+    <xs:element name="procedural-wall"><xs:complexType><xs:complexContent><xs:extension base="cityConcreteMember">
+      <xs:attribute name="seed" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="dressing" type="xs:boolean"/>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
     <xs:element name="road" type="cityStrip"/><xs:element name="avenue" type="cityStrip"/>
-    <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlacement"/><xs:element name="shrub" type="cityPlacement"/>
+    <xs:element name="sidewalk" type="cityStrip"/><xs:element name="tree" type="cityPlant"/><xs:element name="shrub" type="cityPlant"/>
+    <xs:element name="weed"><xs:complexType><xs:complexContent><xs:extension base="cityPlant">
+      <xs:attribute name="variant"><xs:simpleType><xs:restriction base="xs:string">
+        <xs:enumeration value="mound"/><xs:enumeration value="seam"/>
+      </xs:restriction></xs:simpleType></xs:attribute>
+    </xs:extension></xs:complexContent></xs:complexType></xs:element>
     <xs:element name="lamp"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
       <xs:attribute name="banner" type="xs:boolean"/>
     </xs:extension></xs:complexContent></xs:complexType></xs:element>
     <xs:element name="building"><xs:complexType><xs:complexContent><xs:extension base="cityPlacement">
       <xs:attribute name="floors" type="xs:positiveInteger"/>
+      <xs:attribute name="footprint" type="xs:string"/>
+      <xs:attribute name="width" type="xs:double"/><xs:attribute name="depth" type="xs:double"/>
+      <xs:attribute name="seed" type="xs:nonNegativeInteger"/>
+      <xs:attribute name="front-trade" type="xs:string"/><xs:attribute name="model" type="xs:string"/>
     </xs:extension></xs:complexContent></xs:complexType></xs:element>
   </xs:choice></xs:complexType></xs:element>
   <xs:complexType name="cityConcreteMember"><xs:complexContent><xs:extension base="cityPlacement">
@@ -1176,6 +1237,7 @@
         <xs:element ref="opening"/>
         <xs:element ref="panel"/>
         <xs:element ref="glazing"/>
+        <xs:element ref="window"/>
         <xs:element ref="infill"/>
         <xs:element ref="frame"/>
         <xs:element ref="box"/>

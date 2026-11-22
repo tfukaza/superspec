@@ -48,6 +48,7 @@ const GEOMETRY: &[&str] = &[
     "opening",
     "panel",
     "glazing",
+    "window",
     "infill",
     "frame",
     "extrusion",
@@ -152,6 +153,7 @@ fn permitted(kind: &str) -> Option<String> {
                 "{BASE} host shape mode center width height radius radii profile depth offset reveal-material"
             ));
         }
+        "window" => "id label group visible collidable dynamic opening open",
         "panel" | "glazing" | "infill" | "frame" => {
             return Some(format!("{BASE} opening depth offset border"));
         }
@@ -301,6 +303,7 @@ fn read(
             Value::Vector(parsed)
         } else if [
             "visible",
+            "open",
             "collidable",
             "dynamic",
             "closed",
@@ -488,7 +491,7 @@ fn validate_required(node: &Node) -> Result<(), Diagnostic> {
         "slab" | "landing" | "roof" | "canopy" | "extrusion" | "water" | "zone" | "room"
         | "volume" | "clearance" => "profile",
         "opening" | "enclosure" => "host",
-        "panel" | "glazing" | "infill" | "frame" => "opening",
+        "panel" | "glazing" | "infill" | "frame" | "window" => "opening",
         "sweep" | "beam" | "column" => "profile path",
         "instance" => "ref",
         "retaining-wall" => "lower upper",

@@ -138,3 +138,55 @@ fn collision_command_does_not_require_visual_texture_files() {
     assert_eq!(visual.status.code(), Some(1));
     assert!(visual.stdout.is_empty());
 }
+
+#[test]
+fn portable_cli_exports_repeated_buildings_as_nodes_with_shared_meshes() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("city.aml");
+    std::fs::write(
+        &path,
+        r#"<architecture version="1" id="portable"><city>
+          <building id="lot" position="0 0 0" floors="2" seed="9" count="2" step="30 0 0"/>
+        </city></architecture>"#,
+    )
+    .unwrap();
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_superspec"))
+            .arg("glb")
+            .arg(&path)
+            .arg("--no-uv")
+            .args(extra)
+            .env("PATH", "")
+            .output()
+            .unwrap()
+    };
+    let output = run(&["--portable"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc = document(&output.stdout);
+    assert!(doc.get("extensionsRequired").is_none());
+    let images = doc["images"].as_array().unwrap();
+    assert!(!images.is_empty());
+    assert!(
+        images
+            .iter()
+            .all(|image| matches!(image["mimeType"].as_str(), Some("image/png" | "image/jpeg")))
+    );
+    let copies: Vec<_> = doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["extras"]["batchId"].is_string())
+        .collect();
+    assert!(!copies.is_empty());
+    let first = copies[0];
+    assert!(copies.iter().any(|node| {
+        node["mesh"] == first["mesh"] && node["translation"] != first["translation"]
+    }));
+    let conflict = run(&["--portable", "--textures", "ktx2"]);
+    assert_eq!(conflict.status.code(), Some(2));
+    assert!(conflict.stdout.is_empty());
+}

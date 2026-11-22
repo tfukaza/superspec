@@ -1,0 +1,24 @@
+{
+  "format": "itemspec", "version": 2, "id": "kowloon-service-pipe",
+  "parameters": {
+    "points": {"type":"grid","default":[[0,0,0],[0,0,2.4],[3.5,0,2.4]]},
+    "supports": {"type":"grid","default":[]},
+    "radius": {"type":"number","default":0.055,"min":0.012,"max":0.28,"unit":"m"}
+  },
+  "parts": [{
+    "id": "run",
+    "generator": {
+      "kind": "route",
+      "points": {"parameter":"points"},
+      "supports": {"parameter":"supports"},
+      "section": {"kind":"round","radius":"radius"},
+      "bendRadius": "radius * 2.5",
+      "segments": 16, "bendSegments": 8, "capped": true,
+      "omitUnfittableRepeats": true,
+      "fittings": [{"kind":"coupling","id":"sleeve","at":{"every":1.35},"clearance":0.009,"length":0.09}]
+    },
+    "slots": {"body":"skin","end":"skin","fitting":"hardware","bolt":"hardware","bracket":"hardware"}
+  }],
+  "slots": {"skin":{"entry":"builtin:wall-rust"},"hardware":{"entry":"builtin:metal"}},
+  "collision": "none"
+}

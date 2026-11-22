@@ -150,6 +150,7 @@ impl Library {
             ("metal", "metal"),
             ("brushed-metal", "brushed-metal"),
             ("kitchen-metal", "kitchen-metal"),
+            ("kitchen-worktop", "kitchen-worktop"),
             ("vent-metal", "vent-metal"),
             ("vent-edge", "vent-edge"),
             ("shop-register", "shop-register"),
@@ -171,6 +172,7 @@ impl Library {
             ("market-trays", "market-trays"),
             ("snack-packet", "snack-packet"),
             ("grocer-props", "grocer-props"),
+            ("market-hero-props", "market-hero-props"),
         ] {
             materials.insert(slot.into(), self.finish(role)?);
         }

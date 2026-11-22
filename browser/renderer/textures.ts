@@ -29,8 +29,29 @@ function retire(texture: THREE.Texture): void {
 export class TexturePool {
   private readonly entries = new Map<string, Entry>();
   private closed = false;
+  private anisotropy = MAP_ANISOTROPY;
 
   constructor(private readonly renderer: THREE.WebGLRenderer) {}
+
+  /** Runtime filtering of decoded maps, independent of the authored texture or bake resolution. */
+  setAnisotropy(requested = MAP_ANISOTROPY): void {
+    const samples = Math.max(MAP_ANISOTROPY, Math.min(requested, this.renderer.capabilities.getMaxAnisotropy()));
+    if (samples === this.anisotropy) return;
+    this.anisotropy = samples;
+    for (const [key, entry] of this.entries) {
+      void entry.texture.then(texture => {
+        if (this.entries.get(key) === entry && this.filter(texture)) texture.needsUpdate = true;
+      }, () => {});
+    }
+  }
+
+  private filter(texture: THREE.Texture): boolean {
+    const samples = texture.magFilter === THREE.LinearFilter && texture.minFilter === THREE.LinearMipmapLinearFilter
+      ? this.anisotropy : MAP_ANISOTROPY;
+    if (texture.anisotropy === samples) return false;
+    texture.anisotropy = samples;
+    return true;
+  }
 
   /** Retains one reference per scene lease, including while an image is still loading. */
   acquire(key: string, bytes: Uint8Array<ArrayBuffer>, mime: string, color: boolean, leases: Set<string>): Promise<THREE.Texture> {
@@ -40,7 +61,7 @@ export class TexturePool {
       const configure = (value: THREE.Texture): THREE.Texture => {
         value.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
         value.wrapS = value.wrapT = THREE.RepeatWrapping;
-        value.anisotropy = MAP_ANISOTROPY;
+        this.filter(value);
         return value;
       };
       let texture: Promise<THREE.Texture>;

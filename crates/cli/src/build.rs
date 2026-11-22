@@ -1,4 +1,5 @@
 //! Staged publication preserves previous artifacts and unrelated user files on failure.
+mod publication;
 use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
@@ -54,11 +55,11 @@ fn check(cancelled: &dyn Fn() -> bool) -> Result<(), String> {
 pub fn publish(
     scene: &Scene,
     output: &Path,
-    textures: superspec_export::Textures,
+    options: &superspec_export::Options<'_>,
     blender: Option<&Path>,
     quake: Option<&crate::external::QuakeOptions>,
-    cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<Vec<PathBuf>, String> {
+    let cancelled = options.cancelled;
     let parent = output.parent().ok_or("Output needs a parent directory.")?;
     fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     let stamp = std::time::SystemTime::now()
@@ -72,16 +73,11 @@ pub fn publish(
         files: vec![],
         preserve: false,
     };
-    let options = superspec_export::Options {
-        cancelled,
-        textures,
-        ..Default::default()
-    };
     check(cancelled)?;
     eprintln!("Writing scene packet…");
     staging.write("scene.lsp", &scene.packet())?;
     eprintln!("Exporting portable models…");
-    let glb = superspec_export::glb(scene, &options)?;
+    let glb = superspec_export::glb(scene, options)?;
     let (gltf, bin) = superspec_export::gltf_files(&glb)?;
     staging.write("scene.glb", &glb)?;
     if let Some(quake) = quake {
@@ -94,7 +90,7 @@ pub fn publish(
         }
         let palette =
             fs::read(&quake.palette).map_err(|e| format!("Cannot read Quake palette: {e}"))?;
-        let files = superspec_export::quake::encode(scene, &palette, &options)?;
+        let files = superspec_export::quake::encode(scene, &palette, options)?;
         staging.write("scene.map", &files.map)?;
         staging.write("scene.wad", &files.wad)?;
         crate::external::quake(quake, &staging.directory, cancelled)?;
@@ -223,8 +219,10 @@ pub fn publish(
     };
     if old.iter().any(|name| {
         Path::new(name).file_name().and_then(|s| s.to_str()) != Some(name.as_str())
-            || name == "."
-            || name == ".."
+            || matches!(
+                name.as_str(),
+                "" | "." | ".." | MANAGED | ".superspec-build.lock" | "superspec-generations"
+            )
     }) {
         return Err("Invalid managed artifact name.".into());
     }
@@ -233,25 +231,44 @@ pub fn publish(
             return Err(format!("Output contains an unmanaged file named {name}."));
         }
     }
+    let mut generation = publication::snapshot(&staging.directory, output, &names, cancelled)
+        .map_err(|e| e.to_string())?;
+    publication::game_entry(
+        &staging.directory.join("game.json"),
+        &generation.relative,
+        &names,
+    )?;
     let mut replace: BTreeSet<String> = old.into_iter().chain(names.iter().cloned()).collect();
     replace.insert(MANAGED.into());
     let mut backups = vec![];
     let mut written = vec![];
     let commit = (|| -> Result<(), String> {
-        for (i, name) in replace.into_iter().enumerate() {
+        for (i, name) in replace.iter().enumerate() {
             check(cancelled)?;
-            let path = output.join(&name);
+            let path = output.join(name);
             if path.symlink_metadata().is_ok() {
                 let backup = staging.directory.join(format!("backup-{i}"));
-                fs::rename(&path, &backup).map_err(|e| e.to_string())?;
+                publication::backup(&path, &backup).map_err(|e| e.to_string())?;
                 staging.files.push(backup.clone());
                 backups.push((path, backup));
+            }
+        }
+        for name in replace
+            .iter()
+            .filter(|name| name.as_str() != MANAGED && !names.contains(name))
+        {
+            let target = output.join(name);
+            if target.try_exists().map_err(|e| e.to_string())? {
+                check(cancelled)?;
+                fs::remove_file(&target).map_err(|e| e.to_string())?;
+                written.push(target);
             }
         }
         for name in names
             .iter()
             .map(String::as_str)
-            .chain(std::iter::once(MANAGED))
+            .filter(|name| *name != "game.json")
+            .chain([MANAGED, "game.json"])
         {
             check(cancelled)?;
             let target = output.join(name);
@@ -261,16 +278,7 @@ pub fn publish(
         Ok(())
     })();
     if let Err(error) = commit {
-        for path in written.iter().rev() {
-            let _ = fs::remove_file(path);
-        }
-        let mut recovery = vec![];
-        for (path, backup) in backups.iter().rev() {
-            if let Err(e) = fs::rename(backup, path) {
-                recovery.push(e.to_string());
-                staging.files.retain(|p| p != backup);
-            }
-        }
+        let recovery = publication::rollback(written, &backups);
         if !recovery.is_empty() {
             staging.preserve = true;
             return Err(format!(
@@ -281,7 +289,16 @@ pub fn publish(
         }
         return Err(error);
     }
-    Ok(names.into_iter().map(|name| output.join(name)).collect())
+    generation.commit();
+    Ok(names
+        .iter()
+        .map(|name| output.join(name))
+        .chain(
+            names
+                .iter()
+                .map(|name| output.join(&generation.relative).join(name)),
+        )
+        .collect())
 }
 
 #[cfg(test)]
@@ -289,43 +306,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cancellation_during_replacement_restores_previous_artifacts() {
-        let scene = superspec_engine::compile(r#"<architecture version="1" id="publish"><box id="box" width="1" depth="1" height="1"/></architecture>"#, 0).unwrap();
+    fn readers_retain_their_generation_through_cancellation_and_replacement() {
+        let compile = |width| {
+            superspec_engine::compile(&format!(r#"<architecture version="1" id="publish"><box id="box" width="{width}" depth="1" height="1"/></architecture>"#), 0).unwrap()
+        };
+        let original = compile(1);
+        let changed = compile(2);
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("output");
-        publish(
-            &scene,
-            &output,
-            superspec_export::Textures::Png,
-            None,
-            None,
-            &|| false,
-        )
-        .unwrap();
-        fs::write(output.join("user-note.txt"), "keep").unwrap();
+        let build = |scene, cancelled: &(dyn Fn() -> bool + Sync)| {
+            publish(
+                scene,
+                &output,
+                &superspec_export::Options {
+                    cancelled,
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+        };
+        let entry = || {
+            serde_json::from_slice::<serde_json::Value>(
+                &fs::read(output.join("game.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        let original_artifacts = build(&original, &|| false).unwrap();
+        let before_entry = entry();
         let before = fs::read(output.join("scene.glb")).unwrap();
-        let result = publish(
-            &scene,
-            &output,
-            superspec_export::Textures::Png,
-            None,
-            None,
-            &|| !output.join("scene.lsp").exists(),
-        );
+        let immutable = output.join(before_entry["visual"].as_str().unwrap());
+        assert_ne!(immutable, output.join("scene.glb"));
+        for artifact in before_entry["artifacts"].as_object().unwrap().values() {
+            let path = output.join(artifact.as_str().unwrap());
+            assert!(path.is_file() && original_artifacts.contains(&path));
+        }
+        fs::write(output.join("user-note.txt"), "keep").unwrap();
+        let result = build(&changed, &|| {
+            assert!(output.join("scene.lsp").is_file());
+            assert_eq!(entry(), before_entry);
+            fs::read(output.join("scene.glb")).unwrap() != before
+        });
         assert!(result.unwrap_err().contains("cancelled"));
+        assert_eq!(
+            fs::read_dir(output.join("superspec-generations"))
+                .unwrap()
+                .count(),
+            1
+        );
         assert_eq!(fs::read(output.join("scene.glb")).unwrap(), before);
+        assert_eq!(entry(), before_entry);
+        build(&changed, &|| false).unwrap();
+        let current = entry();
+        assert_ne!(current["visual"], before_entry["visual"]);
+        let published = fs::read(output.join(current["visual"].as_str().unwrap())).unwrap();
+        assert_ne!(published, before);
+        assert_eq!(published, fs::read(output.join("scene.glb")).unwrap());
+        assert_eq!(before, fs::read(&immutable).unwrap());
+        fs::write(output.join("scene.glb"), b"edited legacy alias").unwrap();
+        assert_eq!(
+            published,
+            fs::read(output.join(current["visual"].as_str().unwrap())).unwrap()
+        );
+        build(&changed, &|| false).unwrap();
+        assert_eq!(entry(), current);
         assert_eq!(
             fs::read_to_string(output.join("user-note.txt")).unwrap(),
             "keep"
         );
-        publish(
-            &scene,
-            &output,
-            superspec_export::Textures::Png,
-            None,
-            None,
-            &|| false,
-        )
-        .unwrap();
     }
 }

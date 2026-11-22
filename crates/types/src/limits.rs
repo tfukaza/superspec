@@ -23,6 +23,38 @@ pub const MAX_PROJECT_FILE_BYTES: usize = MAX_COMPANION_BYTES / 3 * 4 + 64 * MIB
 /// One exported GLB, which glTF limits to 4 GiB.
 pub const MAX_EXPORT_BYTES: usize = 2048 * MIB;
 
+/// A local mesh resource before any of its placements are expanded.
+pub const MAX_LOCAL_MESH_VERTICES: usize = 750_000;
+pub const MAX_LOCAL_MESH_INDICES: usize = 4_500_000;
+/// Ordinary geometry after expanding every placement of one item model.
+pub const MAX_MODEL_VERTICES: usize = 1_500_000;
+pub const MAX_MODEL_INDICES: usize = 9_000_000;
+/// Number of mesh resources or ordinary placement records in one model.
+pub const MAX_MODEL_RECORDS_PER_KIND: usize = 16_384;
+/// Composed world geometry, including the template stored once for each batch.
+pub const MAX_WORLD_VERTICES: usize = 6_000_000;
+pub const MAX_WORLD_INDICES: usize = 18_000_000;
+/// Distinct material or image records admitted in a delivered world.
+pub const MAX_SCENE_MATERIALS: usize = 16_384;
+pub const MAX_SCENE_IMAGES: usize = 16_384;
+
+/// All batch draws and placements, counted separately from ordinary meshes.
+pub const MAX_BATCHES: usize = 16_384;
+pub const MAX_INSTANCES: usize = 1_000_000;
+/// Geometry stored once for each batch. Repeated placements do not multiply it.
+pub const MAX_BATCH_VERTICES: usize = 6_000_000;
+pub const MAX_BATCH_INDICES: usize = 36_000_000;
+/// Named scalar/vector attribute components across all batch buffers in a packet.
+pub const MAX_BATCH_ATTRIBUTE_FLOATS: usize = 64_000_000;
+
+/// Independent model inputs and material assignments in one Studio project document.
+pub const MAX_PROJECT_MODELS: usize = 16;
+pub const MAX_PROJECT_MATERIAL_ASSIGNMENTS: usize = 64;
+/// Material alternates exclude the base material. Geometry levels include the near level.
+pub const MAX_MATERIAL_LOD_ALTERNATIVES: usize = 16;
+pub const MAX_GEOMETRY_LOD_LEVELS: usize = 16;
+pub const MAX_GEOMETRY_LOD_GROUPS: usize = 16_384;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +90,23 @@ mod tests {
             ("MAX_COMPANIONS", MAX_COMPANIONS),
             ("MAX_SCENE_IMAGE_BYTES", MAX_SCENE_IMAGE_BYTES),
             ("MAX_PROJECT_FILE_BYTES", MAX_PROJECT_FILE_BYTES),
+            ("MAX_SCENE_IMAGES", MAX_SCENE_IMAGES),
+            ("MAX_BATCHES", MAX_BATCHES),
+            ("MAX_INSTANCES", MAX_INSTANCES),
+            ("MAX_BATCH_VERTICES", MAX_BATCH_VERTICES),
+            ("MAX_BATCH_INDICES", MAX_BATCH_INDICES),
+            ("MAX_BATCH_ATTRIBUTE_FLOATS", MAX_BATCH_ATTRIBUTE_FLOATS),
+            ("MAX_PROJECT_MODELS", MAX_PROJECT_MODELS),
+            (
+                "MAX_PROJECT_MATERIAL_ASSIGNMENTS",
+                MAX_PROJECT_MATERIAL_ASSIGNMENTS,
+            ),
+            (
+                "MAX_MATERIAL_LOD_ALTERNATIVES",
+                MAX_MATERIAL_LOD_ALTERNATIVES,
+            ),
+            ("MAX_GEOMETRY_LOD_LEVELS", MAX_GEOMETRY_LOD_LEVELS),
+            ("MAX_GEOMETRY_LOD_GROUPS", MAX_GEOMETRY_LOD_GROUPS),
         ] {
             assert_eq!(value(name), expected, "{name}");
         }

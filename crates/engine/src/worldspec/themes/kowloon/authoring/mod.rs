@@ -1,4 +1,8 @@
 //! Offline authoring of Kowloon recipes and item catalogs.
+mod cabinet_finishes;
+pub mod casement_finishes;
+pub mod fixture_finishes;
+pub mod grille_frame;
 pub mod intrinsic;
 pub mod kit;
 pub mod prop_textures;

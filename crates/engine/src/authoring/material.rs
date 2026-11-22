@@ -1,3 +1,5 @@
+mod lods;
+
 use super::{
     Artifact, Diagnostic, Output, Request, Session,
     receiver::{self, Atlas, Chart},
@@ -2550,7 +2552,12 @@ fn layout_node(index: usize, receiver: &super::Receiver, request: &Request) -> N
     }
     node(
         format!("layout/{index}"),
-        "receiver-atlas-v3",
+        if request.mapping == super::Mapping::Anchored && request.density_of(&receiver.id).is_some()
+        {
+            "receiver-atlas-v4"
+        } else {
+            "receiver-atlas-v3"
+        },
         inputs,
         vec![],
     )
@@ -2659,6 +2666,7 @@ struct Share<'a> {
     index: usize,
     count: usize,
     keys: &'a [ContentKey],
+    generation: u64,
     /// The per-texel data wanted of each bake, parallel to `keys`.
     groups: &'a [Groups],
 }
@@ -2671,10 +2679,13 @@ impl Session {
         assets: &dyn Fn(&str) -> Result<Arc<[u8]>, String>,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Output, Vec<Diagnostic>> {
-        match self.material_with(request, revision, assets, cancelled, None)? {
-            Built::Output(output) => Ok(output),
-            Built::Share(_) => unreachable!("no share was requested"),
-        }
+        let Built::Output(mut output) =
+            self.material_with(request, revision, assets, cancelled, None)?
+        else {
+            unreachable!("no share was requested")
+        };
+        self.attach_material_lods(&mut output, request, revision, assets, cancelled)?;
+        Ok(output)
     }
 
     /// Lets a host that can run several engine instances (browser workers) bake rows in
@@ -2686,17 +2697,16 @@ impl Session {
     /// again. Rows are the same bytes wherever they are evaluated, so the result is identical to
     /// an undistributed build. Disabling drops reported bakes and rows that were never used.
     pub fn distribute_bakes(&mut self, enabled: bool) {
-        self.distribution.enabled = enabled;
-        if !enabled {
-            self.distribution.pending.clear();
-            self.distribution.provided.clear();
-            self.distribution.reported.clear();
+        let distribution = self.distribution.get_mut();
+        if !enabled && distribution.enabled {
+            distribution.reset();
         }
+        distribution.enabled = enabled;
     }
 
     /// The next bake the last build stopped for, if any, in the order they were reported.
     pub fn take_pending_bake(&mut self) -> Option<PendingBake> {
-        (!self.distribution.pending.is_empty()).then(|| self.distribution.pending.remove(0))
+        self.distribution.get_mut().pending.pop_front()
     }
 
     /// Evaluates one share of a pending bake. Runs in any session given the same assets; the
@@ -2736,6 +2746,7 @@ impl Session {
             index,
             count,
             keys: &keys,
+            generation: pending.generation,
             groups: &groups,
         };
         match self.material_with(&pending.request, revision, assets, cancelled, Some(share))? {
@@ -2746,13 +2757,14 @@ impl Session {
 
     /// Accepts rows computed by [`Self::bake_share`] for a bake this session reported.
     pub fn provide_bake_share(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let distribution = self.distribution.get_mut();
         for (key, groups, total, rows) in read_shares(bytes)? {
             // Rows of a bake this session is not waiting for (a superseded edit, or one already
             // built) are dropped: no later build would ask for them.
-            if !self.distribution.reported.contains_key(&key) {
+            if !distribution.reported.contains_key(&key) {
                 continue;
             }
-            let provided = self.distribution.provided.entry(key).or_default();
+            let provided = distribution.provided.entry(key).or_default();
             // Rows of another mask do not mix with these: they hold other data.
             if provided.slots.len() != total || provided.groups != groups {
                 provided.groups = groups;
@@ -2771,8 +2783,8 @@ impl Session {
                 }
             }
             // Over the budget, the rows of the oldest other reports go first.
-            while self.distribution.provided_bytes() > PROVIDED_BYTES
-                && self.distribution.forget_oldest(Some(&key))
+            while distribution.provided_bytes() > PROVIDED_BYTES
+                && distribution.forget_oldest(Some(&key))
             {}
         }
         Ok(())
@@ -3055,15 +3067,17 @@ impl Session {
         // session that bakes a share would have to bake those planes over again, or be sent them.
         // A layered slot's share is the whole stack over its rows (the planes of a texel read
         // only the planes beneath at that texel), which the session baking it makes itself.
-        if share.is_none()
-            && self.distribution.enabled
-            && (planes.sources.is_empty() || chain.is_some())
+        let distribution = self.distribution.get_mut();
+        if share.is_none() && distribution.enabled && (planes.sources.is_empty() || chain.is_some())
         {
             let complete = |key: &ContentKey, wanted: Groups| {
-                self.distribution.provided.get(key).is_some_and(|provided| {
-                    provided.groups.contains_all(wanted.rows())
-                        && provided.slots.iter().all(Option::is_some)
-                })
+                distribution
+                    .provided
+                    .get(&distribution.share_key(key))
+                    .is_some_and(|provided| {
+                        provided.groups.contains_all(wanted.rows())
+                            && provided.slots.iter().all(Option::is_some)
+                    })
             };
             let (keys, groups): (Vec<String>, Vec<u8>) = (0..receivers.len())
                 .filter(|&i| !dirty[i].is_empty() && !complete(&bake_keys[i], dirty[i]))
@@ -3073,12 +3087,6 @@ impl Session {
             let texels = request.resolution * request.resolution * receivers.len();
             if !keys.is_empty() && texels >= DISTRIBUTE_TEXELS {
                 // A bake reported again (the host built before taking it) is listed once.
-                self.distribution
-                    .pending
-                    .retain(|pending| pending.keys != keys || pending.groups != groups);
-                for key in keys.iter().filter_map(|key| parse_key(key)) {
-                    self.distribution.report(key);
-                }
                 // Every asset plane the build reads: the entry's, and those a stack's layers read.
                 let plane_assets: std::collections::BTreeSet<String> = planes
                     .nodes
@@ -3099,7 +3107,7 @@ impl Session {
                     .chain(source_images.keys().filter(|_| chain.is_some()))
                     .cloned()
                     .collect();
-                self.distribution.pending.push(PendingBake {
+                distribution.enqueue(PendingBake {
                     request: if chain.is_some() {
                         original.clone()
                     } else {
@@ -3109,10 +3117,8 @@ impl Session {
                     images: images.into_iter().collect(),
                     groups,
                     planes: plane_assets.into_iter().collect(),
+                    generation: distribution.generation,
                 });
-                // A host that never takes them does not grow the list without bound.
-                let excess = self.distribution.pending.len().saturating_sub(MAX_PENDING);
-                self.distribution.pending.drain(..excess);
                 return Err(vec![Diagnostic {
                     code: "BAKE_PENDING".into(),
                     ..Diagnostic::message(&request.entry, "Material bake is being distributed.")
@@ -3124,8 +3130,9 @@ impl Session {
         if share.is_none() {
             for (i, key) in bake_keys.iter().enumerate() {
                 // This build bakes it, from these rows or here: it is no longer waited for.
-                self.distribution.reported.remove(key);
-                if let Some(rows) = self.distribution.provided.remove(key) {
+                let share_key = distribution.share_key(key);
+                distribution.reported.remove(&share_key);
+                if let Some(rows) = distribution.provided.remove(&share_key) {
                     if !rows.groups.contains_all(dirty[i].rows()) {
                         continue;
                     }
@@ -3807,7 +3814,13 @@ impl Session {
                     cancelled,
                 )
                 .map_err(|error| vec![error])?;
-                write_share(&mut bytes, key, groups, total, &rows);
+                write_share(
+                    &mut bytes,
+                    &bake_share_key(share.generation, key),
+                    groups,
+                    total,
+                    &rows,
+                );
                 // The receiver's planes are kept (within the partition's bounds) or let go now,
                 // so a share of many receivers holds one receiver's planes at a time.
                 if chain.is_some() {
@@ -3961,8 +3974,9 @@ const DISTRIBUTE_TEXELS: usize = 8192;
 #[derive(Default)]
 pub(crate) struct Distribution {
     enabled: bool,
+    generation: u64,
     /// Bakes reported by builds and not yet taken by the host.
-    pending: Vec<PendingBake>,
+    pending: std::collections::VecDeque<PendingBake>,
     /// Rows received so far for a reported bake, by row ordinal.
     provided: BTreeMap<ContentKey, ProvidedRows>,
     /// The bakes this session reported and has not built since, with when each was reported.
@@ -3981,6 +3995,30 @@ const MAX_PENDING: usize = 256;
 const PROVIDED_BYTES: usize = 256 * 1024 * 1024;
 
 impl Distribution {
+    pub(crate) fn reset(&mut self) {
+        *self = Self {
+            enabled: self.enabled,
+            generation: self.generation + 1,
+            ..Self::default()
+        };
+    }
+
+    fn share_key(&self, content: &ContentKey) -> ContentKey {
+        bake_share_key(self.generation, content)
+    }
+
+    fn enqueue(&mut self, pending: PendingBake) {
+        self.pending
+            .retain(|queued| queued.keys != pending.keys || queued.groups != pending.groups);
+        for key in pending.keys.iter().filter_map(|key| parse_key(key)) {
+            self.report(self.share_key(&key));
+        }
+        self.pending.push_back(pending);
+        if self.pending.len() > MAX_PENDING {
+            self.pending.pop_front();
+        }
+    }
+
     /// Notes that `key` was reported now, forgetting the oldest reports beyond the bound.
     fn report(&mut self, key: ContentKey) {
         self.clock += 1;
@@ -4038,6 +4076,23 @@ pub struct PendingBake {
     /// session that bakes a share needs them like the images.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planes: Vec<String>,
+    /// Separates responses issued before and after a host resets the reporting session.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub generation: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+fn bake_share_key(generation: u64, content: &ContentKey) -> ContentKey {
+    if generation == 0 {
+        return *content;
+    }
+    let mut input = [0; 40];
+    input[..8].copy_from_slice(&generation.to_le_bytes());
+    input[8..].copy_from_slice(content);
+    crate::runtime::dependencies::producer_key("distributed-bake-share-v1", &input)
 }
 
 fn format_key(key: &ContentKey) -> String {
@@ -6047,9 +6102,10 @@ output emissive = vec3(glow * 0.2);";
             .err()
             .unwrap();
         assert_eq!(stopped[0].code, "BAKE_PENDING");
-        let pending: PendingBake =
-            serde_json::from_str(&serde_json::to_string(&session.distribution.pending[0]).unwrap())
-                .unwrap();
+        let pending: PendingBake = serde_json::from_str(
+            &serde_json::to_string(&session.distribution.get_mut().pending[0]).unwrap(),
+        )
+        .unwrap();
         assert_eq!(pending.groups, [Groups::MAPS.0]);
         let full: usize = evaluate(&mut session).iter().sum();
         let (distributed, baked) = build(&mut session, 2, &base);
@@ -6063,7 +6119,7 @@ output emissive = vec3(glow * 0.2);";
             .unwrap();
         assert_eq!(stopped[0].code, "BAKE_PENDING");
         assert_eq!(
-            session.distribution.pending[0].groups,
+            session.distribution.get_mut().pending[0].groups,
             [Groups::of(Group::Color).0]
         );
         let partial: usize = evaluate(&mut session).iter().sum();
@@ -6320,10 +6376,10 @@ output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
         let mut stranger = Session::default();
         stranger.distribute_bakes(true);
         stranger.provide_bake_share(&share).unwrap();
-        assert!(stranger.distribution.provided.is_empty());
+        assert!(stranger.distribution.get_mut().provided.is_empty());
         // The reporting session keeps it until a build takes it.
         session.provide_bake_share(&share).unwrap();
-        assert_eq!(session.distribution.provided.len(), 1);
+        assert_eq!(session.distribution.get_mut().provided.len(), 1);
         // Many superseded edits: reports, descriptions and rows stay bounded.
         for edit in 0..(MAX_REPORTED + 40) {
             let edited = request(json!({ "tint": edit as f64 / 2000. }), 1, 96);
@@ -6333,22 +6389,53 @@ output roughness = clamp(select(wide, heavy, 0.5) * shine, 0, 1);";
                     .is_err()
             );
         }
-        assert!(session.distribution.reported.len() <= MAX_REPORTED);
-        assert!(session.distribution.pending.len() <= MAX_PENDING);
+        let distribution = session.distribution.get_mut();
+        assert!(distribution.reported.len() <= MAX_REPORTED);
+        assert!(distribution.pending.len() <= MAX_PENDING);
         assert!(
-            session.distribution.provided.is_empty(),
+            distribution.provided.is_empty(),
             "the rows of the forgotten first report went with it"
         );
         session.provide_bake_share(&share).unwrap();
         assert!(
-            session.distribution.provided.is_empty(),
+            session.distribution.get_mut().provided.is_empty(),
             "a forgotten bake's rows are dropped"
         );
         // Disabling drops everything.
         session.distribute_bakes(false);
-        assert!(
-            session.distribution.reported.is_empty() && session.distribution.pending.is_empty()
-        );
+        let distribution = session.distribution.get_mut();
+        assert!(distribution.reported.is_empty() && distribution.pending.is_empty());
+    }
+
+    #[test]
+    fn late_rows_do_not_survive_reset_even_when_a_new_build_requests_the_same_content() {
+        let mut session = Session::default();
+        session.distribute_bakes(true);
+        let recipe = request(json!({}), 0, 96);
+        let mut helpers = Session::default();
+        assert!(session.build(&recipe, 1, &no_assets, &|| false).is_err());
+        let before = session.take_pending_bake().unwrap();
+        let old_share = helpers
+            .bake_share(&before, 0, 1, &no_assets, &|| false)
+            .unwrap();
+        session.provide_bake_share(&old_share).unwrap();
+        session.clear();
+        assert!(session.take_pending_bake().is_none());
+        assert!(session.build(&recipe, 1, &no_assets, &|| false).is_err());
+        let after = session.take_pending_bake().unwrap();
+        assert_eq!(before.keys, after.keys);
+        session.provide_bake_share(&old_share).unwrap();
+        let errors = session
+            .build(&recipe, 1, &no_assets, &|| false)
+            .err()
+            .expect("stale rows must leave the new bake pending");
+        assert_eq!(errors[0].code, "BAKE_PENDING");
+        let after = session.take_pending_bake().unwrap();
+        let new_share = helpers
+            .bake_share(&after, 0, 1, &no_assets, &|| false)
+            .unwrap();
+        session.provide_bake_share(&new_share).unwrap();
+        assert!(session.build(&recipe, 1, &no_assets, &|| false).is_ok());
     }
 
     #[test]

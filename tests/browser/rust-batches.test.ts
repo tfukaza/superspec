@@ -6,6 +6,45 @@ import { batchAttribute, decodePacket, PLACEMENT_FLOATS, type Manifest } from ".
 import { SceneUpdates } from "../../browser/model/updates.ts";
 import { Box3, Frustum, Matrix4, Vector3 } from "three";
 import { FoliageVisibility } from "../../browser/renderer/foliage-visibility.ts";
+import { retainedPlants } from "../../browser/renderer/plant-reuse.ts";
+import { blurCanopyCards, sprigAtlasRgba, sprigAtlasSize, sprigGrid } from "../../browser/renderer/canopy-paint.ts";
+
+test("paint spreads through dense shaded sprigs and preserves isolated, exposed and highlight cards", () => {
+  const weights = (count: number) => {
+    const origins: number[] = [], shades: number[] = [], tones: number[] = [];
+    for (let i = 0; i < count; i++) {
+      origins.push(3 + 0.01 * (i % 3), 2, 4, 0.2);
+      shades.push(0, 0, 1, i === count - 1 ? 0.15 : 0.95);
+      tones.push(0.8, 0.45, i === count - 2 ? 0.24 : 0);
+    }
+    return blurCanopyCards(origins, shades, tones, 0.2);
+  };
+  assert.ok(weights(9).every(w => w === 0), "one isolated whorl stays sharp");
+  const crowded = weights(52);
+  assert.ok(crowded.slice(0, -2).every(w => w > 0.85));
+  assert.deepEqual(crowded.slice(-2), [0, 0], "highlight and exposed sprigs keep the fine brush");
+
+  const atlas = sprigAtlasRgba(), cell = sprigAtlasSize / sprigGrid;
+  for (let y = 0; y < sprigAtlasSize; y++) for (let x = 0; x < sprigAtlasSize; x++) {
+    if ([0, cell - 1].includes(x % cell) || [0, cell - 1].includes(y % cell)) {
+      assert.equal(atlas[4 * (y * sprigAtlasSize + x) + 3], 0, "soft tails cannot cross into the next brush");
+    }
+  }
+  for (let sprig = 0; sprig < sprigGrid; sprig++) {
+    const profile = (brush: number) => {
+      let edgeEnergy = 0, feather = 0;
+      for (let y = 1; y < cell; y++) for (let x = 1; x < cell; x++) {
+        const i = 4 * ((sprig * cell + y) * sprigAtlasSize + brush * cell + x) + 3, a = atlas[i];
+        edgeEnergy += (a - atlas[i - 4]) ** 2 + (a - atlas[i - 4 * sprigAtlasSize]) ** 2;
+        if (a > 12 && a < 243) feather++;
+      }
+      return { edgeEnergy, feather };
+    };
+    const fine = profile(0), broad = profile(sprigGrid - 1);
+    assert.ok(broad.edgeEnergy < fine.edgeEnergy * 0.25, "dense shade merges individual leaflet edges");
+    assert.ok(broad.feather > fine.feather * 3, "broad paint retains a substantial feathered transition");
+  }
+});
 
 test("foliage patch culling preserves tile levels across distance, view exits and reentry", () => {
   const tiles = new Map<number, Box3>();
@@ -23,9 +62,15 @@ test("foliage patch culling preserves tile levels across distance, view exits an
   eye.x = -8;
   assert.equal(visibility.update(frustum, eye), true);
   assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [2, 2]);
+  assert.equal(visibility.update(frustum, eye, 1.4), true);
+  assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [0, 0], "quality can retain detail with the same view");
+  assert.equal(visibility.update(frustum, eye, 1), true);
+  assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [2, 2]);
   eye.x = -23;
   assert.equal(visibility.update(frustum, eye), true);
   assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [2, -1]);
+  assert.equal(visibility.update(frustum, eye, false), true);
+  assert.deepEqual([...visibility.chosen.values()].slice(0, 2), [0, -1], "canonical detail preserves the authored far cutoff");
   eye.x = -24;
   checks = 0;
   assert.equal(visibility.update(frustum, eye), true);
@@ -114,6 +159,34 @@ test("a packet's batches lie between its indices and its assets and decode into 
   assert.equal(scene.manifest.colliders.length, 0, "a batch is never listed among the colliders");
 });
 
+test("tree reuse keeps an entire unchanged patch and rejects a changed LOD, canopy parameter or instance transform", () => {
+  const pair = () => {
+    const scene = decodePacket(packet());
+    for (const [index, batch] of scene.manifest.batches!.entries()) {
+      batch.foliage = { patch: "tree", family: index ? "shadow" : "bark",
+        ...(index ? { mass: { sites: [[1, 2, 3, 0.4]] } } : {}) } as typeof batch.foliage;
+    }
+    return scene;
+  };
+  const old = pair(), sourceEdit = pair();
+  sourceEdit.manifest.batches![0].source.offset = 82;
+  assert.deepEqual([...retainedPlants(old, sourceEdit, () => true)], ["a", "b"]);
+  for (const edit of [(s: ReturnType<typeof pair>) => { s.batches!.normals[0] = 0.4; },
+    (s: ReturnType<typeof pair>) => { s.batches!.placements[20] += 1; },
+    (s: ReturnType<typeof pair>) => { s.manifest.batches![1].foliage!.mass!.sites[0][3] *= 2; }]) {
+    const changed = pair(); edit(changed);
+    assert.equal(retainedPlants(old, changed, () => true).size, 0);
+  }
+  assert.equal(retainedPlants(old, sourceEdit, id => id !== "b").size, 0);
+});
+
+test("template placement provenance has one source ID per instance in each declared group", () => {
+  const scene = decodePacket(packet(m => { m.batchPlacementOwners = { b: ["city/b"] }; }));
+  assert.deepEqual(scene.manifest.batchPlacementOwners, { b: ["city/b"] });
+  assert.throws(() => decodePacket(packet(m => { m.batchPlacementOwners = { b: [] }; })), /placement owners/);
+  assert.throws(() => decodePacket(packet(m => { m.batchPlacementOwners = { a: ["unknown"] }; })), /Unknown template/);
+});
+
 test("packets without batches decode as before and state none", () => {
   const scene = decodePacket(packet((manifest, numbers) => {
     delete manifest.batches; delete manifest.batchCounts;
@@ -166,6 +239,36 @@ test("a batch's foliage look is decoded when it is one the viewer can draw, and 
 });
 
 const fixtures = resolve("generated/batches");
+test("batch deltas patch exact spans while retaining old channels and recovering from malformed spans", () => {
+  const scene = decodePacket(packet()), b = scene.batches!;
+  const encode = (header: object, payload: ArrayBufferView[]) => {
+    const json = new TextEncoder().encode(JSON.stringify(header)), size = Math.ceil(json.length / 4) * 4;
+    const bytes = new Uint8Array(8 + size + payload.reduce((n, a) => n + a.byteLength, 0));
+    bytes.set(new TextEncoder().encode("LSU1")); new DataView(bytes.buffer).setUint32(4, size, true);
+    bytes.fill(32, 8, 8 + size); bytes.set(json, 8);
+    let cursor = 8 + size;
+    for (const value of payload) { bytes.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength), cursor); cursor += value.byteLength; }
+    return bytes.buffer;
+  };
+  const decoder = new SceneUpdates();
+  const first = decoder.decode(encode({ manifest: scene.manifest, meshes: [null], assets: [null], baseRevision: null },
+    [scene.positions, scene.normals, scene.uvs, scene.colors, scene.indices, scene.assets,
+      b.positions, b.normals, b.uvs, b.colors, b.indices, b.placements, b.values, b.tints, b.attributes]));
+  const spans = Array.from({ length: 9 }, () => [0, 0]);
+  const header = { manifest: { ...scene.manifest, revision: 2 }, meshes: [0], assets: [0], baseRevision: 1, batchSpans: spans };
+  spans[5] = [b.placements.length, 1];
+  assert.throws(() => decoder.decode(encode(header, [new Float32Array([8])])), /batch spans/);
+  spans[5] = [10, 1];
+  assert.throws(() => decoder.decode(encode(header, [])), /payload/);
+  const next = decoder.decode(encode(header, [new Float32Array([8])]));
+  assert.equal(next.batches!.placements[10], 8);
+  assert.equal(first.batches!.placements[10], 4);
+  for (const channel of ["positions", "normals", "colors", "uvs", "indices", "assets"] as const)
+    assert.equal(next[channel], first[channel]);
+  assert.equal(next.batches!.positions, first.batches!.positions);
+  assert.deepEqual(next.batches!.placements.slice(11), first.batches!.placements.slice(11));
+});
+
 test("the Rust exporter's packet and update decode to the batch it describes", { skip: !existsSync(resolve(fixtures, "batches.lsp3")) && "no fixtures: run the export crate's batch tests with BATCH_FIXTURE_OUTPUT=generated/batches" }, () => {
   const owned = (name: string) => Uint8Array.from(readFileSync(resolve(fixtures, name))).buffer;
   for (const scene of [decodePacket(owned("batches.lsp3")), new SceneUpdates().decode(owned("batches.lsu1"))]) {

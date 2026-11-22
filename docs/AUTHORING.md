@@ -233,6 +233,11 @@ presets and images. Select a mesh/material slot and **Assign material**. The sou
 records the assignment. A parameter reference such as `{"parameter":"paintColor"}`
 can connect a public item control to a compatible material parameter. Hex color
 controls use sRGB and are converted to linear RGB before material evaluation.
+
+An ItemSpec slot can use a shipped catalog material by setting its entry to an
+ID such as `builtin:wall-posters`. Catalog slots keep the item's UVs and load the
+catalog textures. The standalone Kowloon procedural wall uses this for its
+concrete, service fittings and paper notices.
 Save/reopen and GLB export use the same project actions as the Material editor.
 
 Static GLB ingestion preserves hierarchy, transforms, local shared meshes, UVs,
@@ -349,9 +354,27 @@ temporary build buffers have their own lifetimes and admission bounds; a cache
 budget is not a total process-memory guarantee. No performance measurements or
 tuning were undertaken for this milestone.
 
-Retained world composition checks each addition or replacement against the
-existing delivery limits: 6 million vertices, 18 million indices, 256 MiB of
-encoded images and 192 Mi pixels. Its separate 1 GiB retained-resource allowance
-also includes superseded layers. Shared resources count once toward retention;
-placed geometry counts toward delivery for each placement. Hosts can lower these
-limits with `WorldModel::with_limits`. Rejected edits leave the prior world intact.
+### Resource limits by stage
+
+| Stage | What is counted | Default ceiling |
+| --- | --- | --- |
+| Studio project | Model inputs and material assignments | 16 models, 64 assignments |
+| WorldSpec authoring document | Item placements and material assignments | 1,024 placements, 256 assignments |
+| ItemSpec definition | Parameters, material slots, attachments and layers per slot | 128 parameters, 128 slots, 256 attachments, 16 layers per slot |
+| MaterialSpec program | External inputs of one program and of a composed slot | 16 program inputs, 64 composite inputs |
+| ItemSpec source | Local vertices and triangles for a GLB import | 500,000 vertices, 250,000 triangles |
+| Generated item | Geometry counted for each placement of a source mesh | 1.5 million vertices, 1 million triangles |
+| Expanded instance model | Ordinary vertices and indices after expanding placements | 1.5 million vertices, 9 million indices |
+| Composed world | Ordinary geometry plus each batch template counted once | 6 million vertices, 18 million indices |
+| Scene images | Encoded bytes and total base-level pixels | 1 GiB encoded, 512 Mi pixels |
+
+Material assignments select a finish for a receiver. A slot can compose several
+layers, and each program can read several fields. The ItemSpec schema and
+MaterialSpec checker own those authoring rules. The Rust types crate owns the
+shared model, world and packet limits. Its parity test checks the corresponding
+browser and editor allowances. The browser also accepts legacy packets within
+its own allocation ceiling.
+
+The retained world's separate 1 GiB memory allowance includes superseded
+layers. It counts shared resources once. Hosts can lower composition limits
+with `WorldModel::with_limits`. Rejected edits leave the prior world intact.

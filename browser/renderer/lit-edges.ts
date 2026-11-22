@@ -47,8 +47,14 @@ export class LitEdges extends ShaderPass {
         vec3 n=normalize(texture2D(normals,vUv).xyz*2.-1.),p=point(vUv,z);
         float facing=dot(n,lightDir); if(facing<.12)return;
         float footprint=max(.0001,length(point(vUv+vec2(texel.x,0),z)-p));
-        float rim=max(max(edge(vec2(texel.x,0),p,n,facing,footprint),edge(vec2(-texel.x,0),p,n,facing,footprint)),
-                      max(edge(vec2(0,texel.y),p,n,facing,footprint),edge(vec2(0,-texel.y),p,n,facing,footprint)));
+        // Integrate neighboring directions so a diagonal corner has fractional coverage.
+        float rim=0.;
+        for(int i=0;i<8;i++){
+          float angle=float(i)*.78539816;
+          vec2 offset=round(vec2(cos(angle),sin(angle)))*texel;
+          rim+=edge(offset,p,n,facing,footprint);
+        }
+        rim=min(1.,rim*.24);
         if(rim<=0.)return;
         vec4 clip=toShadow*vec4(p,1.);vec3 sc=clip.xyz/clip.w;
         if(any(lessThan(sc,vec3(0))) || any(greaterThan(sc,vec3(1))))return;

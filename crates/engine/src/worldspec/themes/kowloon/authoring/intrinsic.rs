@@ -150,7 +150,7 @@ pub fn vent(source: &Image) -> Result<Maps, String> {
 }
 
 pub fn restaurant_tiles(source: &Image) -> Result<Maps, String> {
-    let (width, height, density) = (1152, 576, 320.);
+    let (width, height, density) = (1728, 864, 480.);
     let mut maps = Maps::new(width, height);
     let mut heights = Vec::with_capacity(width * height);
     let field = Tile::new(&Settings {
@@ -181,22 +181,33 @@ pub fn restaurant_tiles(source: &Image) -> Result<Maps, String> {
             let sx = ((u * 2.5).fract() * source.width as f64) as usize;
             let sy = ((1. - (v * 2.5).fract()) * source.height as f64) as usize % source.height;
             let offset = (sy * source.width + sx) * 4;
+            let glaze: [f64; 3] = std::array::from_fn(|axis| {
+                let q = source.rgba[offset + axis] as f64 / 255.;
+                let linear = if q <= 0.04045 {
+                    q / 12.92
+                } else {
+                    ((q + 0.055) / 1.055).powf(2.4)
+                };
+                let ceramic =
+                    cream[axis] * tone * (0.8 + 0.2 * linear) * tile.appearance.tint[axis];
+                mix(
+                    ceramic,
+                    grime[axis],
+                    (tile.appearance.deposit + stain).min(0.85),
+                )
+            });
+            // Compress value only on the glaze. Retain the darker grout and tide line.
+            let luma = glaze[0] * 0.2126 + glaze[1] * 0.7152 + glaze[2] * 0.0722;
+            let target = mix(0.40 - 0.10 * lower, luma, 0.40);
+            let hue = 0.06 * (2. * value_noise((u / 0.18).floor(), (v / 0.18).floor(), 818.) - 1.)
+                + 0.035 * (2. * mottling - 1.);
+            // A warm clay to celadon shift with zero linear luminance change.
+            let hue_axis = [1., -0.2126 / 0.7152, 0.];
             maps.pixel(
                 0,
                 std::array::from_fn(|axis| {
-                    let q = source.rgba[offset + axis] as f64 / 255.;
-                    let linear = if q <= 0.04045 {
-                        q / 12.92
-                    } else {
-                        ((q + 0.055) / 1.055).powf(2.4)
-                    };
-                    let ceramic =
-                        cream[axis] * tone * (0.8 + 0.2 * linear) * tile.appearance.tint[axis];
-                    let coated = mix(
-                        ceramic,
-                        grime[axis],
-                        (tile.appearance.deposit + stain).min(0.85),
-                    );
+                    let coated =
+                        glaze[axis] * target / luma.max(0.0001) + target * hue * hue_axis[axis];
                     let plaster = bed[axis] * 0.82 * tile.bed.tone * (1. - tile.seam * 0.35);
                     let value = mix(plaster, coated, tile.coverage);
                     if value <= 0.0031308 {

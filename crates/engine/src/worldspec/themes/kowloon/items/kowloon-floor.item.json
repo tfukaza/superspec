@@ -311,7 +311,7 @@
   ],
   "layers": {
     "wall": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.15, "arrisWear": 0.7, "peelShare": 0.85, "bareCover": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": 0, "patches": 0, "patchScale": 1.3, "unevenness": 0.5, "illustration": 1, "brushStrokes": 1, "warmTint": [1.06, 0.95, 0.93], "coolTint": [0.9, 0.91, 0.98], "arrisWear": 1, "arrisWidth": 0.08, "peelShare": 0.85, "bareCover": 0.85}, "seed": 1, "follow": {"peel": "peel", "peelInner": "peel-inner"}},
       {"entry": "kowloon-repairs.material.ts", "parameters": {"color": {"parameter": "paint"}, "contrast": 0.6, "outline": 1, "outlineWidth": 0.025, "cement": [0.42, 0.41, 0.38]}, "seed": 4, "follow": {"repair": "repair", "repairInner": "repair-inner"}},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.016, "halo": 0.32, "haloWidth": 0.14, "fixtureHalo": 0.9, "fixtureWidth": 0.4}, "seed": 9, "follow": {"opening": "opening-edge", "sill": "sill", "fixture": "fixture", "fixing": "fixing"}},
       {"entry": "kowloon-grime-streaks.material.ts", "parameters": {"strength": 0.95, "color": [0.33, 0.3, 0.25], "streakLength": 2.2, "period": 5, "variety": 0.6}, "seed": 3, "follow": {"zone": ["drip","ledge","runoff-coping","runoff-sill","runoff-top"]}},
@@ -324,13 +324,13 @@
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.1, "highlight": 0.5, "highlightWidth": 0.016}, "seed": 9, "follow": {"joint": ["end", "start"]}}
     ],
     "trim": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.5, "illustration": 1, "brushStrokes": 1, "warmTint": [1.06, 0.95, 0.93], "coolTint": [0.9, 0.91, 0.98]}, "seed": 1},
       {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 0, "clouds": 0, "soot": 0, "settled": 0.8}, "seed": 9},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.09, "highlight": 0.5, "highlightWidth": 0.016}, "seed": 12},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"zone": ["fixing-drip", "rust"]}}
     ],
     "concrete": [
-      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.15}, "seed": 1},
+      {"entry": "kowloon-paint-coat.material.ts", "parameters": {"color": {"parameter": "paint"}, "peeling": {"parameter": "peeling"}, "patches": 0.5, "patchScale": 1.3, "unevenness": 0.5, "illustration": 1, "brushStrokes": 1, "warmTint": [1.06, 0.95, 0.93], "coolTint": [0.9, 0.91, 0.98]}, "seed": 1},
       {"entry": "kowloon-wall-dirt.material.ts", "parameters": {"amount": 0, "clouds": 0, "soot": 0, "settled": 0.8}, "seed": 9},
       {"entry": "kowloon-edge-ink.material.ts", "parameters": {"inkColor": [0.075, 0.066, 0.055], "inkStrength": 1, "inkWidth": 0.09, "highlight": 0.5, "highlightWidth": 0.016}, "seed": 12},
       {"entry": "kowloon-rust-run.material.ts", "parameters": {}, "seed": 8, "follow": {"zone": ["fixing-drip", "rust"]}},

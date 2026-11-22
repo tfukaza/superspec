@@ -5,10 +5,12 @@
 
 use super::{
     Diagnostic, FieldBake, Project, Request, Session,
-    project::{ContactScene, material_request, receiver_request, receivers},
+    project::{ContactScene, layout_settings, receiver_request, receivers},
     receiver::{Atlas, GUTTER},
 };
+use crate::{runtime::store::Retention, session::Artifact};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -130,6 +132,140 @@ pub struct ProjectLayouts {
     pub records: Vec<f32>,
 }
 
+// Keep only the transferable atlas data between edits. Full CPU atlases also own
+// source vertices and, on anchored faces, a triangle owner for every texture pixel.
+const PREVIEW_LAYOUTS: Retention = Retention {
+    name: "authoring-preview-layouts",
+    bytes: 64 * 1024 * 1024,
+    entries: 2048,
+};
+
+pub(crate) struct ChartRecords {
+    width: usize,
+    height: usize,
+    density: f64,
+    records: Vec<f32>,
+    surface: Vec<f64>,
+    content_key: std::sync::OnceLock<[u8; 32]>,
+}
+
+impl ChartRecords {
+    fn new(mut atlas: Atlas, lattice_maps_only: bool) -> Self {
+        let mut records = Vec::new();
+        write_records(&atlas, &mut records);
+        // A GPU chart carries three samples of the lattice plane. When every triangle
+        // supplies the same bits at those three points, its owner cannot affect the
+        // result. Skip the CPU rasterization of potentially millions of owner texels.
+        for index in 0..atlas.charts.len() {
+            let chart = &atlas.charts[index];
+            if chart.lattice.is_none() || chart.others.is_empty() {
+                continue;
+            }
+            let probes = [(GUTTER, GUTTER), (GUTTER + 1, GUTTER), (GUTTER, GUTTER + 1)]
+                .map(|(x, y)| atlas.texel(chart, x, y));
+            let values = |triangle, (_, u, v)| {
+                atlas
+                    .sample(triangle, u, v)
+                    .ok()
+                    .map(|p| (p.surface.map(f64::to_bits), p.footprint.to_bits()))
+            };
+            let same = probes.iter().all(|probe| {
+                let first = values(chart.first, *probe);
+                chart
+                    .others
+                    .iter()
+                    .all(|&other| values(other, *probe) == first)
+            });
+            if !same {
+                atlas.fill_chart_owners(index);
+            }
+        }
+        Self {
+            width: atlas.width,
+            height: atlas.height,
+            density: atlas.density,
+            records,
+            content_key: Default::default(),
+            surface: atlas
+                .charts
+                .iter()
+                .filter(|chart| !lattice_maps_only || chart.lattice.is_some())
+                .flat_map(|chart| chart_surface(&atlas, chart))
+                .collect(),
+        }
+    }
+
+    fn content_key(&self) -> &[u8; 32] {
+        self.content_key.get_or_init(|| {
+            let mut hash = Sha256::new();
+            hash.update(b"receiver-chart-records-v1");
+            for value in [
+                self.width,
+                self.height,
+                self.records.len(),
+                self.surface.len(),
+            ] {
+                hash.update((value as u64).to_le_bytes());
+            }
+            hash.update(self.density.to_le_bytes());
+            let mut bytes = Vec::with_capacity(4096);
+            for chunk in self.records.chunks(1024) {
+                bytes.clear();
+                bytes.extend(chunk.iter().flat_map(|v| v.to_le_bytes()));
+                hash.update(&bytes);
+            }
+            for value in &self.surface {
+                hash.update(value.to_le_bytes());
+            }
+            hash.finalize().into()
+        })
+    }
+}
+
+/// Hash the GPU layout's admitted inputs before allocating another atlas. Unlike a
+/// CPU material bake it does not sample contact fields. Named features are
+/// admitted even on hits, and do not affect chart coordinates or texel density.
+fn chart_key(receiver: &super::Receiver, request: &Request, lattice_maps_only: bool) -> [u8; 32] {
+    let id = &receiver.id;
+    let mut digest = Sha256::new();
+    digest.update(b"preview-chart-records-v3");
+    digest.update([u8::from(lattice_maps_only)]);
+    digest.update(
+        serde_json::to_vec(&(
+            request.resolution,
+            request.profile.max_resolution(),
+            request.mapping,
+            request.domain,
+            request.gravity,
+            request.density_of(id).map(f64::to_bits),
+            receiver.object_to_world,
+            request
+                .anchors
+                .get(id)
+                .filter(|_| request.mapping == super::Mapping::Anchored),
+        ))
+        .expect("admitted receiver layout inputs"),
+    );
+    // Batch the bytes of the admitted arrays. Formatting every vertex as a decimal
+    // string or cloning a Receiver to blank its identity makes cache hits costly.
+    let mut words = Vec::<u8>::with_capacity(4096);
+    for values in [&receiver.positions, &receiver.normals, &receiver.uvs] {
+        digest.update((values.len() as u64).to_le_bytes());
+        for chunk in values.chunks(512) {
+            words.clear();
+            words.extend(chunk.iter().flat_map(|value| value.to_le_bytes()));
+            digest.update(&words);
+        }
+    }
+    digest.update((receiver.indices.len() as u64).to_le_bytes());
+    for chunk in receiver.indices.chunks(1024) {
+        words.clear();
+        words.extend(chunk.iter().flat_map(|value| value.to_le_bytes()));
+        digest.update(&words);
+    }
+    digest.finalize().into()
+}
+
 /// Appends an atlas's triangle records (see [`LAYOUT_RECORD`]) in triangle order.
 fn write_records(atlas: &Atlas, records: &mut Vec<f32>) {
     let receiver = &atlas.receiver;
@@ -206,6 +342,41 @@ impl Session {
         prepared: &PreparedProject,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<ProjectLayouts, Vec<Diagnostic>> {
+        self.layouts_prepared_with_surface_maps(prepared, false, cancelled)
+    }
+
+    /// A real-time GPU baker interpolates ordinary triangle charts from their vertex records.
+    /// It only samples the extra texel-to-surface map on a flat face snapped to a pattern lattice.
+    /// Other consumers can still request every chart's map with [`Self::layouts_prepared`].
+    pub fn layouts_prepared_with_surface_maps(
+        &mut self,
+        prepared: &PreparedProject,
+        lattice_maps_only: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectLayouts, Vec<Diagnostic>> {
+        self.collect_layouts(prepared, lattice_maps_only, None, cancelled)
+    }
+
+    /// Visit the content key of every admitted chart in binding order. Two different
+    /// input receivers can give the same layout. A caller holding its exact records
+    /// and surface maps needs only the new material and placement binding.
+    pub fn changed_layouts_prepared(
+        &mut self,
+        prepared: &PreparedProject,
+        lattice_maps_only: bool,
+        retained: &mut dyn FnMut(&str, &str, &[u8; 32]) -> bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectLayouts, Vec<Diagnostic>> {
+        self.collect_layouts(prepared, lattice_maps_only, Some(retained), cancelled)
+    }
+
+    fn collect_layouts(
+        &mut self,
+        prepared: &PreparedProject,
+        lattice_maps_only: bool,
+        mut retained: Option<&mut dyn FnMut(&str, &str, &[u8; 32]) -> bool>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ProjectLayouts, Vec<Diagnostic>> {
         let PreparedProject {
             project,
             scene,
@@ -225,30 +396,76 @@ impl Session {
         };
         for assignment in &project.materials {
             let ids: BTreeSet<String> = assignment.meshes.iter().cloned().collect();
-            // The atlas reads no source and no contacts: the request only carries the sizing inputs.
-            let request = material_request(project, assignment, "", Vec::new());
+            let mut request = layout_settings(project, assignment);
+            for id in &ids {
+                if let Some(density) = project.texel_densities.get(id) {
+                    request.texel_densities.insert(id.clone(), *density);
+                }
+                if request.mapping == super::Mapping::Anchored
+                    && let Some(anchor) = project.anchors.get(id)
+                {
+                    request.anchors.insert(id.clone(), *anchor);
+                }
+            }
             for receiver in receivers(scene, &ids, transforms) {
                 if cancelled() {
                     return Err(fail("Project authoring cancelled.".into()));
                 }
                 let id = receiver.id.clone();
-                let atlas = Atlas::for_request(receiver, &request)
-                    .map_err(|message| fail(format!("{id}: {message}")))?;
+                let key = chart_key(&receiver, &request, lattice_maps_only);
+                let cached = self.runtime.lookup(PREVIEW_LAYOUTS, &key);
+                let named = project
+                    .features
+                    .get(&id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                let check_named = || {
+                    crate::materialspec::program::NamedFeatures::validate(named)
+                        .map_err(|message| fail(format!("{id}: {message}")))
+                };
+                let charts = match cached.as_deref() {
+                    Some(Artifact::Layout(charts)) => {
+                        check_named()?;
+                        Arc::clone(charts)
+                    }
+                    _ => {
+                        let atlas = Atlas::layout_for_request(receiver, &request)
+                            .map_err(|message| fail(format!("{id}: {message}")))?;
+                        check_named()?;
+                        let charts = Arc::new(ChartRecords::new(atlas, lattice_maps_only));
+                        let bytes = charts.records.capacity() * 4
+                            + charts.surface.capacity() * 8
+                            + size_of::<ChartRecords>()
+                            + 128;
+                        self.runtime.retain(
+                            PREVIEW_LAYOUTS,
+                            key,
+                            Artifact::Layout(Arc::clone(&charts)),
+                            bytes,
+                            false,
+                        );
+                        charts
+                    }
+                };
+                // A fresh or evicted native session still validates the receiver even
+                // when the client advertises a key that it acquired on another session.
+                if retained
+                    .as_mut()
+                    .is_some_and(|held| held(&id, &assignment.id, charts.content_key()))
+                {
+                    continue;
+                }
                 let offset = layouts.records.len();
-                write_records(&atlas, &mut layouts.records);
+                layouts.records.extend_from_slice(&charts.records);
                 layouts.receivers.push(ReceiverLayout {
                     id,
                     material: assignment.id.clone(),
-                    width: atlas.width,
-                    height: atlas.height,
-                    density: atlas.density,
-                    triangles: atlas.receiver.indices.len() / 3,
+                    width: charts.width,
+                    height: charts.height,
+                    density: charts.density,
+                    triangles: charts.records.len() / LAYOUT_RECORD,
                     offset,
-                    surface: atlas
-                        .charts
-                        .iter()
-                        .flat_map(|chart| chart_surface(&atlas, chart))
-                        .collect(),
+                    surface: charts.surface.clone(),
                 });
             }
         }
@@ -291,11 +508,13 @@ impl Session {
         let fail = |message: String| vec![Diagnostic::message(&project.entry, message)];
         self.begin_authoring(revision, &project.entry)?;
         // Item models bind their slots' meshes to materials (`Session::resolve_items`).
-        let (project, items) = match self.resolve_items(project, assets, cancelled)? {
+        let (resolved, placements) = self.resolve_items(project, assets, cancelled)?;
+        let (project, items) = match resolved {
             Some(items) => (items.project, Some(items.metadata)),
             None => (project.clone(), None),
         };
-        let (model, transforms) = self.compose_models(&project, revision, assets, cancelled)?;
+        let (model, transforms) =
+            self.compose_models(&project, placements, revision, assets, cancelled)?;
         let scene = model
             .scene_cancellable(revision as u32, cancelled)
             .map_err(&fail)?;
@@ -443,6 +662,142 @@ mod tests {
             density,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn anchored_face_resizes_crop_the_existing_pattern_block() {
+        let density = 16.;
+        let prepare = |low: f64, high: f64| {
+            let mut wall = receiver::swatch([(high - low) / density, 1.]);
+            for vertex in wall.positions.chunks_exact_mut(3) {
+                vertex[0] += low / density;
+            }
+            let request = Request {
+                resolution: 256,
+                texel_density: Some(density),
+                mapping: Mapping::Anchored,
+                ..Default::default()
+            };
+            let atlas = Atlas::for_request(wall, &request).unwrap();
+            assert_eq!(
+                (atlas.width, atlas.height, atlas.density),
+                (128, 20, density)
+            );
+            for (xyz, uv) in atlas.mesh.positions.iter().zip(&atlas.mesh.uvs) {
+                assert!(
+                    (xyz[0] - low / density).abs() < 1e-12
+                        || (xyz[0] - high / density).abs() < 1e-12
+                );
+                // One more meter still covers exactly 16 more texels, including a subpixel crop.
+                let origin = chart_surface(&atlas, &atlas.charts[0])[2] * density - 0.5;
+                assert!(
+                    (uv[0] * atlas.width as f64 - (xyz[0] * density - origin + GUTTER as f64))
+                        .abs()
+                        < 1e-10
+                );
+            }
+            atlas
+        };
+        let original = prepare(-14.1, 63.2);
+        let grown = prepare(-15.5, 63.9);
+        let shrunk = prepare(-13.4, 62.2);
+        for wall in [&original, &grown, &shrunk] {
+            let chart = &wall.charts[0];
+            assert_eq!(chart.width, 80 + 2 * GUTTER);
+            for x in 0..chart.width {
+                let (tri, u, v) = wall.texel(chart, x, GUTTER);
+                let sample = wall.sample(tri, u, v).unwrap();
+                // Check the unused reserve and both filter gutters against physical lattice coordinates.
+                assert_eq!(
+                    sample.surface[0],
+                    (x as f64 - GUTTER as f64 - 16. + 0.5) / density
+                );
+                assert_eq!(sample.footprint, 1. / density);
+            }
+        }
+        // Growth past cell 64 needs new space. Filling the entire next block speculatively
+        // would exceed the work budget, so the chart takes its tight 81 cells.
+        assert_eq!(prepare(-15.5, 64.1).charts[0].width, 81 + 2 * GUTTER);
+        // Completing the block ending at cell 128 would exceed the existing texture.
+        let tight = prepare(0., 121.5);
+        assert_eq!(tight.charts[0].width, 122 + 2 * GUTTER);
+    }
+
+    #[test]
+    fn seams_and_different_uv_gradients_keep_the_tight_lattice_chart() {
+        let request = Request {
+            resolution: 256,
+            texel_density: Some(16.),
+            mapping: Mapping::Anchored,
+            ..Default::default()
+        };
+        let wall = receiver::swatch([4.8125, 1.]);
+        let chart_width = |wall| {
+            let atlas = Atlas::for_request(wall, &request).unwrap();
+            assert_eq!(atlas.charts.len(), 1);
+            atlas.charts[0].width
+        };
+        assert_eq!(chart_width(wall.clone()), 80 + 2 * GUTTER);
+        // A continuous diagonal can join triangles with different rates of UV change.
+        let mut bent = wall.clone();
+        bent.uvs[6] = 0.5;
+        assert_eq!(chart_width(bent), 77 + 2 * GUTTER);
+        // Split vertices on that same diagonal and move the second island.
+        let mut split = wall;
+        split.positions.extend_from_within(0..3);
+        split.positions.extend_from_within(6..9);
+        split.normals.extend([0., -1., 0.].repeat(2));
+        split.uvs.extend([1., 0., 2., 1.]);
+        split.indices[3..].copy_from_slice(&[4, 5, 3]);
+        assert_eq!(chart_width(split), 77 + 2 * GUTTER);
+    }
+
+    #[test]
+    fn gpu_lattice_surface_matches_cpu_pixel_owners_with_varying_normals() {
+        for smooth in [false, true] {
+            let mut wall = receiver::swatch([1., 1.]);
+            if smooth {
+                // Split the diagonal's two vertices so the triangles can carry
+                // independent normals and project the same point along different axes.
+                wall.positions.extend_from_within(0..3);
+                wall.positions.extend_from_within(6..9);
+                wall.uvs.extend_from_within(0..2);
+                wall.uvs.extend_from_within(4..6);
+                wall.normals.truncate(9);
+                wall.normals.extend([1., 0., 0.].repeat(3));
+                wall.indices[3..].copy_from_slice(&[4, 5, 3]);
+            }
+            let request = Request {
+                resolution: 64,
+                texel_density: Some(32.),
+                mapping: Mapping::Anchored,
+                anchors: BTreeMap::from([(
+                    wall.id.clone(),
+                    crate::authoring::Anchor {
+                        origin: [0.; 3],
+                        u: [1., 0., 0.],
+                        v: [0., 0., 1.],
+                    },
+                )]),
+                ..Default::default()
+            };
+            let cpu = Atlas::for_request(wall.clone(), &request).unwrap();
+            assert!(cpu.charts.iter().any(|c| !c.owners.is_empty()));
+            let expected: Vec<_> = cpu
+                .charts
+                .iter()
+                .flat_map(|chart| chart_surface(&cpu, chart))
+                .collect();
+            let unowned = Atlas::layout_for_request(wall, &request).unwrap();
+            let first_triangle: Vec<_> = unowned
+                .charts
+                .iter()
+                .flat_map(|chart| chart_surface(&unowned, chart))
+                .collect();
+            assert_eq!(first_triangle != expected, smooth);
+            let gpu = ChartRecords::new(unowned, true);
+            assert_eq!(gpu.surface, expected);
+        }
     }
 
     /// A layer that follows `base` as its `follow` measures to the receiver's base by its own

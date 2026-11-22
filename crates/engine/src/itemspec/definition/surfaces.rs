@@ -2,7 +2,7 @@
 //! Positions stay f64 and unrounded: every input is exact IEEE arithmetic or the shared
 //! deterministic `sin`/`cos`, so native and Wasm agree bit for bit and coincident
 //! corners of neighbouring faces are identical values.
-use super::ItemMesh;
+use super::{ItemMesh, limits::MAX_SOURCE_TRIANGLES};
 use std::collections::BTreeMap;
 use superspec_geometry::{
     V3,
@@ -11,7 +11,6 @@ use superspec_geometry::{
 };
 
 pub(super) type P2 = [f64; 2];
-const MAXIMUM_TRIANGLES: usize = 250_000;
 
 #[derive(Default)]
 struct Buffer {
@@ -63,8 +62,8 @@ impl<'a> Surfaces<'a> {
             return Err("Item geometry has nonfinite or mismatched attributes.".into());
         }
         let before = self.triangles / 4096;
-        self.triangles += triangles.len();
-        if self.triangles > MAXIMUM_TRIANGLES {
+        self.triangles = self.triangles.saturating_add(triangles.len());
+        if self.triangles > MAX_SOURCE_TRIANGLES {
             return Err("Item triangle allowance exceeded.".into());
         }
         if self.triangles / 4096 != before && (self.cancelled)() {

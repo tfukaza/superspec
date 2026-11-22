@@ -4,7 +4,7 @@
 // and fades out where its zone ends. It darkens the surface beneath by multiplication, so paint and grime show
 // through; a receiver without such a zone shows nothing. Give it any stain's colour: rust by default, verdigris, tar,
 // lime.
-import { defineLayer, param, zoneCoord, zoneExtent, smoothstep, valueNoise, add, mul, sub, div, min, max, vec2, vec3, seed } from "@superspec/material/v1";
+import { defineLayer, param, zoneCoord, zoneExtent, smoothstep, valueNoise, add, mul, sub, div, min, max, vec2, vec3, seed, select, gt } from "@superspec/material/v1";
 
 const color = param.vec3({ default: vec3(0.43, 0.23, 0.095), range: [0, 1], label: "Stain colour" });
 const strength = param.scalar({ default: 0.95, range: [0, 1], label: "Strength" });
@@ -24,7 +24,7 @@ const head = sub(1, smoothstep(0, 0.06, zone.y));
 
 export default defineLayer({
   name: "Kowloon rust run",
-  coverage: mul(mul(strength, extent.x), min(add(mul(mul(kept, weight), fade), mul(head, 0.5)), 1)),
+  coverage: select(gt(extent.x, 0), mul(mul(strength, extent.x), min(add(mul(mul(kept, weight), fade), mul(head, 0.5)), 1)), 0),
   baseColor: color,
   blend: { baseColor: "multiply" },
 });

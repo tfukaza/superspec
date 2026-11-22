@@ -9,7 +9,7 @@ impl Compiler<'_> {
     pub(super) fn bake_visual(
         &self,
         execution: &Execution<'_>,
-        scene: &mut Scene,
+        visuals: &mut VisualOutput<'_>,
         drawing: &mut Drawing<'_>,
         host: &str,
         rule: &Node,
@@ -36,17 +36,15 @@ impl Compiler<'_> {
         .bake(baking, host, rule, inputs)?;
         (execution.observe)("surface-publication");
         for material in delivery.values() {
-            if !scene.manifest.materials.iter().any(|m| m.id == material.id) {
-                scene.manifest.materials.push(material.clone());
-            }
+            visuals.ensure_material(material).map_err(fail)?;
         }
         bindings.extend(
             bakes
                 .iter()
                 .map(|b| (b.material().id.clone(), b.material().id.clone())),
         );
-        let result = scene
-            .append_baked_visual(host, drawing, &bindings, &bakes)
+        let result = visuals
+            .append(host, drawing, &bindings, &bakes)
             .map_err(fail);
         (execution.observe)("producer-continuation");
         result

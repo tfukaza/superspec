@@ -19,6 +19,12 @@ pub struct NativeOutput {
 /// Generators supplied by the host, such as a theme's fixtures. They must be deterministic:
 /// the same name, identity and parameters always give the same meshes.
 pub trait NativeGenerators: Send + Sync {
+    /// Retain the original smoothing islands for slots that derive tangent
+    /// frames from indexed triangles at delivery time.
+    fn preserve_signed_zero(&self, _material_slot: &str) -> bool {
+        true
+    }
+
     /// The implementation identity of `name`, which changes whenever its output would;
     /// `None` when the generator is unknown.
     fn identity(&self, name: &str) -> Option<String>;

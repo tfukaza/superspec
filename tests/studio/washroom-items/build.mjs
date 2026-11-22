@@ -109,8 +109,8 @@ function facadeMaterials() {
   const plain = { bandedGloss: 0, silhouette: 0, polishedEdges: 0 };
   return [
     // The reference shop house's cream render: the concrete's plaster coat, with patches lost to the concrete beneath.
-    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.3, chipRelief: 0.0012, darknessA: 0.6, darknessB: 0.45, blendContrast: 2.2, hueAmount: 0.04, hueAngle: 60, intactRoughness: 0.85 }, seed: 11, meshes: [] },
-    { id: "balcony-concrete", entry: concrete, parameters: { darknessA: 0.2, darknessB: 0.22, hueAmount: 0.12, hueAngle: 40, groundContact: false, holes: false, cutouts: false, intactRoughness: 0.75, chippedRoughness: 0.93 }, seed: 7, meshes: [] },
+    { id: "render-paint", entry: anchoredConcrete, parameters: { plaster: false, cutouts: false, holes: false, joints: false, chipAmount: 0.55, chipScale: 0.36, chipRelief: 0.002, darknessA: 0.42, darknessB: 0.32, blendContrast: 2.2, hueAmount: 0.04, hueAngle: 60, intactRoughness: 0.85, flatten: 0.85, illustration: 1, patchScale: 2.4, warmTint: [1.12, 1.03, 0.93], coolTint: [0.9, 0.92, 1.02], brushStrokes: 1 }, seed: 11, meshes: [] },
+    { id: "balcony-concrete", entry: concrete, parameters: { darknessA: 0.14, darknessB: 0.15, hueAmount: 0.12, hueAngle: 40, groundContact: false, holes: false, cutouts: false, intactRoughness: 0.75, chippedRoughness: 0.93, mottlingBreakup: 0.9, chipAmount: 0.28, chipScale: 0.4, chipRelief: 0.0018, edgeWidth: 0.035, edgeChipping: 0.6, edgeContrast: 1.15, flatten: 0.85, illustration: 0.5, patchScale: 2.4, blendScale: 4, warmTint: [1.12, 1.03, 0.93], coolTint: [0.9, 0.92, 1.02], brushStrokes: 0.25 }, seed: 7, meshes: [] },
     // The fixtures are drawn with their paint as vertex tints (a frame's green, a cage's khaki, an awning's stripes), which
     // the picture keeps over their baked looks (`?bakedtints=on`): so their materials are pale, and add only what age
     // does to the paint: dullness, dirt and rust.
@@ -397,8 +397,8 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
     materials.push(...facadeMaterials());
     materials.push({ ...materials.find(material => material.id === "render-paint"), id: "render-paint-round", meshes: [] });
     scene.push({ id: model.id, kind: "item", entry: model.entry, parameters: { ...model.parameters }, transform: model.transform, slots: model.slots,
-      // Small printed surfaces are baked finer than the walls (texels a meter): lettering strokes and poster print.
-      slotDensities: { lettering: 800, posters: 640 } });
+      // Printed strokes, timber grain and pipe rust need more samples at street level.
+      slotDensities: { lettering: 800, posters: 640, "shop-timber": 320, timber: 320, rust: 320, aircon: 256 } });
   }
   let batchList;
   if (batches && room) {
@@ -424,12 +424,12 @@ export function buildProject(resolution = 512, texelDensity = 128, { weathering 
       slots: withFacade ? { paving: "avenue-paving", kerb: "kerb", soil: "room-dark", metal: "street-metal", timber: "weathered-timber" }
         : { paving: "concrete-slab", kerb: "concrete-slab", soil: "concrete-slab", metal: "flat-steel", timber: "bench-wood" },
       // Its slabs, kerbs and soil are shaded per vertex: a coarse bake of the large paving keeps the allowance for the building.
-      slotDensities: { paving: 48, kerb: 96, soil: 24, metal: 96, timber: 128 } });
+      slotDensities: { paving: 48, kerb: 96, soil: 24, metal: 96, timber: 256 } });
     // Street lamps in two rows along the avenue (`lamps` of `avenue.json`).
     modules["items/avenue-lamps.item.json"] = JSON.stringify(avenueLamps(avenue), null, 2) + "\n";
     scene.push({ id: "lamps", kind: "item", entry: "items/avenue-lamps.item.json", parameters: {}, transform: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
       slots: withFacade ? { metal: "street-metal", lamp: "lamp-lens", banner: "canvas" } : { metal: "flat-steel", lamp: "flat-steel", banner: "bench-wood" },
-      slotDensities: { metal: 64, lamp: 64, banner: 96 } });
+      slotDensities: { metal: 128, lamp: 160, banner: 192 } });
     // The road: thin slabs with a rounded rim, so an open edge does not read as a thick floating block. Without the room
     // the front street is a whole street: its carriageway runs far out both ways along the building's front, 7.3 m from
     // the near kerb (the avenue's start) to a far kerb and a 4 m pavement of its own; with the room it stops short of

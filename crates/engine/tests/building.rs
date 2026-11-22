@@ -190,6 +190,7 @@ pub fn check_reference_buildings() {
                             market_trays: false,
                         },
                         restaurant: shop::roast::Assets {
+                            hero_props: false,
                             food: true,
                             metal: false,
                             surfaces: true,

@@ -1,10 +1,11 @@
-import { BrowserCompiler } from "../../browser/runtime/compiler.ts";
-import { decodePacket, type ScenePacket } from "../../browser/model/packet.ts";
+import { worldCompiler } from "../compiler-host.ts";
+import type { BrowserCompiler } from "../../browser/runtime/compiler.ts";
+import type { ScenePacket } from "../../browser/model/packet.ts";
 import { SceneUpdates } from "../../browser/model/updates.ts";
 
 /** Uses the ordinary AML worker and transport admission before a studio changes its accepted model. */
 export class AmlLoader {
-  private compiler?: BrowserCompiler;
+  private compiler?: Pick<BrowserCompiler, keyof BrowserCompiler>;
   private reject?: (error: Error) => void;
 
   /** Each open starts an independent source session, preserving the existing scene until acceptance. */
@@ -13,10 +14,10 @@ export class AmlLoader {
     return new Promise((resolve, reject) => {
       this.reject = reject;
       const updates = new SceneUpdates();
-      const compiler = new BrowserCompiler(result => {
+      const compiler = worldCompiler(result => {
         try {
           if (result.error || !result.buffer) throw new Error(result.error || "No AML scene returned.");
-          const packet = result.update ? updates.decode(result.buffer) : decodePacket(result.buffer);
+          const packet = updates.decodePreview(result.buffer);
           if (!packet.manifest.success) throw new Error(packet.manifest.diagnostics.map(finding => `${finding.source.line}:${finding.source.column} ${finding.message}`).join("\n"));
           resolve(packet);
         } catch (error) { reject(error); }

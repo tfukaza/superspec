@@ -4,26 +4,29 @@ import { fileURLToPath } from "node:url";
 import { resolve, relative } from "node:path";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const roots = [".gitattributes", ".fallowrc.json", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", "tsconfig.json", "vite.rust.config.ts", "LICENSE", "crates", "assets", "schema", "editor", "browser", "tests", "tools", "docs/AML.md", "docs/AUTHORING.md", ".github/workflows"];
+const roots = [".gitattributes", ".fallowrc.json", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "package.json", "package-lock.json", "tsconfig.json", "vite.rust.config.ts", "vite.anime-tree.config.ts", "LICENSE", "crates", "third_party", "assets", "schema", "editor", "browser", "adapters", "tests", "tools", "docs/AML.md", "docs/AUTHORING.md", ".github/workflows"];
+const localDirectories = new Set(["node_modules", "__pycache__", ".git", ".vite", "generated", "target"]);
 
 /** Identifies the portable source distribution, including all implementation assets and tests. */
-export async function sourceManifest() {
+export async function sourceManifest(directory = root) {
   const files = {};
   async function visit(path) {
     const entries = await readdir(path, { withFileTypes: true });
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "en"))) {
       const full = resolve(path, entry.name);
+      if (localDirectories.has(entry.name) || relative(directory, full).replaceAll("\\", "/") === "adapters/three/dist"
+          || entry.name.endsWith(".tsbuildinfo") || entry.name.endsWith(".log")) continue;
       if (entry.isDirectory()) await visit(full);
       else if (entry.isFile()) await record(full);
       else throw new Error(`Unsupported distribution entry ${full}.`);
     }
   }
   async function record(path) {
-    files[relative(root, path).replaceAll("\\", "/")] = createHash("sha256").update(await readFile(path)).digest("hex");
+    files[relative(directory, path).replaceAll("\\", "/")] = createHash("sha256").update(await readFile(path)).digest("hex");
   }
   for (const path of roots) {
-    if ((await stat(resolve(root, path))).isDirectory()) await visit(resolve(root, path));
-    else await record(resolve(root, path));
+    if ((await stat(resolve(directory, path))).isDirectory()) await visit(resolve(directory, path));
+    else await record(resolve(directory, path));
   }
   const ordered = Object.fromEntries(Object.entries(files).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
   return { schemaVersion: 1, baseline: "fb5df8cbf1a3c8b5a8a75a66bf976678cf2106ff", sha256: createHash("sha256").update(JSON.stringify(ordered)).digest("hex"), files: ordered };

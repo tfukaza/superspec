@@ -2,7 +2,10 @@ use std::{ffi::OsString, path::PathBuf};
 
 pub const HELP: &str = "SuperSpec native authoring
 Usage:
+  superspec-studio bake-input <shade|shade-layouts|project-fields|aml-scene> < project.zip
+  superspec-studio serve [--ui directory] [--artifacts directory] [--port port]
   superspec-studio <scene|glb|check> <project.json|source.ms|source.material.ts|source.item.json> [--profile preview|production] [--textures ktx2|png] [--resolution 16-512|2048] [--seed 0-4294967295] [--parameters values.json] [--types] [--sdk <dir>]
+  superspec-studio <scene|glb|check> <source.tree.json|source.grass.json> [--site ground.json] [--textures ktx2|png]
   superspec-studio inspect <source.material.ts>
   superspec-studio inspect <source.item.json> [--parameters values.json]
   superspec-studio edit <source.material.ts> --op <json|@file> [--write]
@@ -22,6 +25,7 @@ pub const RECIPE_COMMANDS: [&str; 4] = ["inspect", "edit", "sdk", "catalog"];
 
 pub struct Arguments {
     pub command: String,
+    pub site: Option<PathBuf>,
     pub source: PathBuf,
     pub resolution: Option<usize>,
     pub profile: Option<superspec_engine::authoring::Profile>,
@@ -61,6 +65,7 @@ impl Arguments {
         };
         let mut parsed = Self {
             command,
+            site: None,
             source: source.into(),
             resolution: None,
             profile: None,
@@ -78,6 +83,12 @@ impl Arguments {
                 values.next().ok_or(format!("{name} requires a value."))
             };
             match option.to_str() {
+                Some("--site")
+                    if parsed.site.is_none()
+                        && parsed.source.to_string_lossy().ends_with(".grass.json") =>
+                {
+                    parsed.site = Some(value("--site")?.into())
+                }
                 Some("--resolution") if parsed.resolution.is_none() => {
                     let value = value("--resolution")?;
                     let value: usize = value

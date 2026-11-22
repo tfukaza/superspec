@@ -9,14 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Batches in one scene.
-pub const MAX_BATCHES: usize = 4096;
-/// Instances of all batches of one scene together.
-pub const MAX_INSTANCES: usize = 1_000_000;
-/// Vertices of all batch meshes of one scene together (each mesh is stored once).
-pub const MAX_BATCH_VERTICES: usize = 1_500_000;
-/// Indices of all batch meshes of one scene together.
-pub const MAX_BATCH_INDICES: usize = 9_000_000;
+pub use crate::limits::{MAX_BATCH_INDICES, MAX_BATCH_VERTICES, MAX_BATCHES, MAX_INSTANCES};
 /// Numbers per delivered placement: translation (3), rotation quaternion `x y z w` (4), scale (3).
 pub const PLACEMENT_FLOATS: usize = 10;
 

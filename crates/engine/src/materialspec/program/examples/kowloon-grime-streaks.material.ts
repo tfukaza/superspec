@@ -10,7 +10,7 @@
 // down it from the edge to the longest streak. Each zone takes its own place in the tile and its own length from its
 // identity, so storeys and sills do not repeat one another; a column fades out where its zone ends (at the next edge
 // or an opening's head below), and a dark lip lies right under every edge.
-import { defineLayer, param, zoneCoord, zoneExtent, zoneSpan, sampleAlpha, valueNoise, seed, smoothstep, clamp, max, min, add, mul, sub, div, fract, vec2, vec3 } from "@superspec/material/v1";
+import { defineLayer, param, zoneCoord, zoneExtent, zoneSpan, sampleAlpha, valueNoise, seed, smoothstep, clamp, max, min, add, mul, sub, div, fract, vec2, vec3, select, gt } from "@superspec/material/v1";
 
 const color = param.vec3({ default: vec3(0.36, 0.34, 0.31), range: [0, 1], label: "Grime colour" });
 const strength = param.scalar({ default: 0.8, range: [0, 2], label: "Strength" });
@@ -52,7 +52,7 @@ const coverage = mul(extent.x, min(add(add(streaks, longRun), under), 1));
 
 export default defineLayer({
   name: "Kowloon grime streaks",
-  coverage,
+  coverage: select(gt(extent.x, 0), coverage, 0),
   baseColor: color,
   blend: { baseColor: "multiply" },
 });

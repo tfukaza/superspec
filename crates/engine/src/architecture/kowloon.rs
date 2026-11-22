@@ -2,7 +2,7 @@
 use super::build::{PhysicalBuild, PhysicalOutput, RenderSurfaces};
 use super::*;
 use crate::worldspec::{
-    build::ThemeAdapter,
+    build::{ItemOutput, ThemeAdapter, VisualOutput},
     themes::kowloon::{
         assembly::{Execution, ThemeState},
         cache::Cache,
@@ -14,6 +14,7 @@ mod dressing;
 mod ground;
 mod visual;
 mod wall_dressing;
+mod windows;
 
 pub(crate) struct Kowloon<'a> {
     execution: Execution<'a>,
@@ -81,14 +82,14 @@ impl ThemeAdapter for Kowloon<'_> {
     }
     fn plan(
         &mut self,
-        physical: &mut PhysicalBuild<'_>,
-        scene: &mut Scene,
+        physical: &PhysicalBuild<'_>,
+        diagnostics: &mut Vec<Diagnostic>,
         output: &PhysicalOutput,
         render: &RenderSurfaces,
     ) -> Result<(), Diagnostic> {
         (self.execution.observe)("building-plan");
         self.building_plan = physical.compiler.plan_buildings(
-            scene,
+            diagnostics,
             &output.product,
             std::mem::take(&mut self.buildings),
             &render.geometry,
@@ -117,34 +118,39 @@ impl ThemeAdapter for Kowloon<'_> {
     }
     fn publish(
         &mut self,
-        physical: &mut PhysicalBuild<'_>,
-        scene: &mut Scene,
+        physical: &PhysicalBuild<'_>,
+        visuals: &mut VisualOutput<'_>,
     ) -> Result<(), Diagnostic> {
         (self.execution.observe)("ground-render");
         physical.compiler.render_ground(
-            scene,
+            visuals,
             std::mem::take(&mut self.ground_plan),
             &mut self.state,
             &self.execution,
         )?;
         (self.execution.observe)("wall-render");
         physical.compiler.render_walls(
-            scene,
+            visuals,
             std::mem::take(&mut self.wall_plan),
             &mut self.state,
             &self.execution,
         )?;
         (self.execution.observe)("building-render");
         physical.compiler.render_buildings(
-            scene,
+            visuals,
             self.building_plan.take(),
             &mut self.state,
             &self.execution,
         )?;
         Ok(())
     }
-    fn place_items(&self, physical: &PhysicalBuild<'_>, scene: Scene) -> Result<Scene, Diagnostic> {
-        use crate::worldspec::{city, themes::kowloon::city as catalog};
+    fn place_items<'build>(
+        &self,
+        physical: &'build PhysicalBuild<'_>,
+        items: ItemOutput<'build>,
+    ) -> Result<ItemOutput<'build>, Diagnostic> {
+        use crate::worldspec::themes::kowloon::city as catalog;
+        let items = physical.compiler.place_windows(items)?;
         let placements = physical
             .compiler
             .resolution
@@ -153,23 +159,35 @@ impl ThemeAdapter for Kowloon<'_> {
             .iter()
             .filter(|node| node.kind == "city")
             .flat_map(|city| &city.children);
-        let scene = city::place(
-            scene,
+        let mut items = items.place_city(
+            || {
+                self.execution
+                    .cache
+                    .map(|cache| cache.lock().expect("Kowloon cache").city_items())
+                    .unwrap_or_default()
+            },
             placements
                 .clone()
                 .filter(|n| !matches!(n.kind.as_str(), "tree" | "shrub")),
             catalog::request,
-            &catalog::asset,
+            |node, path| {
+                if superspec_catalog::image_name(path).is_some() {
+                    physical.compiler.asset(path)
+                } else if node.kind == "grass-field" {
+                    physical.compiler.assets.read(path)
+                } else {
+                    catalog::asset(path)
+                }
+            },
             physical.compiler.cancelled,
         )?;
-        let first_building = placements.clone().find(|node| node.kind == "building");
-        let mut scene = catalog::finish(scene, placements, physical.compiler.cancelled)?;
-        if let Some(building) = first_building {
-            physical
-                .compiler
-                .load_material_assets(&mut scene, Some(building))?;
-        }
-        Ok(scene)
+        catalog::finish(
+            &mut items,
+            placements,
+            physical.compiler.cancelled,
+            self.execution.cache,
+        )?;
+        Ok(items)
     }
     fn fallback_source(&self) -> Option<&Node> {
         self.source.as_ref()

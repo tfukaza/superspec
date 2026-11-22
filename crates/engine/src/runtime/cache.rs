@@ -23,4 +23,6 @@ pub struct Stats {
     pub binding_misses: u64,
     pub binding_entries: usize,
     pub binding_bytes: usize,
+    pub plant_hits: u64,
+    pub plant_misses: u64,
 }

@@ -13,6 +13,7 @@ pub mod grocer_layout;
 pub mod grocer_props;
 pub mod hardware;
 pub mod herbalist;
+mod hero_props;
 mod market_trays;
 pub(super) mod patina;
 pub mod produce;

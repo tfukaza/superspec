@@ -18,6 +18,18 @@ export const MAX_SCENE_IMAGE_BYTES = 1024 * MIB;
 /** A saved project file, whose companions are embedded as base64 (4 bytes per 3), plus 64 MiB. */
 export const MAX_PROJECT_FILE_BYTES = 1_498_764_628;
 
+export const MAX_SCENE_IMAGES = 16_384;
+export const MAX_BATCHES = 16_384;
+export const MAX_INSTANCES = 1_000_000;
+export const MAX_BATCH_VERTICES = 6_000_000;
+export const MAX_BATCH_INDICES = 36_000_000;
+export const MAX_BATCH_ATTRIBUTE_FLOATS = 64_000_000;
+export const MAX_PROJECT_MODELS = 16;
+export const MAX_PROJECT_MATERIAL_ASSIGNMENTS = 64;
+export const MAX_MATERIAL_LOD_ALTERNATIVES = 16;
+export const MAX_GEOMETRY_LOD_LEVELS = 16;
+export const MAX_GEOMETRY_LOD_GROUPS = 16_384;
+
 /** A short human-readable size for limit messages. */
 export function megabytes(bytes: number): string {
   return `${Math.round(bytes / MIB)} MB`;

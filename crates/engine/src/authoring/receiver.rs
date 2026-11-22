@@ -8,6 +8,9 @@ use superspec_model::instances::{LocalMesh, determinant};
 pub const GUTTER: usize = 2;
 /// The smallest chart edge in texels, gutters included.
 const MIN_CHART: usize = 8;
+// Long anchored faces may use spare space in their existing atlas for complete blocks
+// of the physical pattern. One block at either end bounds the speculative work.
+const RESERVE_CELLS: usize = 16;
 
 /// One atlas rectangle: a triangle, or the two coplanar triangles of a quad.
 ///
@@ -31,7 +34,7 @@ pub struct Chart {
     /// than the rest of the receiver has.
     pub samples: [usize; 2],
     /// For a chart on a pattern anchor's texel lattice: along its width and its height, how
-    /// far into a lattice cell its rectangle starts and how many cells its edge is long (both
+    /// far into the inner rectangle the visible face starts and how many cells its edge is long (both
     /// in texels, neither whole in general). Texel centers are then lattice points, inside the
     /// receiver or just beyond its edge.
     pub lattice: Option<[[f64; 2]; 2]>,
@@ -48,6 +51,28 @@ impl Chart {
             .chain(self.second)
             .chain(self.others.iter().copied())
     }
+}
+
+fn pack_charts(
+    charts: &mut [Chart],
+    width: usize,
+    order: &[usize],
+    size: impl Fn(usize) -> [usize; 2],
+) -> usize {
+    let (mut x, mut y, mut row) = (0, 0, 0);
+    for &index in order {
+        let [w, h] = size(index);
+        if x + w > width {
+            x = 0;
+            y += row;
+            row = 0;
+        }
+        let chart = &mut charts[index];
+        (chart.x, chart.y, chart.width, chart.height) = (x, y, w, h);
+        x += w;
+        row = row.max(h);
+    }
+    y + row
 }
 
 pub struct Atlas {
@@ -116,6 +141,46 @@ fn vertex(values: &[f64], index: u32) -> [f64; 3] {
     let start = index as usize * 3;
     values[start..start + 3].try_into().unwrap()
 }
+
+/// UV at three common points determines a triangle's entire affine UV map. Reserve
+/// texels outside a face may be filled from different triangles on CPU and GPU.
+fn face_uvs_agree(
+    receiver: &Receiver,
+    corners: &[[u32; 3]],
+    members: &[usize],
+    frame: [[f64; 3]; 3],
+) -> bool {
+    if members.len() == 1 {
+        return true;
+    }
+    let [origin, u, v] = frame;
+    let project = |triangle: usize| {
+        let [a, b, c] = corners[triangle];
+        let at = vertex(&receiver.positions, a);
+        let ab = sub(vertex(&receiver.positions, b), at);
+        let ac = sub(vertex(&receiver.positions, c), at);
+        let n = cross(ab, ac);
+        let nn = dot(n, n);
+        [origin, add(origin, u), add(origin, v)].map(|point| {
+            let p = sub(point, at);
+            let b_weight = dot(cross(p, ac), n) / nn;
+            let c_weight = dot(cross(ab, p), n) / nn;
+            std::array::from_fn::<_, 2, _>(|channel| {
+                let uv = |index: u32| receiver.uvs[2 * index as usize + channel];
+                uv(a) + b_weight * (uv(b) - uv(a)) + c_weight * (uv(c) - uv(a))
+            })
+        })
+    };
+    let first = project(members[0]);
+    members[1..].iter().all(|&triangle| {
+        project(triangle)
+            .iter()
+            .flatten()
+            .zip(first.iter().flatten())
+            .all(|(a, b)| (a - b).abs() <= 1e-10)
+    })
+}
+
 fn inverse_point(matrix: &[f64; 16], point: [f64; 3]) -> [f64; 3] {
     let a = [matrix[0], matrix[1], matrix[2]];
     let b = [matrix[4], matrix[5], matrix[6]];
@@ -148,6 +213,15 @@ impl Atlas {
     /// The atlas a bake of `request` gives `receiver`: the request's resolution, mapping, domain,
     /// gravity, profile allowance and texel density, so every consumer sizes it by one rule.
     pub fn for_request(receiver: Receiver, request: &super::Request) -> Result<Self, String> {
+        Self::layout_for_request(receiver, request).map(Self::with_pixel_owners)
+    }
+
+    /// The GPU needs chart records. It only asks for a per-pixel owner table
+    /// when different triangles can give its three surface-map samples different values.
+    pub(super) fn layout_for_request(
+        receiver: Receiver,
+        request: &super::Request,
+    ) -> Result<Self, String> {
         let density = request.density_of(&receiver.id);
         let named = request.features.get(&receiver.id).cloned();
         let anchor = request.anchors.get(&receiver.id).copied();
@@ -163,6 +237,92 @@ impl Atlas {
             true,
         )?
         .with_named(named.as_deref().unwrap_or(&[]))
+    }
+
+    fn with_pixel_owners(mut self) -> Self {
+        for index in 0..self.charts.len() {
+            self.fill_chart_owners(index);
+        }
+        self
+    }
+
+    /// Which triangle owns each texel of a multi-triangle lattice chart. A seam
+    /// prefers the first triangle, holes extend along the row then the column.
+    pub(super) fn fill_chart_owners(&mut self, index: usize) {
+        let point = |index: u32| vertex(&self.receiver.positions, index);
+        let corners = &self.corners;
+        let framed = &self.framed;
+        let chart = &mut self.charts[index];
+        let Some([[into_x, across], [into_y, down]]) = chart.lattice else {
+            return;
+        };
+        if chart.others.is_empty() {
+            return;
+        }
+        const NONE: u32 = u32::MAX;
+        let mut owners = vec![NONE; chart.width * chart.height];
+        let members: Vec<usize> = chart.triangles().collect();
+        for triangle in members {
+            let Some([start, edge_x, edge_y]) = framed[triangle] else {
+                continue;
+            };
+            let at = corners[triangle].map(|index| {
+                let from = sub(point(index), start);
+                [
+                    GUTTER as f64 + into_x + dot(from, edge_x) / dot(edge_x, edge_x) * across,
+                    GUTTER as f64 + into_y + dot(from, edge_y) / dot(edge_y, edge_y) * down,
+                ]
+            });
+            let range = |axis: usize, limit: usize| {
+                let low = at.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
+                let high = at.iter().map(|p| p[axis]).fold(f64::NEG_INFINITY, f64::max);
+                (low.floor().max(0.) as usize)..(high.ceil().max(0.) as usize).min(limit)
+            };
+            let side = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| {
+                (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+            };
+            let turn = side(at[0], at[1], at[2]).signum();
+            for y in range(1, chart.height) {
+                for x in range(0, chart.width) {
+                    let center = [x as f64 + 0.5, y as f64 + 0.5];
+                    let inside =
+                        (0..3).all(|k| side(at[k], at[(k + 1) % 3], center) * turn >= -1e-9);
+                    let owner = &mut owners[y * chart.width + x];
+                    if inside && *owner == NONE {
+                        *owner = triangle as u32;
+                    }
+                }
+            }
+        }
+        let (w, h) = (chart.width, chart.height);
+        for row in owners.chunks_exact_mut(w) {
+            for x in 1..w {
+                if row[x] == NONE {
+                    row[x] = row[x - 1];
+                }
+            }
+            for x in (0..w - 1).rev() {
+                if row[x] == NONE {
+                    row[x] = row[x + 1];
+                }
+            }
+        }
+        for y in (1..h).chain((0..h - 1).rev()) {
+            let from = if owners[y * w] == NONE && y > 0 && owners[(y - 1) * w] != NONE {
+                y - 1
+            } else if owners[y * w] == NONE && y + 1 < h {
+                y + 1
+            } else {
+                continue;
+            };
+            owners.copy_within(from * w..from * w + w, y * w);
+        }
+        for owner in &mut owners {
+            if *owner == NONE {
+                *owner = chart.first as u32;
+            }
+        }
+        chart.owners = owners;
     }
 
     /// Receiver vertex indices of a triangle, starting at its chart corner.
@@ -196,6 +356,7 @@ impl Atlas {
             None,
             true,
         )
+        .map(Self::with_pixel_owners)
     }
 
     /// [`Self::new`] for a receiver with a pattern anchor (see [`Mapping::Anchored`]); `snap`
@@ -341,6 +502,7 @@ impl Atlas {
         }
         let mut charts: Vec<Chart> = Vec::new();
         let mut sizes: Vec<[f64; 2]> = Vec::new();
+        let mut reserve_offsets: Vec<[usize; 2]> = Vec::new();
         // For a triangle whose chart is not laid along its own legs: the corner and the two
         // edges of the chart's rectangle, which stand in for the triangle's.
         let mut framed: Vec<Option<[[f64; 3]; 3]>> = vec![None; triangles];
@@ -439,9 +601,30 @@ impl Atlas {
                 };
                 let fits = [fit(low_x, width), fit(low_y, height)];
                 sizes.push(fits.map(|[into, texels]| (into + texels - 1e-6).max(1e-6) / density));
+                let first_normal = vertex(&receiver.normals, corners[first][0]);
+                let flat = members.iter().all(|&triangle| {
+                    corners[triangle]
+                        .iter()
+                        .all(|&index| vertex(&receiver.normals, index) == first_normal)
+                });
+                // A smooth normal extrapolated beyond its triangle can become invalid.
+                // A UV seam would let a neighbor's pattern bleed into the reserved margin.
+                let frame = [start, mul(x, width), mul(y, height)];
+                let reservable = flat
+                    && fits.iter().any(|fit| fit[1] >= (4 * RESERVE_CELLS) as f64)
+                    && face_uvs_agree(&receiver, &corners, &members, frame);
+                reserve_offsets.push(std::array::from_fn(|axis| {
+                    if reservable && fits[axis][1] >= (4 * RESERVE_CELLS) as f64 {
+                        (([low_x, low_y][axis] * density + 1e-6)
+                            .floor()
+                            .rem_euclid(RESERVE_CELLS as f64)) as usize
+                    } else {
+                        RESERVE_CELLS
+                    }
+                }));
                 for triangle in &members {
                     faced[*triangle] = true;
-                    framed[*triangle] = Some([start, mul(x, width), mul(y, height)]);
+                    framed[*triangle] = Some(frame);
                 }
                 charts.push(Chart {
                     x: 0,
@@ -509,21 +692,7 @@ impl Atlas {
             let extent = |length: f64| {
                 ((length * density).ceil() as usize + 2 * GUTTER).clamp(MIN_CHART, width)
             };
-            let (mut x, mut y, mut row) = (0, 0, 0);
-            for &index in &order {
-                let w = extent(sizes[index][0]);
-                let h = extent(sizes[index][1]);
-                if x + w > width {
-                    x = 0;
-                    y += row;
-                    row = 0;
-                }
-                let chart = &mut charts[index];
-                (chart.x, chart.y, chart.width, chart.height) = (x, y, w, h);
-                x += w;
-                row = row.max(h);
-            }
-            y + row
+            pack_charts(charts, width, &order, |index| sizes[index].map(extent))
         };
         let longest = sizes.iter().flatten().copied().fold(0f64, f64::max);
         // With a texel density, a receiver that reaches it in a smaller square takes the smallest
@@ -572,6 +741,65 @@ impl Atlas {
             (resolution, low)
         });
         let height = pack(width, density, &mut charts);
+        // Complete blocks around the actual UV crop where they fit the same texture.
+        // Prioritize both axes, then the long one, then the short one. If they don't fit
+        // keep the tight layout, including its density and texture allocation.
+        if reserve_offsets
+            .iter()
+            .flatten()
+            .any(|&cells| cells < RESERVE_CELLS)
+        {
+            let tight: Vec<_> = charts
+                .iter()
+                .map(|chart| [chart.width, chart.height])
+                .collect();
+            for axes in [[true, true], [true, false], [false, true]] {
+                let padded: Vec<_> = tight
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &size)| {
+                        let candidate = std::array::from_fn::<_, 2, _>(|axis| {
+                            let before = reserve_offsets
+                                .get(index)
+                                .map_or(RESERVE_CELLS, |o| o[axis]);
+                            if !axes[axis] || before == RESERVE_CELLS {
+                                return size[axis];
+                            }
+                            (size[axis] - 2 * GUTTER + before).next_multiple_of(RESERVE_CELLS)
+                                + 2 * GUTTER
+                        });
+                        // Spare atlas space costs no texture memory, but its cells still need
+                        // to be shaded. Limit speculative shading to 5% of this chart.
+                        if candidate[0] * candidate[1] > size[0] * size[1] + size[0] * size[1] / 20
+                        {
+                            size
+                        } else {
+                            candidate
+                        }
+                    })
+                    .collect();
+                if padded == tight || padded.iter().any(|s| s[0] > width || s[1] > height) {
+                    continue;
+                }
+                let mut order: Vec<_> = (0..padded.len()).collect();
+                order.sort_by_key(|&i| (std::cmp::Reverse((padded[i][1], padded[i][0])), i));
+                if pack_charts(&mut charts, width, &order, |i| padded[i]) > height {
+                    pack(width, density, &mut charts);
+                    continue;
+                }
+                for (i, chart) in charts.iter_mut().enumerate() {
+                    if let Some(fits) = &mut chart.lattice {
+                        for axis in 0..2 {
+                            let before = reserve_offsets[i][axis];
+                            if padded[i][axis] > tight[i][axis] {
+                                fits[axis][0] += before as f64;
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
         for (chart, size) in charts.iter_mut().zip(&sizes) {
             let inner = [chart.width - 2 * GUTTER, chart.height - 2 * GUTTER];
             chart.samples = std::array::from_fn(|axis| {
@@ -672,82 +900,6 @@ impl Atlas {
                 mesh.uvs.push([x / width as f64, 1. - y / height as f64]);
                 mesh.indices.push(mesh.indices.len() as u32);
             }
-        }
-        // Which triangle of a face each texel of its chart samples: the one its center is in,
-        // the lowest when it is on an edge two share. A texel in none (a hole, the padding, a
-        // notch of the outline) takes the nearest along its row, then along its column, so
-        // normals and mesh coordinates continue from the closest part of the face.
-        for chart in &mut charts {
-            let Some([[into_x, across], [into_y, down]]) = chart.lattice else {
-                continue;
-            };
-            if chart.others.is_empty() {
-                continue;
-            }
-            const NONE: u32 = u32::MAX;
-            let mut owners = vec![NONE; chart.width * chart.height];
-            let members: Vec<usize> = chart.triangles().collect();
-            for triangle in members {
-                let Some([start, edge_x, edge_y]) = framed[triangle] else {
-                    continue;
-                };
-                let at = corners[triangle].map(|index| {
-                    let from = sub(point(index), start);
-                    [
-                        GUTTER as f64 + into_x + dot(from, edge_x) / dot(edge_x, edge_x) * across,
-                        GUTTER as f64 + into_y + dot(from, edge_y) / dot(edge_y, edge_y) * down,
-                    ]
-                });
-                let range = |axis: usize, limit: usize| {
-                    let low = at.iter().map(|p| p[axis]).fold(f64::INFINITY, f64::min);
-                    let high = at.iter().map(|p| p[axis]).fold(f64::NEG_INFINITY, f64::max);
-                    (low.floor().max(0.) as usize)..(high.ceil().max(0.) as usize).min(limit)
-                };
-                let side = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| {
-                    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
-                };
-                let turn = side(at[0], at[1], at[2]).signum();
-                for y in range(1, chart.height) {
-                    for x in range(0, chart.width) {
-                        let center = [x as f64 + 0.5, y as f64 + 0.5];
-                        let inside =
-                            (0..3).all(|k| side(at[k], at[(k + 1) % 3], center) * turn >= -1e-9);
-                        let owner = &mut owners[y * chart.width + x];
-                        if inside && *owner == NONE {
-                            *owner = triangle as u32;
-                        }
-                    }
-                }
-            }
-            let (w, h) = (chart.width, chart.height);
-            for row in owners.chunks_exact_mut(w) {
-                for x in 1..w {
-                    if row[x] == NONE {
-                        row[x] = row[x - 1];
-                    }
-                }
-                for x in (0..w - 1).rev() {
-                    if row[x] == NONE {
-                        row[x] = row[x + 1];
-                    }
-                }
-            }
-            for y in (1..h).chain((0..h - 1).rev()) {
-                let from = if owners[y * w] == NONE && y > 0 && owners[(y - 1) * w] != NONE {
-                    y - 1
-                } else if owners[y * w] == NONE && y + 1 < h {
-                    y + 1
-                } else {
-                    continue;
-                };
-                owners.copy_within(from * w..from * w + w, y * w);
-            }
-            for owner in &mut owners {
-                if *owner == NONE {
-                    *owner = chart.first as u32;
-                }
-            }
-            chart.owners = owners;
         }
         Ok(Self {
             mesh: Arc::new(mesh),
