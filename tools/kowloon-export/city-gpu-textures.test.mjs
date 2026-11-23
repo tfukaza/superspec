@@ -346,6 +346,28 @@ test("Low halves normal and roughness pages, quarters emission and pairs distant
   assert.ok(report.firstFrame.desktopBytes < report.desktopBytes && report.firstFrame.downloadBytes < report.textureBytes);
 });
 
+test("a streamed Medium keeps a page too large for the encoder as published beside its paired textures", async t => {
+  const f = await fixture(t), { json: source, tail } = readCityEntry(await readFile(f.source)), entry = join(f.root, "large", "city.glb");
+  await mkdir(join(dirname(entry), "city-data"), { recursive: true });
+  // Over the WebAssembly encoder's 12 M texels; a flat colour keeps the PNG small.
+  const side = 3600, bytes = await sharp({ create: { width: side, height: side, channels: 4, background: { r: 150, g: 70, b: 40, alpha: 1 } } }).png().toBuffer();
+  const chunk = await readFile(join(dirname(f.source), "city-data", "chunk.bin"));
+  source.buffers[0].byteLength = chunk.length + bytes.length;
+  source.images.push({ name: "large", mimeType: "image/png", bufferView: source.bufferViews.push({ buffer: 0, byteOffset: chunk.length, byteLength: bytes.length }) - 1 });
+  source.materials[0].pbrMetallicRoughness.baseColorTexture = { index: source.textures.push({ sampler: 0, source: source.images.length - 1 }) - 1 };
+  delete source.scenes[0].extras.cityLod;
+  await writeFile(join(dirname(entry), "city-data", "chunk.bin"), Buffer.concat([chunk, bytes]));
+  await writeFile(entry, entryBytes(source, tail));
+  const destination = join(f.root, "large-medium", "city.glb");
+  const report = await stageCityGpuTextures({ ...f.options, source: entry, destination, tier: "medium", maps: { colorCodec: "uastc", streaming: "all" } });
+  const { json } = readCityEntry(await readFile(destination)), wall = json.textures[json.materials[0].pbrMetallicRoughness.baseColorTexture.index];
+  assert.equal(wall.extensions?.KHR_texture_basisu, undefined);
+  assert.deepEqual([json.images[wall.source].name, json.images[wall.source].mimeType], ["large", "image/png"]);
+  assert.equal(report.records.filter(record => record.kept).length, 1);
+  const pairs = json.scenes[0].extras.worldSpecTextureLod.pairs;
+  assert.ok(pairs.length > 0 && pairs.every(pair => json.textures[pair.far].extensions.KHR_texture_basisu && json.textures[pair.near].extensions.KHR_texture_basisu));
+});
+
 test("Very Low keeps colour, emission and finish detail with constant roughness and metalness", async t => {
   const f = await fixture(t);
   const { json, report, image } = await f.staged("very-low", { tier: "very-low" });

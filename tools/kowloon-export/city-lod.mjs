@@ -37,7 +37,9 @@ export function cityFarPolicy(material) {
 }
 /** A material that holds nothing but signs, posters and lamps. The bake gives these finishes pages of
  * their own (chart-atlas.mjs), and a level's share of so small a primitive would come out of an emblem's
- * teeth or a letter's strokes, so it keeps every triangle at every distance. */
+ * teeth or a letter's strokes, so it keeps every triangle at every distance. So does a page of roof tiles
+ * (`cityDetailKeep` from the bake): the viewer picks a primitive's level by its largest connected piece, and a
+ * primitive of nothing but tiles would be judged by one tile and pruned away while its roof is in plain view. */
 export function keepsEveryTriangle(material) {
   const finishes = material?.extras?.sourceFinishes;
   return material?.extras?.cityDetailKeep === true || Array.isArray(finishes) && finishes.length > 0 && finishes.every(finish => typeof finish === "string"

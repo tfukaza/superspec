@@ -467,7 +467,8 @@ export async function stageCityGpuTextures({ source, destination, tier, maps = g
   for (const record of live) if (record.far) {
     const image = images.push({ mimeType: "image/ktx2", bufferView: await place(record.far, groups.eager) }) - 1;
     for (const [near, definition] of json.textures.entries()) {
-      if (definition.extensions[BASIS].source !== imageIds.get(record.image) || pairs.some(pair => pair.far === near)) continue;
+      // A page too large for the encoder stays a plain image texture, with no Basis source.
+      if (definition.extensions?.[BASIS]?.source !== imageIds.get(record.image) || pairs.some(pair => pair.far === near)) continue;
       pairs.push({ near, far: json.textures.push({ ...structuredClone(definition), extensions: { [BASIS]: { source: image } } }) - 1 });
     }
   }

@@ -348,18 +348,18 @@ function atlasPages(meshesIn, layouts, { nativeMeshes, balconies, visibility }, 
         : [{ item, source: { x: 0, y: 0, w: width, h: height, gutter: 0 },
           w: Math.max(4, Math.round(width * scale)), h: Math.max(4, Math.round(height * scale)) }];
       const opaque = !item.mat.transparent && !item.mat.alphaTest, finish = item.m.name.split("/").slice(-2).join(" / ");
-      // Roof tiles are small charts but part of the building's mass: they are never thinned or culled as fittings are.
+      // Roof tiles are small charts but part of the building's mass: pages of their own, which the viewer never culls.
       const mass = / \/ roof-tile$/.test(finish);
       const hardware = !mass && (item.small || (!dielectricFinish(finish) && metallic(item))), kept = keptFinish(finish);
       const confined = item.confined || !tex;
-      const key = JSON.stringify([item.minimum ?? null, opaque, confined, item.emitter, item.hasEdge, hardware, kept]);
-      if (!classes.has(key)) classes.set(key, { opaque, confined, emitter: item.emitter, edge: item.hasEdge, hardware, kept, items: [] });
+      const key = JSON.stringify([item.minimum ?? null, opaque, confined, item.emitter, item.hasEdge, hardware, kept, mass]);
+      if (!classes.has(key)) classes.set(key, { opaque, confined, emitter: item.emitter, edge: item.hasEdge, hardware, kept, mass, items: [] });
       classes.get(key).items.push(item);
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     renderer.resetState();
     const pages = [];
-    for (const { opaque, confined, emitter, edge, hardware, kept, items } of classes.values()) {
+    for (const { opaque, confined, emitter, edge, hardware, kept, mass, items } of classes.values()) {
       // A part's charts stay together as one block: its distance levels may collapse through
       // their seams, and its coarse mips mix neighbours. The shell's large charts pack singly.
       const units = hardware
@@ -373,7 +373,7 @@ function atlasPages(meshesIn, layouts, { nativeMeshes, balconies, visibility }, 
           charts++;
           placedTexels += (chart.w + 2 * pad) * (chart.h + 2 * pad);
         }
-        pages.push({ width: page.width, height: page.height, opaque, confined, hardware, kept, charts, placedTexels,
+        pages.push({ width: page.width, height: page.height, opaque, confined, hardware, kept, mass, charts, placedTexels,
           keys: ["map", "normalMap", "roughnessMap", ...(emitter ? ["emissiveMap"] : []), ...(edge ? ["edge"] : [])], maps: [], parts: [] });
       }
     }
@@ -444,7 +444,7 @@ function atlasPages(meshesIn, layouts, { nativeMeshes, balconies, visibility }, 
             shopFitting: /\/part\/(?:stock\/stock|clutter\/clutter)\//.test(m.name)
               || /\/part\/(?:room\/room|bay\/bay)\/(?:paint|metal|timber|shop-timber)$/.test(m.name),
             index: !triangles && geom.index ? new Uint32Array(geom.index.array) : null,
-            strength, edge, kept: page.kept, alpha: mat.transparent ? "BLEND" : mat.alphaTest ? "MASK" : "OPAQUE",
+            strength, edge, kept: page.kept, mass: page.mass, alpha: mat.transparent ? "BLEND" : mat.alphaTest ? "MASK" : "OPAQUE",
           });
         }
         geom.dispose();
@@ -531,12 +531,16 @@ for (const name of only ? [only] : names) {
       for (const part of parts) {
         if (part.strength > 0) emitters++;
         // Keep the shop fittings distinct through the packer's material-based join.
-        const materialKey = [part.alpha, part.strength, part.edge, part.shopFitting, !!part.kept].join("-");
+        const materialKey = [part.alpha, part.strength, part.edge, part.shopFitting, !!part.kept, !!part.mass].join("-");
         const mat = (materials[materialKey] ??= doc
           .createMaterial("ItemSpec " + part.alpha)
           // The fraction of the authored texel density these pages hold, for a delivery that scales textures by tier.
           // A page of signs, posters and lamps keeps its geometry and its full textures at every distance.
-          .setExtras({ materialSpecNormalFrame: true, worldSpecTexelDensity: settings.density, ...(part.kept ? { cityDetailKeep: true } : {}),
+          .setExtras({ materialSpecNormalFrame: true, worldSpecTexelDensity: settings.density, ...(part.kept || part.mass ? { cityDetailKeep: true } : {}),
+            // Roof tiles have metal texels, so their pages read as weathered-steel hardware, which the viewer
+            // culls once each piece is a few pixels. They are the roof's colour from across the city, so their
+            // pages are kept: never culled, and every tile kept at every level (city-lod.mjs keepsEveryTriangle).
+            ...(part.mass ? { worldSpecMass: true } : {}),
             ...(part.shopFitting ? { worldSpecOutline: false } : {}) })
           .setDoubleSided(true)
           .setAlphaMode(part.alpha)
