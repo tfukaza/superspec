@@ -2,9 +2,7 @@ import * as THREE from "three";
 import { PMREMGenerator, type WebGPURenderer } from "three/webgpu";
 import { mix, normalWorldGeometry, vec3 } from "three/tsl";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { ShopLights } from "../../adapters/three/src/shopLights.ts";
-import type { GraphicsSettings } from "../../adapters/three/src/graphicsSettings.ts";
-import type { RenderDiagnostics } from "../../adapters/three/src/renderProfile.ts";
+import { ShopLights, type GraphicsSettings, type RenderDiagnostics } from "#render-engine";
 import { lightingFromQuery, parseLighting, sunOf, type Lighting } from "./lighting.ts";
 import { GltfLights } from "./gltf-lights.ts";
 
@@ -62,12 +60,12 @@ export function webGpuLighting(renderer: WebGPURenderer, scene: THREE.Scene, mod
     scene.add(...lights);
   }
   const { fixtures: enableFixtures, shopLight, shadows } = diagnostics.lighting;
-  const shadowMapSize = graphics?.fixtureShadowMapSize === undefined ? undefined
+  const shadowMapSize = !graphics?.fixtureShadowMapSize ? undefined
     : Math.min(graphics.fixtureShadowMapSize, maxShadowMapSize ?? 512);
   const fixtures = new ShopLights(scene, enableFixtures ? extras.shopLightPositions : [],
     enableFixtures && model.name === "Stoa" && shopLight !== "baseline", false,
     { staticShadows: true, stableSlots: true, shadowMapSize });
-  if (!shadows) for (const light of fixtures.shadowLights) light.castShadow = false;
+  if (!shadows || graphics?.fixtureShadowMapSize === 0) for (const light of fixtures.shadowLights) light.castShadow = false;
   const casters = [...lights, ...authored, ...fixtures.shadowLights].filter((light): light is THREE.DirectionalLight | THREE.SpotLight | THREE.PointLight =>
     shadows && light.castShadow && (light instanceof THREE.DirectionalLight
       || light instanceof THREE.SpotLight || light instanceof THREE.PointLight));

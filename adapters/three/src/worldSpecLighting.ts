@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import { paintedCastShadow } from "./paintedCastShadow";
+import { paintedCastShadow } from "./paintedCastShadow.ts";
 
 type Rgb = [number, number, number];
 type Shadow = {

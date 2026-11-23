@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { GeometryLodGroup } from "../model/geometry-lods.ts";
-import { selectAuthoredLod, type AuthoredLodHint } from "../../adapters/three/src/lodSelection.ts";
+import { selectAuthoredLod, type AuthoredLodHint } from "#render-engine";
 
 type Group = { levels: THREE.Mesh[][]; hint: AuthoredLodHint; level: number };
 export type PacketLodMaterials = {

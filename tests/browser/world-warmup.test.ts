@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as THREE from "three";
+import { warmupMesh } from "#render-engine";
 import { prepareFirstColor, warmWorldColor, warmWorldTextures } from "../../adapters/three/src/worldWarmup.ts";
 import { enableSinglePassGlazing, warmGlazingSides } from "../../adapters/three/src/glazing.ts";
 import { markOutlineExclusions, registerOutlineDepth, warmExcludedDepth } from "../../adapters/three/src/outlineExclusions.ts";
@@ -107,7 +108,7 @@ test("prepare nearby complete material bindings within budget, including mips an
   const renderer = { properties: { has: (t: THREE.Texture) => resident.has(t) },
     initTexture(t: THREE.Texture) { resident.add(t); uploaded.push(t); } } as unknown as THREE.WebGLRenderer;
   const eye = new THREE.Vector3();
-  for (const budget of [NaN, Infinity, -1])
+  for (const budget of [NaN, 0, -1])
     assert.deepEqual(await warmWorldTextures(renderer, root, eye, budget), { uploadedTextures: 0, estimatedUploadBytes: 0 });
   assert.deepEqual(await warmWorldTextures(renderer, root, eye, 64), { uploadedTextures: 0, estimatedUploadBytes: 0 });
   assert.deepEqual(await warmWorldTextures(renderer, root, eye, 104), { uploadedTextures: 2, estimatedUploadBytes: 104 });
@@ -147,6 +148,25 @@ test("world preparation compiles against the active color pass, restores the hos
   Object.assign(renderer, { compileAsync() { throw Error("Failed to start compile"); } });
   await assert.rejects(() => warmWorldColor(renderer, scene, camera, map, null, 0), /Failed to start compile/);
   assert.deepEqual(targets.slice(-2), [[null], [host, 2, 3]]);
+});
+
+test("a compile-only mesh uses replacement geometry and preserves shader variants without copying instance buffers", () => {
+  const source = new THREE.InstancedMesh(new THREE.BoxGeometry(), new THREE.MeshStandardMaterial(), 4);
+  const geometry = new THREE.SphereGeometry(), material = new THREE.MeshStandardMaterial();
+  source.castShadow = source.receiveShadow = true;
+  source.setColorAt(0, new THREE.Color(0xcc9044));
+  source.morphTexture = texture(2);
+  const stage = warmupMesh(source, material, geometry);
+  assert.ok(stage instanceof THREE.InstancedMesh);
+  assert.equal(stage.geometry, geometry);
+  assert.equal(stage.material, material);
+  assert.equal(stage.instanceMatrix.count, 0);
+  assert.equal(stage.instanceColor, source.instanceColor);
+  assert.equal(stage.morphTexture, source.morphTexture);
+  assert.equal(stage.castShadow, source.castShadow);
+  assert.equal(stage.receiveShadow, source.receiveShadow);
+  assert.notEqual(source.geometry, geometry);
+  assert.notEqual(source.material, material);
 });
 
 test("warm camera-dependent glazing and exclusion variants without changing source meshes, layers or lighting", async () => {
@@ -192,4 +212,87 @@ test("warm camera-dependent glazing and exclusion variants without changing sour
   assert.deepEqual(sign.material, [decal, ordinary]);
   assert.equal(camera.layers.mask, 1);
   assert.deepEqual(map.children, [panes, sign]);
+});
+
+test("transcoded mip arrays are released after the first upload and never transferred again", async () => {
+  const { releaseMipsAfterUpload, releaseSceneMipsAfterUpload } = await import("../../adapters/three/src/uploadedMips.ts");
+  const levels = () => [4, 2, 1].map(size => ({ data: new Uint8Array(size * size), width: size, height: size }));
+  const compressed = new THREE.CompressedTexture(levels(), 4, 4, THREE.RGBA_ASTC_4x4_Format);
+  const view = compressed.clone();
+  let hostUpdates = 0;
+  compressed.onUpdate = () => { hostUpdates++; };
+  const hostUpdate = compressed.onUpdate;
+  const bitmap = new THREE.Texture({ width: 4, height: 4 });
+  const scene = new THREE.Group();
+  scene.add(new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ map: compressed, normalMap: bitmap })),
+    new THREE.Mesh(new THREE.BufferGeometry(), [new THREE.MeshStandardMaterial({ map: view })]));
+
+  assert.equal(releaseMipsAfterUpload(bitmap), false, "a browser image owns no mip arrays");
+  assert.equal(releaseSceneMipsAfterUpload([scene]), 2);
+  assert.deepEqual(compressed.mipmaps.map(mip => mip.data.byteLength), [16, 4, 1], "the first upload still has every level");
+  assert.equal(compressed.source.dataReady, true);
+
+  // WebGL calls onUpdate once the levels are stored.
+  compressed.onUpdate!(compressed);
+  assert.equal(hostUpdates, 1);
+  assert.equal(compressed.onUpdate, hostUpdate, "the host's own callback is restored");
+  assert.deepEqual(compressed.mipmaps.map(mip => [mip.data.byteLength, mip.width, mip.height]), [[0, 4, 4], [0, 2, 2], [0, 1, 1]]);
+  assert.ok(compressed.mipmaps.every(mip => mip.data instanceof Uint8Array));
+  assert.deepEqual(view.mipmaps.map(mip => mip.data.byteLength), [0, 0, 0], "a clone of the same source holds no second copy");
+  assert.equal(view.source.dataReady, false, "a later sampler change allocates nothing and transfers no level");
+
+  const first = new Uint8Array(64);
+  const data = new THREE.DataTexture(first, 4, 4);
+  data.mipmaps = [{ data: first, width: 4, height: 4 }, { data: new Uint8Array(16), width: 2, height: 2 }];
+  assert.equal(releaseMipsAfterUpload(data), true);
+  data.onUpdate!(data);
+  assert.equal((data.image.data as Uint8Array).byteLength, 0, "the base level shared with the image is released too");
+});
+
+test("an unlimited budget stores each drawable mesh's textures once, in time slices, and stops when aborted", async t => {
+  const root = new THREE.Group();
+  const loaded = () => texture(2);
+  const shared = loaded(), wide = loaded(), unloaded = new THREE.Texture(), target = new THREE.WebGLRenderTarget(2, 2);
+  wide.internalFormat = "RGBA16F";
+  const maps = [loaded(), loaded(), loaded(), loaded()], hiddenMap = loaded();
+  const add = (material: THREE.Material, x: number) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(), material);
+    mesh.position.x = x; root.add(mesh); return mesh;
+  };
+  add(new THREE.MeshStandardMaterial({ map: maps[0], normalMap: shared, aoMap: unloaded, emissiveMap: target.texture }), 1);
+  add(new THREE.MeshStandardMaterial({ map: maps[1], normalMap: shared, roughnessMap: wide }), 2);
+  add(new THREE.MeshStandardMaterial({ map: maps[2], normalMap: maps[3] }), 3);
+  add(new THREE.MeshStandardMaterial({ map: hiddenMap }), 0).visible = false;
+  const drawable = [maps[0], shared, maps[1], wide, maps[2], maps[3]];
+
+  // Each upload takes 5 ms of a clock that only uploads advance.
+  let clock = 0;
+  t.mock.method(performance, "now", () => clock);
+  const waits: number[] = [];
+  let duringWait: (() => void) | undefined;
+  const timeout = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (done: () => void) => timeout(() => { waits.push(uploaded.length); duringWait?.(); done(); }, 0));
+  const resident = new Set<THREE.Texture>(), uploaded: THREE.Texture[] = [];
+  const renderer = { properties: { has: (map: THREE.Texture) => resident.has(map) },
+    initTexture(map: THREE.Texture) { assert.ok(!resident.has(map), "stored twice"); resident.add(map); uploaded.push(map); clock += 5; },
+  } as unknown as THREE.WebGLRenderer;
+  const eye = new THREE.Vector3(), draws = (mesh: THREE.Mesh) => mesh.visible;
+
+  const abort = new AbortController(), reason = new Error("Map replaced");
+  duringWait = () => abort.abort(reason);
+  await assert.rejects(warmWorldTextures(renderer, root, eye, Infinity, { draws, signal: abort.signal }), reason);
+  assert.deepEqual(uploaded, drawable.slice(0, 3), "three 5 ms uploads fill a 12 ms slice, and the abort lands in the wait after it");
+  duringWait = undefined;
+
+  const progress: number[][] = [];
+  waits.length = 0;
+  assert.deepEqual(await warmWorldTextures(renderer, root, eye, Infinity, { draws, sliceMs: 4, onProgress: (...step) => progress.push(step) }),
+    { uploadedTextures: 3, estimatedUploadBytes: 2 * 20 }, "the half-float map is stored without a size estimate");
+  assert.deepEqual(uploaded, drawable, "nearest material first, without the hidden mesh, the unloaded image or the render target");
+  assert.deepEqual(waits, [4, 5], "a 4 ms slice waits before every upload after its first");
+  assert.deepEqual(progress, [[0, 3], [1, 3], [2, 3], [3, 3]]);
+  assert.deepEqual(await warmWorldTextures(renderer, root, eye, Infinity, { draws }), { uploadedTextures: 0, estimatedUploadBytes: 0 });
+  assert.deepEqual(await warmWorldTextures(renderer, root, eye, Infinity), { uploadedTextures: 1, estimatedUploadBytes: 20 });
+  assert.equal(uploaded.at(-1), hiddenMap, "without a filter the hidden mesh is prepared as before");
+  target.dispose();
 });

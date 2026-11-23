@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
 import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 /** WorldSpec's one-pixel edge softening, applied to the displayed world before the viewmodel. */
 export class CityEdgeBlur {

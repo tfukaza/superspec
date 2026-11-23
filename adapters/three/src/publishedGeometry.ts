@@ -1,17 +1,18 @@
 import * as THREE from "three";
-import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { CityVisibility, mergeCityInstances, type CityInstanceGroups } from "../../adapters/three/src/cityVisibility.ts";
-import { loadCityLods } from "../../adapters/three/src/cityLods.ts";
-import { clusterCityGeometry } from "../../adapters/three/src/cityClusters.ts";
-import { CityFarHardware } from "../../adapters/three/src/cityFarHardware.ts";
-import { DistantGlazingDraws } from "../../adapters/three/src/distantGlazing.ts";
-import { CityVegetationLod } from "../../adapters/three/src/cityVegetationLod.ts";
-import { CityTextureResidency } from "../../adapters/three/src/cityTextureResidency.ts";
-import { cityTextureBindings, disposeCityTextureLod, hasCityTextureBindings } from "../../adapters/three/src/cityTextureLoader.ts";
-import type { DeclaredLods } from "../../adapters/three/src/declaredLods.ts";
-import type { BlockLods } from "../../adapters/three/src/blockLods.ts";
-import type { RenderDiagnostics } from "../../adapters/three/src/renderProfile.ts";
-import { releaseObjects } from "./dispose-objects.ts";
+import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
+import { CityVisibility, mergeCityInstances, type CityInstanceGroups } from "./cityVisibility.ts";
+import { loadCityLods } from "./cityLods.ts";
+import { clusterCityGeometry } from "./cityClusters.ts";
+import { CityFarHardware } from "./cityFarHardware.ts";
+import { DistantGlazingDraws } from "./distantGlazing.ts";
+import { GlazingRange } from "./glazingRange.ts";
+import { CityVegetationLod } from "./cityVegetationLod.ts";
+import { CityTextureResidency } from "./cityTextureResidency.ts";
+import { cityTextureBindings, disposeCityTextureLod, hasCityTextureBindings } from "./cityTextureLoader.ts";
+import type { DeclaredLods } from "./declaredLods.ts";
+import type { BlockLods } from "./blockLods.ts";
+import type { RenderDiagnostics } from "./renderProfile.ts";
+import { releaseObjects } from "./releaseObjects.ts";
 
 type CityGeometryRenderer = Pick<THREE.WebGLRenderer, "initTexture" | "domElement">;
 
@@ -36,15 +37,24 @@ function hasMovableCityGeometry(root: THREE.Object3D): boolean {
  * The controller owns the GLTF scene's geometry, material, texture and loaded LOD resources.
  * Restore canonical geometry for shadow passes, then reapply the view before its queued draws. */
 export async function publishedCityGeometry(gltf: GLTF, renderer: CityGeometryRenderer, diagnostics: RenderDiagnostics,
-  { entryUrl, declared, blocks, invalidate, geometryLodBias = 1, materialLodBias = 1 }: {
-    entryUrl?: URL; declared?: DeclaredLods; blocks?: BlockLods; invalidate?: () => void;
+  { entryUrl, declared, blocks, invalidate, signal, geometryLodBias = 1, materialLodBias = 1, lodBandMergeTriangles, glazingDistance }: {
+    entryUrl?: URL; declared?: DeclaredLods; blocks?: BlockLods; invalidate?: () => void; signal?: AbortSignal;
     geometryLodBias?: number; materialLodBias?: number;
-  }) {
+    /** Extra triangles allowed per removed LOD band draw. Default CITY_LOD_MERGE_TRIANGLES. */
+    lodBandMergeTriangles?: number;
+    /** Metres beyond which window glass is left out. Default: all glass is drawn. */
+    glazingDistance?: number;
+  } = {}) {
+  signal?.throwIfAborted();
   const { visibility: features, materials } = diagnostics;
-  blocks?.keepCanonicalShadows();
   const culling = features.cityCulling && !hasMovableCityGeometry(gltf.scene);
   const lods = culling && entryUrl && features.lod
-    ? await loadCityLods(gltf, entryUrl) : new Map();
+    ? await loadCityLods(gltf, entryUrl, signal) : new Map<THREE.BufferGeometry, readonly THREE.BufferGeometry[]>();
+  if (signal?.aborted) {
+    for (const [original, levels] of lods) for (const geometry of levels) if (geometry !== original) geometry.dispose();
+    signal.throwIfAborted();
+  }
+  blocks?.keepCanonicalShadows();
   const residency = features.cityCulling && materials.textureLod
     ? publishedTextureResidency(gltf, renderer, invalidate, declared) : undefined;
   const instanceGroups: CityInstanceGroups | undefined = blocks ? new WeakMap() : undefined;
@@ -59,20 +69,23 @@ export async function publishedCityGeometry(gltf: GLTF, renderer: CityGeometryRe
       detailCull: { maxComponentPixels: 28, maxCoveragePixels: 4096, minDistance: 30 } };
   const visibility = culling ? new CityVisibility(gltf.scene, features.instanceCulling, lods,
     { ...detail, clusterPairs, farHardware, groupFor: blocks?.groupFor, instanceGroups, coalesceClusters: features.clusterDraws !== "off",
-      wideClusters: features.clusterDraws === "wide",
+      wideClusters: features.clusterDraws === "wide", lodMergeTriangles: lodBandMergeTriangles,
       occlusionSize: features.occlusionGrid === "coarse" ? [80, 48] : [160, 96] }) : undefined;
   const glazing = visibility && distantDetail && features.glazingGroups
     ? new DistantGlazingDraws(gltf.scene) : undefined;
   const vegetation = visibility && distantDetail && features.vegetationLod
     ? new CityVegetationLod(gltf.scene, lods) : undefined;
-  const restoreViewOverrides = () => { declared?.restore(); glazing?.restore(); vegetation?.restore(); blocks?.restore(); };
+  const glassRange = visibility ? new GlazingRange(gltf.scene, glazingDistance ?? Infinity) : undefined;
+  const restoreViewOverrides = () => { declared?.restore(); glazing?.restore(); glassRange?.restore(); vegetation?.restore(); blocks?.restore(); };
   const prepareView = (camera: THREE.Camera) => {
     restoreViewOverrides();
     const height = renderer.domElement.height, geometryHeight = height * geometryLodBias;
     if (blocks?.select(camera, geometryHeight)) visibility?.setHiddenGroups(blocks.hidden);
     visibility?.frame(camera, height, geometryLodBias);
     if (visibility && camera instanceof THREE.PerspectiveCamera) blocks?.cull(visibility.occludesBounds);
-    vegetation?.frame(camera, geometryHeight);
+    vegetation?.frame(camera, geometryHeight, geometryLodBias);
+    // Glass left out by range is hidden before the distant batches choose among what remains.
+    glassRange?.frame(camera);
     glazing?.frame(camera, height, renderer.domElement.width);
     declared?.frame(camera, geometryHeight, height * materialLodBias);
   };
@@ -89,22 +102,40 @@ export async function publishedCityGeometry(gltf: GLTF, renderer: CityGeometryRe
     shadowFrame: (shadowCamera: THREE.Camera, viewCamera?: THREE.Camera) => visibility?.shadowFrame(shadowCamera, viewCamera),
     settle: () => residency?.settle(),
     textureStats: () => residency?.stats(),
+    setLodBias(geometry: number, material: number) {
+      geometryLodBias = geometry;
+      materialLodBias = material;
+    },
+    /** Draw-count budgets from the graphics settings. Undefined restores each default. */
+    setDrawBudgets(mergeTriangles?: number, glassDistance?: number) {
+      visibility?.setLodMergeTriangles(mergeTriangles);
+      if (glassRange) glassRange.distance = glassDistance ?? Infinity;
+    },
+    updateAnisotropy: (updated: ReadonlySet<THREE.Texture>) => residency?.updateAnisotropy(updated),
     setBlockProxyEnabled: (enabled: boolean) => blocks?.setEnabled(enabled),
     blockProxyStats: () => blocks?.stats(),
     setSubmission: (mode: "ordinary" | "clusters") => visibility?.setSubmission(mode),
-    dispose() {
+    dispose({ retainGltf = false, retainDeclared = false }: { retainGltf?: boolean; retainDeclared?: boolean } = {}) {
       if (disposed) return;
       disposed = true;
       residency?.dispose();
-      declared?.dispose();
-      disposeCityTextureLod(gltf, { texturesReleased: !!residency });
+      if (!retainDeclared) declared?.dispose();
+      if (!retainGltf) disposeCityTextureLod(gltf, { texturesReleased: !!residency });
       glazing?.dispose();
+      glassRange?.dispose();
       vegetation?.dispose();
       visibility?.dispose();
       const proxyRoots = blocks?.dispose() ?? [];
       const geometries = new Set<THREE.BufferGeometry>();
-      for (const [original, levels] of lods) { geometries.add(original); for (const geometry of levels) geometries.add(geometry); }
-      releaseObjects([...gltf.scenes, ...proxyRoots], geometries);
+      for (const [original, levels] of lods) {
+        if (!retainGltf) geometries.add(original);
+        for (const geometry of levels) if (!retainGltf || geometry !== original) geometries.add(geometry);
+      }
+      if (retainGltf) releaseObjects(proxyRoots, geometries, gltf.scenes);
+      else {
+        gltf.scene.removeFromParent();
+        releaseObjects([...gltf.scenes, ...proxyRoots], geometries);
+      }
     },
   };
 }

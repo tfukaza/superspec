@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { parseLighting, type Lighting } from "./lighting.ts";
-import { SceneLighting, studioEnvironment } from "./rendering.ts";
+import { studioReflections } from "#render-engine";
+import { SceneLighting } from "./rendering.ts";
 import { GltfLights } from "./gltf-lights.ts";
 
 /**
@@ -12,7 +13,7 @@ import { GltfLights } from "./gltf-lights.ts";
  * A SuperSpec GLB carries the record under `extras.superspec.lighting` and its sun again as a `KHR_lights_punctual`
  * light, for consumers that know nothing of the record. Use:
  *
- *     const gltf = await createGltfLoader(renderer).loadAsync(url);   // ktx2.ts
+ *     const gltf = await createRenderGltfLoader(renderer, { transcoderPath: "basis/" }).loadAsync(url);
  *     scene.add(gltf.scene);
  *     const lighting = new GameLighting(renderer, scene, camera, gltfLighting(gltf));
  *     lighting.adopt(gltf.scene);
@@ -81,7 +82,7 @@ export class GameLighting {
     record?: unknown, options: GameLightingOptions = {}) {
     this.record = parseLighting(record ?? { version: 1 });
     this.stated = record;
-    this.environment = studioEnvironment(renderer);
+    this.environment = studioReflections(renderer);
     this.city = options.city === true;
     this.query = options.overrides ?? new URLSearchParams();
     this.view = new SceneLighting(renderer, scene, camera, this.environment.texture, this.query, options.excluded, options.up ?? "y");

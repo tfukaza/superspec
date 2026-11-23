@@ -582,12 +582,8 @@ void main() {
     this.output.uniforms.edgeTexel.value.set(1 / Math.max(1, size.width), 1 / Math.max(1, size.height));
   }
 
-  /** Runs `compile` with the scene target bound, so programs are made for the target the scene is drawn into. */
-  compiling<T>(compile: () => T): T {
-    const before = this.renderer.getRenderTarget();
-    this.renderer.setRenderTarget(this.composer.readBuffer);
-    try { return compile(); } finally { this.renderer.setRenderTarget(before); }
-  }
+  /** Scene color target for shader compilation. */
+  get colorTarget(): THREE.WebGLRenderTarget { return this.composer.readBuffer; }
 
   dispose(): void {
     this.unoutlinedNormal.dispose();

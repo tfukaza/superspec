@@ -1,0 +1,250 @@
+{
+  "version": 2,
+  "about": [
+    "Graphics parameters, quality presets, platform profiles and asset variants.",
+    "The design is docs/plans/graphics-profiles.md. The adapter resolves this file in graphicsSettings.ts;",
+    "the publisher is to read the same file for its variant definitions.",
+    "consumed: true means the adapter acts on the resolved value today. consumed: false means the",
+    "feature does not exist yet, or its value is still a constant elsewhere: the value is declared",
+    "here with its planned settings and changes nothing.",
+    "reserved parameters are named by the plan without a settled value shape. They are never resolved."
+  ],
+  "defaultPlatform": "baseline",
+  "parameters": {
+    "assets.geometryDetail": { "class": "build", "consumed": true, "values": [0, 1, 2], "default": 0, "variantFit": "atLeast",
+      "note": "0 authored, 1 reduced, 2 minimal buildings. Selects the asset variant; the publisher still takes it from compile.py --graphics-detail." },
+    "assets.variantBudget": { "class": "build", "consumed": false, "min": 0, "max": 64, "default": 0,
+      "note": "Variants per part type; 0 is unlimited." },
+    "assets.nearErrorMeters": { "class": "build", "consumed": false, "min": 0, "max": 0.05, "default": 0,
+      "note": "Still the tiers table in city-mobile-delivery.mjs." },
+    "assets.farProfile": { "class": "build", "consumed": false, "values": ["standard", "aggressive"], "default": "standard" },
+    "assets.texelDensity": { "class": "build", "consumed": true, "min": 0.125, "max": 1, "default": 1, "variantFit": "atMost",
+      "note": "Fraction of the authored density. Selects the asset variant; the publisher still takes it from the mobile tiers table." },
+    "assets.maxPageSize": { "class": "build", "consumed": false, "values": [1024, 2048, 4096], "default": 2048 },
+    "assets.maps.normal": { "class": "build", "consumed": false, "values": ["full", "half", "strong-only", "none"], "default": "full" },
+    "assets.maps.roughness": { "class": "build", "consumed": false, "values": ["full", "half", "constant"], "default": "full" },
+    "assets.maps.edge": { "class": "build", "consumed": false, "values": ["separate", "packed", "none"], "default": "separate" },
+    "assets.maps.emissive": { "class": "build", "consumed": false, "values": ["page", "atlas"], "default": "page" },
+    "assets.maps.detail": { "class": "build", "consumed": false, "values": ["on", "off"], "default": "on" },
+    "assets.codec": { "class": "build", "consumed": false, "values": ["webp-lossless", "jpeg-png", "uastc", "etc1s"], "default": "jpeg-png" },
+    "assets.weathering": { "class": "build", "consumed": false, "values": ["unique", "shared-parts", "shared-all"], "default": "unique" },
+    "assets.partInstancing": { "class": "build", "consumed": false, "values": ["off", "geometry", "geometry-and-texels"], "default": "off" },
+    "assets.materialLayout": { "class": "build", "consumed": false, "values": ["per-page", "array-per-building"], "default": "per-page" },
+    "assets.meshCompression": { "class": "build", "consumed": false, "values": ["none", "quantized", "meshopt"], "default": "none" },
+
+    "delivery.variant": { "class": "build", "consumed": true, "values": ["minimal", "reduced", "standard", "full"], "default": "standard",
+      "note": "The asset variant a preset asks for. The resolved value is the variant that is fetched." },
+    "delivery.textureStreaming": { "class": "build", "consumed": false, "values": ["off", "pairs"], "default": "off" },
+    "delivery.firstFrameBudgetMB": { "class": "run", "consumed": false, "min": 0, "sentinel": "none", "default": "none" },
+    "delivery.order": { "class": "run", "consumed": false, "values": ["all", "spawn-cell-first"], "default": "all" },
+    "delivery.generation": { "class": "run", "consumed": false, "values": ["prebuilt", "on-device"], "default": "prebuilt" },
+    "delivery.transferEncoding": { "class": "build", "consumed": false, "values": ["none", "brotli", "zstd"], "default": "none" },
+
+    "memory.textureBudgetMB": { "class": "run", "consumed": false, "min": 0, "sentinel": "none", "default": "none" },
+    "memory.textureMaxEdge": { "class": "run", "consumed": false, "min": 16, "sentinel": "none", "default": "none" },
+    "memory.geometryBudgetMB": { "class": "build", "consumed": false, "min": 0, "sentinel": "none", "default": "none" },
+    "memory.textureWarmupMB": { "class": "run", "consumed": true, "min": 0, "default": 32,
+      "note": "Read as diagnostics.loading.textureWarmupMiB." },
+    "memory.releaseSources": { "class": "run", "consumed": false, "values": [true, false], "default": false },
+
+    "gpu.renderScale": { "class": "run", "consumed": true, "min": 0.5, "max": 1.5, "default": 1 },
+    "gpu.renderScaleFloor": { "class": "run", "consumed": false, "min": 0.5, "max": 1.5, "default": 0.5,
+      "note": "The host's governor owns its own ladder until it reads this." },
+    "gpu.pixelBudget": { "class": "run", "consumed": false, "min": 1, "sentinel": "none", "default": "none",
+      "note": "Largest drawing buffer in pixels." },
+    "gpu.sunShadowSize": { "class": "run", "consumed": true, "min": 0, "max": 4096, "sentinel": "authored", "sentinelValue": 2048, "default": "authored",
+      "note": "authored leaves the scene's own shadow map size. sentinelValue is what a cap compares it with." },
+    "gpu.fixtureShadowSize": { "class": "run", "consumed": true, "min": 0, "max": 1024, "sentinel": "authored", "sentinelValue": 512, "default": "authored" },
+    "gpu.shadowStyle": { "class": "run", "consumed": true, "values": ["authored", "plain", "illustration"], "default": "authored",
+      "note": "Read as diagnostics.look.shadowStyle unless authored." },
+    "gpu.bounce": { "class": "run", "consumed": true, "values": ["off", "smooth", "painted"], "default": "painted" },
+    "gpu.reflectionProbes": { "class": "run", "consumed": true, "values": [true, false], "default": true },
+    "gpu.ambientOcclusion": { "class": "run", "consumed": true, "values": ["auto", "on", "off"], "default": "auto",
+      "note": "auto follows the scene's lighting record." },
+    "gpu.contours": { "class": "run", "consumed": true, "values": ["auto", "on", "off"], "default": "auto" },
+    "gpu.outline": { "class": "run", "consumed": true, "values": ["auto", "on", "off"], "default": "auto" },
+    "gpu.bloom": { "class": "run", "consumed": true, "values": ["auto", "on", "off"], "default": "auto" },
+    "gpu.edgeBoost": { "class": "run", "consumed": true, "values": ["auto", "on", "off"], "default": "auto" },
+    "gpu.grain": { "class": "run", "consumed": true, "values": [true, false], "default": true },
+    "gpu.shopFinish": { "class": "run", "consumed": true, "values": [true, false], "default": true },
+    "gpu.shopArt": { "class": "run", "consumed": true, "values": ["default", "off", "wash", "brush", "palette"], "default": "default" },
+    "gpu.antialiasing": { "class": "run", "consumed": true, "values": ["none", "display", "msaa"], "default": "msaa",
+      "note": "none turns the display pass off. The host still decides its context's multisampling from the preset name." },
+    "gpu.anisotropy": { "class": "run", "consumed": true, "min": 1, "max": 16, "sentinel": "authored", "default": "authored" },
+    "gpu.materialLodBias": { "class": "run", "consumed": true, "min": 0.5, "max": 1.5, "default": 1 },
+
+    "cpu.geometryLodBias": { "class": "run", "consumed": true, "min": 0.5, "max": 1.5, "default": 1 },
+    "cpu.lodBandMerge": { "class": "run", "consumed": true, "min": 0, "max": 1000000, "default": 1000,
+      "note": "Extra triangles a view may draw to remove one LOD band draw. Read as settings.lodBandMergeTriangles." },
+    "cpu.glazingDistance": { "class": "run", "consumed": true, "min": 0, "sentinel": "all", "default": "all",
+      "note": "Metres beyond which window glass is left out; its frame and interior remain. Not neutral. Read as settings.glazingDistance." },
+    "cpu.partLod": { "class": "run", "consumed": false, "values": [0, 1, 2], "default": 0 },
+    "cpu.drawBudget": { "class": "run", "consumed": false, "min": 1, "sentinel": "none", "default": "none",
+      "note": "Target draws per frame at street level." },
+    "cpu.occlusionGrid": { "class": "run", "consumed": true, "values": ["fine", "coarse"], "default": "fine" },
+    "cpu.clusterDraws": { "class": "run", "consumed": true, "values": ["wide", "pairs", "off"], "default": "wide" },
+    "cpu.shadowCasters": { "class": "run", "consumed": false, "values": ["static-cached", "dynamic"], "default": "static-cached",
+      "note": "Still a host option." },
+    "cpu.firstFrameShaders": { "class": "run", "consumed": true, "values": ["off", "parallel"], "default": "parallel",
+      "note": "Link the first view's shaders off the main thread before its first frame. On at every preset and platform. Read as diagnostics.loading.firstFrameShaders." },
+    "cpu.shaderWarmup": { "class": "run", "consumed": true, "values": ["off", "parallel", "serial"], "default": "parallel",
+      "note": "The fuller preparation after the first frame. Read as diagnostics.loading.warmup and shaderWarmup." }
+  },
+  "reserved": [
+    "assets.lodLevels", "assets.codecQuality", "assets.decorationTier", "assets.vegetation",
+    "cpu.vegetationDistance"
+  ],
+  "legacyGroupsAbout": "The parameters each version 1 override group takes from the preset it names.",
+  "legacyGroups": {
+    "geometry": ["cpu.geometryLodBias", "cpu.occlusionGrid"],
+    "materials": ["gpu.materialLodBias", "gpu.anisotropy", "gpu.grain", "gpu.reflectionProbes", "gpu.shopFinish"],
+    "shadows": ["gpu.sunShadowSize", "gpu.fixtureShadowSize"]
+  },
+  "presets": {
+    "very-low": {
+      "values": {
+        "assets.geometryDetail": 2, "assets.variantBudget": 1, "assets.nearErrorMeters": 0.035, "assets.texelDensity": 0.125,
+        "assets.maps.normal": "none", "assets.maps.roughness": "constant", "assets.weathering": "shared-all",
+        "delivery.variant": "minimal",
+        "memory.textureWarmupMB": 0,
+        "gpu.sunShadowSize": 512, "gpu.fixtureShadowSize": 0, "gpu.reflectionProbes": false,
+        "gpu.ambientOcclusion": "off", "gpu.contours": "off", "gpu.outline": "off", "gpu.bloom": "off", "gpu.edgeBoost": "off",
+        "gpu.grain": false, "gpu.shopFinish": false, "gpu.shopArt": "off", "gpu.antialiasing": "none",
+        "gpu.anisotropy": 1, "gpu.materialLodBias": 0.5,
+        "cpu.geometryLodBias": 0.55, "cpu.lodBandMerge": 16000, "cpu.glazingDistance": 32, "cpu.partLod": 2, "cpu.drawBudget": 110, "cpu.occlusionGrid": "coarse", "cpu.shaderWarmup": "off"
+      }
+    },
+    "low": {
+      "values": {
+        "assets.geometryDetail": 1, "assets.variantBudget": 2, "assets.texelDensity": 0.25,
+        "assets.maps.normal": "strong-only", "assets.weathering": "shared-all",
+        "delivery.variant": "reduced",
+        "memory.textureWarmupMB": 0,
+        "gpu.sunShadowSize": 1024, "gpu.fixtureShadowSize": 0, "gpu.reflectionProbes": false,
+        "gpu.ambientOcclusion": "off", "gpu.contours": "off", "gpu.outline": "off", "gpu.bloom": "off", "gpu.edgeBoost": "off",
+        "gpu.grain": false, "gpu.shopArt": "off", "gpu.antialiasing": "none",
+        "gpu.anisotropy": 2, "gpu.materialLodBias": 0.7,
+        "cpu.geometryLodBias": 0.75, "cpu.lodBandMerge": 8000, "cpu.glazingDistance": 16, "cpu.partLod": 1, "cpu.drawBudget": 150, "cpu.occlusionGrid": "coarse", "cpu.shaderWarmup": "off"
+      }
+    },
+    "medium": {
+      "values": {
+        "assets.variantBudget": 4, "assets.weathering": "shared-parts",
+        "delivery.variant": "standard",
+        "cpu.drawBudget": 180
+      }
+    },
+    "high": {
+      "values": {
+        "assets.variantBudget": 8, "assets.weathering": "shared-parts",
+        "delivery.variant": "standard",
+        "gpu.sunShadowSize": 4096, "gpu.anisotropy": 8, "gpu.materialLodBias": 1.25,
+        "cpu.geometryLodBias": 1.2, "cpu.drawBudget": 180
+      }
+    },
+    "very-high": {
+      "values": {
+        "assets.variantBudget": 16, "assets.weathering": "unique",
+        "delivery.variant": "full",
+        "gpu.sunShadowSize": 4096, "gpu.fixtureShadowSize": 1024, "gpu.anisotropy": 16, "gpu.materialLodBias": 1.5,
+        "cpu.geometryLodBias": 1.4, "cpu.drawBudget": 180
+      }
+    }
+  },
+  "platforms": {
+    "baseline": {
+      "about": "No platform values and no caps: every preset resolves as it did before platform profiles existed.",
+      "defaultPreset": "medium",
+      "values": {},
+      "caps": {}
+    },
+    "phone-cellular": {
+      "defaultPreset": "very-low",
+      "values": {
+        "assets.codec": "etc1s", "assets.meshCompression": "meshopt",
+        "delivery.textureStreaming": "pairs", "delivery.order": "spawn-cell-first", "delivery.firstFrameBudgetMB": 15,
+        "memory.textureBudgetMB": 150, "memory.geometryBudgetMB": 100,
+        "memory.textureWarmupMB": 0,
+        "gpu.pixelBudget": 1500000, "gpu.renderScaleFloor": 0.6, "gpu.antialiasing": "none",
+        "cpu.shaderWarmup": "off"
+      },
+      "caps": {
+        "assets.geometryDetail": { "min": 1 }, "assets.texelDensity": { "max": 0.25 },
+        "gpu.sunShadowSize": { "max": 1024 }, "gpu.fixtureShadowSize": { "max": 0 }
+      }
+    },
+    "phone-wifi": {
+      "defaultPreset": "low",
+      "values": {
+        "assets.codec": "uastc", "assets.meshCompression": "meshopt",
+        "delivery.textureStreaming": "pairs", "delivery.order": "spawn-cell-first", "delivery.firstFrameBudgetMB": 40,
+        "memory.textureBudgetMB": 150, "memory.geometryBudgetMB": 150,
+        "memory.textureWarmupMB": 0,
+        "gpu.pixelBudget": 1500000, "gpu.renderScaleFloor": 0.6, "gpu.antialiasing": "none",
+        "cpu.shaderWarmup": "off"
+      },
+      "caps": {
+        "assets.geometryDetail": { "min": 1 }, "assets.texelDensity": { "max": 0.25 },
+        "gpu.sunShadowSize": { "max": 1024 }, "gpu.fixtureShadowSize": { "max": 0 }
+      }
+    },
+    "laptop-web": {
+      "defaultPreset": "medium",
+      "values": {
+        "assets.codec": "uastc", "assets.meshCompression": "meshopt",
+        "delivery.textureStreaming": "pairs", "delivery.order": "spawn-cell-first", "delivery.firstFrameBudgetMB": 80,
+        "memory.textureBudgetMB": 500, "memory.geometryBudgetMB": 300,
+        "gpu.pixelBudget": 4000000, "gpu.renderScaleFloor": 0.6
+      },
+      "caps": {
+        "assets.texelDensity": { "max": 0.5 },
+        "gpu.sunShadowSize": { "max": 2048 }, "gpu.fixtureShadowSize": { "max": 512 }
+      }
+    },
+    "desktop-web": {
+      "defaultPreset": "medium",
+      "values": {
+        "assets.codec": "uastc", "assets.meshCompression": "meshopt",
+        "delivery.textureStreaming": "pairs", "delivery.firstFrameBudgetMB": 150,
+        "memory.textureBudgetMB": 1500, "memory.geometryBudgetMB": 600,
+        "gpu.pixelBudget": 8000000, "gpu.renderScaleFloor": 0.7
+      },
+      "caps": {}
+    },
+    "native-pc": {
+      "defaultPreset": "high",
+      "values": {
+        "assets.codec": "uastc", "assets.meshCompression": "quantized",
+        "memory.textureBudgetMB": 4000,
+        "gpu.renderScaleFloor": 1
+      },
+      "caps": {}
+    }
+  },
+  "variantsAbout": [
+    "Lowest first. packSuffix is inserted before .glb in the map's entry name; null means no pack is published yet.",
+    "assets holds the build parameters the variant is to be built with. Only the consumed ones take part in selection."
+  ],
+  "variants": {
+    "minimal": {
+      "packSuffix": ".very-low",
+      "assets": { "assets.geometryDetail": 2, "assets.variantBudget": 1, "assets.texelDensity": 0.125,
+        "assets.maps.normal": "none", "assets.maps.roughness": "constant", "assets.codec": "etc1s", "assets.weathering": "shared-all" }
+    },
+    "reduced": {
+      "packSuffix": ".low",
+      "assets": { "assets.geometryDetail": 1, "assets.variantBudget": 2, "assets.texelDensity": 0.25,
+        "assets.maps.normal": "strong-only", "assets.codec": "uastc", "assets.weathering": "shared-all" }
+    },
+    "standard": {
+      "packSuffix": "",
+      "assets": { "assets.geometryDetail": 0, "assets.variantBudget": 4, "assets.texelDensity": 1,
+        "assets.maps.edge": "packed", "assets.codec": "uastc", "assets.weathering": "shared-parts" }
+    },
+    "full": {
+      "packSuffix": null,
+      "assets": { "assets.geometryDetail": 0, "assets.variantBudget": 16, "assets.texelDensity": 1,
+        "assets.codec": "uastc", "assets.weathering": "unique" }
+    }
+  }
+}

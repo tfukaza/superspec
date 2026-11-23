@@ -1,4 +1,5 @@
 import "./style.css";
+import { graphicsPackUrl } from "#render-engine";
 import { installGraphicsControls, loadRenderProfile, navigateGraphicsProfile } from "./graphics-controls.ts";
 
 const query = new URLSearchParams(location.search);
@@ -35,6 +36,13 @@ async function showPublishedGltf(url: URL, host: HTMLElement, status: HTMLOutput
   label.append("Renderer ", select);
   status.before(label);
   const graphics = await loadRenderProfile(query);
+  let entry = url;
+  // The resolved asset variant names the pack. The preset no longer does.
+  const variant = graphicsPackUrl(url, graphics.variant);
+  if (variant && variant.origin === location.origin) {
+    const response = await fetch(variant, { method: "HEAD" }).catch(() => undefined);
+    if (response?.ok && !response.headers.get("content-type")?.includes("text/html")) entry = variant;
+  }
   const currentQuery = () => share?.() ?? new URLSearchParams(query);
   installGraphicsControls(status, graphics, profile => navigateGraphicsProfile(currentQuery(), profile));
   const ready = (backend: "webgpu" | "webgl", message: string, portable = false) => {
@@ -52,7 +60,7 @@ async function showPublishedGltf(url: URL, host: HTMLElement, status: HTMLOutput
     status.dataset.state = "loading";
     status.textContent = reason ? `Opening WebGL · ${reason}` : "Loading published glTF…";
     const { openGltf } = await import("./native-gltf.ts");
-    const gl = await openGltf(url, host, view, graphics, () => { status.textContent = "Preparing shaders and textures…"; });
+    const gl = await openGltf(entry, host, view, graphics, () => { status.textContent = "Preparing shaders and textures…"; });
     share = gl.share;
     if (gl.paintedLighting) {
       const painted = graphics.diagnostics.lighting.paintedShadows && graphics.diagnostics.lighting.paintedSpots;
@@ -75,7 +83,7 @@ async function showPublishedGltf(url: URL, host: HTMLElement, status: HTMLOutput
   const module = await import("./native-webgpu.ts").catch(() => undefined);
   if (!module) return openWebGl("WebGPU renderer could not load");
   try {
-    gpu = await module.openWebGpuGltf(url, host, query, graphics, { auto: requested === "auto", onLost: reason => {
+    gpu = await module.openWebGpuGltf(entry, host, query, graphics, { auto: requested === "auto", onLost: reason => {
       if (loss !== undefined) return;
       loss = reason || "WebGPU device lost";
       if (gpu) void openWebGl(loss).catch(error => { status.dataset.state = "error"; status.textContent = String(error); });

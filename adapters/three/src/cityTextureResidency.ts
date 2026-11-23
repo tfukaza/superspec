@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import type { CityTextureBinding } from "./cityTextureLoader";
-export type { CityTextureBinding } from "./cityTextureLoader";
+import type { CityTextureBinding } from "./cityTextureLoader.ts";
+export type { CityTextureBinding } from "./cityTextureLoader.ts";
 type Surface = { material: THREE.MeshStandardMaterial; bindings: CityTextureBinding[]; boxes: THREE.Box3[];
   distance: number; near: boolean; active: boolean; loading: boolean; failed: boolean; high?: THREE.Texture[] };
 
@@ -119,6 +119,7 @@ export class CityTextureResidency {
   private async promote(surface: Surface): Promise<void> {
     try {
       const textures = surface.high ?? await this.load(surface.bindings);
+      this.syncAnisotropy(surface, textures);
       if (this.prepareTexture && surface.near && !this.disposed && textures.some(t => !this.prepared.has(t))) {
         await new Promise<void>((done, fail) => {
           this.uploads.push({ surface, textures, done, fail });
@@ -229,6 +230,27 @@ export class CityTextureResidency {
       if (surface.failed) failed++;
     }
     return { materials: this.surfaces.size, high, pending: this.pending.size, failed };
+  }
+
+  private readonly adjustedAnisotropy = new WeakSet<THREE.Texture>();
+
+  /** Propagate an explicit sampler override from affected coarse maps to full-resolution maps. */
+  updateAnisotropy(updated: ReadonlySet<THREE.Texture>): void {
+    if (!updated.size) return;
+    for (const texture of updated) this.adjustedAnisotropy.add(texture);
+    for (const surface of this.surfaces.values()) if (surface.high) this.syncAnisotropy(surface, surface.high);
+    for (const job of this.uploads) this.syncAnisotropy(job.surface, job.textures);
+  }
+
+  private syncAnisotropy(surface: Surface, textures: THREE.Texture[]): void {
+    for (const [i, texture] of textures.entries()) {
+      const { low } = surface.bindings[i];
+      if (!this.adjustedAnisotropy.has(low)) continue;
+      const samples = low.anisotropy;
+      if (texture.anisotropy === samples) continue;
+      texture.anisotropy = samples;
+      texture.needsUpdate = true;
+    }
   }
 
   dispose(): void {

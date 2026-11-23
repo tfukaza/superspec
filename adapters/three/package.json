@@ -1,10 +1,12 @@
 {
   "name": "@superspec/three",
-  "version": "0.1.0",
+  "version": "0.4.3",
+  "description": "SuperSpec's Three.js render engine for world delivery and authoring previews.",
   "type": "module",
+  "license": "MIT",
   "exports": {
     ".": {
-      "types": "./dist/types/adapters/three/src/index.d.ts",
+      "types": "./dist/types/index.d.ts",
       "import": "./dist/index.js"
     }
   },
@@ -15,6 +17,7 @@
     "three": ">=0.185.0 <0.187.0"
   },
   "scripts": {
-    "prepack": "node build.mjs && tsc -p tsconfig.json"
+    "build": "node build.mjs && tsc -p tsconfig.json",
+    "prepack": "npm run build"
   }
 }

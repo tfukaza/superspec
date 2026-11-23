@@ -22,8 +22,8 @@ export interface DensityField {
   full: number;
 }
 
-/** The field of `sites` (`[x, y, z, size]` per leaf cluster, in the scene) with kernels of `radius` meters. */
-export function densityField(sites: ArrayLike<number>, radius: number, cell = radius / 2): DensityField {
+/** The field of `sites` (`[x, y, z, size]` per cluster), with radius in meters and optional density per site. */
+export function densityField(sites: ArrayLike<number>, radius: number, cell = radius / 2, weights?: ArrayLike<number>): DensityField {
   const lo = new THREE.Vector3(Infinity, Infinity, Infinity), hi = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
   for (let i = 0; i < sites.length; i += 4) {
     lo.min(new THREE.Vector3(sites[i], sites[i + 1], sites[i + 2]));
@@ -37,6 +37,7 @@ export function densityField(sites: ArrayLike<number>, radius: number, cell = ra
   const reach = Math.ceil(radius / cell), r2 = radius * radius;
   for (let i = 0; i < sites.length; i += 4) {
     const c = [sites[i], sites[i + 1], sites[i + 2]];
+    const weight = weights?.[i / 4] ?? 1;
     const g = [0, 1, 2].map(a => Math.round((c[a] - lo.getComponent(a)) / cell));
     for (let z = Math.max(0, g[2] - reach); z <= Math.min(dims[2] - 1, g[2] + reach); z++) {
       const dz = lo.z + z * cell - c[2];
@@ -45,7 +46,7 @@ export function densityField(sites: ArrayLike<number>, radius: number, cell = ra
         for (let x = Math.max(0, g[0] - reach); x <= Math.min(dims[0] - 1, g[0] + reach); x++) {
           const dx = lo.x + x * cell - c[0];
           const s = (dx * dx + dy * dy + dz * dz) / r2;
-          if (s < 1) values[x + dims[0] * (y + dims[1] * z)] += (1 - s) * (1 - s);
+          if (s < 1) values[x + dims[0] * (y + dims[1] * z)] += weight * (1 - s) * (1 - s);
         }
       }
     }

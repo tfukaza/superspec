@@ -97,6 +97,30 @@ test("projected error accounts for drawing resolution and additional host scale"
   scaled.dispose();
 });
 
+test("a lower preset brings the full-motif distance closer, to no less than twelve metres", () => {
+  // At 540 px a 3 cm error projects to under a pixel from 15 m, so only the distance gate decides.
+  const f = fixture();
+  f.reduced.userData.cityLodErrorMeters = .03;
+  f.mesh.position.z = -19;
+  const controller = new CityVegetationLod(f.root, f.lods);
+  const at = (z: number, nearScale?: number) => {
+    f.camera.position.z = z;
+    controller.frame(f.camera, 540, nearScale);
+    return f.mesh.geometry === f.reduced;
+  };
+  // The weed's bounds begin 19 m ahead: inside the default 24 m.
+  assert.equal(at(0), false);
+  assert.equal(at(0, 1), false);
+  assert.equal(at(0, 1.4), false, "a higher preset never shortens the distance");
+  // 24 m * 0.75 = 18 m, so 19 m is beyond it.
+  assert.equal(at(0, .75), true);
+  controller.restore();
+  // 24 m * 0.3 would be 7.2 m; the floor holds 12 m. From z = -6 the weed is 13 m ahead, from -8.5 it is 10.5 m.
+  assert.equal(at(-6, .3), true);
+  assert.equal(at(-8.5, .3), false);
+  controller.dispose();
+});
+
 test("material replacement and shader invalidation return the authored geometry", () => {
   const f = fixture(), controller = new CityVegetationLod(f.root, f.lods);
   controller.frame(f.camera, 1080);

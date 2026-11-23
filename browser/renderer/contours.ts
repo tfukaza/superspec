@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { overlapOutlineShader } from "./overlap-outline.ts";
+import { overlapOutlineShader } from "#render-engine";
 import { FullScreenQuad, Pass } from "three/examples/jsm/postprocessing/Pass.js";
 import type { Contours } from "./lighting.ts";
 
@@ -82,7 +82,7 @@ void main() {
 	float footprint = ( perspective > 0.5 ? away : 1.0 ) * pixelWorld;
 	if (overlapsOnly) {
 		float depthPerMeter = perspective > .5 ? cameraNear * cameraFar / ((cameraFar-cameraNear)*meters) : 1./(cameraFar-cameraNear);
-		float ink = overlapOutline(tDepth,vUv,texel,depthPerMeter,footprint/pixelRatio);
+		float ink = overlapOutline(tDepth,vUv,texel,depthPerMeter,footprint/pixelRatio,false);
 		vec4 ray = inverseProjection * vec4(vUv*2.-1.,0.,1.);
 		vec3 eye = perspective > .5 ? normalize(-ray.xyz) : vec3(0.,0.,1.);
 		vec3 n = normalAt(vUv);

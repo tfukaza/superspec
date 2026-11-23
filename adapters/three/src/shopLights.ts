@@ -1,11 +1,12 @@
 import * as THREE from "three";
-import { PaintedSpotMaps } from "./paintedSpots";
-import { legacyRenderDiagnostics } from "./renderProfile";
+import { PaintedSpotMaps } from "./paintedSpots.ts";
+import { legacyRenderDiagnostics } from "./renderProfile.ts";
 
 // A shaded shop lamp at stock-shelf distance. Candela and cutoff are in game metres.
 const CANDELA = 52;
 const RANGE = 5.2;
 const MAX_LIGHTS = 3;
+const DEFAULT_FIXTURE_SHADOW_SIZE = 512;
 
 type Point = readonly [number, number, number];
 type LightProfile = {
@@ -64,7 +65,7 @@ export class ShopLights {
     painted = legacyRenderDiagnostics().lighting.paintedSpots,
     options: { staticShadows?: boolean; stableSlots?: boolean; shadowMapSize?: number } = {}) {
     this.staticShadows = options.staticShadows === true;
-    this.stableSlots = this.staticShadows && options.stableSlots === true;
+    this.stableSlots = options.stableSlots === true;
     if (painted && Array.isArray(positions) && positions.some(p => p?.kind === "arcade-batten" || p?.kind === "planter-ceiling")) {
       this.paint = new PaintedSpotMaps();
     }
@@ -105,7 +106,7 @@ export class ShopLights {
     if (stoaAccents && !(Array.isArray(positions) && positions.some(p => p?.kind === "shop-fixture"))) {
       for (const accent of STOA_ACCENTS) this.add(accent.position, accent.target, accent.profile);
     }
-    const shadowMapSize = options.shadowMapSize ?? 512;
+    const shadowMapSize = options.shadowMapSize ?? DEFAULT_FIXTURE_SHADOW_SIZE;
     for (let i = 0; i < Math.min(MAX_LIGHTS, this.fixtures.length); i++) {
       const light = new THREE.SpotLight(TUBE.color, 0, TUBE.range, TUBE.angle, TUBE.penumbra, 2);
       light.name = "shop-fixture";
@@ -176,6 +177,26 @@ export class ShopLights {
    * the default dynamic mode, which redraws active shadows each frame. */
   invalidateShadows(): void {
     for (const light of this.lights) light.shadow.needsUpdate = true;
+  }
+
+  /** Apply a new graphics preset without replacing fixtures or stale depth targets. */
+  setShadowSettings(enabled: boolean, size = DEFAULT_FIXTURE_SHADOW_SIZE): boolean {
+    let changed = false;
+    for (const light of this.lights) {
+      const { shadow } = light;
+      if (shadow.mapSize.x !== size || shadow.mapSize.y !== size) {
+        shadow.mapSize.setScalar(size);
+        shadow.dispose();
+        shadow.map = shadow.mapPass = null;
+        changed = true;
+      }
+      if (light.castShadow !== enabled) {
+        light.castShadow = enabled;
+        changed = true;
+      }
+    }
+    if (changed) this.invalidateShadows();
+    return changed;
   }
 
   dispose(): void {

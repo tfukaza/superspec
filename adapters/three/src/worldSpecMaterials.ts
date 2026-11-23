@@ -1,8 +1,8 @@
-import type { MetalFinish } from "./reflectionField";
+import type { MetalFinish } from "./reflectionField.ts";
 import * as THREE from "three";
-import { paintedMetalSky, radialSkyShader, radialSkyVertex } from "./paintedMetalSky";
-import { paintedWorktop, paintedWorktopShader } from "./paintedWorktop";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { paintedMetalSky, radialSkyShader, radialSkyVertex } from "./paintedMetalSky.ts";
+import { paintedWorktop, paintedWorktopShader } from "./paintedWorktop.ts";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 type LiveSetting = { id: string; arguments: Record<string, { value?: number }> };
 
@@ -92,6 +92,40 @@ function styleShopFinish(material: THREE.MeshStandardMaterial): void {
       #include <lights_physical_fragment>`);
   };
   material.customProgramCacheKey = () => key() + "|shop-finish-" + id;
+}
+
+/** The per-vertex role attribute of a shared part prototype: glTF `_MS_ROLE`, an unsigned
+ * byte that is not normalized. 0 keeps the vertex's own colour and 1 takes the instance's tint. */
+export const INSTANCE_ROLE_ATTRIBUTE = "_ms_role";
+
+/** Whether a mesh's vertices state which of them the instance tint colours. */
+export function hasInstanceRoles(geometry: THREE.BufferGeometry): boolean {
+  return geometry.getAttribute(INSTANCE_ROLE_ATTRIBUTE) !== undefined;
+}
+
+/** Multiply an instance's tint into the vertices of role 1 only. Three multiplies it into
+ * every vertex. One tint per instance is published, so any other role keeps its own colour.
+ * Only the tinted instanced program changes: the addition is compiled out of ordinary and
+ * untinted instanced draws of this material. Every tinted batch drawn with the material must
+ * carry the attribute, since a missing vertex attribute reads as role 0. */
+export function applyInstanceRoles(material: THREE.Material): void {
+  const previous = material.onBeforeCompile, previousKey = material.customProgramCacheKey.bind(material);
+  material.onBeforeCompile = function (shader, renderer) {
+    previous.call(this, shader, renderer);
+    // Stand a role-gated tint in for the instance colour while Three's own chunk applies it.
+    shader.vertexShader = `#ifdef USE_INSTANCING_COLOR
+attribute float ${INSTANCE_ROLE_ATTRIBUTE};
+#endif
+` + shader.vertexShader.replace("#include <color_vertex>", `#ifdef USE_INSTANCING_COLOR
+  vec3 msRoleTint = abs(${INSTANCE_ROLE_ATTRIBUTE} - 1.0) < 0.5 ? instanceColor.rgb : vec3(1.0);
+  #define instanceColor msRoleTint
+#endif
+#include <color_vertex>
+#ifdef USE_INSTANCING_COLOR
+  #undef instanceColor
+#endif`);
+  };
+  material.customProgramCacheKey = () => previousKey() + "|worldspec-instance-roles-v1";
 }
 
 /** Retain the receiver's derivative normal frame after packing its chart into a larger atlas.

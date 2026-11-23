@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 /** A local look for the two playable market bays. The pose test skips the resolve work
  * across the rest of the map. The depth test below bounds it to the shop surfaces. */

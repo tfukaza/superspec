@@ -100,6 +100,29 @@ export function stylePaintedStroke(material: THREE.MeshStandardMaterial, part: n
   material.customProgramCacheKey = () => key()+"|painted-stroke-"+part;
 }
 
+/** The stroke shader collapses every brush once its root is this far from the eye. */
+export const PAINTED_STROKE_REACH = 30;
+
+/** Submit no instances for a bed whose nearest point is beyond the strokes'
+ * reach. Every brush there is already collapsed, so the picture is the same.
+ * Placements can share one geometry: each sets the count for its own draw. */
+export function cullPaintedStrokes(mesh: THREE.Mesh, geometry: THREE.InstancedBufferGeometry): void {
+  const count = geometry.instanceCount, eye = new THREE.Vector3(), bounds = new THREE.Box3(), placed = new THREE.Matrix4();
+  // A brush ranked exactly zero passes the shader's `rank <= keep` at any distance.
+  const stroke = geometry.getAttribute("lawnStroke");
+  for (let i = 0; i < stroke.count; i++) if (stroke.getW(i) % 1 === 0) return;
+  let known = false;
+  mesh.onBeforeRender = (_renderer, _scene, camera) => {
+    if (!known || !placed.equals(mesh.matrixWorld)) {
+      placed.copy(mesh.matrixWorld);
+      bounds.copy(geometry.boundingBox!).applyMatrix4(placed);
+      known = true;
+    }
+    geometry.instanceCount = bounds.distanceToPoint(eye.setFromMatrixPosition(camera.matrixWorld)) >= PAINTED_STROKE_REACH ? 0 : count;
+  };
+  mesh.onAfterRender = () => { geometry.instanceCount = count; };
+}
+
 /** Keep ordinary readers' static tuft geometry as a fallback if the companion fails. */
 export async function installPaintedLawns(gltf: GLTF) {
   const root = gltf.scene, record = root.userData.paintedLawn as Lawn | undefined;
@@ -135,6 +158,7 @@ export async function installPaintedLawns(gltf: GLTF) {
           mesh.scale.setScalar(scale);
           mesh.receiveShadow = true;
           mesh.renderOrder = 3+i;
+          cullPaintedStrokes(mesh, g);
           group.add(mesh);
         }
       });

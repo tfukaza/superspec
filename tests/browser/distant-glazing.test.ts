@@ -140,3 +140,58 @@ test("the existing single-pass classifier does not mistake batched local geometr
   material.onBeforeRender({} as THREE.WebGLRenderer, new THREE.Scene(), camera, batch.geometry, batch, null);
   assert.equal(material.forceSinglePass, false); batch.dispose();
 });
+
+test("glass beyond the range is left out per placement, while lit glass, opaque frames and hidden meshes are untouched", async () => {
+  const { GlazingRange } = await import("../../adapters/three/src/glazingRange.ts");
+  const root = new THREE.Group(), camera = new THREE.PerspectiveCamera(90, 1, 0.1, 500);
+  const glass = () => {
+    const material = new THREE.MeshStandardMaterial({ transparent: true, side: THREE.DoubleSide });
+    material.userData.worldSpecSurface = { recipe: "architectural-glazing" };
+    return material;
+  };
+  const pane = new THREE.PlaneGeometry(1, 1);
+  const rows = new THREE.InstancedMesh(pane, glass(), 3);
+  for (const [i, z] of [-5, -20, -60].entries()) rows.setMatrixAt(i, new THREE.Matrix4().makeTranslation(0, 0, z));
+  rows.castShadow = true;
+  const at = <T extends THREE.Mesh>(mesh: T, x: number, z: number) => { mesh.position.set(x, 0, z); root.add(mesh); return mesh; };
+  const far = at(new THREE.Mesh(pane, glass()), 3, -40), near = at(new THREE.Mesh(pane, glass()), 3, -4);
+  const lit = at(new THREE.Mesh(pane, glass()), -3, -40);
+  lit.material.emissive.set(0xffcc88); lit.material.emissiveIntensity = 2;
+  const frame = at(new THREE.Mesh(pane, new THREE.MeshStandardMaterial()), 6, -40);
+  const culled = at(new THREE.Mesh(pane, glass()), -6, -4);
+  root.add(rows);
+  const range = new GlazingRange(root, 10);
+  const authored = root.children.slice();
+  const drawn = () => root.children.filter(child => child.visible);
+
+  culled.visible = false; // View culling runs first.
+  range.frame(camera);
+  const subset = root.children.find(child => !authored.includes(child)) as THREE.InstancedMesh;
+  assert.deepEqual(drawn(), [near, lit, frame, subset]);
+  assert.deepEqual([subset.count, subset.instanceMatrix.array[14], subset.material, subset.castShadow], [1, -5, rows.material, false]);
+  assert.equal(rows.count, 3, "the authored batch keeps every placement for shadows and picking");
+
+  // Walking forward brings the second row into range and leaves the first inside it.
+  camera.position.z = -11;
+  camera.updateMatrixWorld();
+  subset.computeBoundingSphere();
+  range.frame(camera);
+  assert.deepEqual([subset.count, subset.instanceMatrix.array[14], subset.instanceMatrix.array[30]], [2, -5, -20]);
+  assert.equal(subset.boundingSphere, null, "the renderer measures the new set before culling it");
+  assert.equal(far.visible, false);
+
+  range.restore();
+  culled.visible = true;
+  assert.deepEqual(drawn(), authored, "shadow passes and the next view start from the authored scene");
+  range.distance = 100;
+  range.frame(camera);
+  assert.deepEqual(drawn(), authored, "every pane is inside a long range");
+  range.distance = 0;
+  range.frame(camera);
+  assert.deepEqual(drawn(), [lit, frame], "a zero range keeps only what is not plain glass");
+  range.distance = Infinity;
+  range.frame(camera);
+  assert.deepEqual(drawn(), authored);
+  range.dispose();
+  assert.deepEqual(root.children, authored);
+});

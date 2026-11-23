@@ -12,7 +12,7 @@ const { hasDeclaredLodOwner } = await import("../../adapters/three/src/lodOwners
 const { mergeCityInstances, CityVisibility } = await import("../../adapters/three/src/cityVisibility.ts");
 const { clusterCityGeometry } = await import("../../adapters/three/src/cityClusters.ts");
 const { markOutlineExclusions } = await import("../../adapters/three/src/outlineExclusions.ts");
-const { publishedCityGeometry } = await import("../../browser/renderer/published-geometry.ts");
+const { publishedCityGeometry } = await import("#render-engine");
 const { registerCityTextureLod } = await import("../../adapters/three/src/cityTextureLoader.ts");
 const { resolveRenderDiagnostics } = await import("../../adapters/three/src/renderProfile.ts");
 hooks.deregister();

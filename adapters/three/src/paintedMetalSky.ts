@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { brushPigmentAt } from "./paintedBrush";
+import { brushPigmentAt } from "./paintedBrush.ts";
 
 // Tangent to a concentric machining groove, recovered from the centered disc UVs.
 // Its sign cancels out, including on mirrored charts and the vertical shell.

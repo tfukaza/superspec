@@ -15,6 +15,8 @@ type StaticDepth = {
   matrix: THREE.Matrix4;
   source?: THREE.WebGLRenderTarget;
   saved?: THREE.WebGLRenderTarget;
+  /** The target of a complete caster draw which was not copied. */
+  uncopied?: THREE.WebGLRenderTarget;
   cameraMask: number;
 };
 
@@ -26,6 +28,11 @@ type ShadowPass =
  * Each shadow pass visits children in scene order. Draw the fixed city first and save
  * its depth, then let live actors draw against it. On subsequent frames a depth blit
  * replaces just the city's draw calls, retaining the sun's normal PCF and material cutouts.
+ *
+ * The saved depth is a second map of the light's size. A light that redraws its map every
+ * frame is copied on its first pass. A map drawn on request (`autoUpdate` false) is copied
+ * only once a second pass arrives with the same projection, so a light that is drawn once
+ * and then left alone never allocates a copy.
  */
 export class CityShadowCache {
   private readonly before: THREE.Mesh;
@@ -33,12 +40,14 @@ export class CityShadowCache {
   private readonly entries = new Map<THREE.Camera, StaticDepth>();
   private pass?: ShadowPass;
   private readonly shadowStates: readonly THREE.LightShadow[];
+  private readonly lights: ReadonlyMap<THREE.Camera, THREE.Light>;
 
   constructor(private renderer: THREE.WebGLRenderer, private city: THREE.Object3D, sun: THREE.DirectionalLight, restoreVisibility: () => void,
     localLights: readonly THREE.SpotLight[] = [], private restoreView?: () => void,
     prepareShadow?: (shadowCamera: THREE.Camera, viewCamera: THREE.Camera) => void, cacheDepth = true) {
     const scene = city.parent!;
     this.shadowStates = [sun, ...localLights].map(light => light.shadow);
+    this.lights = new Map([sun, ...localLights].map(light => [light.shadow.camera as THREE.Camera, light] as const));
     const shadows = new Map([sun, ...localLights].map(light => [light.shadow.camera as THREE.Camera, light.shadow] as const));
     const localCameras = new Set<THREE.Camera>(localLights.map(light => light.shadow.camera));
     const restoreCasters = (shadowCamera: THREE.Camera, viewCamera: THREE.Camera) => {
@@ -88,10 +97,19 @@ export class CityShadowCache {
       }
       if (!entry.saved || entry.source !== live || entry.cameraMask !== camera.layers.mask ||
           entry.saved.width !== live.width || entry.saved.height !== live.height || !entry.matrix.equals(shadow.matrix)) {
+        // A second pass with an unchanged projection shows that the light redraws on request.
+        const copy = shadow.autoUpdate || (entry.uncopied === live && entry.cameraMask === camera.layers.mask
+          && entry.matrix.equals(shadow.matrix));
         // Include off-camera casters when rebuilding the complete static depth.
-        entry.source = undefined;
+        entry.source = entry.uncopied = undefined;
+        if (!copy) {
+          // Depth saved for another projection cannot serve this one.
+          entry.saved?.dispose();
+          entry.saved = undefined;
+        }
         restoreCasters(shadowCamera, camera);
-        this.pass = { mode: "casters", capture: { entry, target: live } };
+        this.pass = { mode: "casters", capture: copy ? { entry, target: live } : undefined };
+        if (!copy) entry.uncopied = live;
         entry.cameraMask = camera.layers.mask;
         entry.matrix.copy(shadow.matrix);
       } else {
@@ -128,6 +146,18 @@ export class CityShadowCache {
     this.entries.clear();
     for (const shadow of this.shadowStates) shadow.needsUpdate = true;
   };
+
+  /** Release the depth saved for lights that no longer draw a shadow map. Call once a frame.
+   * A light that casts again redraws its casters and saves a new copy. */
+  releaseUnused(): void {
+    const enabled = this.renderer.shadowMap.enabled;
+    for (const [camera, entry] of this.entries) {
+      const light = this.lights.get(camera);
+      if (enabled && light?.castShadow && light.visible) continue;
+      entry.saved?.dispose();
+      this.entries.delete(camera);
+    }
+  }
 
   private captureDepth(entry: StaticDepth, target: THREE.WebGLRenderTarget): void {
     try {

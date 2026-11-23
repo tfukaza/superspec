@@ -108,6 +108,20 @@ test("adding dimensions and replacing them with a convex four-corner lot preview
   ]) assert.deepEqual(preview.moves(bad), [], bad);
 });
 
+test("a courtyard placement translates immediately and uses the compiler for footprint edits", () => {
+  const prefix = '<architecture version="1" id="test"><city>';
+  const source = prefix + '<building id="court" position="0 0 0" footprint="0 0; 12 0; 12 10; 0 10">'
+    + '<hole points="4 3; 4 7; 8 7; 8 3"/></building></city></architecture>';
+  const preview = new PlacementPreview();
+  preview.accept(source, { architecture: { metadata: [{ kind: "city", children: [{
+    id: "court", kind: "building", attributes: { position: [0, 0, 0] },
+    children: [{ kind: "hole" }], source: { offset: prefix.length },
+  }] }] } } as unknown as Manifest);
+  assert.deepEqual(preview.moves(source.replace('position="0 0 0"', 'position="2 3 0"')),
+    [{ owners: ["city/court"], translation: [2, 3, 0] }]);
+  assert.deepEqual(preview.moves(source.replace("12 0; 12 10", "13 0; 13 10")), []);
+});
+
 test("a rotated textured lot keeps its UVs on both halves of a taper, maps its corners, and restores every draw", () => {
   const geometry = new BufferGeometry(), material = new MeshBasicMaterial(), mesh = new Mesh(geometry, material);
   geometry.setAttribute("position", new Float32BufferAttribute([0,0,14, 0,8,14, -7,8,14, -7,0,14], 3));

@@ -1,16 +1,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GameLighting, gltfLighting } from "../browser/renderer/game-lighting.ts";
-import { createGltfLoader, disposeKtx2Loader } from "../browser/renderer/ktx2.ts";
-import { releaseObjects } from "../browser/renderer/dispose-objects.ts";
-import { publishedTextureResidency, publishedWorld } from "../browser/renderer/published-world.ts";
-import { streamsPublishedTextures } from "../browser/renderer/published-geometry.ts";
+import {
+  applyMaterialAnisotropy, attachWorldSpecScene, CityShadowCache, createRenderGltfLoader,
+  disposeCityTextureLod, disposeRenderGltfLoader, fitPublishedSun, lightingOverridesQuery,
+  loadDeclaredLods, publishedTextureResidency, registerCityTextureLod, releaseObjects,
+  streamsPublishedTextures, type ResolvedRenderProfile, type WorldSpecScene,
+} from "#render-engine";
 import { parseView, viewCamera } from "../browser/renderer/view.ts";
-import { disposeCityTextureLod, registerCityTextureLod } from "../adapters/three/src/cityTextureLoader.ts";
-import { loadDeclaredLods } from "../adapters/three/src/declaredLods.ts";
-import { CityShadowCache } from "../adapters/three/src/cityShadowCache.ts";
-import { lightingOverridesQuery, type ResolvedRenderProfile } from "../adapters/three/src/renderProfile.ts";
-import { applyMaterialAnisotropy } from "../adapters/three/src/materialFiltering.ts";
 import { installConnectorDrag } from "./demos/connector-drag.ts";
 
 /** Inspect published glTF directly, resolving external textures and buffers beside the entry file. */
@@ -41,11 +38,11 @@ export async function openGltf(url: URL, host: HTMLElement, query: URLSearchPara
 async function createGltfView(url: URL, host: HTMLElement, query: URLSearchParams, graphics: ResolvedRenderProfile, preparing: (() => void) | undefined,
   loading: AbortSignal, onDispose: (release: () => void) => void) {
   const { settings, diagnostics } = graphics;
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  const renderer = new THREE.WebGLRenderer({ antialias: graphics.parameters.gpu.antialiasing === "msaa" });
   if (settings.renderScale !== 1) renderer.setPixelRatio(settings.renderScale);
   onDispose(() => renderer.domElement.remove());
   onDispose(() => renderer.dispose());
-  onDispose(() => disposeKtx2Loader(renderer));
+  onDispose(() => disposeRenderGltfLoader(renderer));
   host.append(renderer.domElement);
   const scene = new THREE.Scene();
   const view = parseView(query);
@@ -62,11 +59,11 @@ async function createGltfView(url: URL, host: HTMLElement, query: URLSearchParam
   const abortRequests = () => manager.abort();
   loading.addEventListener("abort", abortRequests, { once: true });
   onDispose(() => loading.removeEventListener("abort", abortRequests));
-  const loader = createGltfLoader(renderer, manager);
+  const loader = createRenderGltfLoader(renderer, { transcoderPath: "basis/", manager, graphicsPreset: graphics.preset });
   const streamTextures = streamsPublishedTextures(diagnostics);
   if (streamTextures) registerCityTextureLod(loader);
   const gltf = await loader.loadAsync(url.href);
-  let world: Awaited<ReturnType<typeof publishedWorld>>, textureResidency: ReturnType<typeof publishedTextureResidency>;
+  let world: WorldSpecScene | undefined, textureResidency: ReturnType<typeof publishedTextureResidency>;
   let declared: Awaited<ReturnType<typeof loadDeclaredLods>> | undefined;
   onDispose(() => {
     if (world) return; // Published geometry takes ownership when world attachment succeeds.
@@ -86,13 +83,20 @@ async function createGltfView(url: URL, host: HTMLElement, query: URLSearchParam
   const anisotropy = settings.materialAnisotropy;
   const adopt = () => {
     lighting.adopt(gltf.scene, !isWorldSpec);
-    if (anisotropy !== undefined) applyMaterialAnisotropy(gltf.scene, anisotropy, renderer.capabilities.getMaxAnisotropy());
+    if (!isWorldSpec && anisotropy !== undefined) applyMaterialAnisotropy(gltf.scene, anisotropy, renderer.capabilities.getMaxAnisotropy());
   };
   if (declared) { await declared.withVariants(adopt); lighting.fit(); } else adopt();
   let preparingWorld = true;
   const invalidate = diagnostics.instrumentation.gpuProbe ? undefined : () => { if (!preparingWorld && !loading.aborted) render(); };
-  world = await publishedWorld(gltf, scene, renderer, diagnostics, lighting, url, invalidate, declared, settings);
-  if (world) onDispose(world.dispose);
+  if (isWorldSpec) {
+    const { sun } = lighting.view;
+    fitPublishedSun(sun, gltf, lighting.lighting);
+    sun.shadow.autoUpdate = false;
+    sun.shadow.needsUpdate = true;
+    world = await attachWorldSpecScene(gltf, { scene, renderer, diagnostics, sun, lighting: lighting.lighting,
+      entryUrl: url, invalidate, declared, graphics: settings, signal: loading });
+    if (world) onDispose(world.dispose);
+  }
   loading.throwIfAborted();
   textureResidency = !world && streamTextures ? publishedTextureResidency(gltf, renderer, invalidate, declared) : undefined;
   const applyCameraLods = () => {
@@ -142,14 +146,27 @@ async function createGltfView(url: URL, host: HTMLElement, query: URLSearchParam
   const warmWorld = diagnostics.loading.warmup ? world : undefined;
   const hasViewport = configureViewport();
   let warmup, initialColor;
-  if (warmWorld) {
+  if (warmWorld) preparing?.();
+  // Every preset links the first view's shaders off the main thread before drawing it. Without the
+  // extension the first draw links them itself, as it always did. The fuller warm-up after the
+  // first frame stays a separate choice, which the light presets and phones leave off.
+  if (world && hasViewport && diagnostics.loading.firstFrameShaders && diagnostics.loading.shaderWarmup === "parallel"
+      && renderer.extensions.has("KHR_parallel_shader_compile")) {
     preparing?.();
-    if (hasViewport && diagnostics.loading.shaderWarmup === "parallel" && renderer.extensions.has("KHR_parallel_shader_compile")) {
-      try { initialColor = await warmWorld.prepareFirstColor(camera, loading); }
-      catch (error) { console.warn("Initial shader preparation failed. Continuing with the first draw.", error); }
-    }
+    try { initialColor = await world.prepareFirstColor(camera, loading); }
+    catch (error) { console.warn("Initial shader preparation failed. Continuing with the first draw.", error); }
   }
   loading.throwIfAborted();
+  let firstTextures;
+  if (world && hasViewport && !renderer.getContext().isContextLost()) {
+    // Every preset stores the first view's textures in short slices, so the first frame does not block on them.
+    preparing?.();
+    try { firstTextures = await world.prepareFirstTextures(camera, loading); }
+    catch (error) {
+      loading.throwIfAborted();
+      console.warn("Initial texture preparation failed. Continuing with the first draw.", error);
+    }
+  }
   resize(true);
   if (warmWorld && !renderer.getContext().isContextLost()) {
     warmup = { ...await warmWorld.warmup(camera), initialColor };
@@ -164,7 +181,7 @@ async function createGltfView(url: URL, host: HTMLElement, query: URLSearchParam
     render();
   });
   if (stopDrag) onDispose(stopDrag);
-  if (diagnostics.instrumentation.gpuProbe) Object.assign(window, { __worldSpecView: { backend: "webgl", renderer, scene, camera, controls, render, warmup,
+  if (diagnostics.instrumentation.gpuProbe) Object.assign(window, { __worldSpecView: { backend: "webgl", renderer, scene, camera, controls, render, warmup, initialColor, firstTextures,
     graphics: { preset: graphics.preset, ...settings },
     settle: world?.settle ?? (() => textureResidency?.settle()), textureStats: world?.textureStats ?? (() => textureResidency?.stats()),
     setSubmission: world?.setSubmission, setBlockProxyEnabled: world?.setBlockProxyEnabled, blockProxyStats: world?.blockProxyStats,

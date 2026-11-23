@@ -27,6 +27,7 @@ await mkdir(out, { recursive: true });
 const server = createServer(async (request, response) => {
   try {
     const name = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+    if (name === "/favicon.ico") { response.writeHead(204).end(); return; }
     const path = resolve(root, name === "/" ? "index.html" : `.${name}`);
     if (!path.startsWith(root + sep)) { response.writeHead(403).end(); return; }
     response.setHeader("Content-Type", { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".png": "image/png" }[extname(path)] ?? "application/octet-stream");

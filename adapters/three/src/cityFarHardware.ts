@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import type { CityLodLevels } from "./cityLods";
+import type { CityLodLevels } from "./cityLods.ts";
+import { copyInstanceTint, uploadInstanceTints } from "./instanceTint.ts";
 
 type Member = { bounds: THREE.Box3; level: number; keep: boolean };
 type Assembly = { source: THREE.Mesh; parent: THREE.Object3D; levels: CityLodLevels; members: Member[];
@@ -91,6 +92,7 @@ export class CityFarHardware {
           if (source instanceof THREE.InstancedMesh && draw.mesh instanceof THREE.InstancedMesh && draw.indices[count] !== i) {
             source.getMatrixAt(i, this.matrix);
             draw.mesh.setMatrixAt(count, this.matrix);
+            copyInstanceTint(source, i, draw.mesh, count);
             draw.indices[count] = i;
             dirty = true;
           }
@@ -103,6 +105,7 @@ export class CityFarHardware {
               draw.mesh.instanceMatrix.clearUpdateRanges();
               draw.mesh.instanceMatrix.addUpdateRange(0, count * 16);
               draw.mesh.instanceMatrix.needsUpdate = true;
+              uploadInstanceTints(draw.mesh, count);
             }
             // Per-cell camera tests admitted these placements; a sphere computed
             // for a previous subset would incorrectly reject a later subset.

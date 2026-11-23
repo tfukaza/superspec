@@ -1,11 +1,11 @@
 import * as THREE from "three";
-import { overlapOutlineShader } from "./overlapOutline";
-import { renderColorAndExclusions, renderExcludedDepth, outlineDepthLimit, warmExcludedDepth } from "./outlineExclusions";
+import { overlapOutlineShader } from "./overlapOutline.ts";
+import { renderColorAndExclusions, renderExcludedDepth, outlineDepthLimit, warmExcludedDepth } from "./outlineExclusions.ts";
 import { FullScreenQuad } from "three/addons/postprocessing/Pass.js";
-import { CityEdgeLight, edgeLightDeclarations, edgeLightFragment } from "./cityEdgeLight";
-import { ShopPaint, shopPaintShader } from "./shopPaint";
-import { HORIZON_OCCLUSION_GLSL } from "./horizonOcclusionShader";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { CityEdgeLight, edgeLightDeclarations, edgeLightFragment } from "./cityEdgeLight.ts";
+import { ShopPaint, shopPaintShader } from "./shopPaint.ts";
+import { HORIZON_OCCLUSION_GLSL } from "./horizonOcclusionShader.ts";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 /** The lighting record's `ambientOcclusion`. Only the `horizon` method is drawn here; its
  * `tint` is the share of the sun shadow's hue the occlusion takes. */

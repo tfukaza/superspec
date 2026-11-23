@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 /** The near side of a geometric edge catches the sun. Depth differences along
  * a plane (lettering, texture changes and cast-shadow boundaries) give zero. */

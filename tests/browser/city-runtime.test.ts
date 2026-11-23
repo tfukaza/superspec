@@ -5,7 +5,7 @@ import { WebGLObjects } from "three/src/renderers/webgl/WebGLObjects.js";
 import type { GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { loadCityLods, tagCityLodPrimitives } from "../../adapters/three/src/cityLods.ts";
 import type { CityLodLevels } from "../../adapters/three/src/cityLods.ts";
-import { CityVisibility, mergeCityInstances, selectCityLod, omitCityDetail } from "../../adapters/three/src/cityVisibility.ts";
+import { CITY_LOD_MERGE_TRIANGLES, CityVisibility, mergeCityInstances, selectCityLod, omitCityDetail } from "../../adapters/three/src/cityVisibility.ts";
 import { clusterCityGeometry } from "../../adapters/three/src/cityClusters.ts";
 import { CityFarHardware } from "../../adapters/three/src/cityFarHardware.ts";
 
@@ -1267,4 +1267,128 @@ test("spatial index batches join different selected LODs and restore the ordinar
   view.restore(); assert.deepEqual(root.children.filter(m => m.visible), source);
   view.dispose(); assert.deepEqual(root.children, source);
   assert.ok(source.every(m => m.castShadow && m.geometry.attributes.position === positions));
+});
+
+/** Four placements of a 12-triangle box with 4- and 2-triangle legacy levels: one near, two mid, one far. */
+function lodBandScene(lodMergeTriangles?: number, far?: THREE.BufferGeometry) {
+  const root = new THREE.Group(), camera = new THREE.PerspectiveCamera(60, 1, 0.1, 200);
+  const original = new THREE.BoxGeometry(), mid = original.clone();
+  far ??= original.clone().setIndex([0, 1, 2, 2, 3, 0]);
+  mid.setIndex(Array.from(original.index!.array).slice(0, 12));
+  const mesh = new THREE.InstancedMesh(original, new THREE.MeshBasicMaterial(), 4);
+  for (const [i, [x, z]] of [[-2, -8], [-1, -30], [1, -31], [3, -70]].entries())
+    mesh.setMatrixAt(i, new THREE.Matrix4().makeTranslation(x, 0, z));
+  mesh.castShadow = true;
+  root.add(mesh);
+  const visibility = new CityVisibility(root, true, new Map([[original, [mid, far]]]),
+    lodMergeTriangles === undefined ? {} : { lodMergeTriangles });
+  const draws = () => (root.children.filter(object => object.visible) as THREE.InstancedMesh[])
+    .map(draw => [draw.geometry === original ? "near" : draw.geometry === mid ? "mid" : "far", draw.count]);
+  return { root, camera, mesh, visibility, draws };
+}
+
+test("LOD bands of one batch join the next finer selected level within the triangle budget", () => {
+  // Far to mid adds 1 * (4 - 2) triangles. Mid to near then adds 3 * (12 - 4).
+  const expected: [number | undefined, (string | number)[][]][] = [
+    [-1, [["near", 1], ["mid", 2], ["far", 1]]],
+    [1, [["near", 1], ["mid", 2], ["far", 1]]],
+    [2, [["near", 1], ["mid", 3]]],
+    [23, [["near", 1], ["mid", 3]]],
+    [24, [["near", 4]]],
+    [undefined, [["near", 4]]],
+  ];
+  assert.ok(CITY_LOD_MERGE_TRIANGLES >= 24, "the default budget admits this 26-triangle promotion");
+  for (const [budget, wanted] of expected) {
+    const { root, camera, mesh, visibility, draws } = lodBandScene(budget);
+    visibility.frame(camera);
+    assert.deepEqual(draws().sort(), wanted.slice().sort(), `budget ${budget}`);
+    if (wanted.length === 1) assert.deepEqual(root.children.filter(object => object.visible), [mesh], "one band is the original batch");
+    visibility.restore();
+    assert.deepEqual(root.children.filter(object => object.visible), [mesh]);
+    assert.ok(mesh.castShadow && mesh.count === 4);
+    visibility.dispose();
+    assert.deepEqual(root.children, [mesh]);
+  }
+});
+
+test("a new graphics preset changes the band budget of the running world", () => {
+  const { camera, visibility, draws } = lodBandScene(2);
+  const bands = () => { visibility.frame(camera); return draws().sort(); };
+  assert.deepEqual(bands(), [["mid", 3], ["near", 1]]);
+  visibility.setLodMergeTriangles(-1);
+  assert.deepEqual(bands(), [["far", 1], ["mid", 2], ["near", 1]], "the unchanged camera is selected again");
+  visibility.setLodMergeTriangles(24);
+  assert.deepEqual(bands(), [["near", 4]]);
+  visibility.setLodMergeTriangles(undefined);
+  assert.deepEqual(bands(), [["near", 4]], "no stated budget is the default one");
+  visibility.dispose();
+});
+
+test("a promoted placement keeps its selected level's hysteresis and an omitted level stays omitted", () => {
+  const { camera, visibility, draws } = lodBandScene(2);
+  visibility.frame(camera);
+  assert.deepEqual(draws().sort(), [["mid", 3], ["near", 1]]);
+  // At 47 m only a placement that was selected at the far level stays there.
+  // The near band now costs 12 - 2 triangles to join, which exceeds the budget.
+  camera.position.z = -23;
+  visibility.frame(camera);
+  assert.deepEqual(draws().sort(), [["far", 1], ["near", 2]]);
+  visibility.dispose();
+
+  const omitted = lodBandScene(Infinity, new THREE.BoxGeometry().setIndex([]));
+  omitted.visibility.frame(omitted.camera);
+  assert.deepEqual(omitted.draws(), [["near", 3]], "the part omitted at the far level is not drawn again");
+  omitted.visibility.dispose();
+});
+
+test("software occlusion follows the level a promoted placement draws", () => {
+  for (const [lodMergeTriangles, seen] of [[-1, false], [2, true]] as const) {
+    const root = new THREE.Group(), camera = new THREE.PerspectiveCamera(78, 1.6, 0.05, 100);
+    // The detailed wall has a 2 m doorway. Its reduced level closes the opening.
+    const doorway = new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute(
+      [-6, -6, 0, -1, -6, 0, -1, 6, 0, -6, 6, 0, 1, -6, 0, 6, -6, 0, 6, 6, 0, 1, 6, 0], 3));
+    doorway.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+    const closed = doorway.clone().setIndex([0, 5, 6, 0, 6, 3]);
+    const walls = new THREE.InstancedMesh(doorway, new THREE.MeshBasicMaterial(), 2);
+    walls.setMatrixAt(0, new THREE.Matrix4().makeTranslation(0, 0, -10));
+    walls.setMatrixAt(1, new THREE.Matrix4().makeTranslation(0, 0, -40));
+    const target = new THREE.InstancedMesh(new THREE.BoxGeometry(.3, .3, .3), new THREE.MeshBasicMaterial(), 1);
+    target.setMatrixAt(0, new THREE.Matrix4().makeTranslation(0, 0, -45));
+    root.add(walls, target);
+    const visibility = new CityVisibility(root, true, new Map([[doorway, [closed]]]), { lodMergeTriangles });
+    visibility.frame(camera);
+    const drawn = root.children.filter(object => object.visible && object !== target) as THREE.InstancedMesh[];
+    assert.deepEqual(drawn.map(draw => draw.geometry === doorway).sort(), seen ? [true] : [false, true]);
+    assert.equal(target.visible, seen, seen ? "the open doorway is drawn, so it cannot hide the receiver"
+      : "the closed far level is drawn and hides the receiver");
+    visibility.dispose();
+  }
+});
+
+test("parts split from one primitive promote together so their joined draws remain", () => {
+  // Promotion adds 4 - 2 triangles to one part and 6 - 2 to the other. A part
+  // which its reduced level omits stays omitted there while its sibling is promoted.
+  for (const [lodMergeTriangles, firstReduced, wanted] of [[5, [0, 1, 2, 0, 2, 3], [[12, 1], [30, 1]]],
+    [6, [0, 1, 2, 0, 2, 3], [[30, 2]]], [6, [], [[12, 1], [18, 2]]]] as const) {
+    const root = new THREE.Group(), material = new THREE.MeshStandardMaterial(), origin = {};
+    const positions = new THREE.Float32BufferAttribute([-1, 0, 0, 0, 0, 0, 0, 1, 0, -1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], 3);
+    const part = (indices: number[]) => new THREE.BufferGeometry().setAttribute("position", positions).setIndex(indices);
+    const levels = new Map<THREE.BufferGeometry, CityLodLevels>(), clusterPairs = new WeakMap<THREE.Mesh, object>();
+    for (const [near, reduced] of [[[0, 1, 2, 0, 2, 3, 0, 1, 2, 0, 2, 3], [...firstReduced]],
+      [[4, 5, 6, 4, 6, 7, 4, 5, 6, 4, 6, 7, 4, 5, 6, 4, 6, 7], [4, 5, 6, 4, 6, 7]]]) {
+      const geometry = part(near);
+      levels.set(geometry, [part(reduced)]);
+      const mesh = new THREE.InstancedMesh(geometry, material, 2);
+      mesh.setMatrixAt(0, new THREE.Matrix4().makeTranslation(-2, 0, -10));
+      mesh.setMatrixAt(1, new THREE.Matrix4().makeTranslation(2, 0, -40));
+      root.add(mesh); clusterPairs.set(mesh, origin);
+    }
+    const visibility = new CityVisibility(root, true, levels,
+      { coalesceClusters: true, clusterPairs, wideClusters: true, lodMergeTriangles });
+    visibility.frame(new THREE.PerspectiveCamera(60, 1, .1, 200));
+    const draws = (root.children.filter(object => object.visible) as THREE.InstancedMesh[])
+      .map(draw => [draw.geometry.index!.count, draw.count]).sort((a, b) => a[0] - b[0]);
+    assert.deepEqual(draws, wanted, `budget ${lodMergeTriangles}`);
+    visibility.dispose();
+  }
 });

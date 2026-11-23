@@ -137,18 +137,3 @@ export function shareInstanceAttributes(source: THREE.BufferGeometry, target: TH
     if ((attribute as THREE.InstancedBufferAttribute).isInstancedBufferAttribute) target.setAttribute(name, attribute);
   }
 }
-
-/**
- * A stand-in for `mesh` with another geometry and material, for compiling the material as the mesh will draw it: an
- * instanced mesh's programs differ from an ordinary mesh's, so the stand-in is instanced in the same way.
- */
-export function compileTwin(mesh: THREE.Mesh, geometry: THREE.BufferGeometry, material: THREE.Material): THREE.Mesh {
-  const instanced = mesh as THREE.InstancedMesh;
-  let twin: THREE.Mesh;
-  if (instanced.isInstancedMesh) {
-    const made = twin = new THREE.InstancedMesh(geometry, material, 1);
-    if (instanced.instanceColor) made.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array([1, 1, 1]), 3);
-  } else twin = new THREE.Mesh(geometry, material);
-  twin.castShadow = mesh.castShadow; twin.receiveShadow = mesh.receiveShadow;
-  return twin;
-}

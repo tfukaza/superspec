@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { LiveOperation } from "../model/packet.ts";
 import { shadowStyleKey } from "./shadow-style.ts";
-import { paintedMetalSky, radialSkyShader, radialSkyVertex } from "./painted-metal-sky.ts";
+import { paintedMetalSky, radialSkyShader, radialSkyVertex } from "#render-engine";
 
 /** Operations this renderer executes; others are ignored, like any renderer without support. */
 export const SUPPORTED_LIVE_OPERATIONS = ["modulateDiffuse", "grazingFalloff", "edgeGlint", "filterEnvironment", "virtualSky", "kuwahara", "bandLuminance", "scaleSpecular", "lightFloor"] as const;

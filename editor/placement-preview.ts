@@ -5,6 +5,7 @@ interface CityNode {
   kind: string;
   id: string;
   source: SourceLocation;
+  children?: unknown[];
   attributes: {
     position?: number[]; count?: number; step?: number[]; heading?: number;
     width?: number; depth?: number; footprint?: number[][]; model?: string;
@@ -114,7 +115,7 @@ export class PlacementPreview {
     const edited = opening(draft, tag.start, tag.node.kind);
     if (!edited || edited.end !== tag.end + draft.length - this.source.length
       || edited.selfClosing !== (this.source[tag.end - 2] === "/") || !draft.endsWith(this.source.slice(tag.end))) return [];
-    const building = tag.node.kind === "building" && !tag.node.attributes.model;
+    const building = tag.node.kind === "building" && !tag.node.attributes.model && !tag.node.children?.length;
     for (const key of new Set([...edited.fields.keys(), ...tag.fields.keys()])) {
       const editable = key === "position" || building && ["width", "depth", "footprint"].includes(key);
       if (!editable && edited.fields.get(key) !== tag.fields.get(key)) return [];

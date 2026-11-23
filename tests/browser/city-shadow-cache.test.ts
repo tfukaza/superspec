@@ -115,6 +115,66 @@ test("full shadow casters and view subsets are restored around every shadow pass
   }
 });
 
+test("depth is copied only for a light that redraws, and released when the light stops casting", () => {
+  const scene = new THREE.Scene(), city = new THREE.Group();
+  scene.add(city);
+  const sun = new THREE.DirectionalLight(), spot = new THREE.SpotLight(), camera = new THREE.PerspectiveCamera();
+  sun.castShadow = spot.castShadow = true;
+  // The host draws the sun's map on request. The fixture redraws every frame.
+  sun.shadow.autoUpdate = false;
+  const sunTarget = new THREE.WebGLRenderTarget(32, 32, { depthTexture: new THREE.DepthTexture(32, 32) });
+  const spotTarget = new THREE.WebGLRenderTarget(16, 16, { depthTexture: new THREE.DepthTexture(16, 16) });
+  let active = sunTarget, copies = 0, allocated = 0, disposed = 0, casterDraws = 0;
+  const renderer = {
+    shadowMap: { type: THREE.PCFShadowMap, enabled: true }, domElement: new EventTarget(),
+    getRenderTarget: () => active,
+    setRenderTarget: (target: THREE.WebGLRenderTarget) => { active = target; },
+    initRenderTarget: (target: THREE.WebGLRenderTarget) => { allocated++; target.addEventListener("dispose", () => disposed++); },
+    copyTextureToTexture: () => { copies++; },
+  } as unknown as THREE.WebGLRenderer;
+  const cache = new CityShadowCache(renderer, city, sun, () => { casterDraws++; }, [spot]);
+  const before = scene.children[0] as THREE.Mesh, after = scene.children[2] as THREE.Mesh;
+  const pass = (light: THREE.DirectionalLight | THREE.SpotLight) => {
+    active = light === sun ? sunTarget : spotTarget;
+    before.onBeforeShadow(renderer, before, camera, light.shadow.camera, before.geometry, before.material as THREE.Material, null);
+    const reused = !city.visible;
+    after.onBeforeShadow(renderer, after, camera, light.shadow.camera, after.geometry, after.material as THREE.Material, null);
+    assert.equal(city.visible, true);
+    return reused;
+  };
+  try {
+    assert.equal(pass(sun), false);
+    assert.deepEqual([allocated, copies, casterDraws], [0, 0, 1], "a map drawn once keeps no second copy");
+    cache.releaseUnused();
+    assert.equal(pass(sun), false, "an uncopied projection draws its casters again");
+    assert.deepEqual([allocated, copies, casterDraws], [1, 1, 2], "the repeated request shows the copy will be read");
+    assert.equal(pass(sun), true);
+    assert.deepEqual([allocated, copies, casterDraws], [1, 2, 2]);
+
+    sun.shadow.matrix.makeTranslation(1, 0, 0);
+    assert.equal(pass(sun), false);
+    assert.deepEqual([allocated, disposed, copies], [1, 1, 2], "depth saved for the old projection is released, not replaced");
+
+    assert.equal(pass(spot), false);
+    assert.deepEqual([allocated, copies], [2, 3], "a light that redraws every frame is copied at once");
+    assert.equal(pass(spot), true);
+    cache.releaseUnused();
+    assert.equal(disposed, 1, "casting lights keep their copies");
+    spot.castShadow = false;
+    cache.releaseUnused();
+    assert.equal(disposed, 2);
+    spot.castShadow = true;
+    assert.equal(pass(spot), false, "a light that casts again starts from complete casters");
+    assert.deepEqual([allocated, disposed], [3, 2]);
+    renderer.shadowMap.enabled = false;
+    cache.releaseUnused();
+    assert.equal(disposed, 3, "disabled shadow maps keep no saved depth");
+  } finally {
+    cache.dispose(); sunTarget.dispose(); spotTarget.dispose();
+  }
+  assert.equal(disposed, allocated);
+});
+
 test("local shadow selection leaves live actors after the static cache and restores failed or uncached passes", () => {
   const scene = new THREE.Scene(), city = new THREE.Group(), actor = new THREE.Mesh();
   actor.castShadow = true;

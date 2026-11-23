@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { MetalFinish } from "./reflectionField";
+import type { MetalFinish } from "./reflectionField.ts";
 
 export type EdgeWear = {
   chipDepth: number;

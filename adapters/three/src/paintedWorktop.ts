@@ -1,7 +1,7 @@
-import { worktopLampShader } from "./worktopLamp";
+import { worktopLampShader } from "./worktopLamp.ts";
 import * as THREE from "three";
-import { reflectionPanorama } from "./paintedMetalSky";
-import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { reflectionPanorama } from "./paintedMetalSky.ts";
+import { legacyRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 const probe = new THREE.Vector3(18.67, 0.93, -3.74);
 const room = new THREE.Box3(new THREE.Vector3(15.9, 0.03, -6.48), new THREE.Vector3(19.12, 2.80, -2.48));

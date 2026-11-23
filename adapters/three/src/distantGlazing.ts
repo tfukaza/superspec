@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { hasDeclaredLodOwner } from "./lodOwnership.ts";
-import { batchableGlazing, glazingPaneBounds } from "./glazing";
+import { batchableGlazing, glazingPaneBounds } from "./glazing.ts";
 
 type Attribute = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 type Placement = { id: number; index: number; matrix: THREE.Matrix4; box: THREE.Box3; diameter: number; depth: number };

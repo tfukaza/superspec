@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gaussian foliage</title>
+  <style>
+    :root { color-scheme: dark; font: 14px system-ui, sans-serif; background: #202921; color: #f2f1e5; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100dvh; display: grid; grid-template-rows: auto minmax(300px, 1fr) auto; }
+    header, footer { padding: 14px clamp(14px, 3vw, 36px); }
+    header, .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; }
+    header { justify-content: space-between; }
+    h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.025em; }
+    #metrics, .hint { color: #c1c9b7; font-variant-numeric: tabular-nums; }
+    #viewport { position: relative; min-height: 0; background: #aeb6a0; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+    .controls label { display: inline-flex; align-items: center; gap: 6px; }
+    select, button { font: inherit; border-radius: 6px; padding: 6px 9px; background: #323f32; color: inherit; border: 1px solid #586452; }
+    input { accent-color: #b8cc89; }
+    .hint { margin: 9px 0 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Gaussian foliage</h1>
+    <output id="metrics">Loading scene…</output>
+  </header>
+  <main id="viewport" aria-label="Interactive foliage preview"></main>
+  <footer>
+    <div class="controls">
+      <label>Projection <select id="projection">
+        <option value="splat">3D splats</option>
+        <option value="billboard">Camera-facing dabs</option>
+      </select></label>
+      <label>Density <input id="density" type="range" min="10" max="100" value="100" step="5"><output id="density-value" for="density">100%</output></label>
+      <label>Edge firmness <input id="firmness" type="range" min="0" max="100" value="100" step="5"></label>
+      <label>Leaf normal variation <input id="leaf-normal-variation" type="range" min="0" max="40" value="24"><output id="leaf-normal-value" for="leaf-normal-variation">24°</output></label>
+      <label><input id="pigment-patches" type="checkbox" checked> Pigment patches</label>
+      <label><input id="leaf-hue-variation" type="checkbox" checked> Leaf hue variation</label>
+      <label><input id="interior-fill" type="checkbox" checked> Interior fill</label>
+      <label><input id="relight" type="checkbox" checked> Live lighting</label>
+      <label><input id="shadows" type="checkbox" checked> Shadows</label>
+      <label>Sun angle <input id="sun" type="range" min="-180" max="180" value="-38"></label>
+      <label>Sun elevation <input id="elevation" type="range" min="15" max="80" value="50"></label>
+      <label>Scene <select id="field">
+        <option value="1">Shrub and grass</option>
+        <option value="4">4 × 4 patches</option>
+        <option value="8">8 × 8 patches</option>
+        <option value="birch">Birch</option>
+        <option value="poplar">Poplar</option>
+        <option value="both">Birch and poplar</option>
+      </select></label>
+      <label>Detail <select id="detail">
+        <option value="lod">Culling + LOD</option>
+        <option value="cull">Culling only</option>
+        <option value="all">Submit everything</option>
+      </select></label>
+      <label><input id="shrub" type="checkbox" checked> <span id="canopy-label">Shrub</span></label>
+      <label><input id="grass" type="checkbox" checked> Grass</label>
+      <label><input id="orbit" type="checkbox"> Auto-orbit</label>
+      <button id="canopy-closeup" type="button" hidden>Canopy close-up</button>
+      <button id="reset" type="button">Reset view</button>
+    </div>
+    <p class="hint">Drag to orbit · scroll or pinch to zoom · right-drag to pan</p>
+  </footer>
+  <script type="module" src="./preview.mjs"></script>
+</body>
+</html>

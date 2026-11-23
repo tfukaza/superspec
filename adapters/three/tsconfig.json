@@ -9,7 +9,7 @@
     "skipLibCheck": true,
     "declaration": true,
     "emitDeclarationOnly": true,
-    "rootDir": "../..",
+    "rootDir": "src",
     "outDir": "dist/types"
   },
   "include": ["src"]

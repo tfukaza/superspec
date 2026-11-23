@@ -9,15 +9,16 @@ type RecordEntry = { mesh: number; primitive: number; vertexCount: number; nearC
 
 /** Resolve the sidecar beside its GLB. Existing hosts may also pass a root
  * whose authored primitives they have already tagged. */
-export async function loadCityLods(source: GLTF | THREE.Object3D, entryUrl: string | URL): Promise<Map<THREE.BufferGeometry, CityLodLevels>> {
+export async function loadCityLods(source: GLTF | THREE.Object3D, entryUrl: string | URL,
+  signal?: AbortSignal): Promise<Map<THREE.BufferGeometry, CityLodLevels>> {
   const result = new Map<THREE.BufferGeometry, CityLodLevels>();
   const root = "scene" in source ? source.scene : source;
   const path = root.userData.cityLod;
-  if (typeof path !== "string" || !/^[\w-]+-data\/lod-[a-f0-9]+\.bin$/.test(path)) return result;
+  if (typeof path !== "string" || !/^[\w-]+(?:\.[\w-]+)*-data\/lod-[a-f0-9]+\.bin$/.test(path)) return result;
   const created: THREE.BufferGeometry[] = [];
   try {
     const ids = "scene" in source ? cityLodPrimitiveIds(source) : undefined;
-    const response = await fetch(new URL(path, entryUrl));
+    const response = await fetch(new URL(path, entryUrl), { signal });
     if (!response.ok) throw Error("HTTP " + response.status);
     const buffer = await response.arrayBuffer(), header = new DataView(buffer);
     if (buffer.byteLength < 12 || header.getUint32(0) !== 0x534c4f44 || header.getUint32(4, true) !== 1) throw Error("Unexpected SLOD header");
@@ -28,6 +29,7 @@ export async function loadCityLods(source: GLTF | THREE.Object3D, entryUrl: stri
     if (!Array.isArray(entries) || start > buffer.byteLength) throw Error("Invalid SLOD manifest");
     const { MeshoptDecoder } = await import("three/examples/jsm/libs/meshopt_decoder.module.js");
     await MeshoptDecoder.ready;
+    signal?.throwIfAborted();
     const records = new Map<string, RecordEntry | undefined>();
     for (const entry of entries) {
       const id = primitiveId(entry.mesh, entry.primitive);
@@ -83,6 +85,7 @@ export async function loadCityLods(source: GLTF | THREE.Object3D, entryUrl: stri
   } catch (error) {
     for (const geom of created) geom.dispose();
     result.clear();
+    signal?.throwIfAborted();
     console.warn("Using full-detail city geometry:", error);
   }
   return result;

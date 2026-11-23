@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { AmbientOcclusion } from "./ambient-occlusion.ts";
 import { DEFAULT_LIGHTING, contoursOf, defaultLighting, lightingFromQuery, paintedOf, statesAmbientOcclusion, sunOf, type Lighting } from "./lighting.ts";
 import { ShadowStyle } from "./shadow-style.ts";
@@ -12,21 +11,6 @@ const TONE_MAPPING: Record<Lighting["toneMapping"], THREE.ToneMapping> = {
   aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, none: THREE.LinearToneMapping,
 };
 const PREVIEW_SUN_SHADOW_SIZE = 2048;
-
-/**
- * The record's built-in `studio` environment: three.js's neutral room, prefiltered for reflections. Built once per
- * renderer; the caller owns the returned GPU target.
- */
-export function studioEnvironment(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarget {
-  const room = new RoomEnvironment();
-  const generator = new THREE.PMREMGenerator(renderer);
-  try {
-    return generator.fromScene(room);
-  } finally {
-    room.dispose();
-    generator.dispose();
-  }
-}
 
 /**
  * Everything of a scene view that a lighting record decides: tone mapping and exposure, the environment's strength
@@ -65,7 +49,7 @@ export class SceneLighting {
   private readonly frame: THREE.Object3D;
 
   /**
-   * `environment` is the built-in `studio` reflection environment (`studioEnvironment`), `query` the page's
+   * `environment` is the prefiltered `studio` reflection environment, `query` the page's
    * parameters and `excluded` what ambient occlusion must not see (see `AmbientOcclusion`). The lights are added to
    * `scene`. `up` names the world's up axis: the record's own Z (the Studio viewer), or Y, as a loaded glTF scene and
    * most three.js games have it; the record's directions are then turned with the world (x, y, z to x, z, -y).

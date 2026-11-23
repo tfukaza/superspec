@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { hasDeclaredLodOwner } from "./lodOwnership.ts";
-import type { CityLodLevels } from "./cityLods";
-import type { CityFarHardware } from "./cityFarHardware";
-import type { CityInstanceGroups } from "./cityVisibility";
+import type { CityLodLevels } from "./cityLods.ts";
+import type { CityFarHardware } from "./cityFarHardware.ts";
+import type { CityInstanceGroups } from "./cityVisibility.ts";
 
 const TARGET_TRIANGLES = 8000;
 const MAX_CELLS = 16;
@@ -19,7 +19,7 @@ export function clusterCityGeometry(root: THREE.Object3D, lods: Map<THREE.Buffer
         mesh instanceof THREE.SkinnedMesh || mesh.morphTargetInfluences?.length ||
         mesh.geometry instanceof THREE.InstancedBufferGeometry || Array.isArray(mesh.material) ||
         mesh.material.transparent || mesh.material instanceof THREE.ShaderMaterial || mesh.material.displacementMap ||
-        (mesh instanceof THREE.InstancedMesh && (mesh.morphTexture || mesh.instanceColor)) ||
+        (mesh instanceof THREE.InstancedMesh && mesh.morphTexture) ||
         Object.values(mesh.geometry.attributes).some(attribute => attribute instanceof THREE.InstancedBufferAttribute ||
           (attribute instanceof THREE.InterleavedBufferAttribute && attribute.data instanceof THREE.InstancedInterleavedBuffer))) return;
     const prototype = mesh instanceof THREE.InstancedMesh ? THREE.InstancedMesh.prototype : THREE.Mesh.prototype;
@@ -38,6 +38,7 @@ export function clusterCityGeometry(root: THREE.Object3D, lods: Map<THREE.Buffer
     const children: THREE.Mesh[] = [];
     const owners = instanceGroups?.get(mesh);
     for (const part of pieces) {
+      // A clone of a batch keeps its instance matrices and its per-instance tints.
       const child = mesh.clone(false);
       child.geometry = part;
       if (owners) instanceGroups!.set(child, owners);

@@ -14,6 +14,16 @@ const slots: readonly CityTextureSlot[] = ["map", "normalMap", "metalnessMap", "
 const registries = new WeakMap<GLTFParser, CityTextureLoader>();
 const installed = new WeakSet<GLTFLoader>();
 
+const imageExtensions = ["KHR_texture_basisu", "EXT_texture_webp"] as const;
+/** The image a texture decodes: its core source, or the one image extension
+ * a delivery tier publishes it through. Any other extension is unknown. */
+function textureImage(texture: any): { image?: number; codec?: string } {
+  const names = Object.keys(texture?.extensions ?? {});
+  if (!names.length) return { image: texture?.source, codec: "core" };
+  const codec = names.length === 1 && texture.source === undefined ? imageExtensions.find(name => name === names[0]) : undefined;
+  return codec ? { image: texture.extensions[codec].source, codec } : {};
+}
+
 /** Only standard, single-purpose texture bindings may use the optional pair.
  * Unknown texture references and aliases keep their original source contract. */
 function pairsFor(json: any): { pairs: Map<number, number>; infos: WeakMap<object, Set<string>> } {
@@ -45,10 +55,14 @@ function pairsFor(json: any): { pairs: Map<number, number>; infos: WeakMap<objec
     add(pbr?.metallicRoughnessTexture, "roughnessMap", "data", streamable);
   }
   const opaque = new Set<number>();
-  const scan = (value: any, unknown = false): void => {
+  // `exclusive` is the publisher's statement that textures are referenced only
+  // from keys named for textures, which the scan below still finds and blocks.
+  const exclusive = record.exclusive === true;
+  const scan =(value: any, unknown = false): void => {
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
-      if (key === "worldSpecTextureLod") continue;
+      // A texture's own image extension names its image, as `source` does.
+      if (key === "worldSpecTextureLod" || (imageExtensions as readonly string[]).includes(key)) continue;
       if (/texture/i.test(key) && key !== "textures") {
         const index = typeof child === "number" ? child : (child as any)?.index;
         if (Number.isInteger(index)) {
@@ -56,15 +70,16 @@ function pairsFor(json: any): { pairs: Map<number, number>; infos: WeakMap<objec
           if (!child || typeof child !== "object" || !infos.has(child)) blocked.add(index);
         }
       }
-      if (unknown && Number.isInteger(child)) opaque.add(child as number);
+      // Without the publisher's word, any integer in an extra might name a texture.
+      if (unknown && !exclusive && Number.isInteger(child)) opaque.add(child as number);
       scan(child, unknown || key === "extras" || key === "extensions");
     }
   };
   scan(json);
   const imageRoles = new Map<number, Set<string>>(), blockedImages = new Set<number>();
-  for (const index of blocked) blockedImages.add(textures[index]?.source);
+  for (const index of blocked) blockedImages.add(textureImage(textures[index]).image as number);
   for (const [index, usage] of roles) {
-    const source = textures[index]?.source, set = imageRoles.get(source) ?? new Set<string>();
+    const source = textureImage(textures[index]).image as number, set = imageRoles.get(source) ?? new Set<string>();
     for (const role of usage) set.add(role);
     imageRoles.set(source, set);
   }
@@ -78,12 +93,15 @@ function pairsFor(json: any): { pairs: Map<number, number>; infos: WeakMap<objec
     if (!p || !Number.isInteger(p.near) || !Number.isInteger(p.far) || p.near === p.far
       || nearCounts.get(p.near) !== 1 || farCounts.get(p.far) !== 1 || referenced.has(p.far)) continue;
     const near = textures[p.near], far = textures[p.far];
-    if (!near || !far || !roles.has(p.near) || near.sampler !== far.sampler
-      || !Number.isInteger(near.source) || !Number.isInteger(far.source) || near.source === far.source
-      || !images[near.source] || !images[far.source] || blocked.has(p.near) || blockedImages.has(near.source)
-      || opaque.has(p.near) || opaque.has(near.source)
-      || imageRoles.get(near.source)?.size !== 1
-      || [near, far, images[near.source], images[far.source]].some(v => Object.keys(v.extensions ?? {}).length)) continue;
+    if (!near || !far || !roles.has(p.near) || near.sampler !== far.sampler) continue;
+    // A pair shares one codec, so both levels reach the GPU in the same format.
+    const { image: nearImage, codec } = textureImage(near), { image: farImage, codec: farCodec } = textureImage(far);
+    if (!codec || codec !== farCodec
+      || !Number.isInteger(nearImage) || !Number.isInteger(farImage) || nearImage === farImage
+      || !images[nearImage!] || !images[farImage!] || blocked.has(p.near) || blockedImages.has(nearImage!)
+      || opaque.has(p.near) || opaque.has(nearImage!)
+      || imageRoles.get(nearImage!)?.size !== 1
+      || [images[nearImage!], images[farImage!]].some(v => Object.keys(v.extensions ?? {}).length)) continue;
     pairs.set(p.near, p.far);
   }
   return { pairs, infos };

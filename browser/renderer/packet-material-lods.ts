@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { SceneMaterial } from "../model/packet.ts";
-import { selectAuthoredLod } from "../../adapters/three/src/lodSelection.ts";
+import { selectAuthoredLod } from "#render-engine";
 import { applyLiveOperations } from "./live.ts";
 
 export type PacketMaterialContext = {

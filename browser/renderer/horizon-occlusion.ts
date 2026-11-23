@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import type { AmbientOcclusionSettings, LightShadow } from "./lighting.ts";
 
-export { HORIZON_OCCLUSION_GLSL } from "../../adapters/three/src/horizonOcclusionShader.ts";
+export { HORIZON_OCCLUSION_GLSL } from "#render-engine";
 
 /** The uniforms `HORIZON_OCCLUSION_GLSL` reads. */
 export function horizonUniforms(): Record<string, THREE.IUniform> {

@@ -1,18 +1,18 @@
 import * as THREE from "three";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
-import { prepareRadialTangents } from "./radialTangent";
-import { styleWorldShadows, type WorldSpecLighting } from "./worldSpecLighting";
-import { applyConcreteDetail, type ConcreteDetail } from "./concreteDetail";
-import { applyBounce, probeTexture, type BounceRecord } from "./worldSpecBounce";
-import { installPaintedLawns, stylePaintedStroke } from "./paintedLawn";
-import { createReflectionField, applyReflectionField } from "./reflectionField";
-import { applyEdgeFinish } from "./edgeFinish";
-import { applyWorldSpecMaterial } from "./worldSpecMaterials";
-import { registerOutlineDepth } from "./outlineExclusions";
-import { writeOutlineSpecular } from "./overlapOutline";
-import { enableSinglePassGlazing } from "./glazing";
-import { narrowDataTextureChannels } from "./textureChannels";
-import { legacyRenderDiagnostics, resolveRenderDiagnostics, type RenderDiagnostics } from "./renderProfile";
+import { prepareRadialTangents } from "./radialTangent.ts";
+import { styleWorldShadows, type WorldSpecLighting } from "./worldSpecLighting.ts";
+import { applyConcreteDetail, type ConcreteDetail } from "./concreteDetail.ts";
+import { applyBounce, probeTexture, type BounceRecord } from "./worldSpecBounce.ts";
+import { installPaintedLawns, stylePaintedStroke } from "./paintedLawn.ts";
+import { createReflectionField, applyReflectionField } from "./reflectionField.ts";
+import { applyEdgeFinish } from "./edgeFinish.ts";
+import { applyInstanceRoles, applyWorldSpecMaterial, hasInstanceRoles } from "./worldSpecMaterials.ts";
+import { registerOutlineDepth } from "./outlineExclusions.ts";
+import { writeOutlineSpecular } from "./overlapOutline.ts";
+import { enableSinglePassGlazing } from "./glazing.ts";
+import { narrowDataTextureChannels } from "./textureChannels.ts";
+import { legacyRenderDiagnostics, resolveRenderDiagnostics, type RenderDiagnostics } from "./renderProfile.ts";
 
 /** Bind optional WorldSpec and MaterialSpec extras to an already loaded glTF scene. */
 export async function bindWorldSpecScene(gltf: GLTF, options: {
@@ -93,6 +93,13 @@ export async function bindWorldSpecScene(gltf: GLTF, options: {
   const library = parsed.userData.worldSpecFinishes;
   const styled = new Set<THREE.MeshStandardMaterial>();
   const channelMaterials = new Set<THREE.Material>();
+  // A shared part prototype states per vertex whether its instance's tint colours it.
+  // The material is styled once, at whichever of its meshes comes first.
+  const roleMaterials = new Set<THREE.Material>();
+  parsed.traverse(object => {
+    if (!(object instanceof THREE.Mesh) || !hasInstanceRoles(object.geometry)) return;
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) roleMaterials.add(material);
+  });
   parsed.traverse((object) => {
     if (!(object instanceof THREE.Mesh)) return;
     const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -117,6 +124,7 @@ export async function bindWorldSpecScene(gltf: GLTF, options: {
         const legacyBench = material.name === "builtin:kitchen-worktop" && settings.worktopReflection !== "default";
         const local = field && !legacyBench && (surface?.reflection === "box" || surface?.reflection === "masonry");
         applyWorldSpecMaterial(material, sun?.shadow, renderer?.capabilities?.getMaxAnisotropy?.(), finish, !!local, settings);
+        if (roleMaterials.has(material)) applyInstanceRoles(material);
         const wear = library?.wear?.[surface?.wear];
         const finishDetail=detailMaps.get(surface?.detailTexture);
         if (finishDetail) Object.assign(material,{worldSpecFinishDetail:finishDetail});

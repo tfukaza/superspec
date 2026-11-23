@@ -80,7 +80,13 @@ test("shader composition preserves textures, directional probes and earlier mate
   assert.equal(shader.uniforms.wsBounce.value, texture);
   assert.match(shader.fragmentShader, /custom metal finish/);
   assert.match(shader.fragmentShader, /vec3 w = n\*n/);
-  assert.match(shader.fragmentShader, /smoothstep\(25\.,40\.,length\(vViewPosition\)\)/);
+  assert.match(shader.fragmentShader, /smoothstep\(25\.,40\.,viewDistance\)/);
+  assert.match(shader.fragmentShader, /wsPaintedBounce\(wsPosition,wsFace,length\(vViewPosition\),wsPigment\)/);
+  // The bounce functions are prepended to the material's shader, so they may read only
+  // what is declared before them: a material varying used there does not compile.
+  const declared = shader.fragmentShader.indexOf("varying vec3 vViewPosition;");
+  assert.ok(declared >= 0);
+  assert.equal(shader.fragmentShader.slice(0, declared).includes("vViewPosition"), false);
   assert.match(shader.fragmentShader, /smoothstep\(\.75,1\.5,footprint\)/);
   assert.match(shader.fragmentShader, /if \(wsFarBounce >= 1\.\) return wsIrradiance\(center,n\)/);
   assert.match(shader.fragmentShader, /wsGlaze-wsBody\+wsWash\+wsMark/);

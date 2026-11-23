@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { loadKtx2 } from "./ktx2.ts";
+import { loadRenderKtx2 } from "#render-engine";
 
 /**
  * Anisotropic filtering of material maps in the viewer, for a build's textures and a GPU preview's alike, so a preview
@@ -68,7 +68,7 @@ export class TexturePool {
       if (mime === "image/ktx2") {
         // Compressed textures upload rows top to bottom and cannot be flipped on upload, unlike
         // PNG and JPEG (flipY); flipping V in the texture transform samples the same texels.
-        texture = loadKtx2(this.renderer, bytes).then(value => {
+        texture = loadRenderKtx2(this.renderer, bytes, "basis/").then(value => {
           configure(value);
           value.repeat.set(1, -1);
           value.offset.set(0, 1);

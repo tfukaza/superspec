@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as THREE from "three";
 import { PacketLods } from "../../browser/renderer/packet-lods.ts";
 import { validateGeometryLods, type GeometryLodGroup } from "../../browser/model/geometry-lods.ts";
-import { selectAuthoredLod } from "../../adapters/three/src/lodSelection.ts";
+import { selectAuthoredLod } from "#render-engine";
 
 const definition: GeometryLodGroup = { id: "pipe", levels: [
   { distance: 0, meshes: ["full"] }, { distance: 20, meshes: ["coarse"] }, { distance: 50, meshes: ["far"] },

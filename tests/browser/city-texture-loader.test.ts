@@ -75,6 +75,55 @@ test("opt-in parsing binds coarse images without changing portable JSON, high pi
   await assert.rejects(binding.loadHigh(), { name: "AbortError" });
 });
 
+test("pairs published through one image extension bind; mixed or unknown extensions keep the full texture", async () => {
+  const requested: string[] = [];
+  const ktx2 = { load(url: string, done: (texture: THREE.Texture) => void) {
+    requested.push(url); done(new THREE.DataTexture(new Uint8Array(url.startsWith("near") ? [1, 2, 3, 255] : [4, 5, 6, 255]), 1, 1));
+  } };
+  const basis = (source: number) => ({ sampler: 0, extensions: { KHR_texture_basisu: { source } } });
+  const parse = async (textures: any[], required = true) => {
+    const json = document();
+    json.images = [{ uri: "near.ktx2", mimeType: "image/ktx2" }, { uri: "far.ktx2", mimeType: "image/ktx2" }];
+    json.textures = textures;
+    json.extensionsUsed = ["KHR_texture_basisu"];
+    if (required) json.extensionsRequired = ["KHR_texture_basisu"];
+    requested.length = 0;
+    const loader = registerCityTextureLod(new GLTFLoader());
+    loader.setKTX2Loader(ktx2 as any);
+    const gltf = await loader.parseAsync(JSON.stringify(json), "");
+    const material = await gltf.parser.getDependency("material", 0) as THREE.MeshStandardMaterial;
+    return { gltf, material, bindings: cityTextureBindings(gltf, material) };
+  };
+  // Both levels are KTX2: only the distant companion is fetched until the camera approaches.
+  const streamed = await parse([basis(0), basis(1)]);
+  assert.deepEqual(requested, ["far.ktx2"]);
+  assert.equal(streamed.bindings.length, 1);
+  assert.equal(streamed.material.map!.colorSpace, THREE.SRGBColorSpace);
+  const high = await streamed.bindings[0].loadHigh();
+  assert.deepEqual(requested, ["far.ktx2", "near.ktx2"]);
+  assert.deepEqual(Array.from((high.image as any).data), [1, 2, 3, 255]);
+  // An extension's image index is not an unknown reference to texture or image 1.
+  assert.equal(streamed.material.map!.wrapT, THREE.MirroredRepeatWrapping);
+  // An unrelated integer in an extra blocks texture 0 unless the publisher states its references are exclusive;
+  // a key named for a texture blocks it either way.
+  const extras = async (record: object, material: object) => {
+    const json = document();
+    Object.assign(json.scenes[0].extras.worldSpecTextureLod, record);
+    json.scenes[0].extras.worldSpecLod = { distances: [0, 12] };
+    json.materials[0].extras = material;
+    const gltf = await fixture().parse(json);
+    return cityTextureBindings(gltf, await gltf.parser.getDependency("material", 0) as THREE.MeshStandardMaterial).length;
+  };
+  assert.deepEqual([await extras({}, {}), await extras({ exclusive: true }, {}), await extras({ exclusive: true }, { worldSpecSurface: { detailTexture: 0 } })], [0, 1, 0]);
+  // A companion in another codec, or a texture with a fallback source or a second extension, is not paired.
+  for (const textures of [[basis(0), { source: 1, sampler: 0 }], [{ ...basis(0), source: 0 }, basis(1)],
+    [{ sampler: 0, extensions: { KHR_texture_basisu: { source: 0 }, EXT_unknown: {} } }, basis(1)]]) {
+    const plain = await parse(textures, false);
+    assert.deepEqual(plain.bindings, []);
+    assert.deepEqual(requested, ["near.ktx2"]);
+  }
+});
+
 test("metal/roughness slots deduplicate high clones and preserve normal/color separation", async () => {
   const json = document();
   json.images.push({ uri: "near-normal.png" }, { uri: "far-normal.png" }, { uri: "near-mr.png" }, { uri: "far-mr.png" });

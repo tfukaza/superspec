@@ -1,4 +1,4 @@
-import { paintBrushField } from "./paintedBrush";
+import { paintBrushField } from "./paintedBrush.ts";
 import * as THREE from "three";
 
 /** WorldSpec irradiance in Z-up meters. Six RGB8 volumes hold +X,-X,+Y,-Y,+Z,-Z. */
@@ -112,7 +112,9 @@ export function applyBounce(
         if (w.z > 0.001) light += w.z*wsLobe(uv,4.+step(n.z,0.));
         return fade*light;
       }
-      vec3 wsPaintedBounce(vec3 p, vec3 n, out float pigment) {
+      // This precedes the material's own declarations: the caller passes the view
+      // distance instead of reading a varying that is declared further down.
+      vec3 wsPaintedBounce(vec3 p, vec3 n, float viewDistance, out float pigment) {
         pigment = 0.;
         // Probe outside the receiver so walls sample the room on the face's side.
         vec3 samplePoint = p + n * (wsProbeSpacing*0.48);
@@ -138,7 +140,7 @@ export function applyBounce(
         // footprint. The fully distant path needs one irradiance evaluation.
         // Screen derivatives preserve detail under zoom or a larger viewport;
         // distance also keeps nearby grazing surfaces on the original path.
-        float wsFarBounce = smoothstep(25.,40.,length(vViewPosition)) * smoothstep(.75,1.5,footprint);
+        float wsFarBounce = smoothstep(25.,40.,viewDistance) * smoothstep(.75,1.5,footprint);
         if (wsFarBounce >= 1.) return wsIrradiance(center,n);
         du *= 1. - wsFarBounce;
         dv *= 1. - wsFarBounce;
@@ -169,7 +171,7 @@ export function applyBounce(
       // The sun-shadow illustration has already shaped the direct lighting. The
       // baked transport carries its own sun visibility at the reflecting surface.
       float wsPigment;
-      vec3 wsIndirect = wsPaintedBounce(wsPosition,wsFace,wsPigment) * BRDF_Lambert(material.diffuseContribution);
+      vec3 wsIndirect = wsPaintedBounce(wsPosition,wsFace,length(vViewPosition),wsPigment) * BRDF_Lambert(material.diffuseContribution);
       #ifdef USE_AOMAP
         wsIndirect *= ambientOcclusion;
       #endif
@@ -198,7 +200,7 @@ export function applyBounce(
       #include <opaque_fragment>`,
       );
   };
-  material.customProgramCacheKey = () => key() + "|worldspec-bounce-v4-" + Number(opaquePaint)
+  material.customProgramCacheKey = () => key() + "|worldspec-bounce-v5-" + Number(opaquePaint)
     + "-" + Number(!!material.defines?.WS_DISTANT_HARDWARE_BOUNCE);
   Object.assign(material, { worldSpecBounceTexture: texture });
 }

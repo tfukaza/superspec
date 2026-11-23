@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { validateBytes } from "gltf-validator";
-import { createGltfLoader } from "../../browser/renderer/ktx2.ts";
+import { createRenderGltfLoader } from "#render-engine";
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(960,640);
@@ -46,8 +46,8 @@ function pixel(texture: THREE.Texture | null): number[] | undefined {
 async function load(url: string, ktx2 = false) {
   const bytes = await (await fetch(url)).arrayBuffer();
   const report = await validateBytes(new Uint8Array(bytes), { maxIssues: 100 });
-  // SuperSpec exports store KTX2 textures by default; createGltfLoader adds the KTX2 transcoder.
-  const result = await (ktx2 ? createGltfLoader(renderer) : new GLTFLoader()).parseAsync(bytes, "");
+  // SuperSpec exports store KTX2 textures by default.
+  const result = await (ktx2 ? createRenderGltfLoader(renderer, { transcoderPath: "basis/" }) : new GLTFLoader()).parseAsync(bytes, "");
   release();model = result.scene;scene.add(model);model.updateMatrixWorld(true);
   const bounds = new THREE.Box3().setFromObject(model);
   const center = bounds.getCenter(new THREE.Vector3());

@@ -1,6 +1,6 @@
 import * as THREE from "three";
-import { worktopLampShader } from "./worktopLamp";
-import { reflectionPanorama } from "./paintedMetalSky";
+import { worktopLampShader } from "./worktopLamp.ts";
+import { reflectionPanorama } from "./paintedMetalSky.ts";
 
 type Triple = [number, number, number];
 type Box = {
@@ -117,7 +117,7 @@ export function createReflectionField(
 const linear = Float32Array.from(
   { length: 256 },
   (_, i) =>
-    THREE.ColorManagement.toWorkingColorSpace(
+    THREE.ColorManagement.colorSpaceToWorking(
       new THREE.Color(i / 255, 0, 0),
       THREE.SRGBColorSpace,
     ).r,

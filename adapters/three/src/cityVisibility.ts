@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { CityOccluderFaces, usesCityDepthTest, writesSolidCitySurface } from "./cityOccluderFaces.ts";
 import { hasDeclaredLodOwner } from "./lodOwnership.ts";
-import type { CityLodLevels } from "./cityLods";
-import type { CityFarHardware } from "./cityFarHardware";
+import type { CityLodLevels } from "./cityLods.ts";
+import type { CityFarHardware } from "./cityFarHardware.ts";
+import { copyInstanceTint, equalInstanceTints, instanceTintLayout, sameInstanceTintLayout, uploadInstanceTints } from "./instanceTint.ts";
 
 export type CityDetailCullOptions = {
   /** Largest individual component diameter in drawing-buffer pixels. Default 6. */
@@ -75,9 +76,32 @@ function cellProbeOrder(value: number): number {
   return (value ^ value >>> 16) >>> 0;
 }
 
-type Placement = { lodBox: THREE.Box3; box: THREE.Box3; corners: Float64Array; level: number; diameter: number;
+/** Extra triangles one view may submit to remove one draw call. Each LOD band
+ * of an instanced batch is its own draw. A coarser band joins the next finer
+ * band the camera already selected when promoting its placements costs no
+ * more than this. Promotion only ever draws more detail than was selected.
+ *
+ * Measured on the published Stoa city at Low, 1920x1080 (draws, triangles):
+ * budget      street        city overview
+ * none     672, 838k     1,366, 1,558k
+ * 250      595, 845k     1,089, 1,580k
+ * 1000     566, 867k     1,001, 1,627k
+ * 4000     535, 927k       931, 1,801k
+ * 16000    523, 995k       890, 2,157k
+ * Up to 1000 each removed draw costs under 800 triangles. Beyond it the next
+ * draws cost 1,800 and then 3,500 triangles each. */
+export const CITY_LOD_MERGE_TRIANGLES = 1000;
+
+/** `level` is the selected LOD and carries its hysteresis. `draw` is the level
+ * submitted and rasterized into the occlusion buffer, never coarser than `level`. */
+type Placement = { lodBox: THREE.Box3; box: THREE.Box3; corners: Float64Array; level: number; draw: number; diameter: number;
   detailArea: number; detailHidden: boolean; blockHidden?: boolean; far?: ReturnType<CityFarHardware["member"]>;
   cell?: PlacementCell };
+/** One instanced batch's triangles per instance at each level, level 0 first. */
+type LodBands = { mesh: THREE.Mesh; placements: Placement[]; triangles: number[]; counts: number[] };
+/** Batches split from one primitive merge bands together. Continuous surfaces
+ * keep the same level on both sides of a split, and equal placement lists keep joining. */
+type LodBandGroup = { sources: LodBands[]; target: number[] };
 type PlacementCell = { box: THREE.Box3; view: number; keep: boolean };
 export type CityInstanceGroups = WeakMap<THREE.Mesh, readonly (THREE.Object3D | undefined)[]>;
 
@@ -111,7 +135,11 @@ function placementFor(mesh: THREE.Mesh, transform: THREE.Matrix4, wholeDetail = 
     if (mesh.frustumCulled && mesh.geometry.userData.cityLodIndependent === true && !Array.isArray(mesh.material)
       && disposableCityDetail(mesh.material)) detailArea = mesh.geometry.userData.cityLodComponentArea * columns * rows;
   } else if (wholeDetail && mesh.frustumCulled) detailArea = Math.PI / 4 * diameter * diameter;
-  return { box, lodBox, corners, level: 0, diameter, detailArea, detailHidden: false };
+  return { box, lodBox, corners, level: 0, draw: 0, diameter, detailArea, detailHidden: false };
+}
+
+function triangleCount(geometry: THREE.BufferGeometry): number {
+  return Math.floor((geometry.index?.count ?? geometry.getAttribute("position")?.count ?? 0) / 3);
 }
 
 type Batch = {
@@ -154,6 +182,9 @@ export class CityVisibility {
   private viewBounds = this.bounds;
   private viewMeshes = this.meshes;
   private viewLevels = this.levelGroups;
+  private lodMergeTriangles: number;
+  private readonly bandGroups: LodBandGroup[] = [];
+  private viewBandGroups = this.bandGroups;
   private readonly viewGroups = new WeakMap<THREE.Mesh, THREE.Object3D>();
   private readonly groupPlacements: { group: THREE.Object3D; placement: Placement }[] = [];
   private readonly groupFaces: { group: THREE.Object3D; start: number; end: number; mask: number }[] = [];
@@ -194,9 +225,13 @@ export class CityVisibility {
     options: { disconnectedErrorPixels?: number; distantDetailErrorPixels?: number; distantArchitectureErrorPixels?: number;
       occlusionSize?: readonly [number, number]; coalesceClusters?: boolean; clusterPairs?: WeakMap<THREE.Mesh, object>; farHardware?: CityFarHardware;
       detailCull?: CityDetailCullOptions; wideClusters?: boolean; groupFor?: (mesh: THREE.Mesh) => THREE.Object3D | undefined;
-      instanceGroups?: CityInstanceGroups } = {},
+      instanceGroups?: CityInstanceGroups;
+      /** Extra triangles allowed per removed LOD band draw. Default CITY_LOD_MERGE_TRIANGLES; a negative value keeps every band. */
+      lodMergeTriangles?: number } = {},
   ) {
     this.perPlacement = perPlacement;
+    const mergeBudget = options.lodMergeTriangles ?? CITY_LOD_MERGE_TRIANGLES;
+    this.lodMergeTriangles = Number.isNaN(mergeBudget) ? CITY_LOD_MERGE_TRIANGLES : mergeBudget;
     this.detailCull = detailCullBudget(options.detailCull);
     this.farHardware = options.farHardware;
     const budget = options.disconnectedErrorPixels ?? 1.5;
@@ -238,12 +273,13 @@ export class CityVisibility {
         mesh.matrixAutoUpdate = false;
         this.fixedTransforms.push(mesh);
       }
+      // A subset copies each kept instance's matrix and tint. Other per-instance
+      // attributes live on the shared geometry and cannot be reordered per subset.
       const canSubset =
         instanced &&
         !Array.isArray(material) &&
         !material.transparent &&
         !mesh.morphTexture &&
-        !mesh.instanceColor &&
         !Object.values(mesh.geometry.attributes).some((a) => a instanceof THREE.InstancedBufferAttribute);
       const levels = (instanced ? canSubset : !Array.isArray(material) && !material.transparent)
         ? lods.get(mesh.geometry) : undefined;
@@ -325,9 +361,34 @@ export class CityVisibility {
     this.faces = new Float32Array(vertices);
     this.faceLayers = new Uint32Array(layers);
     if (perPlacement) this.indexPlacementCells();
+    {
+      const split = new Map<object, LodBandGroup>();
+      for (const { mesh, levels, placements } of this.bounds) {
+        if (!levels?.length || placements.length < 2) continue;
+        const source: LodBands = { mesh, placements, triangles: [mesh.geometry, ...levels].map(triangleCount),
+          counts: Array<number>(1 + levels.length).fill(0) };
+        const key = options.clusterPairs?.get(mesh);
+        const siblings = key && split.get(key);
+        if (siblings && siblings.target.length === source.counts.length
+          && siblings.sources[0].placements.length === placements.length) siblings.sources.push(source);
+        else {
+          const group = { sources: [source], target: source.counts.map((_, level) => level) };
+          this.bandGroups.push(group);
+          if (key && !siblings) split.set(key, group);
+        }
+      }
+    }
     if (options.coalesceClusters && options.clusterPairs)
       this.coalescing = new CityClusterDraws([...this.meshes, ...this.bounds], options.clusterPairs);
     this.setSubmission(options.wideClusters ? "clusters" : "ordinary");
+  }
+
+  /** Change the LOD band budget for later views. Undefined restores the default and a
+   * negative value keeps every band. */
+  setLodMergeTriangles(triangles: number = CITY_LOD_MERGE_TRIANGLES): void {
+    if (Number.isNaN(triangles) || triangles === this.lodMergeTriangles) return;
+    this.lodMergeTriangles = triangles;
+    this.previousHeight = 0;
   }
 
   setSubmission(mode: "ordinary" | "clusters"): void {
@@ -345,6 +406,7 @@ export class CityVisibility {
     this.viewBounds = hidden.size ? this.bounds.filter(show) : this.bounds;
     this.viewMeshes = hidden.size ? this.meshes.filter(show) : this.meshes;
     this.viewLevels = hidden.size ? this.levelGroups.filter(show) : this.levelGroups;
+    this.viewBandGroups = hidden.size ? this.bandGroups.filter(group => show(group.sources[0])) : this.bandGroups;
     for (const r of this.groupFaces) this.faceLayers.fill(hidden.has(r.group) ? 0 : r.mask, r.start, r.end);
     for (const { placement, group } of this.groupPlacements) placement.blockHidden = hidden.has(group);
     this.previousHeight = 0;
@@ -421,13 +483,15 @@ export class CityVisibility {
           p.detailHidden = p.detailArea > 0 && omitCityDetail(p.box, p.diameter, p.detailArea, distance, depth,
             camera, viewportHeight, p.detailHidden, this.detailCull);
         }
+        for (const p of placements) p.draw = p.level;
       }
-      // The occlusion buffer must use the same silhouettes as the camera's selected LOD.
+      if (this.lodMergeTriangles >= 0) for (const group of this.viewBandGroups) this.mergeLodBands(group);
+      // The occlusion buffer must use the same silhouettes as the levels the camera draws.
       let first = 0;
       for (const { placement, offsets } of this.lodFaces) {
         for (let i = first; i < offsets[0]; i += FACE_STRIDE) this.cover(i);
         if (!placement.detailHidden && this.frustum.intersectsBox(placement.box))
-          for (let i = offsets[placement.level]; i < offsets[placement.level + 1]; i += FACE_STRIDE) this.cover(i);
+          for (let i = offsets[placement.draw]; i < offsets[placement.draw + 1]; i += FACE_STRIDE) this.cover(i);
         first = offsets[offsets.length - 1];
       }
       for (let i = first; i < this.faces.length; i += FACE_STRIDE) this.cover(i);
@@ -527,10 +591,12 @@ export class CityVisibility {
           previous[i] = keep[i];
           mesh.getMatrixAt(keep[i], this.matrix);
           subset.setMatrixAt(i, this.matrix);
+          copyInstanceTint(mesh, keep[i], subset, i);
         }
         subset.instanceMatrix.clearUpdateRanges();
         subset.instanceMatrix.addUpdateRange(0, keep.length * 16);
         subset.instanceMatrix.needsUpdate = true;
+        uploadInstanceTints(subset, keep.length);
       }
       subset.count = keep.length;
       subset.visible = true;
@@ -635,6 +701,60 @@ export class CityVisibility {
     return cell.keep;
   }
 
+  /** Walk from the coarsest selected band to the finest. A band joins the next
+   * finer one when that removes a draw within the triangle budget. Occlusion is
+   * not known yet, so in-frustum placements bound the cost from above. */
+  private mergeLodBands({ sources, target }: LodBandGroup): void {
+    let selected = -1, several = false;
+    for (const { placements, triangles } of sources) {
+      for (const p of placements) {
+        if (p.far?.level || !triangles[p.level] || p.level === selected) continue;
+        if (selected >= 0) { several = true; break; }
+        selected = p.level;
+      }
+      if (several) break;
+    }
+    if (!several) return;
+    for (const { placements, counts } of sources) {
+      counts.fill(0);
+      for (const p of placements) {
+        if (!p.detailHidden && !p.blockHidden && !p.far?.level && (!this.perPlacement || this.frustum.intersectsBox(p.box)))
+          counts[p.level]++;
+      }
+    }
+    // One joined draw serves every part of a split primitive.
+    const joined = this.coalescing !== undefined && sources.length > 1;
+    let coarse = -1, merged = false;
+    for (let level = target.length - 1; level >= 0; level--) {
+      target[level] = level;
+      if (!sources.some(({ counts, triangles }) => counts[level] && triangles[level])) continue;
+      if (coarse >= 0) {
+        let extra = 0, saved = 0;
+        for (const { counts, triangles } of sources) {
+          if (!counts[coarse] || !triangles[coarse]) continue;
+          extra += counts[coarse] * (triangles[level] - triangles[coarse]);
+          if (counts[level] && triangles[level]) saved++;
+        }
+        if (saved && extra <= this.lodMergeTriangles * (joined ? 1 : saved)) {
+          for (const { counts, triangles } of sources) {
+            if (!triangles[coarse]) continue;
+            counts[level] += counts[coarse];
+            counts[coarse] = 0;
+          }
+          target[coarse] = level;
+          merged = true;
+        }
+      }
+      coarse = level;
+    }
+    if (!merged) return;
+    for (let level = 1; level < target.length; level++) target[level] = target[target[level]];
+    // An empty level omits its part. Promotion never brings omitted geometry back.
+    for (const { placements, triangles } of sources) {
+      for (const p of placements) if (!p.far?.level && triangles[p.level]) p.draw = target[p.level];
+    }
+  }
+
   private selectPlacements(batch: Batch): void {
     const { mesh, placements } = batch;
     const useCells = this.usePlacementCells;
@@ -652,7 +772,7 @@ export class CityVisibility {
         ((!useCells || !p.cell || this.cellKeepsPlacement(p.cell)) && this.frustum.intersectsBox(p.box) && !this.occluded(p.box, p.corners))
       ) {
         if (p.far?.level) p.far.keep = true;
-        else bands[p.level].push(i);
+        else bands[p.draw].push(i);
       }
     }
     if (bands[0].length === placements.length) return;
@@ -683,8 +803,10 @@ export class CityVisibility {
           previous[i] = keep[i];
           mesh.getMatrixAt(keep[i], this.matrix);
           subset.setMatrixAt(i, this.matrix);
+          copyInstanceTint(mesh, keep[i], subset, i);
         }
         subset.instanceMatrix.needsUpdate = true;
+        uploadInstanceTints(subset, keep.length);
       }
       subset.count = keep.length;
       this.shownSubsets.push(subset);
@@ -933,7 +1055,8 @@ class CityClusterDraws {
       const other = previous.mesh;
       if (other.parent !== mesh.parent || other.material !== mesh.material || other.layers.mask !== mesh.layers.mask
         || other.renderOrder !== mesh.renderOrder || other.receiveShadow !== mesh.receiveShadow
-        || !other.matrix.equals(mesh.matrix) || (other instanceof THREE.InstancedMesh) !== (mesh instanceof THREE.InstancedMesh)) continue;
+        || !other.matrix.equals(mesh.matrix) || (other instanceof THREE.InstancedMesh) !== (mesh instanceof THREE.InstancedMesh)
+        || (other instanceof THREE.InstancedMesh && mesh instanceof THREE.InstancedMesh && !sameInstanceTintLayout(other, mesh))) continue;
       this.pairs.push({ left: previous, right: source, draws: new Map() });
       first.delete(key);
     }
@@ -949,7 +1072,8 @@ class CityClusterDraws {
           || base.renderOrder !== mesh.renderOrder || base.receiveShadow !== mesh.receiveShadow
           || !base.matrix.equals(mesh.matrix)) return false;
         if (base instanceof THREE.InstancedMesh && mesh instanceof THREE.InstancedMesh) {
-          return base.count === mesh.count && base.instanceMatrix.array.every((v, i) => v === mesh.instanceMatrix.array[i]);
+          return base.count === mesh.count && base.instanceMatrix.array.every((v, i) => v === mesh.instanceMatrix.array[i])
+            && equalInstanceTints(base, mesh, base.count);
         }
         return !(base instanceof THREE.InstancedMesh) && !(mesh instanceof THREE.InstancedMesh);
       });
@@ -976,7 +1100,8 @@ class CityClusterDraws {
           const a = left.instanceMatrix.array, b = right.instanceMatrix.array;
           let equal = true;
           for (let i = 0; i < left.count * 16; i++) if (a[i] !== b[i]) { equal = false; break; }
-          if (!equal) continue;
+          // One draw carries one tint per instance, so both halves must agree on it.
+          if (!equal || !equalInstanceTints(left, right, left.count)) continue;
         }
         let combined = pair.draws.get(level);
         if (!combined) {
@@ -986,6 +1111,7 @@ class CityClusterDraws {
         }
         if (combined instanceof THREE.InstancedMesh && left instanceof THREE.InstancedMesh) {
           combined.instanceMatrix = left.instanceMatrix;
+          combined.instanceColor = left.instanceColor;
           combined.count = left.count;
         }
         left.visible = right.visible = false;
@@ -1035,7 +1161,7 @@ class CityClusterDraws {
         }
         const first = list[0];
         if (mesh instanceof THREE.InstancedMesh && first instanceof THREE.InstancedMesh) {
-          mesh.instanceMatrix = first.instanceMatrix; mesh.count = first.count;
+          mesh.instanceMatrix = first.instanceMatrix; mesh.instanceColor = first.instanceColor; mesh.count = first.count;
         }
         for (const original of list) { original.visible = false; this.suppressed.push(original); }
         mesh.visible = true; this.shown.push(mesh);
@@ -1107,6 +1233,8 @@ class CityClusterDraws {
       mesh.geometry.dispose();
       if (mesh instanceof THREE.InstancedMesh) {
         mesh.instanceMatrix = detachedMatrix;
+        // The tints belong to the source draw the combined mesh last stood in for.
+        mesh.instanceColor = null;
         mesh.dispose();
       }
     }
@@ -1121,7 +1249,7 @@ export function mergeCityInstances(root: THREE.Object3D, groupFor?: (mesh: THREE
   root.updateWorldMatrix(true, true);
   const groups = new Map<string, THREE.InstancedMesh[]>();
   root.traverseVisible(mesh => {
-    if (!(mesh instanceof THREE.InstancedMesh) || hasDeclaredLodOwner(mesh) || customMeshCallbacks(mesh) || mesh.children.length || mesh.instanceColor || mesh.morphTexture ||
+    if (!(mesh instanceof THREE.InstancedMesh) || hasDeclaredLodOwner(mesh) || customMeshCallbacks(mesh) || mesh.children.length || mesh.morphTexture ||
         Array.isArray(mesh.material) || mesh.material.transparent ||
         Object.values(mesh.geometry.attributes).some(a => a instanceof THREE.InstancedBufferAttribute)) return;
     // Mixed batches require the same conservative subset support as CityVisibility.
@@ -1130,7 +1258,8 @@ export function mergeCityInstances(root: THREE.Object3D, groupFor?: (mesh: THREE
       && mesh.material.depthTest && !(mesh.material instanceof THREE.ShaderMaterial) && !mesh.material.displacementMap
       && !Object.values(mesh.geometry.attributes).some(a =>
         a instanceof THREE.InterleavedBufferAttribute && a.data instanceof THREE.InstancedInterleavedBuffer);
-    const key = [mixed ? undefined : partition?.id, mesh.geometry.uuid, mesh.material.uuid, mesh.layers.mask, mesh.castShadow, mesh.receiveShadow,
+    // Tinted and untinted copies draw with different programs, so they merge separately.
+    const key = [mixed ? undefined : partition?.id, mesh.geometry.uuid, mesh.material.uuid, instanceTintLayout(mesh), mesh.layers.mask, mesh.castShadow, mesh.receiveShadow,
       mesh.renderOrder, mesh.customDepthMaterial?.uuid, mesh.customDistanceMaterial?.uuid, mesh.matrixWorld.elements.join(",")].join("|");
     const copies = groups.get(key);
     if (copies) copies.push(mesh);
@@ -1154,6 +1283,18 @@ export function mergeCityInstances(root: THREE.Object3D, groupFor?: (mesh: THREE
       offset += mesh.count * 16;
     }
     combined.instanceMatrix = new THREE.InstancedBufferAttribute(matrices, 16);
+    const tint = first.instanceColor;
+    if (tint) {
+      // Every copy has the anchor's tint layout: it is part of the grouping key.
+      const size = tint.itemSize;
+      const tints = new (tint.array.constructor as new (length: number) => THREE.TypedArray)(combined.count * size);
+      let at = 0;
+      for (const mesh of copies) {
+        tints.set(mesh.instanceColor!.array.subarray(0, mesh.count * size), at);
+        at += mesh.count * size;
+      }
+      combined.instanceColor = new THREE.InstancedBufferAttribute(tints, size, tint.normalized);
+    }
     if (mixed) instanceGroups!.set(combined, copies.flatMap((mesh, i) => Array<THREE.Object3D | undefined>(mesh.count).fill(partitions![i])));
     combined.boundingBox = combined.boundingSphere = null;
     combined.customDepthMaterial = first.customDepthMaterial;

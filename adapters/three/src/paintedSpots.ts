@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { brushPigmentAt } from "./paintedBrush";
+import { brushPigmentAt } from "./paintedBrush.ts";
 
 export type SpotOptics = { angle: number; penumbra: number; range: number };
 

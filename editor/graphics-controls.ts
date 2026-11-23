@@ -1,29 +1,33 @@
 import "./graphics-controls.css";
-import { GRAPHICS_PRESETS, GRAPHICS_RENDER_SCALE, type GraphicsOverrides, type GraphicsPreset } from "../adapters/three/src/graphicsSettings.ts";
-import { isGraphicsPreset, resolveRenderProfile, type RenderProfile, type ResolvedRenderProfile, writeRenderProfile } from "../adapters/three/src/renderProfile.ts";
+import { GRAPHICS_PRESETS, GRAPHICS_RENDER_SCALE, graphicsParameterOverrides, isGraphicsPreset, resolveRenderProfile, writeRenderProfile,
+  type AnyRenderProfile, type GraphicsOverrides, type GraphicsPreset, type ResolvedRenderProfile } from "#render-engine";
 import type { RustScene } from "../browser/renderer/scene.ts";
 
 export async function loadRenderProfile(query: URLSearchParams): Promise<ResolvedRenderProfile> {
   const source = query.get("profile");
   if (source === null) return resolveRenderProfile(undefined, query);
-  if (source.trimStart().startsWith("{")) return resolveRenderProfile(JSON.parse(source), query);
+  // A linked profile may be version 2. It resolves in full, and the controls below keep its version.
+  if (source.trimStart().startsWith("{")) return resolveRenderProfile(JSON.parse(source), query) as ResolvedRenderProfile;
   const response = await fetch(new URL(source, location.href));
   if (!response.ok) throw Error(`Could not load render profile (${response.status}).`);
-  return resolveRenderProfile(await response.json(), query);
+  return resolveRenderProfile(await response.json(), query) as ResolvedRenderProfile;
 }
 
 export function installGraphicsControls(anchor: HTMLElement, initial: ResolvedRenderProfile,
-  apply: (profile: RenderProfile) => ResolvedRenderProfile | void): void {
+  apply: (profile: AnyRenderProfile) => ResolvedRenderProfile | void): void {
   let active = initial;
+  const stated = (): AnyRenderProfile => active.profile;
   const row = document.createElement("div");
   row.className = "graphics-control-row";
   const label = document.createElement("label");
   const preset = presetSelect(active.preset, true);
   preset.setAttribute("aria-label", "Graphics");
   preset.addEventListener("change", () => {
-    const { diagnostics } = active.profile;
-    if (isGraphicsPreset(preset.value))
-      commit({ version: 1, preset: preset.value, ...(diagnostics ? { diagnostics } : {}) });
+    const profile = stated(), { diagnostics } = profile;
+    if (!isGraphicsPreset(preset.value)) return;
+    // A version 2 profile keeps its platform and its parameter overrides under the new preset.
+    if (profile.version === 2) commit({ ...profile, quality: preset.value });
+    else commit({ version: 1, preset: preset.value, ...(diagnostics ? { diagnostics } : {}) });
   });
   label.append("Graphics ", preset);
 
@@ -57,13 +61,17 @@ export function installGraphicsControls(anchor: HTMLElement, initial: ResolvedRe
       ...(Number.isFinite(renderScale) ? { renderScale } : {}),
       ...Object.fromEntries(fields.flatMap(([group, select]) => isGraphicsPreset(select.value) ? [[group, select.value]] : [])),
     };
-    commit({ ...active.profile, overrides });
+    // In a version 2 profile each group becomes the parameter values it stands for, laid over
+    // the profile's own overrides. A group left on "Use preset" changes none of them.
+    const profile = stated();
+    if (profile.version === 2) commit({ ...profile, overrides: layered(profile.overrides ?? {}, graphicsParameterOverrides(overrides)) });
+    else commit({ ...profile, overrides });
   });
   details.append(summary, form);
   row.append(label, details);
   anchor.before(row);
 
-  function commit(profile: RenderProfile) {
+  function commit(profile: AnyRenderProfile) {
     const next = apply(profile);
     if (!next) return;
     active = next;
@@ -90,7 +98,7 @@ export function connectAuthoringGraphics(anchor: HTMLElement, scene: Pick<RustSc
     apply(profile);
     installGraphicsControls(error, profile, draft => {
       try {
-        const next = resolveRenderProfile(draft);
+        const next = resolveRenderProfile(draft) as ResolvedRenderProfile;
         apply(next);
         const url = new URL(location.href);
         writeRenderProfile(url.searchParams, next.profile);
@@ -114,9 +122,17 @@ export function connectAuthoringGraphics(anchor: HTMLElement, scene: Pick<RustSc
   }).then(install).catch(showError);
 }
 
-export function navigateGraphicsProfile(query: URLSearchParams, profile: RenderProfile): void {
+export function navigateGraphicsProfile(query: URLSearchParams, profile: AnyRenderProfile): void {
   writeRenderProfile(query, profile);
   location.search = query.toString();
+}
+
+function layered<T>(base: T, added: T): T {
+  const plain = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
+  if (!plain(base) || !plain(added)) return added;
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(added)) out[key] = key in base ? layered(base[key], value) : value;
+  return out as T;
 }
 
 function presetSelect(selected?: GraphicsPreset, required = false) {

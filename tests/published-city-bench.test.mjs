@@ -6,6 +6,29 @@ import test from "node:test";
 import { measure, options } from "./published-city-bench.mjs";
 import { calibrateView } from "./published-city-calibration.mjs";
 import { lightingOverridesQuery, resolveRenderProfile, writeRenderProfile } from "../adapters/three/src/renderProfile.ts";
+import { graphicsPackUrl } from "../adapters/three/src/graphicsSettings.ts";
+
+test("mobile profiles lower runtime budgets and request their own map packs", () => {
+  const medium = resolveRenderProfile();
+  const low = resolveRenderProfile({ version: 1, preset: "low" });
+  const tiny = resolveRenderProfile({ version: 1, preset: "very-low" });
+  // Every preset renders at the display's resolution. The lighter tiers lower geometry and material budgets.
+  assert.deepEqual([tiny, low, medium].map(tier => tier.settings.renderScale), [1, 1, 1]);
+  assert.ok(tiny.settings.geometryLodBias < low.settings.geometryLodBias && low.settings.geometryLodBias < medium.settings.geometryLodBias);
+  // Rebuilding fixture shadows redraws the street in one frame, so the lighter tiers go without them.
+  assert.deepEqual([tiny, low].map(tier => tier.settings.fixtureShadowMapSize), [0, 0]);
+  assert.ok(medium.settings.fixtureShadowMapSize !== 0);
+  assert.equal(tiny.diagnostics.materials.bounce, medium.diagnostics.materials.bounce);
+  assert.equal(tiny.diagnostics.materials.reflectionProbes, false);
+  assert.equal(tiny.diagnostics.loading.warmup, false);
+  const overrides = resolveRenderProfile({ version: 1, preset: "very-low", overrides: { materials: "high" },
+    diagnostics: { lighting: { ambientOcclusion: "on" } } });
+  assert.equal(overrides.diagnostics.materials.reflectionProbes, medium.diagnostics.materials.reflectionProbes);
+  assert.equal(overrides.diagnostics.lighting.ambientOcclusion, "on");
+  assert.equal(graphicsPackUrl(new URL("https://example.invalid/maps/test.glb?v=2"), tiny.variant).pathname,
+    "/maps/test.very-low.glb");
+  assert.equal(graphicsPackUrl(new URL("https://example.invalid/maps/test.very-low.glb"), "low"), undefined);
+});
 
 test("the CLI defaults to completed throughput and retains paced diagnostics", async t => {
   const dir = await mkdtemp(join(tmpdir(), "superspec-city-bench-"));
@@ -58,7 +81,7 @@ test("a render profile preserves independent overrides and converts legacy flags
   writeRenderProfile(query, active.profile);
   assert.deepEqual([...query.keys()], ["gltf", "camera", "profile"]);
   assert.deepEqual(resolveRenderProfile(JSON.parse(query.get("profile"))), active);
-  assert.throws(() => resolveRenderProfile({ version: 2 }), /version/);
+  assert.throws(() => resolveRenderProfile({ version: 3 }), /version/);
   assert.throws(() => resolveRenderProfile({ version: 1, overrides: { renderScale: 0.1 } }), /overrides.renderScale/);
   assert.throws(() => resolveRenderProfile({ version: 1, diagnostics: { visibility: { culling: false } } }), /diagnostics.visibility.culling/);
   assert.throws(() => resolveRenderProfile({ version: 1, diagnostics: { lighting: { paintedShadows: "on" } } }), /diagnostics.lighting.paintedShadows/);

@@ -2,14 +2,11 @@ import * as THREE from "three";
 import { WebGPUBackend, WebGPURenderer } from "three/webgpu";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
-import { BlockLods } from "../adapters/three/src/blockLods.ts";
-import { disposeCityTextureLod, registerCityTextureLod } from "../adapters/three/src/cityTextureLoader.ts";
-import { loadDeclaredLods, type DeclaredLods } from "../adapters/three/src/declaredLods.ts";
-import { lightingOverridesQuery, type ResolvedRenderProfile } from "../adapters/three/src/renderProfile.ts";
-import { applyMaterialAnisotropy } from "../adapters/three/src/materialFiltering.ts";
-import { createGltfLoader, disposeKtx2Loader } from "../browser/renderer/ktx2.ts";
-import { releaseObjects } from "../browser/renderer/dispose-objects.ts";
-import { publishedCityGeometry, publishedTextureResidency, streamsPublishedTextures } from "../browser/renderer/published-geometry.ts";
+import {
+  applyMaterialAnisotropy, BlockLods, createRenderGltfLoader, disposeCityTextureLod, disposeRenderGltfLoader,
+  lightingOverridesQuery, loadDeclaredLods, publishedCityGeometry, publishedTextureResidency, registerCityTextureLod,
+  releaseObjects, streamsPublishedTextures, type DeclaredLods, type ResolvedRenderProfile,
+} from "#render-engine";
 import { parseView, viewCamera } from "../browser/renderer/view.ts";
 import { webGpuLighting, webGpuSceneProfile } from "../browser/renderer/webgpu-lighting.ts";
 import { installConnectorDrag } from "./demos/connector-drag.ts";
@@ -58,7 +55,7 @@ export async function openWebGpuGltf(url: URL, host: HTMLElement, query: URLSear
         releaseObjects([...gltf.scenes, ...(blocks?.dispose() ?? [])]);
       }
     }
-    disposeKtx2Loader(renderer);
+    disposeRenderGltfLoader(renderer);
     renderer.domElement.remove();
     // Three's dispose() re-enters init via setAnimationLoop(null) on an uninitialized renderer.
     if (renderer.initialized) void renderer.dispose().catch(error => console.warn("Could not finish releasing the WebGPU renderer.", error));
@@ -117,7 +114,7 @@ export async function openWebGpuGltf(url: URL, host: HTMLElement, query: URLSear
       if (info.reason === "destroyed" && !disposed)
         renderer.onDeviceLost({ api: "WebGPU", reason: info.reason, message: info.message || "The WebGPU device was destroyed.", originalEvent: info });
     });
-    const loader = createGltfLoader(renderer);
+    const loader = createRenderGltfLoader(renderer, { transcoderPath: "basis/", graphicsPreset: graphics.preset });
     const lightingQuery = lightingOverridesQuery(diagnostics);
     let profile: ReturnType<typeof webGpuSceneProfile> | undefined;
     loader.register(parser => ({ name: "SuperSpecWebGPUProfile", beforeRoot: async () => {

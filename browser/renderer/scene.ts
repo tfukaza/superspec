@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { LiveProgram, SceneBatch, SceneMesh, ScenePacket } from "../model/packet.ts";
 import { GroundFields, findGround, missingSceneFields, reportMissingField } from "./scene-fields.ts";
-import { SHADE_NORMAL, batchGeometry, batchInstances, compileTwin, instancedBatch, lightByShadeNormal, stressInstances } from "./batch.ts";
+import { SHADE_NORMAL, batchGeometry, batchInstances, instancedBatch, lightByShadeNormal, stressInstances } from "./batch.ts";
 import type { NavigationMesh, ValidationReport } from "../model/validation.ts";
 import { TexturePool, imageIdentity } from "./textures.ts";
 import { applyLiveOperations, liveTextures } from "./live.ts";
@@ -12,9 +12,8 @@ import { atlasLayouts, commitPositions, type ProjectLayouts } from "./atlas.ts";
 import { hashFloats } from "./layout-digest.ts";
 import { SceneBaker, type FieldSource, type PreparedScene, type SceneBakeTarget } from "./scene-bake.ts";
 import type { ShadowStyle } from "./shadow-style.ts";
-import type { AmbientOcclusion } from "./ambient-occlusion.ts";
 import { defaultLighting, type Lighting } from "./lighting.ts";
-import { SceneLighting, studioEnvironment } from "./rendering.ts";
+import { SceneLighting } from "./rendering.ts";
 import { parseView, viewCamera } from "./view.ts";
 import { fitNearPlane } from "./depth-range.ts";
 import { InspectionWalk } from "./walk.ts";
@@ -30,8 +29,7 @@ import { rigidMaterialTranslation, type MaterialOrigin } from "./material-transl
 import { PacketLods } from "./packet-lods.ts";
 import { configurePacketMaterial, PacketMaterialLods, type PreparedPacketMaterialLod } from "./packet-material-lods.ts";
 import { featureTexture, featureUniforms } from "./feature-texture.ts";
-import { resolveGraphicsSettings } from "../../adapters/three/src/graphicsSettings.ts";
-import { lightingOverridesQuery, type ResolvedRenderProfile } from "../../adapters/three/src/renderProfile.ts";
+import { compileWorldStage, lightingOverridesQuery, resolveGraphicsSettings, studioReflections, warmupMesh, type ResolvedRenderProfile } from "#render-engine";
 
 /** Builds a translucent inspection surface from Rust-owned navigation polygons. */
 function navigationSurface(data: NavigationMesh, color: number): THREE.Mesh {
@@ -246,8 +244,6 @@ export class RustScene {
   get shadows(): boolean { return this.lights.shadows; }
   /** The shadows' look, patched into every scene material; it draws three.js's plain shadows while the style is `plain`. */
   private get shadowStyle(): ShadowStyle { return this.lights.shadowStyle; }
-  /** Ambient occlusion (on unless the record or `?ao=off` turns it off, or the renderer cannot composite); frames then go through it. */
-  private get ambientOcclusion(): AmbientOcclusion | undefined { return this.lights.ambientOcclusion; }
 
   /** Draws one frame now: through the ambient occlusion when it is on, else straight to the canvas. */
   private draw(): void {
@@ -539,7 +535,7 @@ export class RustScene {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.scene.background = new THREE.Color("#d5d7ce");
-    this.environment = studioEnvironment(this.renderer);
+    this.environment = studioReflections(this.renderer);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.addEventListener("change", this.invalidate);
     this.controls.target.fromArray(this.view.target);
@@ -1221,10 +1217,9 @@ export class RustScene {
   private async compileLooks(items: { mesh: THREE.Mesh; geometry: THREE.BufferGeometry; material: THREE.Material }[]): Promise<void> {
     if (!items.length) return;
     const stage = new THREE.Group();
-    for (const { mesh, geometry, material } of items) stage.add(compileTwin(mesh, geometry, material));
-    // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
-    const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
-    await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile());
+    for (const { mesh, geometry, material } of items) stage.add(warmupMesh(mesh, material, geometry));
+    const target = this.lights.ambientOcclusion?.colorTarget ?? this.renderer.getRenderTarget();
+    await compileWorldStage(this.renderer, stage, this.camera, this.scene, target);
   }
 
   /** Puts prepared per-pixel materials on their meshes and starts what follows them: baked maps, or the per-pixel relief. Returns the run it started. */
@@ -1422,12 +1417,8 @@ export class RustScene {
       if (!current()) return false;
       const made = group.map(item => ({ item, material: make(item) }));
       const discard = () => { for (const entry of made) if (entry.item.mesh.material !== entry.material) entry.material.dispose(); };
-      // Compiled as the meshes that will show them, with the displayed scene's lights, shadows and environment.
-      const stage = new THREE.Group();
-      for (const { item, material } of made) stage.add(compileTwin(item.mesh, item.mesh.geometry, material));
-      // (For the target the scene is drawn into: with ambient occlusion that is its scene target, not the canvas.)
-      const compile = () => this.renderer.compileAsync(stage, this.camera, this.scene);
-      try { await (this.ambientOcclusion ? this.ambientOcclusion.compiling(compile) : compile()); } catch { discard(); continue; }
+      try { await this.compileLooks(made.map(({ item, material }) => ({ mesh: item.mesh, geometry: item.mesh.geometry, material }))); }
+      catch { discard(); continue; }
       await this.waitForMaterialRelease(current);
       if (!current()) { discard(); return false; }
       for (const entry of made) {

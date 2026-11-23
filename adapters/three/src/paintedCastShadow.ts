@@ -1,4 +1,4 @@
-import { paintBrushField } from "./paintedBrush";
+import { paintBrushField } from "./paintedBrush.ts";
 
 // All distances outside of shadow projection coordinates are in metres.
 export const paintedCastShadow = /* glsl */ `

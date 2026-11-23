@@ -106,6 +106,23 @@ export async function warmGlazingSides(renderer: THREE.WebGLRenderer, scene: THR
   await ready;
 }
 
+/** Compile-only meshes carrying each stable glazing material's three side views. A draw
+ * picks among them by camera, so the first frame can need any of them. */
+export function glazingSideStage(map: THREE.Object3D, sides: GlazingSides): THREE.Group {
+  const stage = new THREE.Group(), seen = new Set<string>();
+  map.traverse(object => {
+    if (!(object instanceof THREE.Mesh)) return;
+    for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+      if (!knownGlazing.get(material)?.stableSides || material.side !== THREE.DoubleSide || !batchableGlazing(material)) continue;
+      const key = [material.uuid, object.constructor.name, !!(object as THREE.InstancedMesh).instanceColor].join("|");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      stage.add(warmupMesh(object, sides.views(material)));
+    }
+  });
+  return stage;
+}
+
 /** Only ordinary glTF shading or this adapter's admitted glazing hooks may batch. */
 export function batchableGlazing(material: THREE.Material): material is THREE.MeshStandardMaterial {
   if (!(material instanceof THREE.MeshStandardMaterial) || !material.transparent

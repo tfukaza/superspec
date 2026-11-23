@@ -1,11 +1,11 @@
 import * as THREE from "three";
-import { sunOf, type Lighting } from "./lighting.ts";
+import type { WorldSpecLighting } from "./worldSpecLighting.ts";
 
 const rgb = (value: unknown): value is [number, number, number] =>
   Array.isArray(value) && value.length === 3 && value.every(n => typeof n === "number" && Number.isFinite(n));
 
 /** The Stoa delivery stores sky and haze on its game record, in linear RGB and metres. */
-export function publishedSky(scene: THREE.Scene, raw: unknown, lighting: Lighting) {
+export function publishedSky(scene: THREE.Scene, raw: unknown, lighting?: WorldSpecLighting) {
   const record = raw as { sky?: { zenith?: unknown; horizon?: unknown }; fog?: { near: number; far: number } } | undefined;
   if (!rgb(record?.sky?.zenith) || !rgb(record.sky.horizon)) return;
   const dome = new THREE.Mesh(
@@ -52,7 +52,7 @@ export function publishedSky(scene: THREE.Scene, raw: unknown, lighting: Lightin
   const u = dome.material.uniforms;
   u.zenith.value.setRGB(...record.sky.zenith);
   u.horizon.value.setRGB(...record.sky.horizon);
-  const sun = sunOf(lighting);
+  const sun = lighting?.lights.find(light => light.kind === "directional" && light.role === "sun");
   if (sun) {
     u.sunDir.value.set(sun.direction[0], sun.direction[2], -sun.direction[1]).normalize();
     u.sunColor.value.setRGB(...sun.color);

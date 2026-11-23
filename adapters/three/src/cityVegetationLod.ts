@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { hasDeclaredLodOwner } from "./lodOwnership.ts";
-import type { CityLodLevels } from "./cityLods";
+import type { CityLodLevels } from "./cityLods.ts";
 
 export type CityVegetationLodOptions = {
   /** Maximum projected geometric error, in drawing-buffer pixels. Default 1.5. */
@@ -107,7 +107,9 @@ export class CityVegetationLod {
     });
   }
 
-  frame(camera: THREE.Camera, viewportHeight = 1080): void {
+  /** `nearScale` below one brings the full-motif distance closer for a lower
+   * graphics preset, to no less than the 12 metre floor. */
+  frame(camera: THREE.Camera, viewportHeight = 1080, nearScale = 1): void {
     this.restore();
     if (!(camera instanceof THREE.PerspectiveCamera) || !(viewportHeight > 0) || !Number.isFinite(viewportHeight)) return;
     this.root.updateWorldMatrix(true, false);
@@ -117,6 +119,7 @@ export class CityVegetationLod {
     const m = camera.matrixWorldInverse.elements;
     const focal = viewportHeight * Math.max(Math.abs(camera.projectionMatrix.elements[5]),
       Math.abs(camera.projectionMatrix.elements[0]) * camera.aspect) / 2;
+    const minDistance = nearScale > 0 && nearScale < 1 ? Math.max(12, this.minDistance * nearScale) : this.minDistance;
     for (const entry of this.entries) {
       const { mesh, near, bounds: b } = entry;
       if (!mesh.visible || !mesh.layers.test(camera.layers) || mesh.geometry !== near || mesh.castShadow
@@ -125,7 +128,7 @@ export class CityVegetationLod {
         || mesh instanceof THREE.InstancedMesh && (mesh.instanceMatrix.version !== entry.instanceVersion
           || mesh.count !== entry.instanceCount)) continue;
       const distance = b.distanceToPoint(this.eye);
-      if (distance < this.minDistance * (entry.previous ? .9 : 1)) { entry.previous = 0; continue; }
+      if (distance < minDistance * (entry.previous ? .9 : 1)) { entry.previous = 0; continue; }
       const cx = (b.min.x + b.max.x) / 2, cy = (b.min.y + b.max.y) / 2, cz = (b.min.z + b.max.z) / 2;
       const hx = (b.max.x - b.min.x) / 2, hy = (b.max.y - b.min.y) / 2, hz = (b.max.z - b.min.z) / 2;
       const depth = -(m[2] * cx + m[6] * cy + m[10] * cz + m[14])
