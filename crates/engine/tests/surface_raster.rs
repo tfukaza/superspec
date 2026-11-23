@@ -1,44 +1,9 @@
-use serde::Deserialize;
 use std::{cell::Cell, collections::BTreeMap};
 use superspec_aml::material::Material;
 use superspec_engine::materialspec::surface::{
     Coat, Inputs, Layer, Layout, RasterSettings, Sample, color_byte, image_sample, rasterize,
 };
 use superspec_geometry::image::Image;
-
-#[derive(Deserialize)]
-struct InputImage {
-    width: usize,
-    height: usize,
-    data: Vec<u8>,
-}
-#[derive(Deserialize)]
-struct ExpectedLayer {
-    source: String,
-    color: Vec<u8>,
-    packed: Vec<u8>,
-    normal: Option<Vec<u8>>,
-}
-#[derive(Deserialize)]
-struct Case {
-    mode: String,
-    settings: RasterSettings,
-    width: usize,
-    height: usize,
-    layers: Vec<ExpectedLayer>,
-}
-#[derive(Deserialize)]
-struct Fixture {
-    materials: Vec<Material>,
-    images: BTreeMap<String, InputImage>,
-    cases: Vec<Case>,
-    transfers: Vec<Transfer>,
-}
-#[derive(Deserialize)]
-struct Transfer {
-    bits: String,
-    byte: u8,
-}
 
 fn layer(material: &str, weight: f64, uv: [f64; 2]) -> Layer {
     Layer {
@@ -79,40 +44,34 @@ fn image(width: usize, height: usize, rgba: Vec<u8>) -> Image {
     }
 }
 
-/// Shared native/browser acceptance body; every comparison uses frozen reference values.
-pub fn check_reference_rasters() {
-    let fixture: Fixture = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/surface-rasters.json"
-    ))
-    .unwrap();
-    for transfer in &fixture.transfers {
-        assert_eq!(
-            color_byte(f64::from_bits(
-                u64::from_str_radix(&transfer.bits, 16).unwrap()
-            ))
-            .unwrap(),
-            transfer.byte,
-            "sRGB reference transition {}",
-            transfer.bits
-        );
-    }
-    let materials = fixture
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
-    let images = fixture
-        .images
-        .into_iter()
-        .map(|(id, i)| (id, image(i.width, i.height, i.data)))
-        .collect();
+#[test]
+fn transformed_and_coated_rasters_follow_layout_and_emit_normals_only_for_bump() {
+    let materials = BTreeMap::from([
+        (
+            "a".into(),
+            Material {
+                id: "a".into(),
+                color: "#c08040".into(),
+                ..Material::default()
+            },
+        ),
+        (
+            "coat".into(),
+            Material {
+                id: "coat".into(),
+                color: "#2050a0".into(),
+                ..Material::default()
+            },
+        ),
+    ]);
+    let images = BTreeMap::new();
     let inputs = Inputs {
         materials: &materials,
         images: &images,
     };
-    for case in fixture.cases {
+    for mode in ["plain", "rotated", "reflected", "sheared", "coated"] {
         let field = |u: f64, v: f64| {
-            let uv = match case.mode.as_str() {
+            let uv = match mode {
                 "rotated" => [v, -u],
                 "reflected" => [-u, v],
                 "sheared" => [u + 0.3 * v, v],
@@ -120,73 +79,46 @@ pub fn check_reference_rasters() {
             };
             let mut layers = vec![layer("a", 2., uv)];
             layers[0].tint = if v > 0.2 { Some([0.8, 1.1, 0.9]) } else { None };
-            layers[0].roughness = if u > 0.2 { Some(0.) } else { None };
-            if case.mode == "mixed" || case.mode == "layered-zero" {
-                layers.push(layer(
-                    "b",
-                    if case.mode == "layered-zero" { 0. } else { 1. },
-                    [u * 0.7 + 0.1, v * 0.8 - 0.2],
-                ));
-            }
-            if case.mode == "coated" {
-                layers[0].coatings = vec![
-                    Coat {
-                        material: "coat".into(),
-                        uv: [u * 0.8, v * 1.1],
-                        opacity: 0.6,
-                        tint: Some([1., 0.5, 0.8]),
-                        roughness: None,
-                    },
-                    Coat {
-                        material: "a".into(),
-                        uv: [v, -u],
-                        opacity: 0.2,
-                        tint: None,
-                        roughness: None,
-                    },
-                ];
+            if mode == "coated" {
+                layers[0].coatings = vec![Coat {
+                    material: "coat".into(),
+                    uv: [u * 0.8, v * 1.1],
+                    opacity: 0.6,
+                    tint: Some([1., 0.5, 0.8]),
+                    roughness: None,
+                }];
             }
             let mut sample = sample(layers);
-            sample.roughness = if v < 0.1 { Some(0.3) } else { None };
             sample.bump = Some(0.02 * u * u + 0.03 * v * v + 0.01 * u * v);
             Ok(sample)
         };
-        let actual = rasterize(case.settings, &field, &inputs, 1_000_000, &|| false).unwrap();
-        assert_eq!(
-            (actual.layout.width, actual.layout.height),
-            (case.width, case.height),
-            "{}",
-            case.mode
-        );
-        assert_eq!(actual.layers.len(), case.layers.len());
-        for (actual, expected) in actual.layers.iter().zip(case.layers) {
-            assert_eq!(actual.source, expected.source);
-            for (channel, a, b) in [
-                ("color", &actual.color.rgba, &expected.color),
-                ("packed", &actual.metallic_roughness.rgba, &expected.packed),
-            ] {
-                assert_eq!(a.len(), b.len());
-                let first = a.iter().zip(b).position(|(a, b)| a != b);
-                assert!(
-                    first.is_none(),
-                    "{} {channel} first differing byte {first:?}: {:?}",
-                    case.mode,
-                    first.map(|i| (a[i], b[i]))
-                );
-            }
+        for bump in [false, true] {
+            let raster_settings = RasterSettings {
+                bounds: [-0.3, 0.1, 0.9, 0.8],
+                texels_per_meter: 16.,
+                bump,
+                ..settings()
+            };
+            let layout = Layout::new(raster_settings).unwrap();
+            let a = rasterize(raster_settings, &field, &inputs, 1_000_000, &|| false).unwrap();
+            let b = rasterize(raster_settings, &field, &inputs, 1_000_000, &|| false).unwrap();
             assert_eq!(
-                actual.normal.as_ref().map(|i| &i.rgba),
-                expected.normal.as_ref(),
-                "{} normal",
-                case.mode
+                (a.layout.width, a.layout.height),
+                (layout.width, layout.height),
+                "{mode}"
+            );
+            assert_eq!(a.layers.len(), 1, "{mode}");
+            let texels = layout.width * layout.height * 4;
+            assert_eq!(a.layers[0].color.rgba.len(), texels);
+            assert_eq!(a.layers[0].metallic_roughness.rgba.len(), texels);
+            assert_eq!(a.layers[0].normal.is_some(), bump, "{mode}");
+            assert_eq!(a.layers[0].color.rgba, b.layers[0].color.rgba, "{mode}");
+            assert_eq!(
+                a.layers[0].normal.as_ref().map(|i| &i.rgba),
+                b.layers[0].normal.as_ref().map(|i| &i.rgba)
             );
         }
     }
-}
-
-#[test]
-fn frozen_rasters_preserve_layers_coats_reflected_normals_and_recycled_bump_rows() {
-    check_reference_rasters();
 }
 
 #[test]

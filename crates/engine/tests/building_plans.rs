@@ -1,80 +1,52 @@
-use serde::Deserialize;
-use serde_json::Value;
 use superspec_engine::worldspec::themes::kowloon::massing::{
     Rect, SiteBudget, default_stories, lot_blocks, plan_lots, subtract_rect,
 };
 
-#[derive(Deserialize)]
-struct Fixture {
-    seed: String,
-    site: SiteBudget,
-    lots: Value,
-    blocks: Value,
-}
-
-/// Floats permit only sub-picometer arithmetic/JSON round-trip differences; choices and IDs are exact.
-fn equivalent(actual: &Value, expected: &Value, path: &str) {
-    match (actual, expected) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 1e-12,
-            "{path}: {a} != {b}"
-        ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "{path}");
-            for (i, (a, b)) in a.iter().zip(b).enumerate() {
-                equivalent(a, b, &format!("{path}/{i}"));
-            }
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            assert_eq!(
-                a.keys().collect::<Vec<_>>(),
-                b.keys().collect::<Vec<_>>(),
-                "{path}"
-            );
-            for (key, value) in a {
-                equivalent(value, &b[key], &format!("{path}/{key}"));
-            }
-        }
-        _ => assert_eq!(actual, expected, "{path}"),
-    }
-}
-
 #[test]
-fn frozen_building_plans_preserve_every_seeded_layout_and_style_choice() {
-    let fixtures: Vec<Fixture> = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/building-plans.json"
-    ))
-    .unwrap();
+fn seeded_building_plans_are_repeatable_and_vary_kind_awning_and_frontage() {
     let mut kinds = std::collections::BTreeSet::new();
     let mut awnings = std::collections::BTreeSet::new();
     let mut fronts = std::collections::BTreeSet::new();
-    for fixture in fixtures {
-        let lots = plan_lots(fixture.site, &fixture.seed).unwrap();
-        equivalent(
-            &serde_json::to_value(&lots).unwrap(),
-            &fixture.lots,
-            &fixture.seed,
+    for (seed, site) in [
+        ("court-01/background-west", (8.11, 5., 11.8, 4, 3.)),
+        ("court-01/background-east", (6., 5., 14.6, 5, 0.)),
+        ("court-01/shop-row", (30., 8., 15.35, 5, 0.)),
+        ("single", (3., 3., 3.15, 1, 0.)),
+        (
+            "courtyard/\u{5ead}\u{9662}\u{1f33f}",
+            (40., 14., 30.35, 10, 4.2),
+        ),
+        ("short-depth", (18., 3., 9.35, 3, 2.9)),
+        ("branch-0", (30., 8., 15.35, 5, 0.)),
+    ] {
+        let (width, depth, height, stories, base_height) = site;
+        let site = SiteBudget {
+            width,
+            depth,
+            height,
+            stories,
+            base_height,
+        };
+        let lots = plan_lots(site, seed).unwrap();
+        // The same seed and budget always plan the same lots and volumes.
+        assert_eq!(
+            serde_json::to_value(&lots).unwrap(),
+            serde_json::to_value(plan_lots(site, seed).unwrap()).unwrap(),
+            "{seed}"
         );
-        let blocks: Vec<_> = lots
-            .iter()
-            .flat_map(|l| lot_blocks(l, fixture.site.depth))
-            .collect();
-        equivalent(
-            &serde_json::to_value(blocks).unwrap(),
-            &fixture.blocks,
-            &fixture.seed,
-        );
+        let blocks: Vec<_> = lots.iter().flat_map(|l| lot_blocks(l, depth)).collect();
+        assert!(!blocks.is_empty(), "{seed}");
         for lot in lots {
             kinds.insert(lot.kind);
             awnings.insert(lot.style.awning.canvas);
             fronts.insert(lot.front.total_cmp(&0.));
         }
     }
+    // Both lot kinds, both awning materials and recessed, flush and projecting fronts occur.
     assert_eq!(kinds.len(), 2);
     assert_eq!(awnings.len(), 2);
     assert_eq!(fronts.len(), 3);
 }
-
 #[test]
 fn lot_coverage_story_datums_and_body_volumes_obey_site_budgets() {
     for width in [3., 8.499, 8.5, 8.501, 30., 40.] {

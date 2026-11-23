@@ -5,17 +5,105 @@ use superspec_aml::rng::SeededRng;
 use crate::worldspec::themes::kowloon::assembly::FloorPlan;
 
 impl Compiler<'_> {
+    pub(super) fn dressing_settings(&self) -> Option<&Node> {
+        self.resolution
+            .document
+            .metadata
+            .iter()
+            .find(|node| node.kind == "dressing")
+    }
+
+    pub(super) fn check_dressing_settings(&self, materials: &[Material]) -> Result<(), Diagnostic> {
+        let Some(settings) = self.dressing_settings() else {
+            return Ok(());
+        };
+        let mut hosts = BTreeSet::new();
+        for rule in &settings.children {
+            if !hosts.insert(rule.text("host").unwrap()) {
+                return Err(rule.fail("AML_DRESSING", "Use one dressing rule per host."));
+            }
+        }
+        if let Some(palette) = settings.text("wall-materials") {
+            let ids: Vec<_> = palette.split_whitespace().collect();
+            if !(1..=8).contains(&ids.len())
+                || ids.iter().copied().collect::<BTreeSet<_>>().len() != ids.len()
+                || ids.iter().any(|id| !materials.iter().any(|m| m.id == *id))
+            {
+                return Err(settings.fail(
+                    "AML_DRESSING",
+                    "wall-materials requires one to eight distinct declared materials.",
+                ));
+            }
+        }
+        if let Some(prefix) = settings.text("finishes") {
+            let roles = [
+                "wall-posters",
+                "wall-paper",
+                "wall-edge",
+                "wall-rust",
+                "wall-metal",
+                "wall-cable",
+                "wall-ceramic",
+                "wall-tile-plaster",
+                "concrete",
+                "lettering",
+                "signboard",
+                "rust",
+                "metal",
+                "brushed-metal",
+                "kitchen-metal",
+                "kitchen-worktop",
+                "vent-metal",
+                "vent-edge",
+                "shop-register",
+                "market-trays",
+                "wall-tile-grime",
+                "sheet",
+                "timber",
+                "shop-timber",
+                "restaurant-surfaces",
+                "restaurant-tiles",
+                "restaurant-food",
+                "roofing",
+                "balcony-plants",
+                "balcony-cloth",
+                "cloth",
+                "tarp",
+                "aircon",
+                "market-apple",
+                "snack-packet",
+                "grocer-props",
+                "render-weathered",
+                "render-repair",
+            ];
+            let matches = |role: &str| {
+                let id = format!("{prefix}-{role}");
+                materials.iter().find(|m| m.id == id)
+            };
+            if prefix.is_empty()
+                || prefix.len() > 512
+                || !roles.iter().any(|role| matches(role).is_some())
+            {
+                return Err(settings.fail(
+                    "AML_DRESSING",
+                    "No recognized kit finish is declared under this prefix.",
+                ));
+            }
+            if matches("lettering").is_some_and(|material| material.alpha_cutoff.is_none()) {
+                return Err(settings.fail(
+                    "AML_DRESSING",
+                    "The lettering distance-field atlas requires alpha-cutoff.",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn plan_dressing(
         &self,
         materials: &[Material],
     ) -> Result<BTreeMap<usize, FloorPlan>, Diagnostic> {
-        let Some(settings) = self
-            .resolution
-            .document
-            .metadata
-            .iter()
-            .find(|n| n.kind == "dressing")
-        else {
+        let Some(settings) = self.dressing_settings() else {
             return Ok(BTreeMap::new());
         };
         let mut plans = BTreeMap::new();
@@ -77,7 +165,7 @@ impl Compiler<'_> {
         &mut self,
         scene: &mut Scene,
         geometry: &mut BTreeMap<u32, Geometry>,
-        theme: &mut ThemeState,
+        theme: &ThemeState,
     ) -> Result<(), Diagnostic> {
         if theme.floor_dressing.is_empty() {
             return Ok(());
@@ -139,9 +227,6 @@ impl Compiler<'_> {
             let index_start = scene.indices.len();
             let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
             for (i, vertex) in vertices.iter().enumerate() {
-                if !theme.building_hosts.is_empty() {
-                    theme.render_edge_vertices.push(vertex.position);
-                }
                 scene.positions.extend(vertex.position.map(|v| v as f32));
                 scene.normals.extend(vertex.normal.map(|v| v as f32));
                 scene.uvs.extend(vertex.uv.map(|v| v as f32));

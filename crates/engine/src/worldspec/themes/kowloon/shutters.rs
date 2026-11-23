@@ -1,5 +1,6 @@
 //! Roller curtains use one unfolded field across the corrugation; hardware forms its own assembly.
 use super::{
+    graphics_detail::GraphicsDetail,
     mesh::Mesh,
     metal::Kind,
     noise::value_noise,
@@ -92,7 +93,28 @@ pub fn slatted_roller_shutter(
         vec!["paint".into(), "metal".into()],
     )?;
     let color = Tint::Color(paint);
+    let detail = mesh.graphics_detail();
     let mut z = 0.;
+    if detail == GraphicsDetail::VeryLow {
+        // The lowest level hangs the curtain as one sheet at its slats' mean plane; its
+        // paint field is the unfolded curtain's, so its colour and wear stay where they were.
+        curtain.face(
+            mesh,
+            "metal",
+            &[
+                [0., (0.03 + proud) / 2., 0.],
+                [width, (0.03 + proud) / 2., 0.],
+                [width, (0.03 + proud) / 2., height],
+                [0., (0.03 + proud) / 2., height],
+            ],
+            [0., 1., 0.],
+            &color,
+            settings.metal.repeat,
+            None,
+            None,
+        )?;
+        z = height;
+    }
     while z < height - 1e-6 {
         let top = height.min(z + pitch);
         let crest = (z + top) / 2.;
@@ -207,8 +229,12 @@ pub fn slatted_roller_shutter(
         let dark = 1. - 0.4 * rust * ((fine - 0.55) / 0.45).max(0.);
         Ok(rusted.map(|v| v * dark))
     };
-    let columns = ((right - left) / 0.03).ceil().clamp(1., 400.) as usize;
+    // The streaks are painted per vertex: a reduced level samples them more coarsely.
+    let columns = ((right - left) / detail.pick(0.03, 0.12, 0.4))
+        .ceil()
+        .clamp(1., 400.) as usize;
     let rows = ((box_height / 0.05).ceil() as usize).clamp(2, 16);
+    let rows = detail.pick(rows, 2, 1);
     for i in 0..columns {
         let [a, b] = [i, i + 1].map(|k| left + (right - left) * k as f64 / columns as f64);
         for j in 0..rows {

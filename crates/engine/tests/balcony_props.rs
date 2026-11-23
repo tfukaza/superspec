@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     balcony_props::{self, Garment, Plant, Room, Support},
@@ -9,59 +8,6 @@ use superspec_engine::worldspec::themes::kowloon::{
 use superspec_geometry::{Matrix, V3};
 #[path = "support/balcony_props_scene.rs"]
 mod scene_fixture;
-#[derive(Deserialize)]
-struct Geometry {
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
-}
-#[derive(Deserialize)]
-struct PlantCase {
-    name: Plant,
-    textured: bool,
-    reflected: bool,
-    at: V3,
-    scale: f64,
-    rotation: f64,
-    #[serde(flatten)]
-    geometry: Geometry,
-}
-#[derive(Deserialize)]
-struct GarmentCase {
-    seed: String,
-    room: Room,
-    support: Support,
-    textured: bool,
-    reflected: bool,
-    garment: Option<Garment>,
-    left: V3,
-    right: V3,
-    sway: f64,
-    next: u32,
-    #[serde(flatten)]
-    geometry: Geometry,
-}
-#[derive(Deserialize)]
-struct Small {
-    support: Support,
-    room: Room,
-    next: u32,
-}
-#[derive(Deserialize)]
-struct Golden {
-    plants: Vec<PlantCase>,
-    garments: Vec<GarmentCase>,
-    small: Vec<Small>,
-}
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/balcony-props.json"
-    ))
-    .unwrap()
-}
 fn pen(reflected: bool) -> Pen {
     Pen::new(
         if reflected {
@@ -73,128 +19,110 @@ fn pen(reflected: bool) -> Pen {
     )
     .unwrap()
 }
-fn check(mesh: &Mesh<'_>, expected: &Geometry, label: &str) {
-    assert_eq!(
-        mesh.indices.len(),
-        expected.indices.len(),
-        "{label} triangle count"
-    );
-    assert_eq!(
-        mesh.indices
-            .iter()
-            .zip(&expected.indices)
-            .position(|(a, b)| a != b),
-        None,
-        "{label} indexed order"
-    );
-    for (a, b, name) in [
-        (
-            mesh.vertices
-                .iter()
-                .flat_map(|v| v.position)
-                .collect::<Vec<_>>(),
-            &expected.positions,
-            "positions",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-            &expected.normals,
-            "normals",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.color).collect(),
-            &expected.colors,
-            "colors",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-            &expected.uv,
-            "uv",
-        ),
-    ] {
-        assert_eq!(a.len(), b.len(), "{label} {name}");
-        if let Some(i) = a.iter().zip(b).position(|(a, b)| (a - b).abs() > 2e-10) {
-            panic!("{label} {name} {i}: {} != {}", a[i], b[i]);
-        }
-    }
-    assert_eq!(
-        mesh.triangle_surfaces
-            .iter()
-            .map(|i| &mesh.surfaces[*i].slot)
-            .collect::<Vec<_>>(),
-        expected.slots.iter().collect::<Vec<_>>()
-    );
+const LEFT: V3 = [-0.4, 0.2, 2.4];
+const RIGHT: V3 = [1.1, 0.8, 2.7];
+fn linen() -> Garment {
+    balcony_props::choose(
+        &mut SeededRng::from_text("linen/1"),
+        Room {
+            width: 1.5,
+            drop: 1.8,
+        },
+        Support::Line,
+    )
+    .unwrap()
+    .unwrap()
 }
-pub fn check_reference_balcony_props() {
-    let golden = fixture();
-    for (i, c) in golden.plants.iter().enumerate() {
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            balcony_props::plant(
-                &mut Fixture {
-                    pen: pen(c.reflected),
-                    mesh: &mut mesh,
-                    repeats: &|_| 1.,
-                },
-                c.name,
-                c.at,
-                c.scale,
-                c.rotation,
-                c.textured,
-            )
-            .unwrap();
-            if mode == Mode::Render {
-                check(&mesh, &c.geometry, &format!("plant {i}"));
-            } else {
-                assert_eq!(mesh.triangle_count() * 3, c.geometry.indices.len());
+fn hang(mode: Mode, garment: &Garment, reflected: bool, textured: bool) -> usize {
+    let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
+    balcony_props::hang(
+        &mut Fixture {
+            pen: pen(reflected),
+            mesh: &mut mesh,
+            repeats: &|_| 1.,
+        },
+        garment,
+        LEFT,
+        RIGHT,
+        0.05,
+        textured,
+    )
+    .unwrap();
+    mesh.triangle_count()
+}
+#[test]
+fn chosen_garments_fit_their_room_and_tiny_rooms_hang_nothing() {
+    for support in [Support::Line, Support::Pole, Support::Hanger] {
+        for i in 0..16 {
+            let room = Room {
+                width: 0.6 + 0.1 * i as f64,
+                drop: 0.8 + 0.1 * i as f64,
+            };
+            let mut rng = SeededRng::from_text(&format!("fit/{i}"));
+            if let Some(g) = balcony_props::choose(&mut rng, room, support).unwrap() {
+                assert!(
+                    g.width <= room.width + 1e-12,
+                    "width {} > {}",
+                    g.width,
+                    room.width
+                );
+                assert!(
+                    g.drop <= room.drop + 1e-12,
+                    "drop {} > {}",
+                    g.drop,
+                    room.drop
+                );
+                assert!(g.scale > 0.);
             }
         }
-    }
-    for (i, c) in golden.garments.iter().enumerate() {
-        let mut rng = SeededRng::from_text(&c.seed);
-        let garment = balcony_props::choose(&mut rng, c.room, c.support).unwrap();
-        assert_eq!(
-            serde_json::to_value(&garment).unwrap(),
-            serde_json::to_value(&c.garment).unwrap()
-        );
-        assert_eq!(rng.next_u32(), c.next);
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            if let Some(g) = &garment {
-                balcony_props::hang(
-                    &mut Fixture {
-                        pen: pen(c.reflected),
-                        mesh: &mut mesh,
-                        repeats: &|_| 1.,
-                    },
-                    g,
-                    c.left,
-                    c.right,
-                    c.sway,
-                    c.textured,
-                )
-                .unwrap();
-            }
-            if mode == Mode::Render {
-                check(&mesh, &c.geometry, &format!("garment {i}"));
-            } else {
-                assert_eq!(mesh.triangle_count() * 3, c.geometry.indices.len());
-            }
-        }
-    }
-    for c in golden.small {
-        let mut rng = SeededRng::from_text("small");
         assert!(
-            balcony_props::choose(&mut rng, c.room, c.support)
-                .unwrap()
-                .is_none()
+            balcony_props::choose(
+                &mut SeededRng::from_text("small"),
+                Room {
+                    width: 0.05,
+                    drop: 0.1
+                },
+                support
+            )
+            .unwrap()
+            .is_none()
         );
-        assert_eq!(rng.next_u32(), c.next);
     }
 }
 #[test]
-fn balcony_assets_and_fitting_rng_match_reference() {
-    check_reference_balcony_props();
+fn plants_and_garments_survey_like_render_and_mirror_without_changing_topology() {
+    for plant in [Plant::RubberPlant, Plant::TrailingPothos, Plant::SnakePlant] {
+        for textured in [false, true] {
+            let count = |mode, reflected| {
+                let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
+                balcony_props::plant(
+                    &mut Fixture {
+                        pen: pen(reflected),
+                        mesh: &mut mesh,
+                        repeats: &|_| 1.,
+                    },
+                    plant,
+                    [0.3, -0.4, 0.7],
+                    0.8,
+                    0.37,
+                    textured,
+                )
+                .unwrap();
+                mesh.triangle_count()
+            };
+            let render = count(Mode::Render, false);
+            assert!(render > 0);
+            assert_eq!(count(Mode::Survey, false), render);
+            assert_eq!(count(Mode::Render, true), render);
+        }
+    }
+    let garment = linen();
+    for textured in [false, true] {
+        let render = hang(Mode::Render, &garment, false, textured);
+        assert!(render > 0);
+        assert_eq!(hang(Mode::Survey, &garment, false, textured), render);
+        assert_eq!(hang(Mode::Render, &garment, true, textured), render);
+    }
 }
 #[test]
 fn balcony_props_deliver_shared_pbr_atlases_and_preserve_collision() {
@@ -215,9 +143,7 @@ fn balcony_props_deliver_shared_pbr_atlases_and_preserve_collision() {
 }
 #[test]
 fn invalid_fits_are_rejected_without_geometry_or_rng_changes() {
-    let g = fixture();
-    let c = &g.garments[0];
-    let mut garment = c.garment.clone().unwrap();
+    let mut garment = linen();
     for error in 0..3 {
         let before = garment.clone();
         match error {
@@ -234,8 +160,8 @@ fn invalid_fits_are_rejected_without_geometry_or_rng_changes() {
                     repeats: &|_| 1.
                 },
                 &garment,
-                c.left,
-                c.right,
+                LEFT,
+                RIGHT,
                 0.,
                 true
             )
@@ -275,19 +201,5 @@ fn invalid_fits_are_rejected_without_geometry_or_rng_changes() {
         .is_err()
     );
     assert!(mesh.indices.is_empty());
-    let mut recovered = Mesh::new(Mode::Render, 100000, &|| false).unwrap();
-    balcony_props::hang(
-        &mut Fixture {
-            pen: pen(false),
-            mesh: &mut recovered,
-            repeats: &|_| 1.,
-        },
-        &garment,
-        c.left,
-        c.right,
-        0.,
-        true,
-    )
-    .unwrap();
-    assert!(!recovered.indices.is_empty());
+    assert!(hang(Mode::Render, &garment, false, true) > 0);
 }

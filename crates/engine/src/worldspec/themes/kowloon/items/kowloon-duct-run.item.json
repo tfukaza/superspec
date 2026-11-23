@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-duct-run",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "length": {"type": "number", "default": 5, "min": 0.5, "max": 40, "unit": "m"},
     "direction": {"type": "number", "default": -1, "min": -1, "max": 1},
     "width": {"type": "number", "default": 0.3, "min": 0.15, "max": 0.8, "unit": "m"},
@@ -24,7 +26,7 @@
       "generator": {
         "kind": "route",
         "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
-        "wallThickness": 0.004,
+        "wallThickness": "select(graphicsDetail > 0, 0, 0.004)",
         "points": [[0, "-axis", 0], ["direction * length", "-axis", 0]],
         "up": [0, 0, 1],
         "capped": true,
@@ -38,7 +40,7 @@
       "id": "bracket",
       "repeat": [{"name": "k", "count": {"derived": "brackets"}}],
       "generator": {"kind": "item", "entry": "kowloon-duct-bracket.item.json",
-        "parameters": {"width": {"parameter": "depth"}, "depth": {"parameter": "width"}, "standoff": {"parameter": "standoff"}, "feet": false}},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"parameter": "depth"}, "depth": {"parameter": "width"}, "standoff": {"parameter": "standoff"}, "feet": false}},
       "placement": {"position": ["direction * (inset + pitch * (k + 0.5))", 0, 0], "rotation": [0, -90, 0]}
     },
     {
@@ -51,7 +53,7 @@
         "points": [["direction * (inset + pitch * (j + 0.25))", "-axis", 0], ["direction * (inset + pitch * (j + 0.25))", 0.05, 0]],
         "up": [0, 0, 1],
         "capped": false,
-        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.0585}, "overhang": 0.035, "thickness": 0.017, "bolts": 4}]
+        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.0585}, "overhang": 0.035, "thickness": 0.017, "bolts": "select(graphicsDetail > 0, 0, 4)"}]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
     }

@@ -1,12 +1,16 @@
 //! Composition: sub-items (another item definition placed as a part), native generators
 //! supplied by the host, and the arguments, templates and copy indices they read.
 use super::{
-    AssetReader, Attachment, Derived, ItemDefinition, ItemDiagnostic, ItemMesh, PreparedItem,
-    Values, fail, parse,
-    schema::{Arguments, Entry, ItemReference, NativeReference, Scalar},
+    AssetReader, Attachment, Derived, ItemDefinition, ItemDiagnostic, ItemMesh, Mount,
+    PreparedItem, Prototype, Values, fail, parse,
+    schema::{Arguments, Entry, ItemReference, NativeReference, PrototypeReference, Scalar},
 };
 use serde_json::Value;
-use std::{fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 /// What a native generator returns: meshes in its own coordinates, each with a material
 /// slot, and any attachments it offers.
@@ -44,7 +48,41 @@ pub trait NativeGenerators: Send + Sync {
     fn features(&self, _name: &str, _parameters: &Values) -> Vec<super::Feature> {
         Vec::new()
     }
+    /// What `name` draws for `parameters`, described as a shared shape and this instance's
+    /// own inputs; `None` (the default) where the output is the instance's alone. As cheap
+    /// and as deterministic as [`Self::features`]: it draws nothing. Instances that return
+    /// equal `content` must differ only by the colours named in `inputs`.
+    fn prototype(&self, _name: &str, _parameters: &Values) -> Option<NativePrototype> {
+        None
+    }
+    /// The shape of the prototype `content` describes, in the coordinates and slots
+    /// [`Self::generate`] uses, with every [`ItemMesh::roles`] filled and neutral vertex
+    /// colours: a vertex of role `k` carries its shade of the `k - 1`th input in name order,
+    /// so that colour times that input is what `generate` draws for an instance. Asked for
+    /// once per prototype of one prepared item, however many parts place it. The default
+    /// serves a generator without inputs whose content is its parameters.
+    fn prototype_meshes(
+        &self,
+        name: &str,
+        content: &Values,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<NativeOutput, String> {
+        self.generate(name, content, cancelled)
+    }
 }
+
+/// How a native generator describes one instance as a placed prototype.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NativePrototype {
+    /// Everything that shapes the output, canonically: no seed, no part and no placement.
+    pub content: Values,
+    /// The instance's own colours by role name, in linear RGB.
+    pub inputs: BTreeMap<String, [f64; 3]>,
+    pub mount: Mount,
+}
+
+/// The prototypes drawn so far for one prepared item and its sub-items, by key.
+pub(super) type PrototypeCache = Mutex<BTreeMap<String, Arc<Prototype>>>;
 
 /// Everything outside a definition that preparing it may read: asset bytes (GLB files and
 /// sub-item definitions, by the same paths) and the host's native generators.
@@ -53,6 +91,8 @@ pub struct Environment<'a> {
     pub natives: Option<Arc<dyn NativeGenerators>>,
     /// Entries being prepared, outermost first, to refuse cycles and deep nesting.
     pub(super) stack: Vec<String>,
+    /// Shared by every native part prepared here, so a prototype is drawn once.
+    pub(super) prototypes: Arc<PrototypeCache>,
 }
 impl<'a> Environment<'a> {
     pub fn new(assets: &'a AssetReader<'a>) -> Self {
@@ -60,6 +100,7 @@ impl<'a> Environment<'a> {
             assets,
             natives: None,
             stack: vec![],
+            prototypes: Arc::default(),
         }
     }
     pub fn with_natives(mut self, natives: Arc<dyn NativeGenerators>) -> Self {
@@ -294,8 +335,125 @@ pub(super) struct Native {
     pub name: String,
     pub identity: String,
     pub parameters: Values,
+    /// Set where the part is a prototype drawn as it is (`kind: "prototype"`): `parameters`
+    /// is then the prototype's content, not an instance's parameters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared: Option<Shared>,
     #[serde(skip_serializing)]
     pub generators: Opaque<dyn NativeGenerators>,
+    #[serde(skip_serializing)]
+    pub prototypes: Opaque<PrototypeCache>,
+}
+
+/// How a `prototype` part draws its prototype.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+pub(super) struct Shared {
+    /// Reflected in its local X, as [`Prototype::reflected`].
+    pub mirrored: bool,
+}
+
+impl Native {
+    /// The meshes of the prototype this part is (`shared`), as the engine holds them in
+    /// [`super::ItemGeometry::prototypes`]: indexed, neutral colours, roles filled.
+    pub(super) fn shared_meshes(
+        &self,
+        shared: Shared,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<ItemMesh>, String> {
+        let generators = &self.generators.0;
+        let output = generators
+            .prototype_meshes(&self.name, &self.parameters, cancelled)
+            .map_err(|e| format!("{} prototype: {e}", self.name))?;
+        let mut meshes = output.meshes;
+        for mesh in &mut meshes {
+            if !mesh.roles.is_empty() && mesh.roles.len() != mesh.positions.len() {
+                return Err(format!(
+                    "{} prototype: a mesh names roles for other vertices than its own.",
+                    self.name
+                ));
+            }
+            mesh.index_vertices(generators.preserve_signed_zero(&mesh.material_slot));
+            if shared.mirrored {
+                mesh.reflect();
+            }
+        }
+        Ok(meshes)
+    }
+
+    /// The prototype this part places and its own inputs, where its generator describes one:
+    /// drawn on first use and shared after.
+    pub(super) fn prototype(
+        &self,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Option<(String, Arc<Prototype>, BTreeMap<String, [f64; 3]>)>, String> {
+        let generators = &self.generators.0;
+        let Some(described) = generators.prototype(&self.name, &self.parameters) else {
+            return Ok(None);
+        };
+        let key = Prototype::key(
+            "native",
+            &self.name,
+            &self.identity,
+            &described.content,
+            false,
+        )?;
+        let known = self
+            .prototypes
+            .0
+            .lock()
+            .map_err(|_| "Prototype cache poisoned.")?
+            .get(&key)
+            .cloned();
+        let prototype = match known {
+            Some(prototype) => prototype,
+            None => {
+                let roles: Vec<String> = described.inputs.keys().cloned().collect();
+                let output = generators
+                    .prototype_meshes(&self.name, &described.content, cancelled)
+                    .map_err(|e| format!("{} prototype: {e}", self.name))?;
+                let mut meshes = output.meshes;
+                for mesh in &mut meshes {
+                    if !mesh.roles.is_empty() && mesh.roles.len() != mesh.positions.len()
+                        || mesh
+                            .roles
+                            .iter()
+                            .any(|&role| usize::from(role) > roles.len())
+                    {
+                        return Err(format!(
+                            "{} prototype: a mesh names a role it has no input for.",
+                            self.name
+                        ));
+                    }
+                    mesh.index_vertices(generators.preserve_signed_zero(&mesh.material_slot));
+                }
+                let prototype = Arc::new(Prototype {
+                    kind: "native".into(),
+                    name: self.name.clone(),
+                    identity: self.identity.clone(),
+                    features: generators.features(&self.name, &described.content),
+                    content: described.content,
+                    mirrored: false,
+                    meshes,
+                    roles,
+                    mount: described.mount,
+                });
+                self.prototypes
+                    .0
+                    .lock()
+                    .map_err(|_| "Prototype cache poisoned.")?
+                    .entry(key.clone())
+                    .or_insert(prototype)
+                    .clone()
+            }
+        };
+        if !prototype.roles.iter().eq(described.inputs.keys()) {
+            return Err(format!(
+                "{}: instances of one prototype name different inputs.",
+                self.name
+            ));
+        }
+        Ok(Some((key, prototype, described.inputs)))
+    }
 }
 
 pub(super) fn native(
@@ -342,6 +500,41 @@ pub(super) fn native(
         name: reference.name.clone(),
         identity,
         parameters,
+        shared: None,
         generators: Opaque(generators),
+        prototypes: Opaque(environment.prototypes.clone()),
     })
+}
+
+/// A `prototype` part: the generator's identity and the content it is drawn from, as stated.
+pub(super) fn prototype(
+    definition: &ItemDefinition,
+    reference: &PrototypeReference,
+    environment: &Environment<'_>,
+    pointer: &str,
+) -> Result<Native, ItemDiagnostic> {
+    if reference.content.len() > 128 {
+        return Err(fail(
+            &definition.source,
+            &format!("{pointer}/content"),
+            "ITEM_LIMIT",
+            "A prototype's content has at most 128 values.",
+        ));
+    }
+    let mut native = native(
+        definition,
+        &NativeReference {
+            name: reference.name.clone(),
+            parameters: Arguments::new(),
+        },
+        &Values::new(),
+        &Derived::new(),
+        environment,
+        pointer,
+    )?;
+    native.parameters = reference.content.clone();
+    native.shared = Some(Shared {
+        mirrored: reference.mirrored,
+    });
+    Ok(native)
 }

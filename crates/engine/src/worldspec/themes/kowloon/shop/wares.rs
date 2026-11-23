@@ -280,6 +280,10 @@ pub fn bucket(d: &mut Fixture<'_, '_>, at: V3, r: f64, h: f64, tint: V3) -> Resu
         ],
         12,
     )?;
+    // Its wire bail is a hairline: a reduced level leaves it out.
+    if d.mesh.graphics_detail().reduced() {
+        return Ok(());
+    }
     limb(
         d,
         "metal",

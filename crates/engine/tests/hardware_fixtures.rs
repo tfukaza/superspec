@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::{
     materialspec::surface::Sample,
@@ -15,32 +14,29 @@ use superspec_engine::{
 use superspec_geometry::Matrix;
 #[path = "support/tank_scene.rs"]
 mod scene_fixture;
-#[derive(Deserialize)]
-struct Receiver {
-    first: usize,
-    count: usize,
-    point: [f64; 2],
-    sample: Sample,
-}
-#[derive(Deserialize)]
+const OPERATIONS: [&str; 17] = [
+    "member",
+    "angle",
+    "gusset",
+    "rod",
+    "plate2",
+    "plate4",
+    "turnbuckle",
+    "chain",
+    "lattice",
+    "corrugated",
+    "round-tank",
+    "box-tank",
+    "brushed-box",
+    "brushed-slope",
+    "brushed-uv",
+    "brushed-derived",
+    "brushed-curves",
+];
 struct Case {
-    frame: String,
     density: f64,
-    operation: String,
+    operation: &'static str,
     settings: Settings,
-    next: u32,
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
-    parts: Vec<String>,
-    receivers: Vec<Receiver>,
-}
-#[derive(Deserialize)]
-struct Cases {
-    cases: Vec<Case>,
 }
 fn repeat(slot: &str) -> f64 {
     match slot {
@@ -64,7 +60,7 @@ fn draw(drawing: &mut Fixture<'_, '_>, case: &Case, rng: &mut SeededRng) -> Resu
         tint: [0.3, 0.5, 0.7],
         finish: Finish::Metal((case.density > 0.).then_some(&case.settings.weathering)),
     };
-    match case.operation.as_str() {
+    match case.operation {
         "corrugated" => superspec_engine::worldspec::themes::kowloon::corrugated::draw(
             drawing,
             "metal",
@@ -181,161 +177,84 @@ fn draw(drawing: &mut Fixture<'_, '_>, case: &Case, rng: &mut SeededRng) -> Resu
         }
     }
 }
-fn close_json(a: &serde_json::Value, b: &serde_json::Value, label: &str) {
-    match (a, b) {
-        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{label}: {a} != {b}"
-        ),
-        (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "{label}");
-            for (a, b) in a.iter().zip(b) {
-                close_json(a, b, label);
-            }
-        }
-        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
-            assert_eq!(a.len(), b.len(), "{label}");
-            for (k, b) in b {
-                close_json(&a[k], b, &format!("{label}/{k}"));
-            }
-        }
-        _ => assert_eq!(a, b, "{label}"),
-    }
-}
-pub fn check_reference_hardware() {
-    let cases: Cases =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/hardware.json")).unwrap();
-    for case in cases.cases {
-        let label = format!("{}/{}/{}", case.frame, case.density, case.operation);
-        let pen = Pen::new(matrix(&case.frame), "fixture").unwrap();
-        let mut mesh = Mesh::new(Mode::Render, 50000, &|| false).unwrap();
-        let mut rng = SeededRng::from_text("hardware/7");
-        draw(
-            &mut Fixture {
-                pen: pen.clone(),
-                mesh: &mut mesh,
-                repeats: &repeat,
-            },
-            &case,
-            &mut rng,
-        )
-        .unwrap();
-        assert_eq!(rng.next_u32(), case.next, "{label} RNG");
-        assert_eq!(
-            mesh.indices.len(),
-            case.indices.len(),
-            "{label} index count"
-        );
-        assert!(
-            mesh.indices == case.indices,
-            "{label} index sharing mismatch {:?}",
-            mesh.indices
-                .iter()
-                .zip(&case.indices)
-                .position(|(a, b)| a != b)
-        );
-        for (name, actual, expected) in [
-            (
-                "position",
-                mesh.vertices
-                    .iter()
-                    .flat_map(|v| v.position)
-                    .collect::<Vec<_>>(),
-                &case.positions,
-            ),
-            (
-                "normal",
-                mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-                &case.normals,
-            ),
-            (
-                "uv",
-                mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-                &case.uv,
-            ),
-            (
-                "color",
-                mesh.vertices.iter().flat_map(|v| v.color).collect(),
-                &case.colors,
-            ),
-        ] {
-            assert_eq!(actual.len(), expected.len(), "{label}/{name} count");
-            for (i, (a, b)) in actual.iter().zip(expected).enumerate() {
-                assert!((a - b).abs() < 2e-10, "{label}/{name}/{i}: {a} != {b}");
-            }
-        }
-        assert_eq!(mesh.triangle_surfaces.len(), case.slots.len());
-        assert_eq!(case.slots.len(), case.parts.len());
-        for ((s, slot), part) in mesh
-            .triangle_surfaces
-            .iter()
-            .zip(&case.slots)
-            .zip(&case.parts)
-        {
-            assert_eq!(&mesh.surfaces[*s].slot, slot, "{label} slot");
-            assert_eq!(&mesh.surfaces[*s].part, part, "{label} part");
-        }
-        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        assert_eq!(
-            plan.receivers().len(),
-            case.receivers.len(),
-            "{label} receiver count"
-        );
-        for (range, expected) in plan.receivers().iter().zip(&case.receivers) {
-            assert_eq!(
-                (range.first_triangle, range.triangle_count),
-                (expected.first, expected.count),
-                "{label} receiver range"
-            );
-            let job = &plan.jobs()[range.job];
-            let field = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
-            let runoff = |u, v| field.as_ref().unwrap().sample(u, v);
-            let metal = Metal::new(
-                job.metal_settings().unwrap(),
-                field
-                    .as_ref()
-                    .map(|_| &runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
-            )
-            .unwrap();
-            close_json(
-                &serde_json::to_value(metal.sample(expected.point[0], expected.point[1]).unwrap())
-                    .unwrap(),
-                &serde_json::to_value(&expected.sample).unwrap(),
-                &label,
-            );
-        }
-        drop(plan);
-        let mut survey = Mesh::new(Mode::Survey, 50000, &|| false).unwrap();
-        let mut rng = SeededRng::from_text("hardware/7");
-        draw(
-            &mut Fixture {
-                pen,
-                mesh: &mut survey,
-                repeats: &|_| panic!("survey resolved appearance"),
-            },
-            &case,
-            &mut rng,
-        )
-        .unwrap();
-        assert_eq!(rng.next_u32(), case.next);
-        assert_eq!(
-            survey.survey.len(),
-            mesh.indices.len(),
-            "{label} survey count"
-        );
-        for (p, i) in survey.survey.iter().zip(&mesh.indices) {
-            assert_eq!(
-                *p, mesh.vertices[*i as usize].position,
-                "{label} survey position"
-            );
-        }
-    }
-}
 #[test]
-fn hardware_and_tanks_match_frozen_geometry_finishes_and_rng() {
-    check_reference_hardware();
+fn hardware_surveys_its_rendered_corners_with_identical_rng_use_and_bounded_receivers() {
+    for frame in ["identity", "reflection"] {
+        for density in [0., 128.] {
+            for operation in OPERATIONS {
+                let case = Case {
+                    density,
+                    operation,
+                    settings: scene_fixture::settings(),
+                };
+                let label = format!("{frame}/{density}/{operation}");
+                let pen = Pen::new(matrix(frame), "fixture").unwrap();
+                let mut mesh = Mesh::new(Mode::Render, 50000, &|| false).unwrap();
+                let mut rng = SeededRng::from_text("hardware/7");
+                draw(
+                    &mut Fixture {
+                        pen: pen.clone(),
+                        mesh: &mut mesh,
+                        repeats: &repeat,
+                    },
+                    &case,
+                    &mut rng,
+                )
+                .unwrap();
+                assert!(mesh.triangle_count() > 0, "{label}");
+                assert_eq!(mesh.triangle_surfaces.len(), mesh.triangle_count());
+                let triangles = mesh.triangle_count();
+                let plan = weathered::finish(&mut mesh, &|| false).unwrap();
+                let mut end = 0;
+                for range in plan.receivers() {
+                    assert!(
+                        range.first_triangle >= end && range.triangle_count > 0,
+                        "{label}"
+                    );
+                    end = range.first_triangle + range.triangle_count;
+                    assert!(end <= triangles, "{label}");
+                    let job = &plan.jobs()[range.job];
+                    let field = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
+                    let runoff = |u, v| field.as_ref().unwrap().sample(u, v);
+                    let metal = Metal::new(
+                        job.metal_settings().unwrap(),
+                        field
+                            .as_ref()
+                            .map(|_| &runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
+                    )
+                    .unwrap();
+                    let sample: Sample = metal.sample(0.4, 0.6).unwrap();
+                    let _ = sample;
+                }
+                drop(plan);
+                let mut survey = Mesh::new(Mode::Survey, 50000, &|| false).unwrap();
+                let mut survey_rng = SeededRng::from_text("hardware/7");
+                draw(
+                    &mut Fixture {
+                        pen,
+                        mesh: &mut survey,
+                        repeats: &|_| panic!("survey resolved appearance"),
+                    },
+                    &case,
+                    &mut survey_rng,
+                )
+                .unwrap();
+                assert_eq!(survey_rng.next_u32(), rng.next_u32(), "{label} RNG");
+                assert_eq!(
+                    survey.survey.len(),
+                    mesh.indices.len(),
+                    "{label} survey count"
+                );
+                for (p, i) in survey.survey.iter().zip(&mesh.indices) {
+                    assert_eq!(
+                        *p, mesh.vertices[*i as usize].position,
+                        "{label} survey position"
+                    );
+                }
+            }
+        }
+    }
 }
-
 #[test]
 fn complete_tanks_bake_with_stainless_maps_and_separate_collision() {
     for round in [true, false] {

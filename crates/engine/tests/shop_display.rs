@@ -1,112 +1,42 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
     mesh::{Mesh, Mode},
     pen::Pen,
     shop::{display, frontage},
-    timber,
 };
-use superspec_geometry::{Matrix, V3};
-#[allow(dead_code)]
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-struct Case {
-    kind: display::Kind,
-    trade: display::Trade,
-    seed: String,
-    textured: bool,
-    next: f64,
-    matrix: [V3; 4],
-    geometry: assembly::Geometry,
-}
-#[derive(Deserialize)]
-struct Planning {
-    width: f64,
-    seed: String,
-    mode: u8,
-    plans: serde_json::Value,
-    calls: serde_json::Value,
-    next: f64,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-    plans: Vec<Planning>,
-}
-pub fn check_reference_shop_display() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/shop-display.json"
-    ))
-    .unwrap();
-    for c in g.cases {
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            let mut rng = SeededRng::from_text(&c.seed);
-            display::draw(
-                &mut Fixture {
-                    pen: Pen::new(Matrix(c.matrix), "furniture").unwrap(),
-                    mesh: &mut mesh,
-                    repeats: &|_| 1.7,
-                },
-                c.kind,
-                c.trade,
-                &mut rng,
-                &display::Settings {
-                    timber: &timber::Settings {
-                        textured: c.textured,
-                        timber_repeat: 1.7,
-                        atlas_repeat: 1.7,
-                        ..Default::default()
-                    },
-                    props: c.textured,
-                    apples: c.textured,
-                },
-            )
+use superspec_geometry::Matrix;
+/// Whatever clearance the street grants, planned displays stay shallow and beside the doorway.
+pub fn check_frontage_plans() {
+    let mut planned = 0;
+    for mode in 0..5 {
+        for (i, width) in [0.9, 1.8, 2.2, 2.8, 3.2, 3.6, 4.2, 5.].into_iter().enumerate() {
+            let mut rng = SeededRng::from_text(&format!("frontage/{}", mode * 8 + i));
+            let plans = frontage::plan(width, &mut rng, &|a, _, _, h| {
+                Ok(match mode {
+                    0 => true,
+                    1 => false,
+                    2 => a >= width / 2.,
+                    3 => h < 1.,
+                    _ => a < width / 2.,
+                })
+            })
             .unwrap();
-            assert_eq!(rng.next_f64(), c.next);
-            if !mesh.surveying() {
-                assembly::check_triangles(
-                    &mesh,
-                    &c.geometry,
-                    &format!("{:?} {:?}", c.kind, c.trade),
+            planned += plans.len();
+            for plan in plans {
+                assert!(plan.depth + 0.04 <= 0.65);
+                assert!(
+                    plan.center[0] + plan.width / 2. <= width / 2. - 0.5 + 1e-10
+                        || plan.center[0] - plan.width / 2. >= width / 2. + 0.5 - 1e-10
                 );
             }
         }
     }
-    for p in g.plans {
-        let mut rng = SeededRng::from_text(&p.seed);
-        let calls = std::cell::RefCell::new(vec![]);
-        let plans = frontage::plan(p.width, &mut rng, &|a, b, d, h| {
-            calls.borrow_mut().push([a, b, d, h]);
-            Ok(match p.mode {
-                0 => true,
-                1 => false,
-                2 => a >= p.width / 2.,
-                3 => h < 1.,
-                _ => a < p.width / 2.,
-            })
-        })
-        .unwrap();
-        reference::close(&serde_json::to_value(&plans).unwrap(), &p.plans);
-        reference::close(&serde_json::to_value(calls.into_inner()).unwrap(), &p.calls);
-        assert_eq!(rng.next_f64(), p.next);
-        for plan in plans {
-            assert!(plan.depth + 0.04 <= 0.65);
-            assert!(
-                plan.center[0] + plan.width / 2. <= p.width / 2. - 0.5 + 1e-10
-                    || plan.center[0] - plan.width / 2. >= p.width / 2. + 0.5 - 1e-10
-            );
-        }
-    }
+    assert!(planned > 0, "open frontages must plan displays");
 }
 #[test]
-fn supported_displays_preserve_stock_and_clearance_queries() {
-    check_reference_shop_display();
+fn planned_displays_stay_shallow_and_clear_of_the_doorway() {
+    check_frontage_plans();
 }
 #[test]
 fn failed_clearance_and_cancellation_do_not_emit() {

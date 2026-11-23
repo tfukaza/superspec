@@ -91,21 +91,6 @@ pub struct Mesh<'a> {
     identity_bytes: usize,
     work: usize,
 }
-/// Owned producer output crossing a worker boundary, with cancellation rebound by its consumer.
-pub(crate) struct OwnedMesh {
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
-    surfaces: Vec<Surface>,
-    triangle_surfaces: Vec<usize>,
-    survey: Vec<V3>,
-    mode: Mode,
-    maximum_triangles: usize,
-    surface_lookup: BTreeMap<String, BTreeMap<String, usize>>,
-    source_materials: BTreeMap<String, String>,
-    identity_bytes: usize,
-    work: usize,
-}
-
 /// Completed receiver binding, excluding immutable producer planning state.
 pub(crate) struct BoundMesh {
     vertices: Vec<Vertex>,
@@ -122,24 +107,6 @@ impl BoundMesh {
             + self.triangle_surfaces.len() * std::mem::size_of::<usize>()
             + self.identity_bytes
             + 512 * self.surfaces.len()
-    }
-}
-impl OwnedMesh {
-    pub(crate) fn bind(self, cancelled: &dyn Fn() -> bool) -> Mesh<'_> {
-        Mesh {
-            vertices: self.vertices,
-            indices: self.indices,
-            surfaces: self.surfaces,
-            triangle_surfaces: self.triangle_surfaces,
-            survey: self.survey,
-            mode: self.mode,
-            maximum_triangles: self.maximum_triangles,
-            cancelled,
-            surface_lookup: self.surface_lookup,
-            source_materials: self.source_materials,
-            identity_bytes: self.identity_bytes,
-            work: self.work,
-        }
     }
 }
 impl<'a> Mesh<'a> {
@@ -206,21 +173,6 @@ impl<'a> Mesh<'a> {
         }
     }
 
-    pub(crate) fn into_owned(self) -> OwnedMesh {
-        OwnedMesh {
-            vertices: self.vertices,
-            indices: self.indices,
-            surfaces: self.surfaces,
-            triangle_surfaces: self.triangle_surfaces,
-            survey: self.survey,
-            mode: self.mode,
-            maximum_triangles: self.maximum_triangles,
-            surface_lookup: self.surface_lookup,
-            source_materials: self.source_materials,
-            identity_bytes: self.identity_bytes,
-            work: self.work,
-        }
-    }
     /// Work already charged to this detached drawing, for aggregate scene admission.
     pub(crate) fn work_spent(&self) -> usize {
         self.work

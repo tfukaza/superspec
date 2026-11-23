@@ -2,16 +2,19 @@
 //! group, features, pattern anchor, attachments and geometry key.
 use super::{
     Attachment, Derived, Feature, ImportedMaterial, ItemDecal, ItemDefinition, ItemDiagnostic,
-    ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PatternAnchor, PreparedItem, Values,
-    arc,
+    ItemGeometry, ItemImage, ItemMesh, ItemNode, ItemPart, PartPlacement, PatternAnchor,
+    PreparedItem, Prototype, Values, arc,
     compose::{self, Environment, Opaque},
     decal, fail, footprint, panel, procedural, route,
-    schema::{Axis, Generator, PartDefinition, Scalar, Switch, bounded_name},
-    surfaces::{self, Frame, Outline, Surfaces, beveled_prism, prism},
+    schema::{Axis, FootprintMode, Generator, PartDefinition, Scalar, Switch, bounded_name},
+    surfaces::{self, Frame, Outline, Surfaces, beveled_prism, prism, prism_loops},
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use superspec_geometry::{
     Matrix, V3,
     math::{dot, unit},
@@ -172,6 +175,8 @@ enum PartShape {
     /// A footprint outline swept up by `height` from the part origin.
     Prism {
         outline: Vec<footprint::P2>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        holes: Vec<Vec<footprint::P2>>,
         height: f64,
         #[serde(skip_serializing_if = "Bevel::none")]
         bevel: Bevel,
@@ -376,8 +381,7 @@ fn copies(
         }
         let mut next = Vec::new();
         for copy in copies {
-            // Along a footprint, one copy per edge, each reading that edge's geometry.
-            let edges = match &repeat.footprint {
+            let plan = match &repeat.footprint {
                 Some(reference) => Some(footprint::resolve(
                     context.definition,
                     reference,
@@ -387,8 +391,25 @@ fn copies(
                 )?),
                 None => None,
             };
-            let count = match &edges {
-                Some(edges) => edges.len() as f64,
+            let rectangles = match (&plan, repeat.footprint_mode) {
+                (_, FootprintMode::Edges) => None,
+                (Some(plan), mode) => Some(
+                    plan.rectangles(mode == FootprintMode::LargestRectangle)
+                        .map_err(|message| context.fail(&at, "ITEM_FOOTPRINT", message))?,
+                ),
+                (None, _) => {
+                    return Err(context.fail(
+                        &at,
+                        "ITEM_REPEAT",
+                        "A footprint repeat mode requires a footprint.",
+                    ));
+                }
+            };
+            let count = match &plan {
+                Some(plan) => rectangles
+                    .as_ref()
+                    .map_or_else(|| plan.edge_count(), Vec::len)
+                    as f64,
                 None => context.definition.scalar(
                     &repeat.count,
                     context.parameters,
@@ -407,8 +428,11 @@ fn copies(
                 let mut derived = copy.derived.clone();
                 derived.insert(repeat.name.clone(), index as f64);
                 derived.insert(format!("{}_count", repeat.name), count);
-                if let Some(edges) = &edges {
-                    derived.extend(footprint::locals(&repeat.name, edges, index));
+                if let Some(plan) = &plan {
+                    derived.extend(match &rectangles {
+                        Some(rectangles) => plan.rectangle_locals(&repeat.name, rectangles[index]),
+                        None => plan.edge_locals(&repeat.name, index),
+                    });
                 }
                 next.push(Copy {
                     id: format!("{}-{index}", copy.id),
@@ -694,7 +718,7 @@ pub(super) fn prepare(
                     bevel,
                     bevel_segments,
                 } => {
-                    let edges = footprint::resolve(
+                    let plan = footprint::resolve(
                         context.definition,
                         reference,
                         context.parameters,
@@ -703,23 +727,31 @@ pub(super) fn prepare(
                     )?;
                     let inset = context.scalar(inset, &format!("{generator}/inset"))?;
                     let height = context.dimension(height, &format!("{generator}/height"))?;
-                    let outline = footprint::outline(&edges, inset);
+                    let mut loops = plan.outlines(inset).map_err(|message| {
+                        context.fail(&format!("{generator}/footprint"), "ITEM_FOOTPRINT", message)
+                    })?;
+                    let outline = loops.remove(0);
                     let (radius, segments) = context.bevel(
                         &generator,
                         bevel,
                         bevel_segments,
                         (height / 2. - 5e-4).max(0.),
                     )?;
-                    if radius > 0. && !surfaces::insets(&outline, radius) {
+                    if radius > 0. && (!loops.is_empty() || !surfaces::insets(&outline, radius)) {
                         return Err(context.fail(
                             &format!("{generator}/bevel"),
                             "ITEM_GEOMETRY",
-                            "The bevel is wider than an edge of the outline can lose.",
+                            if loops.is_empty() {
+                                "The bevel is wider than an edge of the outline can lose."
+                            } else {
+                                "A prism with footprint holes requires a zero bevel."
+                            },
                         ));
                     }
                     (
                         PartShape::Prism {
                             outline,
+                            holes: loops,
                             height,
                             bevel: Bevel { radius, segments },
                         },
@@ -786,11 +818,21 @@ pub(super) fn prepare(
                     &[],
                     vec![],
                 ),
+                Generator::Prototype(reference) => (
+                    PartShape::Native(compose::prototype(
+                        context.definition,
+                        reference,
+                        environment,
+                        &generator,
+                    )?),
+                    &[],
+                    vec![],
+                ),
                 Generator::Glb { .. } | Generator::Parts => {
                     return Err(context.fail(
                         &generator,
                         "ITEM_PART",
-                        "A part uses a box, panel, route, arc, pipe, duct, item or native generator.",
+                        "A part uses a box, panel, route, arc, pipe, duct, item, native or prototype generator.",
                     ));
                 }
             };
@@ -1107,6 +1149,10 @@ struct Built {
     images: Vec<ItemImage>,
     /// A sub-item's features, in part coordinates, given to this part.
     features: Vec<Feature>,
+    /// The prototypes this part places, in part coordinates: `meshes` index this part's own
+    /// and `node` is not yet known.
+    placements: Vec<PartPlacement>,
+    prototypes: BTreeMap<String, Arc<Prototype>>,
 }
 
 /// The source an authored feature carries at its own level; a sub-item's authored features
@@ -1188,13 +1234,67 @@ impl PreparedPart {
                         feature
                     })
                     .collect();
+                // The sub-item's placements, lifted: its item space is this part's, its
+                // flattened meshes are numbered node by node, and those in a slot this part
+                // maps nowhere are gone.
+                let mut placements = Vec::new();
+                let mut prototypes = BTreeMap::new();
+                if !item.geometry.placements.is_empty() {
+                    let mut flat = vec![usize::MAX; item.geometry.meshes.len()];
+                    let mut count = 0;
+                    for &index in item.geometry.nodes.iter().flat_map(|node| &node.meshes) {
+                        if let Some(at) = flat.get_mut(index) {
+                            *at = count;
+                        }
+                        count += 1;
+                    }
+                    let mut adopted = 0;
+                    let kept: Vec<Option<usize>> = meshes
+                        .iter()
+                        .map(|mesh| {
+                            self.slot(&mesh.material_slot).map(|_| {
+                                adopted += 1;
+                                adopted - 1
+                            })
+                        })
+                        .collect();
+                    for mut placement in item.geometry.placed()? {
+                        placement.meshes = placement
+                            .meshes
+                            .iter()
+                            .filter_map(|&mesh| *kept.get(*flat.get(mesh)?)?)
+                            .collect();
+                        if placement.meshes.is_empty() {
+                            continue;
+                        }
+                        placement.slots = placement
+                            .slots
+                            .into_iter()
+                            .filter_map(|(from, to)| Some((from, self.slot(&to)?)))
+                            .collect();
+                        placement.path = format!("{}/{}", self.id, placement.path);
+                        if let Some(prototype) = item.geometry.prototypes.get(&placement.prototype)
+                        {
+                            prototypes.insert(placement.prototype.clone(), prototype.clone());
+                        }
+                        placements.push(placement);
+                    }
+                }
                 Ok(Built {
                     meshes: self.adopt(meshes),
                     materials,
                     images,
                     features,
+                    placements,
+                    prototypes,
                 })
             }
+            // A prototype drawn as it is: its shades and roles stay on the meshes, and it is
+            // no placement of anything.
+            PartShape::Native(native) if native.shared.is_some() => Ok(Built {
+                meshes: self.adopt(native.shared_meshes(native.shared.unwrap(), cancelled)?),
+                ..Built::default()
+            }),
             PartShape::Native(native) => {
                 let output = native
                     .generators
@@ -1211,10 +1311,45 @@ impl PreparedPart {
                             .preserve_signed_zero(&mesh.material_slot),
                     );
                 }
-                Ok(Built {
+                let drawn: Vec<(String, usize)> = meshes
+                    .iter()
+                    .map(|mesh| (mesh.material_slot.clone(), mesh.indices.len()))
+                    .collect();
+                let mut built = Built {
                     meshes: self.adopt(meshes),
                     ..Built::default()
-                })
+                };
+                if built.meshes.is_empty() {
+                    return Ok(built);
+                }
+                if let Some((key, prototype, inputs)) = native.prototype(cancelled)? {
+                    // The prototype is this instance's shape, mesh for mesh.
+                    if !prototype
+                        .meshes
+                        .iter()
+                        .map(|mesh| (&mesh.material_slot, mesh.indices.len()))
+                        .eq(drawn.iter().map(|(slot, indices)| (slot, *indices)))
+                    {
+                        return Err(format!(
+                            "{}: its prototype is not the shape it draws.",
+                            native.name
+                        ));
+                    }
+                    built.placements.push(PartPlacement {
+                        prototype: key.clone(),
+                        path: self.id.clone(),
+                        node: 0,
+                        transform: Matrix::default().0,
+                        inputs,
+                        slots: drawn
+                            .iter()
+                            .filter_map(|(slot, _)| Some((slot.clone(), self.slot(slot)?)))
+                            .collect(),
+                        meshes: (0..built.meshes.len()).collect(),
+                    });
+                    built.prototypes.insert(key, prototype);
+                }
+                Ok(built)
             }
             _ => Ok(Built {
                 meshes: self.meshes(cancelled)?,
@@ -1329,21 +1464,32 @@ impl PreparedPart {
             PartShape::Arc(arc) => arc.build(&mut surfaces)?,
             PartShape::Prism {
                 outline,
+                holes,
                 height,
                 bevel,
-            } => beveled_prism(
-                &mut surfaces,
-                ["side", "bottom", "top"],
-                &Frame {
+            } => {
+                let frame = Frame {
                     origin: [0.; 3],
                     x: [1., 0., 0.],
                     y: [0., 1., 0.],
-                },
-                &Outline::flat(outline.clone()),
-                [0., *height],
-                bevel.radius,
-                bevel.segments,
-            )?,
+                };
+                let outer = Outline::flat(outline.clone());
+                let groups = ["side", "bottom", "top"];
+                if holes.is_empty() {
+                    beveled_prism(
+                        &mut surfaces,
+                        groups,
+                        &frame,
+                        &outer,
+                        [0., *height],
+                        bevel.radius,
+                        bevel.segments,
+                    )?;
+                } else {
+                    let holes: Vec<_> = holes.iter().cloned().map(Outline::flat).collect();
+                    prism_loops(&mut surfaces, groups, &frame, &outer, &holes, [0., *height])?;
+                }
+            }
             PartShape::Item { .. } | PartShape::Native(_) => {
                 return Err("Sub-item and native parts are built by their owner.".into());
             }
@@ -1382,6 +1528,9 @@ impl PreparedPart {
                         .features(&native.name, &native.parameters)
                         .into_iter()
                         .map(|mut feature| {
+                            if native.shared.is_some_and(|shared| shared.mirrored) {
+                                feature.reflect();
+                            }
                             feature.part = self.id.clone();
                             feature
                         })
@@ -1398,6 +1547,127 @@ impl PreparedPart {
             ),
         }
     }
+}
+
+/// What one leaf part of a prepared item is, apart from where it stands: the content keys a
+/// later stage shares panels by, and what a survey counts. None of the three keys names the
+/// part's ID, its placement or the item it is in.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartContent {
+    /// Part IDs, outermost first.
+    pub path: String,
+    /// The generator: `panel`, `box`, `route`, `native:<name>`, `item:<entry>` and so on.
+    pub kind: String,
+    /// The slots of the outermost item its face groups land in.
+    pub slots: Vec<String>,
+    /// A panel's width, height and thickness.
+    pub size: Option<[f64; 3]>,
+    /// A panel's openings and seats.
+    pub openings: usize,
+    /// The zone rules and authored features the part carries.
+    pub features: usize,
+    /// A hash of the generator, its outer size and its slots: a panel without its openings.
+    pub bare: String,
+    /// A hash of the resolved shape and slots: the part's geometry key less ID and placement.
+    pub shape: String,
+    /// `shape` with the part's zone rules and its authored features, in part coordinates.
+    pub featured: String,
+}
+
+/// The leaf parts of `parts` and of their sub-items under `prefix`. `authored` are the
+/// features of the parts' item, in its coordinates; `outer` maps one of its slots to the
+/// outermost item's.
+pub(super) fn contents(
+    parts: &[PreparedPart],
+    authored: &[Feature],
+    prefix: &str,
+    outer: &dyn Fn(&str) -> Option<String>,
+    result: &mut Vec<PartContent>,
+) -> Result<(), String> {
+    fn key(value: &impl Serialize) -> Result<String, String> {
+        let mut hash = Sha256::new();
+        hash.update(b"itemspec-part-content-v1\0");
+        hash.update(serde_json::to_vec(value).map_err(|e| e.to_string())?);
+        Ok(format!("{:x}", hash.finalize()))
+    }
+    for part in parts {
+        let path = format!("{prefix}{}", part.id);
+        if let PartShape::Item { prepared, .. } = &part.shape {
+            if let super::Shape::Parts(children) = &prepared.0.shape {
+                contents(
+                    children,
+                    &prepared.0.authored,
+                    &format!("{path}/"),
+                    &|slot| outer(&part.slot(slot)?),
+                    result,
+                )?;
+                continue;
+            }
+        }
+        let (kind, size, openings) = match &part.shape {
+            PartShape::Box { .. } => ("box".to_owned(), None, 0),
+            PartShape::Pipe { .. } => ("pipe".to_owned(), None, 0),
+            PartShape::Duct { .. } => ("duct".to_owned(), None, 0),
+            PartShape::Panel(panel) => (
+                "panel".to_owned(),
+                Some(panel.size()),
+                panel.opening_count(),
+            ),
+            PartShape::Route(_) => ("route".to_owned(), None, 0),
+            PartShape::Arc(_) => ("arc".to_owned(), None, 0),
+            PartShape::Prism { .. } => ("prism".to_owned(), None, 0),
+            PartShape::Item { entry, .. } => (format!("item:{entry}"), None, 0),
+            PartShape::Native(native) if native.shared.is_some() => {
+                (format!("prototype:{}", native.name), None, 0)
+            }
+            PartShape::Native(native) => (format!("native:{}", native.name), None, 0),
+        };
+        // Authored features are kept in item coordinates: a part's own are told apart from
+        // another placement's by bringing them back to the part, to a micrometre.
+        let inverse = part.placement.inverse()?;
+        let round = |v: V3| v.map(|v| (v * 1e6).round() as i64);
+        let own: Vec<_> = authored
+            .iter()
+            .filter(|feature| feature.part == part.id)
+            .map(|feature| {
+                (
+                    &feature.name,
+                    &feature.face,
+                    feature
+                        .points
+                        .iter()
+                        .map(|point| round(inverse.point(*point)))
+                        .collect::<Vec<_>>(),
+                    feature.closed,
+                    round(inverse.direction(feature.normal)),
+                    feature.width,
+                    feature.reach,
+                    feature.within,
+                    &feature.zone,
+                )
+            })
+            .collect();
+        let shape = key(&(&part.shape, &part.slots))?;
+        let mut slots: Vec<String> = part.slots.values().filter_map(|slot| outer(slot)).collect();
+        slots.sort();
+        slots.dedup();
+        result.push(PartContent {
+            path,
+            bare: match size {
+                Some(size) => key(&(&kind, size, &part.slots))?,
+                None => shape.clone(),
+            },
+            featured: key(&(&part.shape, &part.slots, &part.zones, &own))?,
+            shape,
+            kind,
+            slots,
+            size,
+            openings,
+            features: part.zones.len() + own.len(),
+        });
+    }
+    Ok(())
 }
 
 /// Builds the item's geometry. A part whose key matches one in `previous` copies that
@@ -1418,6 +1688,8 @@ pub(super) fn build(
         parts: vec![],
         features: vec![],
         anchors: vec![],
+        prototypes: BTreeMap::new(),
+        placements: vec![],
     };
     let mut built = Vec::new();
     for part in parts {
@@ -1430,14 +1702,39 @@ pub(super) fn build(
                 .parts
                 .iter()
                 .find(|old| old.id == part.id && old.geometry_key == part.key)?;
-            old.meshes
+            let meshes = old
+                .meshes
                 .iter()
                 .map(|index| previous.meshes.get(*index).cloned())
-                .collect::<Option<Vec<_>>>()
+                .collect::<Option<Vec<_>>>()?;
+            Some((old, meshes))
         });
         let mut adopted = Vec::new();
+        // The part's placements, with meshes numbered from its first.
+        let mut placements = Vec::new();
+        let mut prototypes = BTreeMap::new();
         let meshes = match kept {
-            Some(meshes) => {
+            Some((old, meshes)) => {
+                // A kept part's placements are the ones it had: its node is the one they
+                // lead to, as before.
+                for placement in previous
+                    .into_iter()
+                    .flat_map(|previous| &previous.placements)
+                    .filter(|placement| placement.node == old.node)
+                {
+                    let mut placement = placement.clone();
+                    placement.meshes = placement
+                        .meshes
+                        .iter()
+                        .filter_map(|mesh| old.meshes.iter().position(|index| index == mesh))
+                        .collect();
+                    if let Some(prototype) =
+                        previous.and_then(|previous| previous.prototypes.get(&placement.prototype))
+                    {
+                        prototypes.insert(placement.prototype.clone(), prototype.clone());
+                    }
+                    placements.push(placement);
+                }
                 // A kept sub-item's features are the ones it had, already in item coordinates.
                 if let Some(previous) = previous.filter(|_| part.sub_item().is_some()) {
                     geometry.features.extend(
@@ -1454,6 +1751,8 @@ pub(super) fn build(
                 built.push(part.id.clone());
                 let result = part.build(cancelled).map_err(failure)?;
                 adopted = result.features;
+                placements = result.placements;
+                prototypes = result.prototypes;
                 for (slot, material) in result.materials {
                     geometry.imported_materials.entry(slot).or_insert(material);
                 }
@@ -1500,6 +1799,39 @@ pub(super) fn build(
             extras: None,
         });
         let matrix = item.then(part.placement);
+        for mut placement in placements {
+            placement.node = geometry.nodes.len() - 1;
+            for mesh in &mut placement.meshes {
+                *mesh += first;
+            }
+            let Some(prototype) = prototypes.get(&placement.prototype) else {
+                return Err(failure("A placement names an unknown prototype.".into()));
+            };
+            // A placement that mirrors its prototype names the reflected prototype, so every
+            // stored transform is a proper motion.
+            let local = Matrix(placement.transform);
+            if matrix.then(local).determinant() < 0. {
+                placement.prototype = Prototype::key(
+                    &prototype.kind,
+                    &prototype.name,
+                    &prototype.identity,
+                    &prototype.content,
+                    !prototype.mirrored,
+                )
+                .map_err(failure)?;
+                placement.transform = local.then(super::output::REFLECTION).0;
+                geometry
+                    .prototypes
+                    .entry(placement.prototype.clone())
+                    .or_insert_with(|| Arc::new(prototype.reflected()));
+            } else {
+                geometry
+                    .prototypes
+                    .entry(placement.prototype.clone())
+                    .or_insert_with(|| prototype.clone());
+            }
+            geometry.placements.push(placement);
+        }
         let inverse = matrix.inverse().map_err(failure)?;
         // Surface normals follow the inverse transpose; route directions follow the matrix.
         let covector = |normal: V3| {

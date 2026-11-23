@@ -1,10 +1,7 @@
 //! Per-build Kowloon planning state and explicitly supplied execution services.
 use super::{cache::Cache, floor::Finish, pavement::plan::Settings};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Mutex,
-};
-use superspec_types::architecture::{Node, V3};
+use std::{collections::BTreeMap, sync::Mutex};
+use superspec_types::architecture::Node;
 
 pub(crate) struct FloorPlan {
     pub(crate) source: Node,
@@ -16,9 +13,6 @@ pub(crate) struct FloorPlan {
 #[derive(Default)]
 pub(crate) struct ThemeState {
     pub(crate) floor_dressing: BTreeMap<usize, FloorPlan>,
-    pub(crate) building_hosts: BTreeSet<usize>,
-    pub(crate) render_edge_vertices: Vec<V3>,
-    pub(crate) sign_survey: Vec<[V3; 3]>,
 }
 
 pub(crate) struct Execution<'a> {

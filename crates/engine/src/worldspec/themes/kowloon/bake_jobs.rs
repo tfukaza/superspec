@@ -457,7 +457,6 @@ pub struct Plan<'mesh, 'cancel> {
     pub(super) receivers: Vec<ReceiverRange>,
     pub(super) mesh: &'mesh mut Mesh<'cancel>,
     pub(super) edge_vertices: std::sync::Arc<[superspec_geometry::V3]>,
-    pub(super) edge_index: Option<std::sync::Arc<super::conform::Edges>>,
 }
 impl Plan<'_, '_> {
     /// Includes raw geometry, recipes, material inputs and every potentially incident external edge.
@@ -490,22 +489,11 @@ impl Plan<'_, '_> {
                     .map_err(|e| e.to_string())?,
             );
         }
-        let mut bounds = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-        for vertex in &self.mesh.vertices {
-            for i in 0..3 {
-                bounds[0][i] = bounds[0][i].min(vertex.position[i]);
-                bounds[1][i] = bounds[1][i].max(vertex.position[i]);
-            }
-        }
         hash.update((self.edge_vertices.len() as u64).to_le_bytes());
         for point in self.edge_vertices.iter() {
             for value in point {
                 hash.update(value.to_bits().to_le_bytes());
             }
-        }
-        hash.update([u8::from(self.edge_index.is_some())]);
-        if let Some(edges) = &self.edge_index {
-            edges.binding_hash(&mut hash, bounds);
         }
         Ok(hash.finalize().into())
     }
@@ -727,12 +715,6 @@ impl Plan<'_, '_> {
         vertices: std::sync::Arc<[superspec_geometry::V3]>,
     ) -> Self {
         self.edge_vertices = vertices;
-        self.edge_index = None;
-        self
-    }
-    pub(crate) fn with_edge_index(mut self, index: std::sync::Arc<super::conform::Edges>) -> Self {
-        self.edge_vertices = std::sync::Arc::from([]);
-        self.edge_index = Some(index);
         self
     }
     /// Every layer and optional coating participates, including those with zero coverage at the chart origin.
@@ -885,7 +867,7 @@ impl Plan<'_, '_> {
             &bindings,
             &selected,
             &self.edge_vertices,
-            self.edge_index.clone(),
+            None,
             &mut superspec_geometry::obstructions::Budget::new(128 * 1024 * 1024, cancelled)?,
         )?;
         self.mesh.bind_rasters(&bindings)?;

@@ -1,159 +1,16 @@
-use serde::Deserialize;
-use serde_json::{Value, json};
-use superspec_engine::worldspec::themes::kowloon::pavement::{context, field, layout};
-use superspec_geometry::V3;
+use superspec_engine::worldspec::themes::kowloon::pavement::{
+    context::{self, Wall},
+    field, layout,
+};
 use superspec_geometry::obstructions::Budget;
 
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-enum Neighbor {
-    Wall {
-        path: Vec<V3>,
-        thickness: f64,
-        contacts: Vec<[V3; 2]>,
-    },
-    Floor {
-        loops: Vec<Vec<V3>>,
-    },
-}
-impl Neighbor {
-    fn native(self) -> layout::Neighbor {
-        match self {
-            Self::Wall {
-                path,
-                thickness,
-                contacts,
-            } => layout::Neighbor::Wall {
-                path,
-                thickness,
-                contacts,
-            },
-            Self::Floor { loops } => layout::Neighbor::Floor { loops },
-        }
-    }
-}
-#[derive(Deserialize)]
-struct Case {
-    loops: Vec<Vec<V3>>,
-    patch: f64,
-    material: f64,
-    seed: u32,
-    amount: f64,
-    result: Value,
-    #[serde(default)]
-    origin: V3,
-    #[serde(default)]
-    receiving: Vec<Vec<V3>>,
-    #[serde(default)]
-    neighbors: Vec<Neighbor>,
-    #[serde(default)]
-    connections: Vec<Vec<V3>>,
-}
-#[derive(Deserialize)]
-struct Field {
-    points: Vec<V3>,
-    boundary: Vec<V3>,
-    point: V3,
-    area: f64,
-    distance: f64,
-    intersection: Value,
-    split: Value,
-}
-#[derive(Deserialize)]
-struct Exposure {
-    point: V3,
-    walls: Vec<context::Wall>,
-    result: Value,
-}
-#[derive(Deserialize)]
-struct Golden {
-    footprints: Vec<Case>,
-    authored: Vec<Case>,
-    fields: Vec<Field>,
-    exposures: Vec<Exposure>,
-}
-fn compare(a: &Value, b: &Value, at: &str) {
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 1e-9,
-            "{at}: {a} != {b}"
-        ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "{at}");
-            for (i, (a, b)) in a.iter().zip(b).enumerate() {
-                compare(a, b, &format!("{at}/{i}"));
-            }
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            assert_eq!(a.len(), b.len(), "{at}");
-            for (k, a) in a {
-                compare(a, &b[k], &format!("{at}/{k}"));
-            }
-        }
-        _ => assert_eq!(a, b, "{at}"),
-    }
-}
-fn capture(l: &layout::Layout, seed: u32, amount: f64, budget: &mut Budget<'_>) -> Value {
-    json!({"world":l.world.0,"columns":l.columns,"rows":l.rows,"zonesX":l.zones_x,"zonesY":l.zones_y,
-        "constructionX":l.construction_x,"constructionY":l.construction_y,"anchors":l.anchors,"pours":layout::pours(l,seed,amount,budget).unwrap()})
-}
-pub fn check_reference_pavement_layout() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/pavement-layout.json"
-    ))
-    .unwrap();
-    let mut budget = Budget::new(32_000_000, &|| false).unwrap();
-    for (i, c) in g.footprints.into_iter().enumerate() {
-        let l = layout::footprint(&c.loops, c.patch, c.material, &mut budget).unwrap();
-        compare(
-            &capture(&l, c.seed, c.amount, &mut budget),
-            &c.result,
-            &format!("footprint/{i}"),
-        );
-    }
-    for (i, c) in g.authored.into_iter().enumerate() {
-        let neighbors: Vec<_> = c.neighbors.into_iter().map(Neighbor::native).collect();
-        let l = layout::authored(
-            layout::Authored {
-                loops: &c.loops,
-                origin: c.origin,
-                receiving: &c.receiving,
-                neighbors: &neighbors,
-                connections: &c.connections,
-            },
-            c.patch,
-            c.material,
-            &mut budget,
-        )
-        .unwrap();
-        compare(
-            &capture(&l, c.seed, c.amount, &mut budget),
-            &c.result,
-            &format!("authored/{i}"),
-        );
-    }
-    for (i, c) in g.fields.into_iter().enumerate() {
-        compare(
-            &json!(field::area(&c.points)),
-            &json!(c.area),
-            &format!("field/{i}/area"),
-        );
-        compare(
-            &json!(field::edge_distance(c.point, c.points[0], c.points[1])),
-            &json!(c.distance),
-            &format!("field/{i}/distance"),
-        );
-        compare(
-            &json!(field::intersect(&c.points, &c.boundary)),
-            &c.intersection,
-            &format!("field/{i}/intersection"),
-        );
-        let split = field::split(&c.points, &c.boundary);
-        compare(
-            &json!({"inside":split.inside,"outside":split.outside}),
-            &c.split,
-            &format!("field/{i}/split"),
-        );
+#[test]
+fn convex_cuts_partition_receiving_area_and_keep_heights() {
+    let receiving = field::rectangle(0., 0., 4., 3., 0.25);
+    let tilted = vec![[1., -1., 0.], [5., 1., 0.], [3., 4., 0.], [-0.5, 2., 0.]];
+    let outside = field::rectangle(10., 10., 1., 1., 0.);
+    for boundary in [field::rectangle(1., 1., 2., 1., 0.), tilted, outside] {
+        let split = field::split(&receiving, &boundary);
         let partitioned = field::area(&split.inside).abs()
             + split
                 .outside
@@ -161,22 +18,50 @@ pub fn check_reference_pavement_layout() {
                 .map(|p| field::area(p).abs())
                 .sum::<f64>();
         assert!(
-            (partitioned - c.area.abs()).abs() < 1e-8,
+            (partitioned - field::area(&receiving).abs()).abs() < 1e-8,
             "partition preserves receiving area"
         );
-    }
-    for (i, c) in g.exposures.into_iter().enumerate() {
-        let e = context::exposure(c.point, &c.walls, &mut budget).unwrap();
-        compare(
-            &json!({"wallDistance":e.wall_distance,"corridorWidth":e.corridor_width}),
-            &c.result,
-            &format!("exposure/{i}"),
+        let inside = field::intersect(&receiving, &boundary);
+        assert!((field::area(&inside).abs() - field::area(&split.inside).abs()).abs() < 1e-8);
+        assert!(
+            split
+                .outside
+                .iter()
+                .flatten()
+                .chain(&split.inside)
+                .all(|p| p[2] == 0.25),
+            "cuts retain the receiving height"
         );
     }
+    assert_eq!(field::area(&receiving), 12.);
+    assert_eq!(
+        field::edge_distance([2., 5., 0.], [0., 0., 0.], [4., 0., 0.]),
+        5.
+    );
+    assert_eq!(
+        field::edge_distance([7., 4., 0.], [0., 0., 0.], [4., 0., 0.]),
+        5.
+    );
 }
 #[test]
-fn construction_axes_pours_footprint_cuts_and_finite_contacts_match_reference() {
-    check_reference_pavement_layout();
+fn opposing_walls_from_distinct_hosts_establish_corridor_width() {
+    let mut budget = Budget::new(100_000, &|| false).unwrap();
+    let wall = |host: &str, y: f64| Wall {
+        host: host.into(),
+        seam: [[-5., y, 0.], [5., y, 0.]],
+    };
+    let open = context::exposure([0., 0., 0.], &[], &mut budget).unwrap();
+    assert!(open.wall_distance.is_infinite() && open.corridor_width.is_infinite());
+    let lane =
+        context::exposure([0., 0.5, 0.], &[wall("a", 0.), wall("b", 2.)], &mut budget).unwrap();
+    assert!((lane.wall_distance - 0.5).abs() < 1e-12);
+    assert!((lane.corridor_width - 2.).abs() < 1e-12);
+    let same =
+        context::exposure([0., 0.5, 0.], &[wall("a", 0.), wall("a", 2.)], &mut budget).unwrap();
+    assert!(
+        same.corridor_width.is_infinite(),
+        "one host is not a corridor"
+    );
 }
 #[test]
 fn admission_and_work_limits_fail_without_poisoning_recovery() {

@@ -424,6 +424,7 @@ impl NativeGenerators for Quads {
                 tangents: vec![],
                 indices: vec![0, 1, 2, 0, 2, 3],
                 material_slot: tint,
+                roles: vec![],
             }],
             attachments: vec![],
         })

@@ -51,7 +51,13 @@ fn check(name: &str, meshes: &[ItemMesh]) {
         let count = m.positions.len();
         assert!(count > 0, "{name}/{} has no vertices", m.id);
         assert_eq!(m.normals.len(), count, "{name}/{} normals", m.id);
-        assert_eq!(m.uvs.len(), count, "{name}/{} uvs", m.id);
+        // Weed blades are painted by vertex colour alone and deliver no UV stream, which an
+        // item mesh may omit; every other generator maps a material and needs one per vertex.
+        if name == "kowloon/weed-blades" {
+            assert!(m.uvs.is_empty(), "{name}/{} uvs", m.id);
+        } else {
+            assert_eq!(m.uvs.len(), count, "{name}/{} uvs", m.id);
+        }
         assert_eq!(m.colors.len(), count, "{name}/{} colors", m.id);
         assert!(
             m.tangents.is_empty() || m.tangents.len() == count,

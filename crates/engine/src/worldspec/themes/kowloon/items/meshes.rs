@@ -58,6 +58,7 @@ pub fn meshes(mesh: &Mesh<'_>) -> Result<Vec<ItemMesh>, String> {
             tangents: vec![],
             indices: Vec::with_capacity(triangles.len() * 3),
             material_slot: slot.to_owned(),
+            roles: vec![],
         };
         for corners in triangles {
             for &corner in corners {

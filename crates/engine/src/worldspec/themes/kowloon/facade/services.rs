@@ -3,6 +3,7 @@ use crate::worldspec::themes::kowloon::{
     facade_cells::{Kind, Role},
     facade_plan::{Plan, Queries, Request, Zone, inside},
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     household,
     massing::Rect,
     palette::{shade, srgb},
@@ -423,7 +424,9 @@ pub(crate) fn draw_standing_duct(
         [1.; 3],
         "ud",
     )?;
-    for section in 0..=3 {
+    // The stiffening rings are 36 mm deep: level 2 keeps the two at the body's ends.
+    let rings = d.mesh.graphics_detail().pick(1, 1, 3);
+    for section in (0..=3).step_by(rings) {
         let z = lo + (hi - lo) * section as f64 / 3.;
         d.cuboid(
             "vent-edge",
@@ -471,13 +474,15 @@ pub(crate) fn draw_standing_duct(
         [0.8; 3],
         "b",
     )?;
-    d.bar(
-        "vent-edge",
-        [x + 0.16, out(1.01), hatch + 0.2],
-        [x + 0.16, out(1.01), hatch + 0.4],
-        0.035,
-        [0.7; 3],
-    )?;
+    if d.mesh.graphics_detail() != GraphicsDetail::VeryLow {
+        d.bar(
+            "vent-edge",
+            [x + 0.16, out(1.01), hatch + 0.2],
+            [x + 0.16, out(1.01), hatch + 0.4],
+            0.035,
+            [0.7; 3],
+        )?;
+    }
     use crate::worldspec::themes::kowloon::stains::{RunoffSettings, runoff};
     for (z, drop) in [(bottom + 0.055, 1.55), (top + 0.055, 1.65)] {
         runoff(
@@ -550,7 +555,17 @@ fn draw_close_fixings(
 ) -> Result<(), String> {
     let steel = "vent-metal";
     let arm = front + 0.05;
+    // Level 1 keeps the arms and the bars across the front; the plates are a centimetre
+    // thick and go with their bolts. Level 2 draws the duct alone.
+    let detail = d.mesh.graphics_detail();
+    if detail == GraphicsDetail::VeryLow {
+        return Ok(());
+    }
+    let full = !detail.reduced();
     fn bolt(d: &mut Fixture<'_, '_>, u: f64, v: f64, face: f64) -> Result<(), String> {
+        if d.mesh.graphics_detail().reduced() {
+            return Ok(());
+        }
         // Drawn heavy: a bolt head that reads from the street.
         d.cuboid(
             "vent-edge",
@@ -562,7 +577,9 @@ fn draw_close_fixings(
     }
     for [u0, v0, u1, v1] in &fixings.brackets {
         let (u, z) = ((u0 + u1) / 2., (v0 + v1) / 2.);
-        d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.014, *v1], [0.45; 3], "")?;
+        if full {
+            d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.014, *v1], [0.45; 3], "")?;
+        }
         d.bar(steel, [u, 0.014, z], [u, arm, z], 0.05, [0.48; 3])?;
         bolt(d, u, v0 + 0.03, 0.014)?;
         bolt(d, u, v1 - 0.03, 0.014)?;
@@ -582,7 +599,9 @@ fn draw_close_fixings(
         )?;
     }
     for [u0, v0, u1, v1] in &fixings.connections {
-        d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.016, *v1], [0.45; 3], "")?;
+        if full {
+            d.cuboid(steel, [*u0, 0.002, *v0], [*u1, 0.016, *v1], [0.45; 3], "")?;
+        }
         for (u, v) in [
             (u0 + 0.04, v0 + 0.04),
             (u1 - 0.04, v0 + 0.04),

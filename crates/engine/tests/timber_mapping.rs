@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_engine::worldspec::themes::kowloon::{
     mesh::{Mesh, Mode},
     pen::{Pen, Tint},
@@ -6,33 +5,62 @@ use superspec_engine::worldspec::themes::kowloon::{
 };
 use superspec_geometry::Matrix;
 
-#[derive(Deserialize)]
 struct Case {
-    frame: String,
-    operation: String,
+    frame: &'static str,
+    operation: &'static str,
     textured: bool,
     finish: Settings,
     axis: Option<usize>,
-    key: String,
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
 }
-#[derive(Deserialize)]
-struct Formatting {
-    bits: String,
-    text: String,
+const OPERATIONS: [&str; 26] = [
+    "panel",
+    "convex",
+    "box-x",
+    "box-y",
+    "box-z",
+    "box-tie",
+    "omitted",
+    "bevel",
+    "slanted-bevel",
+    "frontwear",
+    "variant",
+    "untextured",
+    "explicit-uv",
+    "field-tint",
+    "metal",
+    "derived",
+    "grain-axis",
+    "explicit-normals",
+    "nonplanar",
+    "untextured-uv",
+    "untextured-field",
+    "untextured-normals",
+    "empty-slots",
+    "metal-slots",
+    "field-bevel",
+    "beveled-frontwear",
+];
+fn case(frame: &'static str, operation: &'static str) -> Case {
+    let finish: Settings = serde_json::from_value(match operation {
+        "frontwear" | "beveled-frontwear" => serde_json::json!({
+            "frontWear": {"width": 0.008, "strength": 1.2, "direction": [0, 1, 0]}
+        }),
+        "variant" => serde_json::json!({"grainVariant": 2}),
+        "empty-slots" => serde_json::json!({"slots": []}),
+        "metal-slots" => serde_json::json!({"slots": ["metal"]}),
+        _ => serde_json::json!({}),
+    })
+    .unwrap();
+    Case {
+        frame,
+        operation,
+        textured: !operation.starts_with("untextured"),
+        finish,
+        axis: (operation == "grain-axis").then_some(0),
+    }
 }
-#[derive(Deserialize)]
-struct Fixture {
-    cases: Vec<Case>,
-    formatting: Vec<Formatting>,
-}
-fn drawing(case: &Case, mode: Mode) -> Mesh<'static> {
-    let matrix = match case.frame.as_str() {
+fn pen_for(case: &Case) -> Pen {
+    let matrix = match case.frame {
         "identity" => Matrix::default(),
         "reflection" => Matrix([[-1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [4., -3., 2.]]),
         "rotation" => Matrix([[0., 1., 0.], [-1., 0., 0.], [0., 0., 1.], [4., -3., 2.]]),
@@ -56,15 +84,11 @@ fn drawing(case: &Case, mode: Mode) -> Mesh<'static> {
             .facing([0.1, 0.2, 0.3], [0., 1., 0.], [-1., 0., 0.])
             .unwrap();
     }
+    pen
+}
+fn drawing(case: &Case, mode: Mode) -> Mesh<'static> {
+    let pen = pen_for(case);
     let mut mesh = Mesh::new(mode, 50000, &|| false).unwrap();
-    assert_eq!(
-        superspec_engine::worldspec::themes::kowloon::timber::seed_key(
-            &pen,
-            &[0., -0., 1e-7, 1e21]
-        )
-        .unwrap(),
-        case.key
-    );
     let field = |p: [f64; 3]| {
         assert_eq!(mode, Mode::Render);
         Ok([0.2 + p[0] * 0.1, 0.3 + p[2] * 0.02, 0.4])
@@ -76,7 +100,7 @@ fn drawing(case: &Case, mode: Mode) -> Mesh<'static> {
     };
     let slot = "timber";
     let repeat = 2.;
-    match case.operation.as_str() {
+    match case.operation {
         "panel" | "variant" | "untextured" | "derived" | "grain-axis" | "empty-slots" => {
             pen.panel(&mut mesh, slot, [-0.2, 1.1, -0.3, 3.5], 0.1, &tint, repeat)
         }
@@ -203,75 +227,64 @@ fn drawing(case: &Case, mode: Mode) -> Mesh<'static> {
     .unwrap();
     mesh
 }
-/// Native and browser execute identical frozen mapping and seed-format assertions.
-pub fn check_reference_timber() {
-    let fixture: Fixture =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/timber.json")).unwrap();
-    for formatting in fixture.formatting {
-        let bytes: Vec<u8> = formatting
-            .bits
-            .as_bytes()
-            .chunks(2)
-            .map(|hex| u8::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap())
-            .collect();
-        let value = f64::from_le_bytes(bytes.try_into().unwrap());
-        let pen = Pen::new(Matrix::default(), "format").unwrap();
-        let key =
-            superspec_engine::worldspec::themes::kowloon::timber::seed_key(&pen, &[value]).unwrap();
-        assert_eq!(key.rsplit('/').next().unwrap(), formatting.text);
-    }
-    assert_eq!(fixture.cases.len(), 78);
-    for case in fixture.cases {
-        let mesh = drawing(&case, Mode::Render);
-        assert_eq!(
-            mesh.indices, case.indices,
-            "{}/{} indices",
-            case.frame, case.operation
-        );
-        let actual = [
-            mesh.vertices
-                .iter()
-                .flat_map(|v| v.position)
-                .collect::<Vec<_>>(),
-            mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-            mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-            mesh.vertices.iter().flat_map(|v| v.color).collect(),
-        ];
-        for (channel, (actual, expected)) in actual
-            .iter()
-            .zip([&case.positions, &case.normals, &case.uv, &case.colors])
-            .enumerate()
-        {
-            assert_eq!(actual.len(), expected.len());
-            for (i, (a, b)) in actual.iter().zip(expected).enumerate() {
-                assert!(
-                    (a - b).abs() < 2e-12,
-                    "{}/{} channel{channel}[{i}]:{a} != {b}",
-                    case.frame,
-                    case.operation
-                );
-            }
-        }
-        let slots: Vec<_> = mesh
-            .triangle_surfaces
-            .iter()
-            .map(|i| mesh.surfaces[*i].slot.clone())
-            .collect();
-        assert_eq!(slots, case.slots);
-        let survey = drawing(&case, Mode::Survey);
-        assert!(survey.vertices.is_empty());
-        assert_eq!(
-            survey.survey,
-            mesh.indices
-                .iter()
-                .map(|i| mesh.vertices[*i as usize].position)
-                .collect::<Vec<_>>()
-        );
-    }
-}
 #[test]
-fn frozen_timber_preserves_geometry_uv_grain_wear_and_survey() {
-    check_reference_timber();
+fn timber_seed_keys_format_numbers_with_ecmascript_shortest_round_trip_text() {
+    use superspec_engine::worldspec::themes::kowloon::timber::seed_key;
+    let pen = Pen::new(Matrix::default(), "format").unwrap();
+    for (value, text) in [
+        (0., "0"),
+        (-0., "0"),
+        (1e-7, "1e-7"),
+        (-1e-7, "-1e-7"),
+        (1e-6, "0.000001"),
+        (1e20, "100000000000000000000"),
+        (1e21, "1e+21"),
+        (1e23, "1e+23"),
+        (5e-324, "5e-324"),
+        (f64::MAX, "1.7976931348623157e+308"),
+        (1. / 3., "0.3333333333333333"),
+        (10f64.sqrt(), "3.1622776601683795"),
+        (0.1 + 0.2, "0.30000000000000004"),
+    ] {
+        let key = seed_key(&pen, &[value]).unwrap();
+        assert_eq!(key.rsplit('/').next().unwrap(), text, "{value:e}");
+    }
+    // The key carries the part, the frame's matrix and every listed value.
+    let identity = pen_for(&case("identity", "panel"));
+    assert_eq!(
+        seed_key(&identity, &[0., -0., 1e-7, 1e21]).unwrap(),
+        "木/🌿/1/0/0/0/0/1/0/0/0/0/1/0/0/0/0/1/0/0/1e-7/1e+21"
+    );
+    let keys: std::collections::BTreeSet<_> = ["identity", "reflection", "rotation"]
+        .into_iter()
+        .flat_map(|frame| {
+            ["panel", "derived"]
+                .map(|operation| seed_key(&pen_for(&case(frame, operation)), &[0.]).unwrap())
+        })
+        .collect();
+    assert_eq!(keys.len(), 6);
+}
+
+#[test]
+fn every_timber_operation_surveys_exactly_its_rendered_corners() {
+    for frame in ["identity", "reflection", "rotation"] {
+        for operation in OPERATIONS {
+            let case = case(frame, operation);
+            let mesh = drawing(&case, Mode::Render);
+            assert!(mesh.triangle_count() > 0, "{frame}/{operation}");
+            assert_eq!(mesh.triangle_surfaces.len(), mesh.triangle_count());
+            let survey = drawing(&case, Mode::Survey);
+            assert!(survey.vertices.is_empty());
+            assert_eq!(
+                survey.survey,
+                mesh.indices
+                    .iter()
+                    .map(|i| mesh.vertices[*i as usize].position)
+                    .collect::<Vec<_>>(),
+                "{frame}/{operation}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -997,6 +997,16 @@ pub fn glb(scene: &Scene, options: &Options<'_>) -> Result<Vec<u8>, String> {
         &mut meshes,
         &mut nodes,
     )?;
+    if visual && !scene.manifest.render_visibility.is_empty() {
+        for node in &mut nodes {
+            if let Some(minimum) = node["extras"]["objectId"]
+                .as_str()
+                .and_then(|id| scene.manifest.render_visibility.get(id))
+            {
+                node["extras"]["worldSpecMinGraphics"] = json!(minimum);
+            }
+        }
+    }
     // A visual export carries the scene's lighting record: its lights as nodes under the root,
     // so their directions stay in the domain's Z-up frame, and the whole record in the extras.
     let lighting = if visual {

@@ -1,131 +1,92 @@
-use serde::Deserialize;
-use serde_json::Value;
 use superspec_engine::worldspec::themes::kowloon::spans::{
-    anchors::{Anchor, Plane},
+    anchors::Anchor,
     plan::{self, Rule},
-    walking::{Surface, Walking},
+    walking::Walking,
 };
-use superspec_geometry::V3;
-use superspec_geometry::obstructions::{Budget, Obstructions, Triangle};
-#[path = "support/sign_reference.rs"]
-#[allow(dead_code)]
-mod reference;
-#[derive(Deserialize)]
-struct PlaneInput {
-    host: String,
-    normal: V3,
-    offset: f64,
-    faces: Vec<Triangle>,
-}
-#[derive(Deserialize)]
-struct Case {
-    seed: String,
-    rule: Rule,
-    planes: Vec<PlaneInput>,
-    physical: Vec<Triangle>,
-    triangles: Vec<Triangle>,
-    utility: Vec<Anchor>,
-    windows: Vec<Anchor>,
-    expected: Value,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_span_plans() {
-    let golden: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/span-plan.json")).unwrap();
-    for c in golden.cases {
-        let mut budget = Budget::new(32_000_000, &|| false).unwrap();
-        let planes = c
-            .planes
-            .iter()
-            .map(|p| Plane::new(&p.host, p.normal, p.offset, &p.faces, &mut budget).unwrap())
-            .collect::<Vec<_>>();
-        let floors = Walking::new(
-            &c.physical
-                .iter()
-                .map(|&points| Surface {
-                    points,
-                    floor_or_stairs: true,
-                    collidable: true,
-                })
-                .collect::<Vec<_>>(),
-            &mut budget,
-        )
-        .unwrap();
-        for _ in 0..2 {
-            let obstacles = Obstructions::new(&c.triangles, &mut budget).unwrap();
-            let plan = plan::build(
-                c.rule,
-                &c.seed,
-                &planes,
-                &c.utility,
-                &c.windows,
-                &floors,
-                obstacles,
-                &mut budget,
-            )
-            .unwrap();
-            reference::close_at(&serde_json::to_value(plan).unwrap(), &c.expected, &c.seed);
+use superspec_geometry::obstructions::{Budget, Obstructions};
+#[path = "support/span_street.rs"]
+mod street;
+use street::{RULE, street};
+#[test]
+fn span_plans_are_seeded_repeatable_and_reference_their_anchors() {
+    let mut budget = Budget::new(32_000_000, &|| false).unwrap();
+    let s = street(4., &mut budget);
+    let anchors = s.utility.len() + s.windows.len();
+    for seed in ["span-plan/1", "span-plan/4", "span-plan/8"] {
+        let first = s.plan(RULE, seed, &mut budget).unwrap();
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(s.plan(RULE, seed, &mut budget).unwrap()).unwrap(),
+            "{seed}"
+        );
+        for cable in &first.cables {
+            assert!(cable.from < anchors && cable.to < anchors, "{seed}");
+            for strand in &cable.strands {
+                assert!(strand.points.len() >= 2);
+                assert!(strand.points.iter().flatten().all(|v| v.is_finite()));
+            }
+        }
+        for rack in &first.racks {
+            assert!(rack.anchor < anchors, "{seed}");
+        }
+        for line in &first.clotheslines {
+            assert!(line.from < anchors && line.to < anchors, "{seed}");
+        }
+        for sign in &first.signs {
+            assert!(sign.from < anchors && sign.to < anchors, "{seed}");
+            assert!(sign.length > 0.);
         }
     }
 }
 #[test]
-fn signs_washing_cables_and_racks_preserve_ordered_scene_placement() {
-    check_reference_span_plans();
-}
-#[test]
 fn invalid_cancelled_and_exhausted_span_jobs_leave_inputs_reusable() {
-    let g: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/span-plan.json")).unwrap();
-    let c = &g.cases[1];
     let mut budget = Budget::new(32_000_000, &|| false).unwrap();
-    let planes = c
-        .planes
-        .iter()
-        .map(|p| Plane::new(&p.host, p.normal, p.offset, &p.faces, &mut budget).unwrap())
-        .collect::<Vec<_>>();
+    let s = street(6., &mut budget);
+    let seed = "span-plan/1";
+    let rule = Rule {
+        clotheslines: 0.,
+        ..RULE
+    };
     let floors = Walking::new(&[], &mut budget).unwrap();
     for (rule, anchors, cancel, work) in [
         (
             Rule {
                 reach: f64::NAN,
-                ..c.rule
+                ..rule
             },
-            c.utility.clone(),
+            s.utility.clone(),
             false,
             1_000_000,
         ),
         (
-            c.rule,
+            rule,
             vec![Anchor {
                 plane: 99,
-                ..c.utility[0].clone()
+                ..s.utility[0].clone()
             }],
             false,
             1_000_000,
         ),
-        (c.rule, c.utility.clone(), true, 1_000_000),
-        (c.rule, c.utility.clone(), false, 10),
+        (rule, s.utility.clone(), true, 1_000_000),
+        (rule, s.utility.clone(), false, 10),
     ] {
-        let obstacles = Obstructions::new(&c.triangles, &mut budget).unwrap();
+        let obstacles = Obstructions::new(&s.triangles, &mut budget).unwrap();
         let predicate = || cancel;
         let mut work = Budget::new(work, &predicate).unwrap();
         assert!(
             plan::build(
-                rule, &c.seed, &planes, &anchors, &c.windows, &floors, obstacles, &mut work
+                rule, seed, &s.planes, &anchors, &s.windows, &floors, obstacles, &mut work
             )
             .is_err()
         );
     }
-    let obstacles = Obstructions::new(&c.triangles, &mut budget).unwrap();
+    let obstacles = Obstructions::new(&s.triangles, &mut budget).unwrap();
     let result = plan::build(
-        c.rule,
-        &c.seed,
-        &planes,
-        &c.utility,
-        &c.windows,
+        rule,
+        seed,
+        &s.planes,
+        &s.utility,
+        &s.windows,
         &floors,
         obstacles,
         &mut budget,

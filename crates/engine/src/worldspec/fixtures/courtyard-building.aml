@@ -1,0 +1,9 @@
+<architecture version="1" id="courtyard-building" validation="premap">
+  <box id="base" position="0 0 -0.2" width="14" depth="12" height="0.2"/>
+  <city>
+    <building id="ring" position="0 0 0" floors="2" seed="6"
+      footprint="0 0; 14 0; 14 12; 0 12" ground-shops="false" pavement="false">
+      <hole points="4 3; 4 9; 10 9; 10 3"/>
+    </building>
+  </city>
+</architecture>

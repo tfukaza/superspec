@@ -109,8 +109,7 @@ impl<'a> PhysicalBuild<'a> {
         scene: &mut Scene,
         render: RenderSurfaces,
     ) -> Result<(), Diagnostic> {
-        self.compiler
-            .append_owned(scene, render.geometry, false, None)
+        self.compiler.append_owned(scene, render.geometry, false)
     }
     pub(crate) fn context(&self, output: &PhysicalOutput) -> Result<Context, Diagnostic> {
         self.compiler.context(&output.product)

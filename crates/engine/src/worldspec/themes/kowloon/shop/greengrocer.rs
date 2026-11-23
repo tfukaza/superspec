@@ -50,6 +50,29 @@ fn selection(rng: &mut SeededRng) -> &'static str {
     }
     "pineapples"
 }
+/// A baked tray, or at a reduced level a crate heaped from a stream of its own: the baked
+/// produce has no colours of its own to mass, and no other stream may notice the level.
+fn tray(
+    d: &mut Fixture<'_, '_>,
+    room: &Room<'_>,
+    asset: &super::market_trays::Tray,
+    key: &str,
+    size: V3,
+    wood: V3,
+) -> Result<(), String> {
+    if !d.mesh.graphics_detail().reduced() {
+        return asset.draw(d, size);
+    }
+    let mut own = room.stream(&format!("reduced-tray/{key}"))?;
+    furniture::crate_box(
+        d,
+        size,
+        shade(wood, own.float(0.85, 1.25)),
+        &mut own,
+        &room.kit.settings().timber,
+    )?;
+    load(d, room, selection(&mut own), &mut own, key, size)
+}
 fn load(
     d: &mut Fixture<'_, '_>,
     room: &Room<'_>,
@@ -59,7 +82,22 @@ fn load(
     size: V3,
 ) -> Result<(), String> {
     let [w, depth, h] = size;
-    if what == "apple" {
+    if what == "apple" && d.mesh.graphics_detail().reduced() {
+        // The baked pile's place is taken by a heap of the same apples from the pile's own
+        // stream; the shared stream still makes the pile's one draw.
+        let mut pose = SeededRng::from_text(&format!("apple-crate/{key}"));
+        rng.pick(&produce::fruit_kind(what)?.colors);
+        let kind = produce::fruit_kind(what)?;
+        produce::heap(
+            d,
+            [w / 2., depth / 2., 0.012_f64.max(h - kind.radius * 2.3)],
+            [w / 2. - 0.01, depth / 2. - 0.01],
+            kind.radius,
+            2,
+            &mut pose,
+            |d, at, rng| produce::fruit(d, at, &kind, rng),
+        )?;
+    } else if what == "apple" {
         let mut pose = SeededRng::from_text(&format!("apple-crate/{key}"));
         let at = [
             w / 2. + pose.float(-0.006, 0.006),
@@ -281,8 +319,8 @@ pub fn furnish(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
             }
             let pen = forms::rotated(&d.pen, [crate_x, crate_y, z], 0, 0.2)?;
             let tipped = &mut on(d, pen);
-            if let Some(tray) = tray {
-                tray.draw(tipped, size)?;
+            if let Some(asset) = tray {
+                self::tray(tipped, room, asset, &key, size, wood)?;
                 fittings::price_card(
                     tipped,
                     [size[0] * 0.8, 0.035, size[2]],
@@ -468,7 +506,7 @@ fn walk_in(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
                 if let Some(assortment) = &mut assortment
                     && let Some(asset) = assortment.pick(&mut room.stream(&format!("{key}/tray"))?)
                 {
-                    asset.draw(tray, CRATE)?;
+                    self::tray(tray, room, asset, &key, CRATE, wood)?;
                 } else {
                     furniture::crate_box(
                         tray,
@@ -523,7 +561,7 @@ fn walk_in(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), String> {
             let tray_pen = forms::rotated(&deck, [0., 0., 0.6], 0, 0.2)?;
             let tray = &mut on(&mut local, tray_pen);
             if let Some(asset) = assortment.as_mut().and_then(|pool| pool.pick(&mut rng)) {
-                asset.draw(tray, CRATE)?;
+                self::tray(tray, room, asset, &key, CRATE, wood)?;
             } else {
                 furniture::crate_box(tray, CRATE, wood, &mut rng, &room.kit.settings().timber)?;
                 load(tray, room, selection(&mut rng), &mut rng, &key, CRATE)?;

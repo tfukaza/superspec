@@ -127,6 +127,37 @@ fn draw(
         mesh: d.mesh,
         repeats: d.repeats,
     };
+    if local.mesh.graphics_detail().reduced() {
+        // Each pouch as a card of its print's colour, in its own pose; cord and pegs are
+        // hairlines and are left out.
+        let (min, max) = measure(
+            stock_mesh::packet()
+                .iter()
+                .flatten()
+                .map(|v| point(v, false)),
+        );
+        let prints = ["#bd7b31", "#a8443a", "#4f7a55", "#c9a83f"].map(srgb);
+        for (index, pose) in packets.iter().enumerate() {
+            let pen = local
+                .pen
+                .shape_frame(local.pen.matrix.then(pose.matrix), &local.pen.part)?;
+            let card = [
+                [min[0], 0., min[2]],
+                [max[0], 0., min[2]],
+                [max[0], 0., max[2]],
+                [min[0], 0., max[2]],
+            ];
+            let mut body = Fixture {
+                pen,
+                mesh: local.mesh,
+                repeats: local.repeats,
+            };
+            for out in [-1., 1.] {
+                body.face("paint", &card, [0., out, 0.], prints[(variant + index) % 4])?;
+            }
+        }
+        return Ok(());
+    }
     local.bar(
         "paint",
         [0.; 3],

@@ -1,6 +1,7 @@
 //! Board-local atlas charts and contact wear. Geometry stays on the original member surfaces.
 #![allow(clippy::too_many_arguments)]
 use super::{
+    graphics_detail::GraphicsDetail,
     mesh::{Mesh, rounded},
     noise::{smooth_step, value_noise},
     palette::srgb,
@@ -466,7 +467,22 @@ impl Timber {
             );
         }
         let chart = self.chart(pen, minimum, extent, &axes, norm(hint))?;
-        let wear = self.wear(norm(hint));
+        // Worn edge strips are a few millimetres wide and split along the board. Very Low
+        // draws the board whole. Low keeps one strip per worn edge so its lighter tint still
+        // reads: widened to a readable width (the strips of a narrow board meet in its
+        // middle) and left whole along the board.
+        let detail = mesh.graphics_detail();
+        let wear = match detail {
+            GraphicsDetail::Full => self.wear(norm(hint)),
+            GraphicsDetail::Low => self.wear(norm(hint)).map(|mut wear| {
+                let board = self.board.as_ref().expect("a worn face has a board");
+                let room =
+                    (board.high[wear.across] - board.low[wear.across]) / wear.edges.len() as f64;
+                wear.width = detail.readable(wear.width).min(room).max(wear.width);
+                wear
+            }),
+            GraphicsDetail::VeryLow => None,
+        };
         let cuts: Vec<_> = wear
             .as_ref()
             .map(|w| {
@@ -522,7 +538,7 @@ impl Timber {
                     let worn = wear
                         .as_ref()
                         .is_some_and(|w| w.edges.iter().any(|e| (across - e).abs() < w.width));
-                    let along = if worn {
+                    let along = if worn && detail == GraphicsDetail::Full {
                         intervals(v_low - phase, v_high - phase, 0.22)?
                             .into_iter()
                             .map(|[a, b, _]| [a + phase, b + phase])
@@ -580,11 +596,17 @@ impl Timber {
                                 .map(|edge| (p[w.across] - edge).abs())
                                 .fold(f64::INFINITY, f64::min);
                             let along = p[w.along] - board.low[w.along];
-                            let coverage = smooth_step(
-                                0.25,
-                                0.7,
-                                value_noise(along * 7., 0., board.seed as f64),
-                            );
+                            // The wear comes and goes along the board. A strip left whole has
+                            // only its ends to sample that at, so it lays the mean cover.
+                            let coverage = if detail == GraphicsDetail::Full {
+                                smooth_step(
+                                    0.25,
+                                    0.7,
+                                    value_noise(along * 7., 0., board.seed as f64),
+                                )
+                            } else {
+                                0.5
+                            };
                             let amount =
                                 w.strength * (1. - smooth_step(0., w.width, distance)) * coverage;
                             Ok([1., 1.1, 1.18].map(|strength| {

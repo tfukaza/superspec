@@ -3,6 +3,7 @@ use super::admission::{Admission, Limits};
 use crate::{
     Scene,
     instances::{LocalMesh, Model},
+    visual::GraphicsTier,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -35,6 +36,7 @@ pub struct WorldModel {
     admission: Admission,
     limits: Limits,
     retained_bytes: usize,
+    render_visibility: BTreeMap<String, GraphicsTier>,
 }
 
 impl WorldModel {
@@ -63,6 +65,7 @@ impl WorldModel {
             admission,
             limits: Limits::default(),
             retained_bytes: 0,
+            render_visibility: BTreeMap::new(),
         };
         output.admission.check(output.limits)?;
         output.retained_bytes = output.charge(&output.admission, None, None)?;
@@ -77,6 +80,7 @@ impl WorldModel {
             admission: Admission::default(),
             limits: Limits::default(),
             retained_bytes: 0,
+            render_visibility: BTreeMap::new(),
         };
         let model = output.share_meshes(model)?;
         output.admission = Admission::model(&model)?;
@@ -119,6 +123,31 @@ impl WorldModel {
 
     pub fn layers(&self) -> &[Layer] {
         &self.layers
+    }
+
+    /// Attach validated WorldSpec appearance choices to this delivery.
+    pub fn set_render_visibility(
+        &mut self,
+        visibility: BTreeMap<String, GraphicsTier>,
+    ) -> Result<(), String> {
+        if visibility.len() > superspec_types::limits::MAX_MODEL_RECORDS_PER_KIND {
+            return Err("WorldSpec render visibility allowance exceeded.".into());
+        }
+        let mut base_objects = BTreeSet::new();
+        if let Some(scene) = self.base_scene().filter(|_| !visibility.is_empty()) {
+            base_objects.extend(scene.manifest.meshes.iter().map(|mesh| mesh.object_id.as_str()));
+            base_objects.extend(scene.manifest.batches.iter().map(|batch| batch.object_id.as_str()));
+        }
+        for id in visibility.keys() {
+            if id.is_empty()
+                || id.len() > 4096
+                || (!self.admission.has_owner(id) && !base_objects.contains(id.as_str()))
+            {
+                return Err(format!("Unknown render visibility object {id}."));
+            }
+        }
+        self.render_visibility = visibility;
+        Ok(())
     }
 
     pub fn append(&mut self, model: Model) -> Result<(), String> {
@@ -187,6 +216,7 @@ impl WorldModel {
                 }
             };
         }
+        scene.manifest.render_visibility.extend(self.render_visibility.clone());
         check()?;
         Ok(scene)
     }

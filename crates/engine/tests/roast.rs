@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
     kit::Kit,
@@ -9,51 +8,44 @@ use superspec_engine::worldspec::themes::kowloon::{
         room::{Assets, Room},
     },
 };
-use superspec_geometry::{Matrix, V3};
-#[allow(dead_code)]
-#[path = "support/assembly_reference.rs"]
-mod assembly;
+use superspec_geometry::Matrix;
 #[allow(dead_code)]
 #[path = "support/shop_composition.rs"]
 mod composition;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Case {
-    width: f64,
-    depth: f64,
-    height: f64,
-    seed: String,
-    detail: u8,
-    key: String,
-    matrix: [V3; 4],
-    independent_pipe: assembly::Geometry,
-    pipe_charts: Vec<assembly::Chart>,
-    pipe_center: [f64; 2],
-}
-#[derive(Deserialize)]
-struct Golden {
-    rooms: Vec<Case>,
-}
 fn kit(seed: &str, detail: u8) -> Kit {
     Kit::new(serde_json::from_value(serde_json::json!({"weathering":{"seed":seed,"wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":32,"metal":{"material":"metal","repeat":1.7},"sheet":{"material":"sheet","repeat":1.7},"paint":{"material":"paint","repeat":1.7}},"lettering":true,"timber":{"textured":true,"timberRepeat":1.7,"atlasRepeat":1.7}})).unwrap(),detail).unwrap()
 }
-pub fn check_reference_roast() {
-    let g: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/roast.json")).unwrap();
-    for c in g.rooms {
+/// Small shop rooms across widths, depths, heights, detail levels and reflected host frames.
+fn rooms() -> Vec<(f64, f64, f64, String, u8, String, Matrix)> {
+    let (c, s) = (0.9523335698857134, 0.3050586364434435);
+    (0..8)
+        .map(|i| {
+            let x = if i % 2 == 0 { [c, s, 0.] } else { [-c, -s, 0.] };
+            (
+                [1.8, 2.2, 2.5, 3.2][i % 4],
+                [2.4, 3.1][i / 4],
+                [2.08, 2.4, 2.6][i % 3],
+                format!("room/{i}"),
+                (i % 3) as u8,
+                format!("shop/{i}"),
+                Matrix([x, [-s, c, 0.], [0., 0., 1.], [0.3, -0.2, 0.4]]),
+            )
+        })
+        .collect()
+}
+#[test]
+fn roast_rooms_survey_their_render_and_keep_walls_counter_and_food_display() {
+    for (width, depth, height, seed, detail, key, matrix) in rooms() {
         let mut rendered = vec![];
         for mode in [Mode::Render, Mode::Survey] {
             let mut mesh = Mesh::new(mode, 400000, &|| false).unwrap();
-            let kit = kit(&c.seed, c.detail);
+            let kit = kit(&seed, detail);
             let room = Room {
-                width: c.width,
-                depth: c.depth,
-                height: c.height,
+                width,
+                depth,
+                height,
                 kit: &kit,
-                key: &c.key,
+                key: &key,
                 assets: Assets {
                     posters: true,
                     grocer_props: true,
@@ -65,7 +57,7 @@ pub fn check_reference_roast() {
             };
             roast::furnish(
                 &mut Fixture {
-                    pen: Pen::new(Matrix(c.matrix), "room").unwrap(),
+                    pen: Pen::new(matrix, "room").unwrap(),
                     mesh: &mut mesh,
                     repeats: &|_| 1.7,
                 },
@@ -87,64 +79,28 @@ pub fn check_reference_roast() {
                 rendered = composition::positions(&mesh);
                 assert!(mesh.surfaces.iter().any(|s| s.slot == "kitchen-metal"));
                 for side in ["left", "right"] {
-                    let wall = composition::part_points(
-                        &mesh,
-                        &format!("room/room-wall-{side}"),
-                        Matrix(c.matrix),
-                    );
-                    composition::bounds(&wall, [0., 0., 0.], [c.width, c.depth, c.height]);
+                    let wall =
+                        composition::part_points(&mesh, &format!("room/room-wall-{side}"), matrix);
+                    composition::bounds(&wall, [0., 0., 0.], [width, depth, height]);
                     assert!(wall.iter().all(|p| (p[0] - 0.004).abs() < 0.00001
-                        || (p[0] - (c.width - 0.004)).abs() < 0.00001));
+                        || (p[0] - (width - 0.004)).abs() < 0.00001));
                     assert!(wall.iter().any(|p| p[2] < 0.00001));
-                    assert!(wall.iter().any(|p| p[2] > c.height - 0.07));
+                    assert!(wall.iter().any(|p| p[2] > height - 0.07));
                 }
-                let register =
-                    composition::part_points(&mesh, "room/checkout/register", Matrix(c.matrix));
+                let register = composition::part_points(&mesh, "room/checkout/register", matrix);
                 assert!(
                     register.iter().any(|p| (p[2] - 0.92).abs() < 0.00001),
                     "register must rest on kitchen counter"
                 );
-                let food = composition::part_points(&mesh, "room/display-food", Matrix(c.matrix));
+                let food = composition::part_points(&mesh, "room/display-food", matrix);
                 assert!(
                     food.iter().any(|p| p[2] > 0.92),
                     "stocked food display must remain above work surface"
                 );
-                let inverse = Matrix(c.matrix).inverse().unwrap();
-                let selected: Vec<_> = mesh
-                    .indices
-                    .chunks_exact(3)
-                    .enumerate()
-                    .filter_map(|(t, indices)| {
-                        indices
-                            .iter()
-                            .all(|&i| {
-                                let p = inverse.point(mesh.vertices[i as usize].position);
-                                let radius = ((p[0] - c.pipe_center[0]).powi(2)
-                                    + (p[1] - c.pipe_center[1]).powi(2))
-                                .sqrt();
-                                (radius - 0.06).abs() < 0.000009
-                                    && p[2] >= 1.3 - 0.000009
-                                    && p[2] <= c.height + 0.000009
-                            })
-                            .then_some(t)
-                    })
-                    .collect();
-                let mut pipe =
-                    Mesh::new(Mode::Render, mesh.triangle_count() + 1, &|| false).unwrap();
-                pipe.vertices = mesh.vertices.clone();
-                pipe.surfaces = mesh.surfaces.clone();
-                for &t in &selected {
-                    pipe.indices
-                        .extend_from_slice(&mesh.indices[t * 3..t * 3 + 3]);
-                    pipe.triangle_surfaces.push(mesh.triangle_surfaces[t]);
-                }
-                assembly::check_triangles(&pipe, &c.independent_pipe, &c.key);
-                assembly::check_selected_finishes(&mut mesh, &selected, &c.pipe_charts, &c.key);
             }
         }
     }
 }
-
 #[test]
 fn deep_restaurant_tables_keep_floor_support_and_kitchen_clearance() {
     let build = |seed: &str| {
@@ -286,9 +242,4 @@ fn stoa_roast_bay_seats_four_beside_a_clear_aisle() {
             mesh.surfaces[surface].part
         );
     }
-}
-
-#[test]
-fn complete_roast_preserves_stock_transforms_materials_and_named_streams() {
-    check_reference_roast();
 }

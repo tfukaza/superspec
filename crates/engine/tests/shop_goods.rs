@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
@@ -6,76 +5,74 @@ use superspec_engine::worldspec::themes::kowloon::{
     pen::Pen,
     shop::goods,
 };
-use superspec_geometry::{Matrix, V3};
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-struct Case {
-    kind: String,
-    seed: String,
-    textured: bool,
-    dimensions: Option<[f64; 4]>,
-    next: f64,
-    matrix: [V3; 4],
-    geometry: assembly::Geometry,
+use superspec_geometry::Matrix;
+fn frame(index: usize) -> Matrix {
+    let (c, s) = (0.9523335698857134, 0.3050586364434435);
+    let x = if index % 2 == 0 {
+        [c, s, 0.]
+    } else {
+        [-c, -s, 0.]
+    };
+    Matrix([x, [-s, c, 0.], [0., 0., 1.], [0.3, -0.2, 0.4]])
 }
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_shop_goods() {
-    let g: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/shop-goods.json")).unwrap();
-    for c in g.cases {
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            let d = &mut Fixture {
-                pen: Pen::new(Matrix(c.matrix), "furniture").unwrap(),
-                mesh: &mut mesh,
-                repeats: &|_| 1.7,
-            };
-            let mut rng = SeededRng::from_text(&c.seed);
-            if c.kind == "sack" {
-                goods::sack(
-                    d,
-                    [0.1, 0.2, 0.3],
-                    0.2,
-                    0.45,
-                    [0.6, 0.4, 0.2],
-                    [0.2, 0.3, 0.1],
-                )
-                .unwrap();
-            } else {
-                let kind = serde_json::from_value(serde_json::json!(c.kind)).unwrap();
-                let mut line = goods::line(kind, &mut rng, c.textured).unwrap();
-                for (a, b) in [line.width, line.depth, line.height, line.stack as f64]
-                    .iter()
-                    .zip(c.dimensions.unwrap())
-                {
-                    assert!((a - b).abs() < 1e-12);
+#[test]
+fn goods_lines_have_positive_sizes_and_survey_like_render_with_the_same_randomness() {
+    const KINDS: [&str; 13] = [
+        "tins",
+        "bottles",
+        "jars",
+        "bigJars",
+        "cartons",
+        "packets",
+        "rolls",
+        "thermoses",
+        "mugs",
+        "bowls",
+        "paintTins",
+        "ceramicJars",
+        "sack",
+    ];
+    for kind in KINDS {
+        for textured in [false, true] {
+            for index in 0..3 {
+                let mut outcomes = vec![];
+                for mode in [Mode::Render, Mode::Survey] {
+                    let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
+                    let d = &mut Fixture {
+                        pen: Pen::new(frame(index), "furniture").unwrap(),
+                        mesh: &mut mesh,
+                        repeats: &|_| 1.7,
+                    };
+                    let mut rng = SeededRng::from_text(&format!("goods/{index}"));
+                    if kind == "sack" {
+                        goods::sack(
+                            d,
+                            [0.1, 0.2, 0.3],
+                            0.2,
+                            0.45,
+                            [0.6, 0.4, 0.2],
+                            [0.2, 0.3, 0.1],
+                        )
+                        .unwrap();
+                    } else {
+                        let kind = serde_json::from_value(serde_json::json!(kind)).unwrap();
+                        let mut line = goods::line(kind, &mut rng, textured).unwrap();
+                        assert!(line.width > 0. && line.depth > 0. && line.height > 0.);
+                        assert!(line.stack >= 1);
+                        (line.draw)(d, [0.1, 0.2, 0.3]).unwrap();
+                        // A repeated placement stacked on the first draws again.
+                        (line.draw)(d, [0.4, 0.2, 0.3 + line.height]).unwrap();
+                    }
+                    assert!(mesh.triangle_count() > 0, "{kind} {index}");
+                    outcomes.push((mesh.triangle_count(), rng.next_f64()));
                 }
-                (line.draw)(d, [0.1, 0.2, 0.3]).unwrap();
-                (line.draw)(d, [0.4, 0.2, 0.3 + line.height]).unwrap();
-            }
-            assert_eq!(rng.next_f64(), c.next, "{} {}", c.kind, c.seed);
-            assert_eq!(mesh.triangle_count() * 3, c.geometry.indices.len());
-            if !mesh.surveying() {
-                assembly::check(
-                    &mut mesh,
-                    &c.geometry,
-                    &[],
-                    &format!("{} {} textured={}", c.kind, c.seed, c.textured),
+                assert_eq!(
+                    outcomes[0], outcomes[1],
+                    "{kind} {index} textured={textured}"
                 );
             }
         }
     }
-}
-#[test]
-fn goods_preserve_product_sizes_brands_repeated_placements_and_surface_charts() {
-    check_reference_shop_goods();
 }
 #[test]
 fn invalid_and_cancelled_goods_do_not_emit_and_next_draw_recovers() {

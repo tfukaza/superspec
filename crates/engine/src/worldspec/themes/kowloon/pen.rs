@@ -415,7 +415,7 @@ impl Pen {
         repeat: f64,
     ) -> Result<(), String> {
         let (_, side, other) = basis(sub(b, a))?;
-        let h = thickness / 2.;
+        let h = mesh.graphics_detail().readable(thickness) / 2.;
         for (u, v) in [
             (side, other),
             (other, scale(side, -1.)),
@@ -507,6 +507,16 @@ impl Pen {
         }
         let axis = scale(delta, 1. / size);
         let other = unit(cross(axis, side))?;
+        // A reduced level draws the plain section, at a readable size, and at level 2
+        // leaves the ends open as `bar` does.
+        let detail = mesh.graphics_detail();
+        let (width, depth, bevel) = if detail.reduced() {
+            let widest = width.max(depth);
+            let grow = detail.readable(widest) / widest;
+            (width * grow, depth * grow, 0.)
+        } else {
+            (width, depth, bevel)
+        };
         let u = scale(side, width / 2.);
         let v = scale(other, depth / 2.);
         let inset = bevel.min(width.min(depth) * 0.18);
@@ -548,6 +558,9 @@ impl Pen {
                 None,
             )?;
         }
+        if detail == super::graphics_detail::GraphicsDetail::VeryLow {
+            return Ok(());
+        }
         self.face(
             mesh,
             slot,
@@ -575,6 +588,11 @@ impl Pen {
         if path.len() < 2 || path.len() > 65536 || path.iter().flatten().any(|v| !v.is_finite()) {
             return Err("Invalid tube path.".into());
         }
+        // Weathering still measures the authored section; only the drawn one is coarser.
+        let authored = radius;
+        let detail = mesh.graphics_detail();
+        let radius = detail.readable(radius * 2.) / 2.;
+        let sides = detail.sides(radius, sides);
         mesh.check_work((path.len() - 1) * sides * 2)?;
         for pair in path.windows(2) {
             mesh.check_work(0)?;
@@ -591,8 +609,8 @@ impl Pen {
                     slot,
                     a,
                     b,
-                    radius,
-                    radius * 2.,
+                    authored,
+                    authored * 2.,
                     false,
                     Some(unit(sub(b, a))?),
                 )?;
@@ -644,6 +662,7 @@ impl Pen {
     ) -> Result<(), String> {
         positive(radius)?;
         segments(sides)?;
+        let sides = mesh.graphics_detail().sides(radius, sides);
         let (_, side, other) = basis(hint)?;
         let rim: Vec<_> = (0..sides)
             .map(|k| {

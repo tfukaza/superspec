@@ -80,6 +80,7 @@ fn project() -> Project {
                 ("roughness".into(), json!(0.4)),
             ]),
         )]),
+        ..Default::default()
     };
     Project {
         kind: "world".into(),
@@ -89,6 +90,26 @@ fn project() -> Project {
         world: Some(world),
         ..Default::default()
     }
+}
+
+#[test]
+fn world_graphics_labels_follow_object_identity_into_visual_exports() {
+    let mut project = project();
+    project.world.as_mut().unwrap().render_visibility =
+        serde_json::from_value(json!({"item/left": "low", "slab": "medium"})).unwrap();
+    let built = Session::default()
+        .build_project(&project, 1, &assets, &|| false)
+        .unwrap();
+    let scene = built.model.scene(1).unwrap();
+    assert!(scene.manifest.colliders.iter().any(|id| id.starts_with("item/left/")));
+    let glb = superspec_export::glb(&scene, &Default::default()).unwrap();
+    let length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    let document: serde_json::Value = serde_json::from_slice(&glb[20..20 + length]).unwrap();
+    let nodes = document["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|node| node["extras"]["objectId"] == "item/left"
+        && node["extras"]["worldSpecMinGraphics"] == "low"));
+    assert!(nodes.iter().any(|node| node["extras"]["objectId"] == "item/right"
+        && node["extras"]["worldSpecMinGraphics"].is_null()));
 }
 fn physical(scene: &Scene) -> BTreeMap<String, Vec<[f32; 3]>> {
     scene

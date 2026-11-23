@@ -19,7 +19,7 @@
 use super::{
     bake_jobs, balconies, balcony_props, doors, facade_details,
     fixture::Fixture,
-    ground, household,
+    graphics_detail, ground, household,
     kit::Kit,
     laundry,
     massing::Rect,
@@ -27,10 +27,12 @@ use super::{
     metal::Binding,
     palette::srgb,
     pen::Pen,
-    pipes, roof_access, rooftop, shop, shutters, signs, tarps, timber, water_tanks, weathered,
-    windows,
+    pipes, roof_access, rooftop, shop, shutters, signs, tarps, timber, variants, water_tanks,
+    weathered, windows,
 };
-use crate::itemspec::definition::{Feature, ItemMesh, NativeGenerators, NativeOutput, Values};
+use crate::itemspec::definition::{
+    Feature, ItemMesh, NativeGenerators, NativeOutput, NativePrototype, Values,
+};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use superspec_geometry::{Matrix, V3};
@@ -46,11 +48,12 @@ mod hardware;
 mod party;
 mod passage_lamp;
 mod procedural_wall;
+mod prototypes;
 mod street;
 mod weeds;
 
 /// Bumped whenever a generator's output changes for the same parameters.
-const VERSION: &str = "13";
+const VERSION: &str = "15";
 /// Most triangles one native fixture may draw.
 const MAXIMUM_TRIANGLES: usize = 200_000;
 /// The default `weight` of a fixture's small hardware (clips, straps, brackets, bolts, lines):
@@ -220,12 +223,29 @@ pub fn room_pen(part: &str, offset: V3) -> Result<Pen, String> {
     Pen::new(Matrix::default(), part)?.moved(offset)
 }
 
+/// How many shapes the part type of the native generator running on this thread may draw.
+pub(super) fn variant_budget() -> variants::Budget {
+    variants::requested(graphics_detail::requested())
+}
+
+/// The stream that shapes a fixture of the `part` type whose own stream is `key`: under a
+/// budget, the stream of the catalogue entry the fixture's seed picks, so every fixture of
+/// that entry given the same parameters is the same geometry; with no catalogue, its own.
+/// For a fixture whose colours are parameters, not draws.
+pub(super) fn shape_stream(part: &str, key: &str) -> SeededRng {
+    match variant_budget().pick(&mut SeededRng::from_text(key)) {
+        Some(entry) => variants::stream(part, entry),
+        None => SeededRng::from_text(key),
+    }
+}
+
 /// Draws into a fresh render mesh and converts it.
 pub fn draw(
     cancelled: &dyn Fn() -> bool,
     paint: impl FnOnce(&mut Mesh<'_>) -> Result<(), String>,
 ) -> Result<NativeOutput, String> {
     let mut mesh = Mesh::new(Mode::Render, MAXIMUM_TRIANGLES, cancelled)?;
+    mesh.set_graphics_detail(graphics_detail::requested());
     paint(&mut mesh)?;
     unbaked_paint(&mut mesh);
     Ok(NativeOutput {
@@ -344,6 +364,8 @@ fn aircon(
         plates: arguments.boolean("plates", false)?,
         louvred: arguments.boolean("louvred", false)?,
         weight: arguments.bounded("weight", BOLD, 1. ..=3.)?,
+        variants: variant_budget(),
+        entry: None,
     };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
@@ -377,6 +399,8 @@ fn condenser(
         plates: arguments.boolean("plates", false)?,
         louvred: false,
         weight: arguments.bounded("weight", BOLD, 1. ..=3.)?,
+        variants: variant_budget(),
+        entry: None,
     };
     let mut rng = arguments.rng()?;
     arguments.finish()?;
@@ -507,7 +531,13 @@ fn window(
     };
     let glowing = look.lit && (glow.is_some() || options.room.is_some());
     let key = a.seed()?;
-    let mut rng = SeededRng::from_text(&key);
+    // The sashes that stand open, the curtains, the lit room and the cartons are the shape
+    // of a catalogue entry; a window's colours are its parameters.
+    let mut rng = shape_stream("window", &key);
+    let mut stored = match variant_budget().pick(&mut SeededRng::from_text(&key)) {
+        Some(entry) => variants::stream("window-storage", entry),
+        None => SeededRng::from_text(&format!("{key}/storage")),
+    };
     a.finish()?;
     let recess = look.recess;
     let mut output = draw(cancelled, |mesh| {
@@ -520,7 +550,7 @@ fn window(
         )?;
         if storage > 0. && recess >= 0.15 && !look.boarded {
             let d = &mut fixture(mesh, "window")?;
-            let mut rng = SeededRng::from_text(&format!("{key}/storage"));
+            let rng = &mut stored;
             let (back, front) = (-recess + 0.008, -0.075);
             let mut x = -width / 2. + 0.05;
             while x < width / 2. - 0.3 {
@@ -590,6 +620,10 @@ fn security_bars(
     };
     a.finish()?;
     draw(cancelled, |mesh| {
+        // Bars two centimetres thick over an opening: level 2 leaves the window clear.
+        if mesh.graphics_detail() == graphics_detail::GraphicsDetail::VeryLow {
+            return Ok(());
+        }
         windows::security_bars_gauged(
             &mut fixture(mesh, "security-bars")?,
             if share < 1. {
@@ -1530,7 +1564,8 @@ fn plants(
     let width = a.number("width", 1.5)?;
     let offset = a.number("offset", 0.2)?;
     let textured = a.boolean("textured", true)?;
-    let mut rng = a.rng()?;
+    // Which pots stand where is a catalogue entry's.
+    let mut rng = shape_stream("plants", &a.seed()?);
     a.finish()?;
     draw(cancelled, |mesh| {
         household::plants(
@@ -1603,14 +1638,35 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         middle: None,
         middle_gap: None,
         bold: true,
+        tints: None,
     };
     let louvred = a.boolean("louvred", false)?;
     let mut rng = a.rng()?;
     a.finish()?;
+    // Under a budget the roof and the contents are a catalogue entry's; how rusted the cage's
+    // paint is, what its roof sheet is painted and the colours of its washing stay the cage's
+    // own, drawn from its streams.
+    // A caged unit is its cage's entry, so a cage and its unit are one shape together.
+    let entry = variant_budget().pick(&mut rng);
+    let plan = match entry {
+        Some(entry) => {
+            let tints = [rng.float(0., 0.35), rng.next_f64(), rng.float(0., 0.6)];
+            rng = variants::stream("cage", entry);
+            household::CagePlan {
+                tints: Some(tints),
+                ..plan
+            }
+        }
+        None => plan,
+    };
     // The middle rail keeps off a unit's face: above it where the cage has room, else broken
     // across its width.
     let plan = if unit {
-        let [w, h] = super::aircon::unit_size(SeededRng::from_text(&format!("{key}/unit")));
+        let [w, h] = super::aircon::unit_size(
+            SeededRng::from_text(&format!("{key}/unit")),
+            variant_budget(),
+            entry,
+        );
         let top = cage.heights[0] + 0.045 + h + 0.04;
         if (cage.heights[0] + cage.heights[1]) / 2. >= top {
             plan
@@ -1629,14 +1685,17 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
         plan
     };
     draw(cancelled, |mesh| {
-        household::planned_cage(
-            &mut fixture(mesh, "cage")?,
-            &cage,
-            &mut rng,
-            None,
-            textured,
-            &plan,
-        )?;
+        // Washing in a catalogued cage is the entry's garments in the cage's own colours.
+        laundry::with_dyes(entry.is_some().then_some(key.as_str()), || {
+            household::planned_cage(
+                &mut fixture(mesh, "cage")?,
+                &cage,
+                &mut rng,
+                None,
+                textured,
+                &plan,
+            )
+        })?;
         if unit {
             // Drawn after the cage from a stream of its own, so the cage stays the seed's.
             super::aircon::air_conditioner_with(
@@ -1650,6 +1709,8 @@ fn cage(name: &str, values: &Values, cancelled: &dyn Fn() -> bool) -> Result<Nat
                     plates: false,
                     louvred,
                     weight: BOLD,
+                    variants: variant_budget(),
+                    entry,
                 },
             )?;
         }
@@ -1759,12 +1820,14 @@ fn back_door(
             srgb("#a39f92"),
             8,
         )?;
+        // The threshold stands on the ground: its underside is never seen, and would lie in
+        // the plane of the wall's own foot.
         d.cuboid(
             "concrete",
             [left - 0.03, -recess, -0.03],
             [right + 0.03, 0.1, 0.025],
             trim,
-            "",
+            "d",
         )
     })
 }
@@ -1785,19 +1848,27 @@ fn drying_rack(
     let depth = a.number("depth", 0.6)?;
     let textured = a.boolean("textured", true)?;
     let weight = a.bounded("weight", BOLD, 1. ..=3.)?;
-    let mut rng = a.rng()?;
+    // The washing on the poles is a catalogue entry's: which garments hang where. Their
+    // colours are the rack's own, so racks of one entry are one geometry in many colourings.
+    let key = a.seed()?;
+    let catalogued = variant_budget()
+        .pick(&mut SeededRng::from_text(&key))
+        .is_some();
+    let mut rng = shape_stream("drying-rack", &key);
     a.finish()?;
     draw(cancelled, |mesh| {
-        household::drying_rack_with(
-            &mut fixture(mesh, "drying-rack")?,
-            [-width / 2., width / 2.],
-            0.,
-            depth,
-            &mut rng,
-            None,
-            textured,
-            weight,
-        )
+        laundry::with_dyes(catalogued.then_some(key.as_str()), || {
+            household::drying_rack_with(
+                &mut fixture(mesh, "drying-rack")?,
+                [-width / 2., width / 2.],
+                0.,
+                depth,
+                &mut rng,
+                None,
+                textured,
+                weight,
+            )
+        })
     })
 }
 
@@ -2384,6 +2455,10 @@ fn aerial(
     a.finish()?;
     let kit = kit(&key, 1, 0.)?;
     draw(cancelled, |mesh| {
+        // A mast and its elements are lines against the sky: level 2 draws no aerial.
+        if mesh.graphics_detail() == graphics_detail::GraphicsDetail::VeryLow {
+            return Ok(());
+        }
         rooftop::aerial_with(
             &mut on(mesh, room_pen("aerial", [0.; 3])?)?,
             [0.; 3],
@@ -3290,9 +3365,24 @@ impl NativeGenerators for Natives {
             .generators
             .get(name)
             .ok_or_else(|| format!("Unknown native generator {name}."))?;
-        generate(name, parameters, cancelled)
+        // Every generator takes the graphics detail and the variant budget. They reach the
+        // mesh each one draws into (see `draw`) and its catalogue picks (see
+        // `variant_budget`), so a generator's own parameters stay what they were.
+        let detail = graphics_detail::parse(parameters.get(graphics_detail::PARAMETER))
+            .map_err(|error| format!("{name}: {error}"))?;
+        let budget = variants::parse(parameters.get(variants::PARAMETER))
+            .map_err(|error| format!("{name}: {error}"))?;
+        let own = without_render_choices(parameters);
+        graphics_detail::with_requested(detail, || {
+            variants::with_requested(budget, || {
+                generate(name, own.as_ref().unwrap_or(parameters), cancelled)
+            })
+        })
     }
     fn features(&self, name: &str, parameters: &Values) -> Vec<Feature> {
+        // Features are the same at every graphics detail and variant budget.
+        let own = without_render_choices(parameters);
+        let parameters = own.as_ref().unwrap_or(parameters);
         match name {
             "kowloon/party" => party::features(name, parameters),
             "kowloon/riser-duct" => riser_duct_features(name, parameters),
@@ -3301,6 +3391,49 @@ impl NativeGenerators for Natives {
             _ => vec![],
         }
     }
+    fn prototype(&self, name: &str, parameters: &Values) -> Option<NativePrototype> {
+        prototypes::describe(name, parameters)
+    }
+    fn prototype_meshes(
+        &self,
+        name: &str,
+        content: &Values,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<NativeOutput, String> {
+        prototypes::meshes(name, content, cancelled, &|parameters| {
+            self.generate(name, parameters, cancelled)
+        })
+        .unwrap_or_else(|| self.generate(name, content, cancelled))
+    }
+}
+
+/// `parameters` less the graphics detail and the variant budget, when they carry either.
+fn without_render_choices(parameters: &Values) -> Option<Values> {
+    const CHOICES: [&str; 2] = [graphics_detail::PARAMETER, variants::PARAMETER];
+    CHOICES
+        .iter()
+        .any(|choice| parameters.contains_key(*choice))
+        .then(|| {
+            let mut own = parameters.clone();
+            for choice in CHOICES {
+                own.remove(choice);
+            }
+            own
+        })
+}
+/// The key of the group of prototypes that are `prototype` at every graphics detail: its key
+/// computed without the detail. `None` where its content names no detail.
+pub fn prototype_lod_group(prototype: &crate::itemspec::definition::Prototype) -> Option<String> {
+    let mut content = prototype.content.clone();
+    content.remove(graphics_detail::PARAMETER)?;
+    crate::itemspec::definition::Prototype::key(
+        &prototype.kind,
+        &prototype.name,
+        &prototype.identity,
+        &content,
+        prototype.mirrored,
+    )
+    .ok()
 }
 
 /// The shared registry handed to ItemSpec hosts.

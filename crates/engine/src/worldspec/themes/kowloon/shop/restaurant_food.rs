@@ -84,6 +84,24 @@ fn draw(
         );
     }
     d.mesh.check_work(asset.faces.len() * 2)?;
+    let detail = d.mesh.graphics_detail();
+    if detail.reduced() {
+        // The piece's massing in its sampled colours under the same glaze or cut finish.
+        let points: Vec<(V3, V3)> = asset
+            .faces
+            .iter()
+            .flatten()
+            .map(|v| {
+                let brush = finish.pigment(v);
+                (
+                    std::array::from_fn(|i| at[i] + (v[i] - pivot[i]) * scale * proportions[i]),
+                    std::array::from_fn(|axis| v[axis + 8] * pigment[axis] * brush[axis]),
+                )
+            })
+            .collect();
+        let pen = d.pen.clone();
+        return super::grocer_props::mass(d, &pen, &points, detail, false);
+    }
     for face in &asset.faces {
         let points: Vec<V3> = face
             .iter()

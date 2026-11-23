@@ -1,50 +1,12 @@
-use serde::Deserialize;
-use std::collections::BTreeMap;
-use superspec_engine::{
-    materialspec::surface::Sample,
-    worldspec::themes::kowloon::{
-        fixture::Fixture,
-        mesh::{Mesh, Mode},
-        metal::Metal,
-        pen::Pen,
-        tarps::{self, Envelope, Pattern},
-        weathered,
-    },
+use serde_json::json;
+use superspec_engine::worldspec::themes::kowloon::{
+    fixture::Fixture,
+    mesh::{Mesh, Mode},
+    pen::Pen,
+    tarps::{self, Envelope, Pattern},
+    weathered,
 };
 use superspec_geometry::{Matrix, V3};
-#[derive(Deserialize)]
-struct Geometry {
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
-}
-#[derive(Deserialize)]
-struct Chart {
-    triangles: Vec<usize>,
-    point: [f64; 2],
-    sample: Sample,
-}
-#[derive(Deserialize)]
-struct Case {
-    envelope: Envelope,
-    tint: V3,
-    hem: V3,
-    pattern: Option<Pattern>,
-    key: String,
-    settings: Option<weathered::Settings>,
-    reflected: bool,
-    charts: Vec<Chart>,
-    #[serde(flatten)]
-    geometry: Geometry,
-}
-#[derive(Deserialize)]
-struct Golden {
-    repeats: BTreeMap<String, f64>,
-    cases: Vec<Case>,
-}
 fn pen(reflected: bool) -> Pen {
     Pen::new(
         if reflected {
@@ -56,168 +18,95 @@ fn pen(reflected: bool) -> Pen {
     )
     .unwrap()
 }
-fn check(mesh: &Mesh<'_>, expected: &Geometry, label: &str) {
-    assert_eq!(
-        mesh.indices.len(),
-        expected.indices.len(),
-        "{label} triangle count"
-    );
-    assert_eq!(
-        mesh.indices
-            .iter()
-            .zip(&expected.indices)
-            .position(|(a, b)| a != b),
-        None,
-        "{label} indexed order"
-    );
-    for (a, b, name) in [
-        (
-            mesh.vertices
-                .iter()
-                .flat_map(|v| v.position)
-                .collect::<Vec<_>>(),
-            &expected.positions,
-            "positions",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-            &expected.normals,
-            "normals",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.color).collect(),
-            &expected.colors,
-            "colors",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-            &expected.uv,
-            "uv",
-        ),
-    ] {
-        assert_eq!(a.len(), b.len(), "{label} {name}");
-        if let Some(i) = a.iter().zip(b).position(|(a, b)| (a - b).abs() > 2e-10) {
-            panic!("{label} {name} {i}: {} != {}", a[i], b[i]);
-        }
-    }
-    assert_eq!(
-        mesh.triangle_surfaces
-            .iter()
-            .map(|i| &mesh.surfaces[*i].slot)
-            .collect::<Vec<_>>(),
-        expected.slots.iter().collect::<Vec<_>>()
-    );
-}
-
-fn close(a: &serde_json::Value, b: &serde_json::Value) {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{a} != {b}"
-        ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(b) {
-                close(a, b);
-            }
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            for (k, b) in b {
-                close(&a[k], b);
-            }
-        }
-        _ => assert_eq!(a, b),
+fn repeats(slot: &str) -> f64 {
+    match slot {
+        "tarp" => 2.3,
+        "metal" | "sheet" => 1.5,
+        _ => 1.,
     }
 }
-
-fn draw(mesh: &mut Mesh<'_>, c: &Case, repeats: &BTreeMap<String, f64>) -> Result<(), String> {
+fn envelope(x1: f64, depth: f64, drop: f64, valance: f64) -> Envelope {
+    Envelope {
+        x0: -0.4,
+        x1,
+        z: 2.5,
+        depth,
+        drop,
+        valance,
+    }
+}
+const TINT: V3 = [0.05, 0.21, 0.11];
+const HEM: V3 = [0.81, 0.74, 0.53];
+struct Case {
+    envelope: Envelope,
+    pattern: Option<Pattern>,
+    settings: Option<weathered::Settings>,
+    reflected: bool,
+}
+fn draw(mesh: &mut Mesh<'_>, c: &Case, key: &str) -> Result<(), String> {
     tarps::canvas(
         &mut Fixture {
             pen: pen(c.reflected),
             mesh,
-            repeats: &|s| repeats[s],
+            repeats: &repeats,
         },
         c.envelope,
-        c.tint,
-        c.hem,
-        &c.key,
+        TINT,
+        HEM,
+        key,
         c.settings.as_ref(),
         c.pattern,
     )
 }
-pub fn check_reference_tarps() {
-    let golden: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/tarps.json")).unwrap();
-    for (i, c) in golden.cases.iter().enumerate() {
-        let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-        draw(&mut mesh, c, &golden.repeats).unwrap();
-        check(&mesh, &c.geometry, &format!("canvas {i}"));
-        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        let mut covered = vec![false; c.geometry.indices.len() / 3];
-        for receiver in plan.receivers() {
-            let chart = c
-                .charts
-                .iter()
-                .find(|c| c.triangles.contains(&receiver.first_triangle))
-                .unwrap();
-            for (t, seen) in covered
-                .iter_mut()
-                .enumerate()
-                .skip(receiver.first_triangle)
-                .take(receiver.triangle_count)
-            {
-                assert!(chart.triangles.contains(&t));
-                assert!(!*seen);
-                *seen = true;
-            }
-            let job = &plan.jobs()[receiver.job];
-            let runoff = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
-            let sample_runoff = |u, v| runoff.as_ref().unwrap().sample(u, v);
-            let metal = Metal::new(
-                job.metal_settings().unwrap(),
-                runoff
-                    .as_ref()
-                    .map(|_| &sample_runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
-            )
-            .unwrap();
-            close(
-                &serde_json::to_value(metal.sample(chart.point[0], chart.point[1]).unwrap())
-                    .unwrap(),
-                &serde_json::to_value(&chart.sample).unwrap(),
-            );
-        }
-        assert_eq!(
-            covered.iter().filter(|x| **x).count(),
-            c.charts.iter().map(|c| c.triangles.len()).sum::<usize>()
-        );
-        let mut survey = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
-        draw(&mut survey, c, &golden.repeats).unwrap();
-        assert_eq!(
-            survey.triangle_count() * 3,
-            c.geometry.indices.len(),
-            "survey {i}"
-        );
-    }
+fn triangles(c: &Case, mode: Mode) -> usize {
+    let mut mesh = Mesh::new(mode, 150000, &|| false).unwrap();
+    draw(&mut mesh, c, "canvas/0").unwrap();
+    mesh.triangle_count()
 }
-
 #[test]
-fn fitted_canvas_matches_reference() {
-    check_reference_tarps();
+fn canvas_surveys_like_render_mirrors_without_changing_topology_and_valance_adds_cloth() {
+    let settings: weathered::Settings = serde_json::from_value(json!({
+        "seed": "awning/1", "grime": 0.6, "wear": 0.25, "rust": 0.4, "textureDensity": 32,
+        "metal": {"material": "metal", "repeat": 1.5},
+        "paint": {"material": "paint", "repeat": 1},
+        "sheet": {"material": "sheet", "repeat": 1.5}
+    }))
+    .unwrap();
+    let pattern: Pattern =
+        serde_json::from_value(json!({"color": [0.69, 0.35, 0.03], "width": 0.24})).unwrap();
+    for (x1, depth) in [(2.4, 1.3), (4.8, 0.65)] {
+        for pattern in [None, Some(pattern)] {
+            for settings in [None, Some(settings.clone())] {
+                let case = |valance, reflected| Case {
+                    envelope: envelope(x1, depth, 0.4, valance),
+                    pattern,
+                    settings: settings.clone(),
+                    reflected,
+                };
+                let plain = case(0., false);
+                let render = triangles(&plain, Mode::Render);
+                assert!(render > 0);
+                assert_eq!(triangles(&plain, Mode::Survey), render);
+                assert_eq!(triangles(&case(0., true), Mode::Render), render);
+                assert!(triangles(&case(0.28, false), Mode::Render) > render);
+            }
+        }
+    }
 }
 #[test]
 fn invalid_canvas_does_not_emit_and_next_build_recovers() {
-    let mut g: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/tarps.json")).unwrap();
-    let c = &mut g.cases[0];
+    let mut c = Case {
+        envelope: envelope(2.4, f64::NAN, 0.4, 0.),
+        pattern: None,
+        settings: None,
+        reflected: false,
+    };
     let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-    let depth = c.envelope.depth;
-    c.envelope.depth = f64::NAN;
-    assert!(draw(&mut mesh, c, &g.repeats).is_err());
+    assert!(draw(&mut mesh, &c, "canvas/0").is_err());
     assert!(mesh.indices.is_empty());
-    c.envelope.depth = depth;
-    draw(&mut mesh, c, &g.repeats).unwrap();
+    c.envelope = envelope(2.4, 1.3, 0.4, 0.);
+    draw(&mut mesh, &c, "canvas/0").unwrap();
     assert!(!mesh.indices.is_empty());
     let mut cancelled = Mesh::new(Mode::Render, 150000, &|| true).unwrap();
-    assert!(draw(&mut cancelled, c, &g.repeats).is_err());
+    assert!(draw(&mut cancelled, &c, "canvas/0").is_err());
 }

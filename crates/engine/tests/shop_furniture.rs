@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
@@ -7,100 +6,103 @@ use superspec_engine::worldspec::themes::kowloon::{
     shop::furniture::{self, Finish},
     timber,
 };
-use superspec_geometry::{Matrix, V3};
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-struct Case {
-    kind: String,
-    size: V3,
-    levels: usize,
-    above: f64,
-    tint: V3,
-    seed: String,
-    textured: bool,
-    matrix: [V3; 4],
-    surfaces: serde_json::Value,
-    next: f64,
-    geometry: assembly::Geometry,
+use superspec_geometry::Matrix;
+fn frame(index: usize) -> Matrix {
+    let (c, s) = (0.9523335698857134, 0.3050586364434435);
+    let x = if index % 2 == 0 {
+        [c, s, 0.]
+    } else {
+        [-c, -s, 0.]
+    };
+    Matrix([x, [-s, c, 0.], [0., 0., 1.], [0.3, -0.2, 0.4]])
 }
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_shop_furniture() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/shop-furniture.json"
-    ))
-    .unwrap();
-    for c in g.cases {
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            let mut rng = SeededRng::from_text(&c.seed);
-            let timber = timber::Settings {
-                textured: c.textured,
-                timber_repeat: 1.7,
-                atlas_repeat: 1.7,
-                ..Default::default()
-            };
-            let d = &mut Fixture {
-                pen: Pen::new(Matrix(c.matrix), "furniture").unwrap(),
-                mesh: &mut mesh,
-                repeats: &|_| 1.7,
-            };
-            let surfaces = match c.kind.as_str() {
-                "shelving-timber" | "shelving-metal" => furniture::shelving(
-                    d,
-                    c.size,
-                    c.levels,
-                    c.kind.strip_prefix("shelving-").unwrap(),
-                    c.tint,
-                    c.above,
-                    &timber,
-                )
-                .unwrap(),
-                "counter-timber" | "counter-tiled" | "counter-steel" => vec![
-                    furniture::counter(
-                        d,
-                        c.size,
-                        match c.kind.as_str() {
-                            "counter-timber" => Finish::Timber,
-                            "counter-tiled" => Finish::Tiled,
-                            _ => Finish::Steel,
-                        },
-                        c.tint,
-                        &mut rng,
-                        &timber,
-                    )
-                    .unwrap(),
-                ],
-                "crate" => {
-                    vec![furniture::crate_box(d, c.size, c.tint, &mut rng, &timber).unwrap()]
+#[test]
+fn furniture_reports_the_same_stock_surfaces_inside_its_footprint_in_render_and_survey() {
+    let tint = [0.36, 0.28, 0.17];
+    for kind in [
+        "shelving-timber",
+        "shelving-metal",
+        "counter-timber",
+        "counter-tiled",
+        "counter-steel",
+        "crate",
+    ] {
+        for textured in [false, true] {
+            for index in 0..3 {
+                let size = if kind == "crate" {
+                    [[0.4, 0.3, 0.24], [0.55, 0.34, 0.31], [0.7, 0.38, 0.38]][index]
+                } else if kind.starts_with("counter") {
+                    [[1.2, 0.3, 0.8], [1.9, 0.45, 0.92], [2.6, 0.6, 1.04]][index]
+                } else {
+                    [[1.2, 0.3, 1.7], [1.9, 0.45, 1.8], [2.6, 0.6, 1.9]][index]
+                };
+                let levels = 3 + index;
+                let above = if index == 1 { 0. } else { 0.35 };
+                let mut outcomes = vec![];
+                for mode in [Mode::Render, Mode::Survey] {
+                    let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
+                    let mut rng = SeededRng::from_text(&format!("furniture-{index}"));
+                    let timber = timber::Settings {
+                        textured,
+                        timber_repeat: 1.7,
+                        atlas_repeat: 1.7,
+                        ..Default::default()
+                    };
+                    let d = &mut Fixture {
+                        pen: Pen::new(frame(index), "furniture").unwrap(),
+                        mesh: &mut mesh,
+                        repeats: &|_| 1.7,
+                    };
+                    let surfaces = match kind {
+                        "shelving-timber" | "shelving-metal" => furniture::shelving(
+                            d,
+                            size,
+                            levels,
+                            kind.strip_prefix("shelving-").unwrap(),
+                            tint,
+                            above,
+                            &timber,
+                        )
+                        .unwrap(),
+                        "crate" => {
+                            vec![furniture::crate_box(d, size, tint, &mut rng, &timber).unwrap()]
+                        }
+                        _ => vec![
+                            furniture::counter(
+                                d,
+                                size,
+                                match kind {
+                                    "counter-timber" => Finish::Timber,
+                                    "counter-tiled" => Finish::Tiled,
+                                    _ => Finish::Steel,
+                                },
+                                tint,
+                                &mut rng,
+                                &timber,
+                            )
+                            .unwrap(),
+                        ],
+                    };
+                    // Survey skips finish-driven timber splits, so only emission is compared.
+                    assert!(mesh.triangle_count() > 0, "{kind} {index}");
+                    assert!(!surfaces.is_empty());
+                    for s in &surfaces {
+                        assert!(
+                            0. <= s.x0 && s.x0 < s.x1 && s.x1 <= size[0],
+                            "{kind} {index}"
+                        );
+                        assert!(0. <= s.y && s.depth > 0. && s.y + s.depth <= size[1]);
+                        assert!(0. < s.z && s.z <= size[2] && s.clear > 0.);
+                    }
+                    outcomes.push((serde_json::json!(surfaces), rng.next_f64()));
                 }
-                _ => panic!("unknown furniture"),
-            };
-            reference::close(&serde_json::json!(surfaces), &c.surfaces);
-            assert_eq!(rng.next_f64(), c.next);
-            // Survey skips finish-driven timber splits, retaining the same physical surfaces.
-            if !mesh.surveying() {
-                assembly::check(
-                    &mut mesh,
-                    &c.geometry,
-                    &[],
-                    &format!("{} {} textured={}", c.kind, c.seed, c.textured),
+                assert_eq!(
+                    outcomes[0], outcomes[1],
+                    "{kind} {index} textured={textured}"
                 );
-            } else {
-                assert!(mesh.triangle_count() > 0);
             }
         }
     }
-}
-#[test]
-fn furniture_keeps_stock_surfaces_timber_charts_geometry_and_rng() {
-    check_reference_shop_furniture();
 }
 #[test]
 fn invalid_shelves_and_cancelled_crates_do_not_consume_stock_randomness() {

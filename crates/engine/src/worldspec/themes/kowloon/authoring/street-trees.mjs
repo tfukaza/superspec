@@ -46,6 +46,9 @@ export async function bakeStreetTree(path, name, { Document, sharp }) {
   // fixed subset and compensate leaf area as the original distance shader does.
   const count = Math.min(5500, g.instanceCount),
     growth = Math.sqrt(g.instanceCount / count);
+  const all = Array.from({ length: count }, (_, i) => i);
+  let material;
+  const sprigs = async (selected, growth) => {
   const positions = [],
     normals = [],
     uvs = [],
@@ -62,7 +65,7 @@ export async function bakeStreetTree(path, name, { Document, sharp }) {
   const tint = new THREE.Color();
   const up = new THREE.Vector3(0, 0, 1),
     east = new THREE.Vector3(1, 0, 0);
-  for (let i = 0; i < count; i++) {
+  for (const i of selected) {
     foot.fromBufferAttribute(a.iOrigin, i);
     along.fromBufferAttribute(a.iAlong, i);
     normal.fromBufferAttribute(a.iShade, i);
@@ -96,27 +99,30 @@ export async function bakeStreetTree(path, name, { Document, sharp }) {
     }
     for (const index of g.index.array) indices.push(base + index);
   }
-  const coverage = doc.createTexture("Painted canopy coverage").setMimeType("image/png")
-    .setImage(await sharp(sprigAtlasRgba(), { raw: { width: sprigAtlasSize, height: sprigAtlasSize, channels: 4 } }).png().toBuffer());
-  mesh.addPrimitive(
-    doc
+  material ??= mat("Kowloon illustrated canopy").setDoubleSided(true).setAlphaMode("MASK").setAlphaCutoff(0.5)
+    .setExtras({ foliageClusterNormals: true, foliagePaintCoverage: true })
+    .setBaseColorTexture(doc.createTexture("Painted canopy coverage").setMimeType("image/png")
+      .setImage(await sharp(sprigAtlasRgba(), { raw: { width: sprigAtlasSize, height: sprigAtlasSize, channels: 4 } }).png().toBuffer()));
+  return { positions, colors, primitive: doc
       .createPrimitive()
-      .setMaterial(mat("Kowloon illustrated canopy").setDoubleSided(true).setBaseColorTexture(coverage).setAlphaMode("MASK")
-        .setAlphaCutoff(0.5).setExtras({ foliageClusterNormals: true, foliagePaintCoverage: true }))
+      .setMaterial(material)
       .setIndices(attribute(new Uint16Array(indices), "SCALAR"))
       .setAttribute("POSITION", attribute(new Float32Array(positions), "VEC3"))
       .setAttribute("NORMAL", attribute(new Float32Array(normals), "VEC3"))
       .setAttribute("TEXCOORD_0", attribute(new Float32Array(uvs), "VEC2"))
-      .setAttribute("COLOR_0", attribute(new Float32Array(colors), "VEC3")),
-  );
+      .setAttribute("COLOR_0", attribute(new Float32Array(colors), "VEC3")) };
+  };
+  const full = await sprigs(all, growth);
+  mesh.addPrimitive(full.primitive);
   const scene = doc.createScene();
   doc.getRoot().setDefaultScene(scene);
   const near = doc.createNode(name).setMesh(mesh).setRotation([-Math.SQRT1_2, 0, 0, Math.SQRT1_2]);
   scene.addChild(near);
   const farBark = batches.find(b => b.foliage?.family === "bark" && b.foliage.level === 2);
   if (farBark && farBark.foliage.distance > 0) {
+    const barkMaterial = mesh.listPrimitives()[0].getMaterial();
     const farGeometry = batchGeometry(packet, farBark), far = doc.createMesh(name + "/far");
-    far.addPrimitive(doc.createPrimitive().setMaterial(mesh.listPrimitives()[0].getMaterial())
+    far.addPrimitive(doc.createPrimitive().setMaterial(barkMaterial)
       .setIndices(attribute(farGeometry.index.array, "SCALAR"))
       .setAttribute("POSITION", attribute(farGeometry.attributes.position.array, "VEC3"))
       .setAttribute("NORMAL", attribute(farGeometry.attributes.normal.array, "VEC3")));
@@ -125,11 +131,124 @@ export async function bakeStreetTree(path, name, { Document, sharp }) {
     far.addPrimitive(mesh.listPrimitives()[1].clone());
     const farName = name + "/lod/2";
     doc.createNode(farName).setMesh(far).setRotation(near.getRotation());
-    near.setExtras({ worldSpecLod: { version: 1, distances: [0, farBark.foliage.distance] },
-      worldSpecPendingTreeLod: farName });
+    const pending = [farName], distances = [0, farBark.foliage.distance];
+    // Lower presets start from a cheaper rendition (graphicsVisibility.ts
+    // continues the chain from the first level a preset delivers).
+    const level = (label, parts, minimum) => {
+      const lower = doc.createMesh(name + "/" + label);
+      for (const part of parts) lower.addPrimitive(part);
+      const node = doc.createNode(name + "/lod/" + label).setMesh(lower).setRotation(near.getRotation());
+      if (minimum) node.setExtras({ worldSpecMinGraphics: minimum });
+      pending.push(node.getName());
+    };
+    // Limbs and trunk of an existing bark level: twigs inside the crown are covered by its leaves.
+    const limbs = (geometry, highest) => {
+      const levels = geometry.attributes.msVertex_level, index = geometry.index.array;
+      if (!levels) return index;
+      return index.filter((_, i) => [0, 1, 2].every(corner => levels.getX(index[i - i % 3 + corner]) <= highest));
+    };
+    const barkPart = (geometry, indices) => {
+      const remap = new Map(), positions = [], normals = [], packed = [];
+      for (const vertex of indices) {
+        if (!remap.has(vertex)) {
+          remap.set(vertex, remap.size);
+          for (let k = 0; k < 3; k++) {
+            positions.push(geometry.attributes.position.array[vertex * 3 + k]);
+            normals.push(geometry.attributes.normal.array[vertex * 3 + k]);
+          }
+        }
+        packed.push(remap.get(vertex));
+      }
+      return doc.createPrimitive().setMaterial(barkMaterial)
+        .setIndices(attribute(new Uint16Array(packed), "SCALAR"))
+        .setAttribute("POSITION", attribute(new Float32Array(positions), "VEC3"))
+        .setAttribute("NORMAL", attribute(new Float32Array(normals), "VEC3"));
+    };
+    // The opaque crown mass is the canopy's shadow hull, fitted inside the leaves it stands behind.
+    const hull = batches.find(b => b.foliage?.family === "shadow" && b.foliage.mass);
+    const hullGeometry = hull && batchGeometry(packet, hull);
+    const massed = !!hullGeometry?.index?.count;
+    const thinned = sprigSubset(g.instanceCount, count, STREET_TREE_LEVELS.low.sprigs);
+    // Without a crown mass this is also the lowest preset's rendition.
+    level("low", [barkPart(barkGeometry, limbs(barkGeometry, 1)), (await sprigs(thinned.indices, thinned.growth)).primitive],
+      massed ? "low" : undefined);
+    if (massed) {
+      const crown = new THREE.Box3().setFromArray(full.positions);
+      const mean = new THREE.Color(0, 0, 0), sample = new THREE.Color();
+      for (let i = 0; i < full.colors.length; i += 3) mean.add(sample.setRGB(full.colors[i], full.colors[i + 1], full.colors[i + 2]));
+      mean.multiplyScalar(3 / full.colors.length);
+      const trunk = new THREE.Color("#776957");
+      // One opaque primitive holds the crown mass and its trunk, coloured per vertex.
+      const mass = (fit, shade, wood, woodIndices) => {
+        const from = hullGeometry.boundingBox, size = from.getSize(new THREE.Vector3()), middle = from.getCenter(new THREE.Vector3());
+        const scale = crown.getSize(new THREE.Vector3()).multiplyScalar(fit).divide(size), to = crown.getCenter(new THREE.Vector3());
+        const positions = [], normals = [], colors = [], indices = [];
+        const p = new THREE.Vector3(), n = new THREE.Vector3();
+        for (let v = 0; v < hullGeometry.attributes.position.count; v++) {
+          p.fromBufferAttribute(hullGeometry.attributes.position, v).sub(middle).multiply(scale).add(to);
+          n.fromBufferAttribute(hullGeometry.attributes.normal, v).divide(scale).normalize();
+          positions.push(...p.toArray());
+          normals.push(...n.toArray());
+          // Lighter toward the sky, as the leaves it replaces are.
+          const lift = shade * (0.85 + 0.25 * n.z);
+          colors.push(mean.r * lift, mean.g * lift, mean.b * lift);
+        }
+        indices.push(...hullGeometry.index.array);
+        const remap = new Map();
+        for (const vertex of woodIndices) {
+          if (!remap.has(vertex)) {
+            remap.set(vertex, positions.length / 3);
+            positions.push(...p.fromBufferAttribute(wood.attributes.position, vertex).toArray());
+            normals.push(...n.fromBufferAttribute(wood.attributes.normal, vertex).toArray());
+            colors.push(trunk.r, trunk.g, trunk.b);
+          }
+          indices.push(remap.get(vertex));
+        }
+        return doc.createPrimitive().setMaterial(massMaterial)
+          .setIndices(attribute(new Uint16Array(indices), "SCALAR"))
+          .setAttribute("POSITION", attribute(new Float32Array(positions), "VEC3"))
+          .setAttribute("NORMAL", attribute(new Float32Array(normals), "VEC3"))
+          .setAttribute("COLOR_0", attribute(new Float32Array(colors), "VEC3"));
+      };
+      const massMaterial = mat("Kowloon canopy mass");
+      // The leaves hold the crown's whole leaf area and colour; the dark mass
+      // inside closes the gaps between them and hides the far side's leaves.
+      const { veryLow, far: distant } = STREET_TREE_LEVELS;
+      const shell = sprigSubset(g.instanceCount, count, veryLow.sprigs);
+      level("very-low", [mass(veryLow.fit, veryLow.shade, farGeometry, farGeometry.index.array),
+        (await sprigs(shell.indices, shell.growth)).primitive]);
+      const rim = sprigSubset(g.instanceCount, count, distant.sprigs, distant.scale);
+      level("distant", [mass(distant.fit, distant.shade, farGeometry, limbs(farGeometry, 0)),
+        (await sprigs(rim.indices, rim.growth)).primitive]);
+    }
+    // Medium and above keep the full canopy at every distance a city reaches.
+    const beyond = STREET_TREE_LEVELS.unreached.slice(0, pending.length - 1);
+    near.setExtras({ worldSpecMinGraphics: "medium", worldSpecLod: { version: 1, distances: [...distances, ...beyond],
+      presetDistances: massed ? { low: STREET_TREE_LEVELS.low.distances, "very-low": STREET_TREE_LEVELS.veryLow.distances }
+        : { low: [0], "very-low": [0] } },
+      worldSpecPendingTreeLod: pending });
+    doc.getRoot().listNodes().find(node => node.getName() === farName).setExtras({ worldSpecMinGraphics: "medium" });
   }
   console.log("Street tree:", count, "painted sprigs in one canopy primitive,", bark.indexCount / 3, "bark triangles");
   return doc;
+}
+
+/** Renditions below the published one. Distances are reference metres (a
+ * 1080-pixel, 70-degree view); lower presets reach them sooner as their
+ * drawing buffer and geometry bias shrink. `scale` is against a full-canopy
+ * leaf; without it the kept leaves grow to hold the canopy's whole leaf area. */
+export const STREET_TREE_LEVELS = {
+  low: { sprigs: 2200, distances: [0, 43, 71] },
+  veryLow: { sprigs: 900, fit: 0.74, shade: 0.4, distances: [0, 73] },
+  far: { sprigs: 400, scale: 3, fit: 0.74, shade: 0.4 },
+  unreached: [1000, 2000, 4000],
+};
+
+/** An even thinning of the `drawn` shuffled leaves of a crown that grew
+ * `total`: the first `count` of them. */
+export function sprigSubset(total, drawn, count, scale) {
+  const indices = Array.from({ length: Math.min(count, drawn) }, (_, i) => i);
+  return { indices, growth: scale ? scale * Math.sqrt(total / drawn) : Math.sqrt(total / indices.length) };
 }
 
 /** Resolve the owner's private references only after glTF-Transform assigns node indices. */
@@ -138,10 +257,13 @@ export function finishStreetTreeLods(bytes) {
   const json = JSON.parse(input.toString("utf8", 20, end)), tail = input.subarray(end);
   let used = false;
   for (const node of json.nodes ?? []) {
-    const name = node.extras?.worldSpecPendingTreeLod;
-    if (!name) continue;
-    const ids = json.nodes.flatMap((candidate, index) => candidate.name === name ? [index] : []);
-    if (ids.length !== 1) throw Error("Missing or ambiguous authored street-tree LOD node: " + name);
+    const pending = node.extras?.worldSpecPendingTreeLod;
+    if (!pending) continue;
+    const ids = [pending].flat().map(name => {
+      const found = json.nodes.flatMap((candidate, index) => candidate.name === name ? [index] : []);
+      if (found.length !== 1) throw Error("Missing or ambiguous authored street-tree LOD node: " + name);
+      return found[0];
+    });
     delete node.extras.worldSpecPendingTreeLod;
     node.extensions = { ...node.extensions, MSFT_lod: { ids } };
     used = true;

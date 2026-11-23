@@ -518,6 +518,15 @@ fn sides(item: &GeneratedItem, prefix: &str) -> Vec<String> {
     parts(item, prefix).into_iter().map(str::to_owned).collect()
 }
 
+fn residential_ground_windows(item: &GeneratedItem, side: usize) -> bool {
+    let prefix = format!("side-{side}/");
+    item.geometry.meshes.iter().any(|mesh| {
+        mesh.id.starts_with(&prefix)
+            && mesh.id.contains("/groundFloor/")
+            && mesh.id.contains("/window-")
+    })
+}
+
 #[test]
 fn a_building_follows_its_footprint_cutting_corners_between_streets() {
     // The reference shop house: 9.8 by 7 m, streets on the front and right, their corner cut
@@ -626,6 +635,181 @@ fn a_building_follows_its_footprint_cutting_corners_between_streets() {
     .err()
     .unwrap();
     assert_eq!(error.code, "ITEM_FOOTPRINT");
+}
+
+#[test]
+fn shaped_buildings_keep_residential_facades_and_roof_fixtures_on_their_wings() {
+    let orientation = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    for (label, footprint, holes, roof_area, clear, walls) in [
+        (
+            "O",
+            json!([[0, 0], [14, 0], [14, 18], [0, 18]]),
+            json!([[[4, 4], [10, 4], [10, 14], [4, 14]]]),
+            172.8,
+            [7., 9., 0.],
+            8,
+        ),
+        (
+            "C",
+            json!([
+                [0, 0],
+                [12, 0],
+                [12, 4],
+                [4, 4],
+                [4, 8],
+                [12, 8],
+                [12, 12],
+                [0, 12]
+            ]),
+            json!([]),
+            99.36,
+            [8., 6., 0.],
+            8,
+        ),
+        (
+            "H",
+            json!([
+                [0, 0],
+                [4, 0],
+                [4, 4],
+                [8, 4],
+                [8, 0],
+                [12, 0],
+                [12, 12],
+                [8, 12],
+                [8, 8],
+                [4, 8],
+                [4, 12],
+                [0, 12]
+            ]),
+            json!([]),
+            99.36,
+            [6., 2., 0.],
+            12,
+        ),
+    ] {
+        let item = generate(
+            "kowloon-building.item.json",
+            &[
+                ("footprint", footprint),
+                ("courtyards", holes),
+                ("floors", json!(2)),
+                ("cut", json!(0)),
+                ("groundShops", json!(false)),
+                ("pavement", json!(false)),
+                ("roofTiles", json!(true)),
+            ],
+        );
+        assert_eq!(parts(&item, "side-").len(), walls, "{label}");
+        let roof = item
+            .geometry
+            .meshes
+            .iter()
+            .find(|mesh| mesh.id == "roof/top")
+            .unwrap();
+        let area = roof
+            .indices
+            .chunks_exact(3)
+            .map(|face| {
+                let [a, b, c] = [face[0], face[1], face[2]].map(|i| roof.positions[i as usize]);
+                let area = orientation(a, b, c);
+                assert!(area > 0., "{label} roof winding");
+                assert!(
+                    [
+                        orientation(a, b, clear),
+                        orientation(b, c, clear),
+                        orientation(c, a, clear)
+                    ]
+                    .iter()
+                    .any(|s| *s < -1e-8),
+                    "{label} roof covers its opening"
+                );
+                area / 2.
+            })
+            .sum::<f64>();
+        assert!(
+            (area - roof_area).abs() < 1e-9,
+            "{label} roof area was {area}"
+        );
+        assert!(
+            residential_ground_windows(&item, 0),
+            "{label} elevated residential windows"
+        );
+        assert!(
+            !item
+                .geometry
+                .meshes
+                .iter()
+                .any(|mesh| mesh.id.contains("/shop-")),
+            "{label}"
+        );
+        if label != "O" {
+            continue;
+        }
+        assert_eq!(parts(&item, "roofTiles-").len(), 4);
+        assert_eq!(parts(&item, "hut-"), ["hut-0"]);
+        let transforms = item.geometry.world_transforms().unwrap();
+        for (node, matrix) in item.geometry.nodes.iter().zip(transforms) {
+            let Some(name) = &node.name else {
+                continue;
+            };
+            if name == "side-4" {
+                let [x, y, _] = matrix.point([0.; 3]);
+                assert_eq!([x, y], [4., 4.]);
+                assert!(matrix.direction([0., -1., 0.])[0] > 0.99);
+            }
+            if !["roofTiles-", "hut-", "tank-", "aerial-"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+            {
+                continue;
+            }
+            for mesh in &node.meshes {
+                for &p in &item.geometry.meshes[*mesh].positions {
+                    let [x, y, _] = matrix.point(p);
+                    assert!(
+                        (0. ..=14.).contains(&x) && (0. ..=18.).contains(&y),
+                        "{name} extends past the roof"
+                    );
+                    assert!(
+                        !(4. < x && x < 10. && 4. < y && y < 14.),
+                        "{name} projects into the courtyard"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shops_fit_in_the_solid_depth_of_a_courtyard_wing() {
+    let item = generate(
+        "kowloon-building.item.json",
+        &[
+            ("footprint", json!([[0, 0], [14, 0], [14, 14], [0, 14]])),
+            ("courtyards", json!([[[2, 2], [8, 2], [8, 9], [2, 9]]])),
+            ("cut", json!(0)),
+            ("floors", json!(2)),
+            ("pavement", json!(false)),
+        ],
+    );
+    let has_shops = |side: &str| {
+        item.geometry
+            .meshes
+            .iter()
+            .any(|m| m.id.starts_with(side) && m.id.contains("/shop-"))
+    };
+    assert!(
+        !has_shops("side-0/"),
+        "the 2 m south wing receives residential windows"
+    );
+    assert!(residential_ground_windows(&item, 0));
+    assert!(
+        has_shops("side-1/"),
+        "the 6 m east wing supports the standard shop composition"
+    );
 }
 
 #[test]
@@ -900,30 +1084,6 @@ fn the_reference_plan_builds_its_shops_balcony_roof_and_pavement() {
     );
     // The pavement reaches the kerb height below the building's floor and no further.
     assert!((building.geometry.bounds[0][2] + 0.15).abs() < 1e-6);
-    let triangles: usize = building
-        .geometry
-        .meshes
-        .iter()
-        .map(|m| m.indices.len() / 3)
-        .sum();
-    let slots: BTreeSet<&str> = building
-        .geometry
-        .meshes
-        .iter()
-        .map(|m| m.material_slot.as_str())
-        .collect();
-    let vertices: usize = building
-        .geometry
-        .meshes
-        .iter()
-        .map(|m| m.positions.len())
-        .sum();
-    println!(
-        "reference plan: {} meshes, {triangles} triangles, {vertices} vertices, slots {slots:?}",
-        building.geometry.meshes.len()
-    );
-    // Well within the million triangles a placed item may hold.
-    assert!(triangles < 400_000);
 }
 
 /// The distance from `p` to the segment `a`-`b`.

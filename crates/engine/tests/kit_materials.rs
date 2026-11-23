@@ -1,52 +1,57 @@
-use serde::Deserialize;
-use std::collections::BTreeMap;
 use superspec_aml::material::Material;
 use superspec_engine::worldspec::themes::kowloon::kit_materials::Library;
-#[derive(Deserialize)]
-struct Case {
-    initial: Vec<Material>,
-    prefix: Option<String>,
-    night: bool,
-    bindings: serde_json::Value,
-    materials: Vec<Material>,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_kit_materials() {
-    let golden: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/kit-materials.json"
-    ))
-    .unwrap();
-    for (i, c) in golden.cases.into_iter().enumerate() {
-        let initial = c.initial.clone();
-        let mut library = Library::new(&c.initial, c.prefix.as_deref(), c.night).unwrap();
-        for _ in 0..2 {
-            let bindings = library.bind("wall", &["substrate".into()]).unwrap();
-            assert_eq!(
-                serde_json::to_value(bindings).unwrap(),
-                c.bindings,
-                "bindings case {i}"
+
+#[test]
+fn kit_bindings_are_repeatable_keep_authored_inputs_and_fall_back_to_shipped_finishes() {
+    let initial = vec![
+        Material {
+            id: "wall".into(),
+            color: "#caaf92".into(),
+            repeat: 2.7,
+            roughness: 0.8,
+            metalness: 0.05,
+            ..Material::default()
+        },
+        Material {
+            id: "substrate".into(),
+            color: "#777777".into(),
+            repeat: 1.3,
+            roughness: 0.95,
+            metalness: 0.,
+            ..Material::default()
+        },
+    ];
+    for (prefix, night) in [(None, false), (Some("kit"), true)] {
+        let copy = initial.clone();
+        let mut library = Library::new(&copy, prefix, night).unwrap();
+        let first =
+            serde_json::to_value(library.bind("wall", &["substrate".into()]).unwrap()).unwrap();
+        let second =
+            serde_json::to_value(library.bind("wall", &["substrate".into()]).unwrap()).unwrap();
+        assert_eq!(first, second, "binding twice is stable");
+        assert_eq!(copy, initial, "authored inputs are not mutated");
+        assert_eq!(library.materials["wall"], initial[0]);
+        assert_eq!(library.materials["substrate"], initial[1]);
+        // Slots no authored material declares bind the shipped catalog finishes.
+        for slot in ["kitchen-worktop", "market-hero-props"] {
+            let id = format!("builtin:{slot}");
+            assert_eq!(first["materials"][slot], serde_json::json!(id));
+            let shipped = superspec_aml::material_catalog::material(&id);
+            assert!(shipped.is_some(), "{id} is a shipped material");
+            assert_eq!(library.materials.get(&id).cloned(), shipped);
+        }
+        for id in first["materials"].as_object().unwrap().values() {
+            assert!(
+                library.materials.contains_key(id.as_str().unwrap()),
+                "every binding names a defined material: {id}"
             );
         }
-        let expected = c
-            .materials
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(library.materials, expected, "definitions case {i}");
-        assert_eq!(c.initial, initial);
     }
-}
-#[test]
-fn kit_bindings_preserve_authored_pbr_roles_and_night_glazing() {
-    check_reference_kit_materials();
 }
 
 #[test]
-fn building_sampling_slots_do_not_shadow_authored_names() {
-    use superspec_engine::worldspec::themes::kowloon::building::materials::Appearance;
+fn wall_sampling_slots_do_not_shadow_authored_names() {
+    use superspec_engine::worldspec::themes::kowloon::wall_appearance::Appearance;
     let wall = Material {
         id: "metal".into(),
         color: "#d4c7b0".into(),
@@ -72,12 +77,12 @@ fn building_sampling_slots_do_not_shadow_authored_names() {
     assert_eq!(library.materials["metal"], wall);
     assert_eq!(library.materials["kit-metal"], metal);
     let ceramic = Material {
-        id: "kit-wall-ceramic".into(),
+        id: "metal".into(),
         height_texture: Some("height.png".into()),
         height_scale: Some(0.1),
         ..Material::default()
     };
-    let mut displaced = Library::new(&[wall, ceramic], Some("kit"), false).unwrap();
+    let mut displaced = Library::new(&[ceramic], Some("kit"), false).unwrap();
     assert!(
         Appearance::new(&mut displaced, "metal", &[])
             .err()

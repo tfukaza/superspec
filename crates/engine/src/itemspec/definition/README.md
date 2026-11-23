@@ -85,7 +85,7 @@ scene renderer contract (UV0, identity texture transform, repeat/linear mipmappe
 sampling, supported PBR channels). An unsupported renderer feature must fail at
 that boundary rather than disappear from the imported artifact.
 
-Limits include 1 MiB definition text, 128 controls, 128 slots, 256 attachments,
+Limits include 1 MiB definition text, 160 controls, 128 slots, 256 attachments,
 512 MiB main GLB, 8 MiB GLB JSON, 1 GiB aggregate source/image bytes, 64 MiB per
 encoded image, 512 Mi base-level pixels, and 4096 nodes/primitives. Source geometry
 allows 500,000 local vertices and 250,000 triangles. Across all placements, one
@@ -119,10 +119,11 @@ message.
 | `panel` | `width`, `height`, `thickness`, `openings[]`, `patternAnchor`, `bevel`, `bevelSegments`, `arris`, `arrisStart`, `arrisEnd`, `miters` | `front`, `back`, `edge`, `reveal`, `frame`, `glazing`, `sill` |
 | `prism` | `footprint`, `height`, `inset`, `bevel`, `bevelSegments` (see Footprints) | `side`, `top`, `bottom` |
 | `arc` | `radius`, `turn`, `segments`, `section[]`, `closed`, `bevel`, `bevelSegments`, `step`, `patternAnchor`, `rings[]` | `side`, `end` |
-| `route` | `section`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
+| `route` | `section`, `drawn`, `wallThickness`, `points[]`, `bendRadius`, `segments`, `bendSegments`, `up`, `capped`, `fittings[]`, `from` | `body`, `fitting`, `bracket`, `bolt`, `end` |
 | `pipe`, `duct` | as version 1 | `surface` |
 | `item` | `entry` (one or a list), `pick`, `parameters` | the sub-item's slots |
 | `native` | `name`, `parameters` | the generator's slots |
+| `prototype` | `name`, `content`, `mirrored` | the generator's slots |
 
 Placement rules position openings and fittings: `{"from": "start"|"end"|"center",
 "offset"}`, `{"fraction"}`, and for fittings `{"every", "inset"}` (even spacing no
@@ -235,6 +236,15 @@ run (`ITEM_FITTING`). Fittings are closed solids that overlap the body; nothing 
 subtracted. Attachments are `<part>/start`, `<part>/end`, `<part>/<fitting>` and
 `<part>/<tee>/branch`.
 
+`"drawn": {"section": {...}, "offset": [across, up]}` draws the body and its end caps
+with another section, its centre moved `offset` meters from the centreline (across the
+section, then along `up`; zero by default). Only those triangles change: the path, the
+fittings and their solids, features, attachments and decals still follow `section`, so
+an item can draw a member heavier or lighter without changing what it reports. The
+drawn section must leave the wall a positive inner section and, with its offset, fit
+inside `bendRadius` (`ITEM_ROUTE`). A drawn section equal to `section` with no offset
+is the same route, with the same geometry key.
+
 `ItemGeometry` also carries `parts` (ID, geometry key, node and meshes), `features`
 and `anchors`, in the same space as `bounds`. Features are named polylines: panels
 report `base`, `top`, `opening-edge` and `sill`; routes report `joint` (a ring at
@@ -242,6 +252,35 @@ every fitting, with the fitting's length as `width`), `end` and `bracket-contact
 Materials cannot read them yet. Each part's geometry key hashes the values it
 resolved, its placement and its slot map; the item key hashes the part keys and the
 transform. `PreparedItem::rebuild` regenerates only parts whose key changed.
+
+**Placements.** A native generator may describe an instance as a shared shape and
+the instance's own colours (`NativeGenerators::prototype`, `prototype_meshes`).
+`ItemGeometry` then also carries `prototypes` (by content key: generator, identity,
+content and reflection, never a seed, part or placement) and `placements`
+(prototype, part path, node, transform, inputs, slots and the expanded meshes
+covered), lifted through sub-items and kept on a rebuild. They annotate the expanded
+meshes, which stay complete: `ItemGeometry::placed` composes the transforms, and
+placing each prototype by it rebuilds what `flattened` gives. A placement that
+mirrors its prototype names the reflected prototype, so transforms are proper
+motions. Both fields are absent from an item no generator describes, and no geometry
+key reads them. `PreparedItem::part_contents` lists each leaf part's content keys
+(its geometry key less ID and placement) without building anything.
+
+**Prototype parts.** `{"kind":"prototype","name":"kowloon/condenser","content":{...}}`
+draws one shared shape as it is: the meshes `NativeGenerators::prototype_meshes` gives
+for `name` and `content`, which is what `ItemGeometry::prototypes` holds for the key of
+that generator, its identity and that content, value for value. `content` is passed
+literally (at most 128 values; no `{"parameter"}` or `{"expr"}` forms, since a content
+is a recorded value), and `mirrored: true` draws the shape reflected in its local X,
+as a mirrored placement names it. A tool that has only an item's placement records
+(prototype name, content and reflection) can so build a library item per prototype and
+bake each once. The part's meshes keep the prototype's neutral colours and their
+`roles` (per vertex, 0 or the 1-based index of the role in the prototype's `roles`);
+it records no placement, and its geometry key differs from a `native` part's with
+the same values. An unknown `name` fails at `/parts/<i>/generator/name` with
+`ITEM_NATIVE` when the item is prepared; content the generator does not draw fails
+at `/parts/<i>/generator` with `ITEM_GEOMETRY` and the generator's message when the
+part is built. A prototype part belongs to `parts`, like every version 2 generator.
 
 **Decals.** `decals` lists images placed on a part: `{"id", "image", "size": [w, h],
 "on": {"part", "face"}, "u", "v"}` on a panel face (`front` or `back`) or a box's
@@ -313,6 +352,21 @@ street edges is cut back `cut` along each (at most a third of either edge). `pla
 sets a part's X axis to a plan direction without trigonometry, so its front (-Y) faces out of the
 footprint. The `prism` generator sweeps the cut footprint, moved `inset` inward, up by `height`
 (face groups `side`, `top`, `bottom`). A clockwise footprint fails with `ITEM_FOOTPRINT`.
+
+`footprint.holes` optionally names a numeric `grid` control containing enclosed plan loops.
+Each loop has at least three XY points, with at most 64 corners across the footprint.
+Holes accept either winding and must stay strictly inside the outer loop and apart from one
+another. Their edges follow the outer edges in a repeat, with `_courtyard` set to 1 and each
+part's front facing into the hole. The prism's top and bottom preserve the holes, and its
+inner side faces look into them. A prism with holes uses a zero bevel.
+
+For roof-mounted parts, a repeat axis can use `"footprintMode": "rectangles"` for several
+nonoverlapping rectangles, or `"largestRectangle"` for one. On a concave or holed profile,
+the rectangles fit inside the footprint inset by 0.2 m. `_min_x`, `_min_y`, `_max_x` and
+`_max_y` give the chosen rectangle's bounds. `_shaped` is 1 for these profiles, and convex
+footprints give one rectangle with the original plan bounds. On shaped street edges,
+`_inward_depth` measures clearance to the nearest footprint boundary across that wall's
+width, which can gate the placement of a deep interior kit.
 
 A footprint with `"round": n` (2 to 16) cuts each such corner into `n` facets instead of one:
 the chords of the arc that touches both edges where the cut starts and ends (on a square corner
@@ -424,6 +478,10 @@ the rest, and a cut corner with a sign between two streets (`cornerStyle` `chamf
 one `kowloon-corner`, whose wall, plinth, tile bands, string courses and coping are arcs of
 `cornerSegments` chords, with a `kowloon/pavement-corner` round it; `cornerTiles` runs the tile
 band through it). Its `arris` rounds every other convex corner and the shop piers' edges.
+To build a C or H shape, trace it in the building's `footprint` control. To build a ring,
+set `courtyards` to a list of enclosed XY loops. The same facet, window, trim and roof
+recipes continue around all edges and roof wings. Set `groundShops` to `false` for a
+residential first storey.
 
 In a scene project an item is a model of kind `item` (see `authoring/project.rs`):
 its slots are bound to the project's materials, every part and face group is a receiver

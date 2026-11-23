@@ -26,6 +26,23 @@ pub fn draw(d: &mut Fixture<'_, '_>, at: V3, scale: f64, textured: bool) -> Resu
         at[2],
     ])?;
     let sign = if pen.mirrored { -1. } else { 1. };
+    let detail = d.mesh.graphics_detail();
+    if detail.reduced() {
+        // The register's massing in its own sampled colours.
+        let points: Vec<_> = asset
+            .faces
+            .iter()
+            .chain(&asset.painted_faces)
+            .flatten()
+            .map(|v| {
+                (
+                    [v[0] * sign * scale, v[1] * scale, v[2] * scale],
+                    [v[8], v[9], v[10]],
+                )
+            })
+            .collect();
+        return super::grocer_props::mass(d, &pen, &points, detail, false);
+    }
     for (faces, textured) in [(&asset.faces, textured), (&asset.painted_faces, false)] {
         let slot = if textured { "shop-register" } else { "paint" };
         for face in faces {

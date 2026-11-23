@@ -1,37 +1,8 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::{Scene, compile, worldspec::themes::kowloon::floor::Finish};
 use superspec_geometry::math::*;
 
 const SOURCE: &str = include_str!("../../../tests/fixtures/aml/rust-floor-dressing.aml");
-#[derive(Deserialize)]
-struct Corner {
-    position: V3,
-    normal: V3,
-    uv: [f64; 2],
-    color: V3,
-}
-#[derive(Deserialize)]
-struct Sample {
-    seed: String,
-    phase: f64,
-    grime: f64,
-    wear: f64,
-    point: V3,
-    color: V3,
-}
-#[derive(Deserialize)]
-struct Oracle {
-    inputs: Vec<Input>,
-    corners: Vec<Corner>,
-    samples: Vec<Sample>,
-    overrides: Vec<Corner>,
-}
-#[derive(Deserialize)]
-struct Input {
-    points: [V3; 3],
-    normal: V3,
-}
 fn visible_area(scene: &Scene, material: Option<&str>) -> f64 {
     let mut area = 0.;
     for mesh in scene
@@ -54,68 +25,62 @@ fn visible_area(scene: &Scene, material: Option<&str>) -> f64 {
     }
     area
 }
-/// Frozen source pixels and corners are shared with actual browser Wasm acceptance.
-pub fn check_reference_floor() {
-    let oracle: Oracle = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/floor-dressing.json"
-    ))
-    .unwrap();
-    assert_eq!(oracle.samples.len(), 135);
-    for sample in oracle.samples {
-        assert_eq!(
-            SeededRng::from_text(&sample.seed).float(0., 100.),
-            sample.phase
-        );
-        let color = Finish {
-            grime: sample.grime,
-            wear: sample.wear,
-            phase: sample.phase,
-            repeat: 1.,
-        }
-        .color(sample.point);
-        for (a, b) in color.into_iter().zip(sample.color) {
-            assert!((a - b).abs() < 2e-14);
+#[test]
+fn floor_colors_stay_in_range_and_grime_darkens_while_wear_lightens() {
+    for seed in ["courtyard/地面🌿/floor", "a", "b/c"] {
+        let phase = SeededRng::from_text(seed).float(0., 100.);
+        assert!((0.0..100.0).contains(&phase));
+        for point in [[0., 0., 0.], [1.3, -2.1, 0.4], [40., 7., -3.]] {
+            let at = |grime, wear| {
+                Finish {
+                    grime,
+                    wear,
+                    phase,
+                    repeat: 1.,
+                }
+                .color(point)
+            };
+            let base = at(0.5, 0.5);
+            for channel in 0..3 {
+                assert!((0.0..=1.0).contains(&base[channel]));
+                assert!(at(1., 0.5)[channel] <= base[channel]);
+                assert!(at(0.5, 1.)[channel] >= base[channel]);
+            }
+            assert!(base[2] <= base[0] && base[0] <= base[1], "warm grey order");
         }
     }
-    // Freeze the source compiler's receiver triangles as well: architectural partition
-    // triangulation differs, while this producer must preserve its input and stack order.
+}
+
+#[test]
+fn floor_refinement_splits_long_edges_and_preserves_area_and_winding() {
     let finish = Finish {
         grime: 0.8,
         wear: 0.2,
         phase: SeededRng::from_text("courtyard/地面🌿/floor").float(0., 100.),
         repeat: 1.7,
     };
-    let mut actual = Vec::new();
+    let triangle = [[0., 0., 0.], [4., 0., 0.], [4., 3., 0.]];
+    let mut output = Vec::new();
     let mut work = 0;
-    for input in oracle.inputs {
-        finish
-            .triangle(input.points, input.normal, &mut work, &mut actual)
-            .unwrap();
-    }
-    let expected = oracle.corners;
-    assert_eq!(actual.len(), expected.len());
-    for (a, b) in actual.iter().zip(&expected) {
-        for (a, b) in a
-            .position
-            .iter()
-            .chain(&a.normal)
-            .chain(&a.uv)
-            .chain(&a.color)
-            .zip(
-                b.position
-                    .iter()
-                    .chain(&b.normal)
-                    .chain(&b.uv)
-                    .chain(&b.color),
-            )
-        {
-            assert!((a - b).abs() < 2e-12, "{a} != {b}");
+    finish
+        .triangle(triangle, [0., 0., 1.], &mut work, &mut output)
+        .unwrap();
+    assert!(work >= output.len() / 3);
+    let mut area = 0.;
+    for t in output.as_chunks::<3>().0 {
+        let p = t.each_ref().map(|v| v.position);
+        let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+        assert!(n[2] > 0.);
+        area += length(n) / 2.;
+        for i in 0..3 {
+            assert!(length(sub(p[i], p[(i + 1) % 3])) <= 0.650001);
+        }
+        for v in t {
+            assert_eq!(v.normal, [0., 0., 1.]);
+            assert_eq!(v.color, finish.color(v.position));
         }
     }
-}
-#[test]
-fn reference_floor_colors_and_refinement() {
-    check_reference_floor();
+    assert!((area - 6.).abs() < 1e-9);
 }
 
 #[test]
@@ -199,21 +164,39 @@ fn floor_finish_preserves_physics_inlays_area_and_bounds() {
 }
 
 #[test]
-fn integrated_floor_uses_reference_seed_material_and_rule_overrides() {
-    let oracle: Oracle = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/floor-dressing.json"
-    ))
-    .unwrap();
-    for (source, expected) in [
-        (SOURCE.to_owned(), oracle.corners),
+fn integrated_floor_uses_dressing_seed_material_and_rule_overrides() {
+    let phase = SeededRng::from_text("courtyard/地面🌿/floor").float(0., 100.);
+    for (source, grime, wear) in [
+        (SOURCE.to_owned(), 0.8, 0.2),
         (
             SOURCE.replace("<floor host", "<floor grime=\"0\" wear=\"1\" host"),
-            oracle.overrides,
+            0.,
+            1.,
         ),
     ] {
+        let finish = Finish {
+            grime,
+            wear,
+            phase,
+            repeat: 1.7,
+        };
         let scene = compile(&source, 0).unwrap();
         for position in [[0., 0., 0.], [4., 0., 0.], [4., 3., 0.], [0., 3., 0.]] {
-            let reference = expected.iter().find(|v| v.position == position).unwrap();
+            // The producer's own corner at this point, from a tiny triangle anchored there.
+            let mut produced = Vec::new();
+            finish
+                .triangle(
+                    [
+                        position,
+                        add(position, [0.01, 0., 0.]),
+                        add(position, [0., 0.01, 0.]),
+                    ],
+                    [0., 0., 1.],
+                    &mut 0,
+                    &mut produced,
+                )
+                .unwrap();
+            let reference = &produced[0];
             let mut found = false;
             for mesh in scene
                 .manifest

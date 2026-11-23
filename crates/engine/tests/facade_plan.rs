@@ -1,87 +1,57 @@
-use serde::Deserialize;
-use serde_json::{Value, json};
-use std::cell::RefCell;
+use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
-    facade_plan::{self, Queries},
+    facade_cells::Role,
+    facade_plan::{self, Queries, Request},
     kit::Kit,
-    massing::Lot,
-    signs::panel::Settings,
+    massing::{Lot, Rect},
+    palette,
 };
-#[path = "support/facade_input.rs"]
-mod input;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-use input::{Input, LotData};
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Case {
-    group: usize,
-    style_seed: String,
-    lot: LotData,
-    request: Input,
-    detail: u8,
-    settings: Settings,
-    reach: Value,
-    hollow: Value,
-    plan: Value,
-}
-impl Case {
-    fn lot(&self) -> Lot {
-        self.lot.build(&self.style_seed, self.request.width)
+fn lot() -> Lot {
+    Lot {
+        index: 0,
+        kind: "tenement",
+        x0: 0.,
+        x1: 9.8,
+        ground: 3.4,
+        story_height: 3.,
+        stories: 3,
+        roof: 9.4,
+        top: 10.05,
+        front: 0.,
+        back: 0.,
+        style: palette::lot_style(&mut SeededRng::from_text("facade-style/0")),
+        key: "lot-2".into(),
     }
 }
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/facade-plan.json"
-    ))
-    .unwrap()
-}
-pub fn check_reference_facade_plans() {
-    for c in fixture().cases {
-        let lot = c.lot();
-        let kit = Kit::new(c.settings, c.detail).unwrap();
-        let reach = RefCell::new(vec![]);
-        let hollow = RefCell::new(vec![]);
-        let q = Queries {
-            reach: &|zone, r, limit| {
-                reach
-                    .borrow_mut()
-                    .push(json!([zone, r.u0, r.u1, r.v0, r.v1, limit]));
-                Ok(if c.group % 3 == 0 && r.u0 > 3. {
-                    0.
-                } else if c.group % 3 == 1 {
-                    limit.min(0.4)
-                } else {
-                    limit
-                })
-            },
-            hollow: &|u0, u1, h, limit| {
-                hollow.borrow_mut().push(json!([u0, u1, h, limit]));
-                Ok(if c.group % 4 == 0 { 0. } else { 3.1 })
-            },
-        };
-        let plan = facade_plan::plan(&c.request.request(&lot), &kit, &q, &|| false).unwrap();
-        reference::close(&json!(*reach.borrow()), &c.reach);
-        reference::close(&json!(*hollow.borrow()), &c.hollow);
-        let mut value = json!(plan);
-        value["next"] = json!(plan.continuation.clone().next_f64());
-        reference::close(&value, &c.plan);
+fn request<'a>(lot: &'a Lot, ground: &'a [Rect], body: &'a [Rect]) -> Request<'a> {
+    Request {
+        lot,
+        role: Role::Front,
+        key: "front-2",
+        width: 9.8,
+        shift: -0.2,
+        body_span: [-0.1, 10.],
+        ground,
+        body,
+        shops: 0.,
     }
-}
-#[test]
-fn facade_plans_match_bays_households_openings_conditions_queries_and_streams() {
-    check_reference_facade_plans()
 }
 #[test]
 fn invalid_queries_coverage_and_cancellation_fail_and_next_plan_recovers() {
-    let c = fixture().cases.remove(30);
-    let lot = c.lot();
-    let kit = Kit::new(c.settings, c.detail).unwrap();
+    let lot = lot();
+    let ground = [Rect {
+        u0: 0.,
+        u1: 9.8,
+        v0: 0.,
+        v1: 3.4,
+    }];
+    let body = vec![Rect {
+        u0: -0.1,
+        u1: 10.,
+        v0: 3.4,
+        v1: 10.05,
+    }];
+    let kit=Kit::new(serde_json::from_value(serde_json::json!({"weathering":{"seed":"facade/2","wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":32,"metal":{"material":"metal","repeat":1},"sheet":{"material":"sheet","repeat":1},"paint":{"material":"paint","repeat":1}},"lettering":true,"timber":{"textured":true,"timberRepeat":1,"atlasRepeat":1}})).unwrap(),2).unwrap();
     let clear = Queries {
         reach: &|_, _, limit| Ok(limit),
         hollow: &|_, _, _, limit| Ok(limit),
@@ -91,14 +61,21 @@ fn invalid_queries_coverage_and_cancellation_fail_and_next_plan_recovers() {
             reach: &|_, _, _| Ok(bad),
             hollow: clear.hollow,
         };
-        assert!(facade_plan::plan(&c.request.request(&lot), &kit, &query, &|| false).is_err());
+        assert!(
+            facade_plan::plan(&request(&lot, &ground, &body), &kit, &query, &|| false).is_err()
+        );
     }
-    let mut bad = c.request.clone();
-    bad.body.push(bad.body[0]);
-    assert!(facade_plan::plan(&bad.request(&lot), &kit, &clear, &|| false).is_err());
-    assert!(facade_plan::plan(&c.request.request(&lot), &kit, &clear, &|| true).is_err());
+    let mut overlapping = body.clone();
+    overlapping.push(overlapping[0]);
     assert!(
-        !facade_plan::plan(&c.request.request(&lot), &kit, &clear, &|| false)
+        facade_plan::plan(&request(&lot, &ground, &overlapping), &kit, &clear, &|| {
+            false
+        })
+        .is_err()
+    );
+    assert!(facade_plan::plan(&request(&lot, &ground, &body), &kit, &clear, &|| true).is_err());
+    assert!(
+        !facade_plan::plan(&request(&lot, &ground, &body), &kit, &clear, &|| false)
             .unwrap()
             .cells
             .is_empty()

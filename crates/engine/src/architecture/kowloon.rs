@@ -9,7 +9,6 @@ use crate::worldspec::{
     },
 };
 use std::sync::Mutex;
-mod buildings;
 mod dressing;
 mod ground;
 mod visual;
@@ -19,9 +18,7 @@ mod windows;
 pub(crate) struct Kowloon<'a> {
     execution: Execution<'a>,
     state: ThemeState,
-    buildings: Vec<buildings::Recipe>,
     walls: Vec<wall_dressing::Recipe>,
-    building_plan: Option<buildings::Prepared>,
     ground_plan: Vec<ground::Prepared>,
     wall_plan: Vec<wall_dressing::Job>,
     source: Option<Node>,
@@ -39,9 +36,7 @@ impl<'a> Kowloon<'a> {
                 observe,
             },
             state: ThemeState::default(),
-            buildings: vec![],
             walls: vec![],
-            building_plan: None,
             ground_plan: vec![],
             wall_plan: vec![],
             source: None,
@@ -56,45 +51,28 @@ impl ThemeAdapter for Kowloon<'_> {
     ) -> Result<(), Diagnostic> {
         let compiler = &physical.compiler;
         let floor_dressing = compiler.plan_dressing(materials)?;
-        let buildings = compiler.building_recipes(materials)?;
+        compiler.check_dressing_settings(materials)?;
         let walls = compiler.wall_recipes(materials)?;
-        let building_hosts = buildings.iter().map(|recipe| recipe.node).collect();
         self.source = compiler.dressing_settings().cloned();
-        self.state = ThemeState {
-            floor_dressing,
-            building_hosts,
-            ..Default::default()
-        };
-        self.buildings = buildings;
+        self.state = ThemeState { floor_dressing };
         self.walls = walls;
-        self.building_plan = None;
         self.ground_plan.clear();
         self.wall_plan.clear();
         Ok(())
     }
     fn needs_surfaces(&self) -> bool {
-        !self.buildings.is_empty()
-            || self
-                .state
-                .floor_dressing
-                .values()
-                .any(|plan| plan.ground.is_some())
+        self.state
+            .floor_dressing
+            .values()
+            .any(|plan| plan.ground.is_some())
     }
     fn plan(
         &mut self,
         physical: &PhysicalBuild<'_>,
-        diagnostics: &mut Vec<Diagnostic>,
+        _diagnostics: &mut Vec<Diagnostic>,
         output: &PhysicalOutput,
         render: &RenderSurfaces,
     ) -> Result<(), Diagnostic> {
-        (self.execution.observe)("building-plan");
-        self.building_plan = physical.compiler.plan_buildings(
-            diagnostics,
-            &output.product,
-            std::mem::take(&mut self.buildings),
-            &render.geometry,
-            &mut self.state,
-        )?;
         (self.execution.observe)("ground-plan");
         self.ground_plan =
             physical
@@ -112,7 +90,7 @@ impl ThemeAdapter for Kowloon<'_> {
             scene,
             render.geometry,
             std::mem::take(&mut self.walls),
-            &mut self.state,
+            &self.state,
         )?;
         Ok(())
     }
@@ -125,24 +103,15 @@ impl ThemeAdapter for Kowloon<'_> {
         physical.compiler.render_ground(
             visuals,
             std::mem::take(&mut self.ground_plan),
-            &mut self.state,
+            &self.state,
             &self.execution,
         )?;
         (self.execution.observe)("wall-render");
         physical.compiler.render_walls(
             visuals,
             std::mem::take(&mut self.wall_plan),
-            &mut self.state,
             &self.execution,
-        )?;
-        (self.execution.observe)("building-render");
-        physical.compiler.render_buildings(
-            visuals,
-            self.building_plan.take(),
-            &mut self.state,
-            &self.execution,
-        )?;
-        Ok(())
+        )
     }
     fn place_items<'build>(
         &self,
@@ -200,37 +169,11 @@ impl Compiler<'_> {
         scene: &mut Scene,
         mut by_owner: BTreeMap<u32, Geometry>,
         wall_recipes: Vec<wall_dressing::Recipe>,
-        theme: &mut ThemeState,
+        theme: &ThemeState,
     ) -> Result<Vec<wall_dressing::Job>, Diagnostic> {
-        if !theme.building_hosts.is_empty() {
-            for (owner, geometry) in &by_owner {
-                let surface = &self.surfaces[owner];
-                if !surface.visible || theme.building_hosts.contains(&surface.node) {
-                    continue;
-                }
-                if theme.sign_survey.len() + geometry.triangles.len() > 1_048_576 {
-                    return Err(self.resolution.nodes[surface.node].source.fail(
-                        "AML_COMPLEXITY",
-                        "Authored sign survey exceeds scene triangle allowance.",
-                    ));
-                }
-                theme.sign_survey.extend(
-                    geometry
-                        .triangles
-                        .iter()
-                        .map(|t| t.map(|i| geometry.points[i])),
-                );
-            }
-        }
         self.dress_floors(scene, &mut by_owner, theme)?;
         let walls = self.dress_walls(&mut by_owner, wall_recipes)?;
-        by_owner.retain(|owner, _| !theme.building_hosts.contains(&self.surfaces[owner].node));
-        self.append_owned(
-            scene,
-            by_owner,
-            false,
-            (!theme.building_hosts.is_empty()).then_some(&mut theme.render_edge_vertices),
-        )?;
+        self.append_owned(scene, by_owner, false)?;
         Ok(walls)
     }
 }

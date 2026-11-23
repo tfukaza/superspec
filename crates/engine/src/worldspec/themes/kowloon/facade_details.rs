@@ -345,7 +345,8 @@ pub fn draw(
             0.45,
             &format!("{key}/band-{}", ryu_js::Buffer::new().format(r.v0)),
         )?;
-        if s.detail > 0 {
+        // A band's joints are 12 mm lines.
+        if s.detail > 0 && !d.mesh.graphics_detail().reduced() {
             let mut u = r.u0 + 2.4;
             while u < r.u1 - 0.1 {
                 d.panel(
@@ -367,22 +368,30 @@ pub fn draw(
             0.036,
             srgb("#2a2927"),
         )?;
+        // Louvres 8 mm thick, 45 mm apart: level 1 draws every second one and level 2 the
+        // frame round its dark opening. Neither draws the screw heads.
+        let detail = d.mesh.graphics_detail();
+        let every = detail.pick(1, 2, usize::MAX);
         let mut z = r.v0 + 0.045;
+        let mut index = 0;
         while z < r.v1 - 0.02 {
-            d.molding(
-                "metal",
-                [r.u0 + 0.02, r.u1 - 0.02],
-                &[
-                    [0.04, z + 0.028],
-                    [0.085, z],
-                    [0.085, z - 0.008],
-                    [0.04, z + 0.02],
-                ],
-                rim,
-            )?;
+            if every != usize::MAX && index % every == 0 {
+                d.molding(
+                    "metal",
+                    [r.u0 + 0.02, r.u1 - 0.02],
+                    &[
+                        [0.04, z + 0.028],
+                        [0.085, z],
+                        [0.085, z - 0.008],
+                        [0.04, z + 0.02],
+                    ],
+                    rim,
+                )?;
+            }
+            index += 1;
             z += 0.045;
         }
-        if s.detail > 0 {
+        if s.detail > 0 && !detail.reduced() {
             for u in [r.u0 + 0.012, r.u1 - 0.012] {
                 for z in [r.v0 + 0.012, r.v1 - 0.012] {
                     d.disc(
@@ -400,8 +409,11 @@ pub fn draw(
     for r in &plan.outlets {
         let rim = shade(srgb("#a4a9aa"), 0.6);
         d.panel("paint", [r.u0, r.u1, r.v0, r.v1], 0.003, srgb("#2a2927"))?;
-        for u in [r.u0, r.u1 - 0.025] {
-            d.cuboid("metal", [u, 0., r.v0], [u + 0.025, 0.1, r.v1], rim, "b")?;
+        // Level 2 keeps the dark mouth, its hood and its lip.
+        if d.mesh.graphics_detail() != super::graphics_detail::GraphicsDetail::VeryLow {
+            for u in [r.u0, r.u1 - 0.025] {
+                d.cuboid("metal", [u, 0., r.v0], [u + 0.025, 0.1, r.v1], rim, "b")?;
+            }
         }
         d.molding(
             "metal",

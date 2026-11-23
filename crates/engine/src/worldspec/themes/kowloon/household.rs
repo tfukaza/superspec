@@ -3,6 +3,7 @@ use super::pipes::{Options as PipeOptions, PipeSystem};
 use super::{
     balcony_props::{self, Plant},
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     laundry::{self, Support},
     metal::Kind,
     palette::{mix, shade, srgb},
@@ -199,13 +200,16 @@ pub fn drying_rack_with(
             weighed(weight, 0.025, 0.036),
             steel,
         )?;
-        frame.bar(
-            "metal",
-            [x, 0., z - 0.25],
-            [x, depth * 0.7, z + 0.02],
-            weighed(weight, 0.018, 0.028),
-            steel,
-        )?;
+        // The brace under each arm goes at level 2.
+        if frame.mesh.graphics_detail() != GraphicsDetail::VeryLow {
+            frame.bar(
+                "metal",
+                [x, 0., z - 0.25],
+                [x, depth * 0.7, z + 0.02],
+                weighed(weight, 0.018, 0.028),
+                steel,
+            )?;
+        }
     }
     // Heavy poles are fewer: two where three thin ones lay.
     let poles = if depth > 0.5 && weight < 1.5 { 3 } else { 2 };
@@ -413,6 +417,9 @@ pub struct CagePlan {
     /// A cage of few heavy bars: the infill bars share each side evenly at about `spacing`,
     /// and the floor's runners and the wall stays are of the bars' weight instead of 9 and 12 mm.
     pub bold: bool,
+    /// The cage's own colours where its stream shapes other cages too: how much rust is in
+    /// its paint (0–0.35), and the draw (0–1) and rust (0–0.6) of a seeded roof's sheet.
+    pub tints: Option<[f64; 3]>,
 }
 impl CagePlan {
     fn validate(&self) -> Result<(), String> {
@@ -468,6 +475,7 @@ pub fn planned_cage(
     validate_weathering(settings)?;
     plan.validate()?;
     let oxidation = rng.float(0., 0.35);
+    let oxidation = plan.tints.map_or(oxidation, |tints| tints[0]);
     let oxidation = plan.rust.map_or(oxidation, |most| oxidation / 0.35 * most);
     let paint = metal_color(c.color, oxidation, settings);
     let bar = plan.bar.unwrap_or(0.012);
@@ -514,20 +522,36 @@ pub fn planned_cage(
     };
     let width = 0.09_f64.min((x1 - x0) * 0.2);
     let height = 0.14_f64.min((z1 - z0) * 0.2);
+    // A reduced level keeps the cage's massing: its frame, posts and a share of its infill
+    // bars. The wall plates are a centimetre thick and go at both; the stays, the floor's
+    // runners and its cross bars go at level 2.
+    let detail = frame.mesh.graphics_detail();
+    let fixed = !detail.reduced();
+    let floored = detail != GraphicsDetail::VeryLow;
+    let stride = if plan.bold {
+        detail.pick(1, 1, 2)
+    } else {
+        detail.pick(1, 2, 4)
+    };
     for x in [x0 + width / 2., x1 - width / 2.] {
         for z in [z0 + height / 2., z1 - height / 2.] {
-            steel::fixing_plate(
-                &mut frame,
-                finish,
-                &Plate {
-                    center: [x, 0., z],
-                    across: [1., 0., 0.],
-                    up: [0., 0., 1.],
-                    out: [0., 1., 0.],
-                    size: [width, height],
-                    bolts: 2,
-                },
-            )?;
+            if fixed {
+                steel::fixing_plate(
+                    &mut frame,
+                    finish,
+                    &Plate {
+                        center: [x, 0., z],
+                        across: [1., 0., 0.],
+                        up: [0., 0., 1.],
+                        out: [0., 1., 0.],
+                        size: [width, height],
+                        bolts: 2,
+                    },
+                )?;
+            }
+            if !floored {
+                continue;
+            }
             let front = if z < (z0 + z1) / 2. {
                 z0 + 0.014
             } else {
@@ -563,8 +587,12 @@ pub fn planned_cage(
         )
     };
     let mut y = runner_pitch / 2.;
+    let mut index = 0;
     while y < depth {
-        rail([x0, y, z0], [x1, y, z0], runner)?;
+        if floored && index % stride == 0 {
+            rail([x0, y, z0], [x1, y, z0], runner)?;
+        }
+        index += 1;
         y += runner_pitch;
     }
     let middle = plan
@@ -593,20 +621,31 @@ pub fn planned_cage(
         rail([x, depth, z0], [x, depth, z1], post)?;
     }
     let mut x = x0 + pitch;
+    let mut index = 0;
     while x < x1 - 0.04 {
-        rail([x, depth, z0], [x, depth, z1], bar)?;
+        // Counted from the second bar, so a cage of two bars keeps one.
+        if (index + 1) % stride == 0 {
+            rail([x, depth, z0], [x, depth, z1], bar)?;
+        }
+        index += 1;
         x += pitch;
     }
     for x in [x0, x1] {
         let mut y = side_pitch;
+        let mut index = 0;
         while y < depth - 0.03 {
-            rail([x, y, z0], [x, y, z1], bar)?;
+            if (index + 1) % stride == 0 {
+                rail([x, y, z0], [x, y, z1], bar)?;
+            }
+            index += 1;
             y += side_pitch;
         }
     }
     let mut x = x0 + cross_pitch;
     while x < x1 - 0.1 {
-        rail([x, 0., z0], [x, depth, z0], bar)?;
+        if floored && !detail.reduced() {
+            rail([x, 0., z0], [x, depth, z0], bar)?;
+        }
         x += cross_pitch;
     }
     // A planned roof draws from its own stream, so the contents stay the seed's.
@@ -617,24 +656,29 @@ pub fn planned_cage(
     if roofed {
         let roof = if plan.roof.is_some() {
             plan.roof_color.unwrap_or(srgb("#b9c79a"))
+        } else if let Some([_, pick, rust]) = plan.tints {
+            if pick < 0.5 {
+                srgb("#b9c79a")
+            } else {
+                metal_color(srgb("#a4a9aa"), rust, settings)
+            }
         } else if rng.chance(0.5) {
             srgb("#b9c79a")
         } else {
             metal_color(srgb("#a4a9aa"), rng.float(0., 0.6), settings)
         };
-        corrugated::draw(
-            d,
-            "sheet",
-            [
-                [x0 - 0.05, 0., z1 + 0.14],
-                [x1 + 0.05, 0., z1 + 0.14],
-                [x1 + 0.05, depth + 0.1, z1 + 0.02],
-                [x0 - 0.05, depth + 0.1, z1 + 0.02],
-            ],
-            0.09,
-            roof,
-            settings,
-        )?;
+        let corners = [
+            [x0 - 0.05, 0., z1 + 0.14],
+            [x1 + 0.05, 0., z1 + 0.14],
+            [x1 + 0.05, depth + 0.1, z1 + 0.02],
+            [x0 - 0.05, depth + 0.1, z1 + 0.02],
+        ];
+        if detail.reduced() && settings.is_none() {
+            // The ribs are a few millimetres deep: an unbaked roof is one flat sheet.
+            d.sheet("sheet", &corners, roof)?;
+        } else {
+            corrugated::draw(d, "sheet", corners, 0.09, roof, settings)?;
+        }
     }
     if !c.stocked {
         return Ok(());
@@ -662,13 +706,15 @@ pub fn planned_cage(
                     card,
                     "d",
                 )?;
-                d.cuboid(
-                    "paint",
-                    [x + size * 0.44, y - 0.002, z + high - 0.002],
-                    [x + size * 0.56, y + size + 0.002, z + high + 0.002],
-                    shade(card, 0.72),
-                    "d",
-                )?;
+                if !detail.reduced() {
+                    d.cuboid(
+                        "paint",
+                        [x + size * 0.44, y - 0.002, z + high - 0.002],
+                        [x + size * 0.56, y + size + 0.002, z + high + 0.002],
+                        shade(card, 0.72),
+                        "d",
+                    )?;
+                }
                 z += high + 0.004;
             }
             x += size + rng.float(0.03, 0.12);
@@ -783,7 +829,9 @@ pub fn guarded_wall_lamp(
         srgb("#f4e8c0"),
         "b",
     )?;
-    for bar in [-0.03, 0.03] {
+    // The guard's two bars are wire: a reduced level shows the glass.
+    let guarded = !d.mesh.graphics_detail().reduced();
+    for bar in [-0.03, 0.03].into_iter().filter(|_| guarded) {
         Fixture {
             pen: pen.clone(),
             mesh: d.mesh,
@@ -837,6 +885,11 @@ pub fn guarded_round_wall_lamp(
     let metal = hardware(&mut lamp, Some(settings))?;
     let housing = shade(srgb("#a4a9aa"), 0.5);
     let wire = shade(srgb("#a4a9aa"), 0.4);
+    // A reduced level turns the plate and the glass in fewer sides and rows; level 1 bends
+    // the cage of fewer chords and level 2, where its wire would be a hairline, leaves it.
+    let detail = lamp.mesh.graphics_detail();
+    let (plate_sides, dome_sides) = (detail.pick(24, 10, 6), detail.pick(20, 8, 6));
+    let (ring_steps, hoop_steps) = (detail.pick(24, 8, 0), detail.pick(10, 4, 0));
     {
         let mut m = Fixture {
             pen: metal.clone(),
@@ -853,7 +906,7 @@ pub fn guarded_round_wall_lamp(
                 [plate - 0.012 * k, 0.026 * k],
             ],
             &super::shop::forms::Tints::Uniform(&Tint::Color(housing)),
-            24,
+            plate_sides,
             None,
         )?;
         m.disc(
@@ -862,7 +915,7 @@ pub fn guarded_round_wall_lamp(
             plate - 0.012 * k,
             [0., 0., 1.],
             housing,
-            24,
+            plate_sides,
         )?;
     }
     // The glass: a low dome from the plate, closed by a small disc at its crown.
@@ -875,13 +928,19 @@ pub fn guarded_round_wall_lamp(
         [0.014, 0.118],
     ]
     .map(|p| p.map(|v| v * k));
+    let rows: &[usize] = match detail {
+        GraphicsDetail::Full => &[0, 1, 2, 3, 4, 5],
+        GraphicsDetail::Low => &[0, 2, 4, 5],
+        GraphicsDetail::VeryLow => &[0, 3, 5],
+    };
+    let dome: Vec<[f64; 2]> = rows.iter().map(|row| dome[*row]).collect();
     super::shop::forms::lathe(
         &mut lamp,
         "pane",
         [0.; 3],
         &dome,
         &super::shop::forms::Tints::Uniform(&Tint::Color(srgb("#f4e8c0"))),
-        20,
+        dome_sides,
         None,
     )?;
     lamp.disc(
@@ -898,9 +957,9 @@ pub fn guarded_round_wall_lamp(
         repeats: lamp.repeats,
     };
     // A ring round the dome's foot and three hoops over its crown.
-    let ring: Vec<V3> = (0..=24)
+    let ring: Vec<V3> = (0..=ring_steps.max(1))
         .map(|i| {
-            let a = i as f64 / 24. * std::f64::consts::TAU;
+            let a = i as f64 / ring_steps.max(1) as f64 * std::f64::consts::TAU;
             [
                 0.084 * k * superspec_geometry::math::cos(a),
                 0.084 * k * superspec_geometry::math::sin(a),
@@ -912,16 +971,18 @@ pub fn guarded_round_wall_lamp(
         Some(wire) => (wire / 2., wire * 0.45, 2),
         None => (0.006 * k, 0.005 * k, 3),
     };
-    m.tube("metal", &ring, ring_radius, wire, 6)?;
-    for hoop in 0..hoops {
+    if ring_steps > 0 {
+        m.tube("metal", &ring, ring_radius, wire, 6)?;
+    }
+    for hoop in (0..hoops).filter(|_| hoop_steps > 0) {
         let bearing = hoop as f64 * std::f64::consts::PI / hoops as f64;
         let (c, s) = (
             superspec_geometry::math::cos(bearing),
             superspec_geometry::math::sin(bearing),
         );
-        let hoop: Vec<V3> = (0..=10)
+        let hoop: Vec<V3> = (0..=hoop_steps)
             .map(|i| {
-                let a = i as f64 / 10. * std::f64::consts::PI;
+                let a = i as f64 / hoop_steps as f64 * std::f64::consts::PI;
                 let (r, h) = (
                     0.084 * k * superspec_geometry::math::cos(a),
                     (0.034 + 0.096 * superspec_geometry::math::sin(a)) * k,
@@ -965,6 +1026,12 @@ pub fn meter_bank_with(
     settings.validate()?;
     let pen = hardware(d, Some(settings))?;
     let body = shade(srgb("#a4a9aa"), rng.float(0.5, 0.9));
+    // Meters and their conduits are street furniture of the wall's foot: level 2 draws none,
+    // and level 1 the boxes with their glass and no raised door.
+    let detail = d.mesh.graphics_detail();
+    if detail == GraphicsDetail::VeryLow {
+        return Ok(());
+    }
     for i in 0..count {
         let x0 = x + i as f64 * 0.3;
         let mut frame = Fixture {
@@ -973,13 +1040,15 @@ pub fn meter_bank_with(
             repeats: d.repeats,
         };
         frame.cuboid("metal", [x0, 0., z], [x0 + 0.24, 0.12, z + 0.34], body, "b")?;
-        frame.cuboid(
-            "metal",
-            [x0 + 0.03, 0.12, z + 0.15],
-            [x0 + 0.21, 0.128, z + 0.31],
-            shade(body, 0.7),
-            "b",
-        )?;
+        if !detail.reduced() {
+            frame.cuboid(
+                "metal",
+                [x0 + 0.03, 0.12, z + 0.15],
+                [x0 + 0.21, 0.128, z + 0.31],
+                shade(body, 0.7),
+                "b",
+            )?;
+        }
         d.panel(
             "pane",
             [x0 + 0.05, x0 + 0.19, z + 0.17, z + 0.29],

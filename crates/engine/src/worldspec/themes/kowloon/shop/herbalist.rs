@@ -80,10 +80,18 @@ fn cabinet(
         shade(tint, 0.75),
         "df",
     )?;
+    // A reduced level keeps each door and drawer as its front in its own shade, and each
+    // drawer's paper label: the wall of drawers still reads as one, without its joinery.
+    let reduced = d.mesh.graphics_detail().reduced();
     let doors = (width / 0.55).round().max(2.) as usize;
     for i in 0..doors {
         let x0 = i as f64 * width / doors as f64 + 0.012;
         let x1 = (i + 1) as f64 * width / doors as f64 - 0.012;
+        if reduced {
+            let own = shade(tint, rng.float(0.9, 1.05));
+            forms::front(d, "timber", [x0, x1, 0.07, base - 0.03], 0., own)?;
+            continue;
+        }
         d.cuboid(
             "timber",
             [x0, 0., 0.07],
@@ -120,6 +128,24 @@ fn cabinet(
         for row in 0..rows {
             let x = column as f64 * w;
             let z = base + row as f64 * h;
+            if reduced {
+                let own = shade(tint, rng.float(0.88, 1.12));
+                forms::front(
+                    d,
+                    "timber",
+                    [x + 0.006, x + w - 0.006, z + 0.006, z + h - 0.006],
+                    0.,
+                    own,
+                )?;
+                forms::front(
+                    d,
+                    "paint",
+                    [x + w * 0.2, x + w * 0.8, z + h * 0.56, z + h * 0.84],
+                    -0.001,
+                    shade(srgb("#e8dcc0"), rng.float(0.8, 1.)),
+                )?;
+                continue;
+            }
             d.cuboid(
                 "timber",
                 [x + 0.006, 0., z + 0.006],
@@ -183,6 +209,16 @@ fn abacus(d: &mut Fixture<'_, '_>, at: V3) -> Result<(), String> {
         rosewood(),
         "d",
     )?;
+    if d.mesh.graphics_detail().reduced() {
+        // Rods and beads are millimetres: the frame holds one slab in the beads' colour.
+        return d.cuboid(
+            "timber",
+            [x + 0.012, y + 0.012, z],
+            [x + w - 0.012, y + depth - 0.012, z + 0.02],
+            shade(rosewood(), 0.7),
+            "d",
+        );
+    }
     for rod in 0..9 {
         let rx = x + 0.03 + rod as f64 * ((w - 0.06) / 8.);
         d.bar(

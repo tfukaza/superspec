@@ -14,7 +14,6 @@ use superspec_geometry::{
     V3,
     math::{atan2, hypot, sin},
 };
-use superspec_types::rng::SeededRng;
 
 /// Both faces of a smooth grid of cloth or sheet.
 fn two_sided(d: &mut Fixture<'_, '_>, slot: &str, grid: &[Vec<PatchVertex>]) -> Result<(), String> {
@@ -78,7 +77,8 @@ pub(super) fn sagging_tarp(
     let steel = a.color("steel", "#6d6f66")?;
     let key = a.seed()?;
     a.finish()?;
-    let mut rng = SeededRng::from_text(&key);
+    // How the cloth hangs, ripples and folds is a catalogue entry's.
+    let mut rng = super::shape_stream("sagging-tarp", &key);
     let noise_seed = rng.float(0., 1000.);
     // Front fixings: the pole tops, or the two corners.
     let supports = if frame { 2 } else { poles.max(2) };
@@ -234,6 +234,22 @@ pub(super) fn sagging_tarp(
     let band_color = |band: usize| if band % 2 == 1 { stripe } else { color };
     let edge = shade(mix(color, hem, 0.15), 0.6);
     draw(cancelled, |mesh| {
+        let detail = mesh.graphics_detail();
+        let reduced = detail.reduced();
+        // A reduced level sweeps the same surface over a coarser grid: whole stripes and
+        // lobes still, with the same edges, sag and fixings, so its shadow keeps its outline.
+        let (columns, rows) = if reduced {
+            let per = ((width / detail.pick(0.05, 0.15, 0.3) / unit as f64).ceil() as usize)
+                .max((detail.pick(6, 3, 2) * scallops).div_ceil(unit))
+                .max(1);
+            let rows = (depth / detail.pick(0.07, 0.21, 0.35)).ceil() as usize;
+            (
+                (unit * per).min(columns),
+                rows.clamp(detail.pick(8, 4, 3), detail.pick(36, 12, 6)),
+            )
+        } else {
+            (columns, rows)
+        };
         let d = &mut fixture(mesh, "sagging-tarp")?;
         let per_band = columns / bands;
         for band in 0..bands {
@@ -255,8 +271,10 @@ pub(super) fn sagging_tarp(
                 .collect();
             two_sided(d, "tarp", &grid)?;
             if valance > 0. {
-                let grid: Vec<Vec<PatchVertex>> = [0., 0.45, 0.8, 1.]
-                    .into_iter()
+                let hung = detail.pick::<&[f64]>(&[0., 0.45, 0.8, 1.], &[0., 0.6, 1.], &[0., 1.]);
+                let grid: Vec<Vec<PatchVertex>> = hung
+                    .iter()
+                    .copied()
                     .map(|row: f64| {
                         (0..=per_band)
                             .map(|i| {
@@ -276,7 +294,8 @@ pub(super) fn sagging_tarp(
                 two_sided(d, "tarp", &grid)?;
             }
         }
-        if valance > 0. && scallops > 0 {
+        // Rolled hems and tie ropes are 15 mm lines: a reduced level leaves them out.
+        if valance > 0. && scallops > 0 && !reduced {
             // The scalloped hem's bound edge.
             let path: Vec<V3> = (0..=columns)
                 .map(|i| valance_at(i as f64 / columns as f64, 1.).0)
@@ -294,12 +313,14 @@ pub(super) fn sagging_tarp(
                 .map(|j| surface(u, j as f64 / rows as f64))
                 .collect()
         };
-        for path in [across(0.), across(1.), along(0.), along(1.)] {
-            d.tube("tarp", &path, HEM, edge, 5)?;
+        if !reduced {
+            for path in [across(0.), across(1.), along(0.), along(1.)] {
+                d.tube("tarp", &path, HEM, edge, 5)?;
+            }
         }
         let rope = shade(hem, 0.8);
         let dark = shade(steel, 0.8);
-        if ties {
+        if ties && !reduced {
             // Eyelets along the wall, each tied up to a hook.
             for i in 0..=eyelets {
                 let p = surface(i as f64 / eyelets as f64, 0.);
@@ -366,7 +387,7 @@ pub(super) fn sagging_tarp(
                     )?;
                     wall_plate(d, [x, 0.22], 0.05, 0.06, dark)?;
                 }
-                if ties {
+                if ties && !reduced {
                     // The corner's eyelet lashed to the post in one heavy turn.
                     d.tube(
                         "tarp",
@@ -413,7 +434,8 @@ pub(super) fn sheet_canopy(
     let steel = a.color("steel", "#55554c")?;
     let key = a.seed()?;
     a.finish()?;
-    let mut rng = SeededRng::from_text(&key);
+    // How each sheet slips and falls, and where its rust blooms, is a catalogue entry's.
+    let mut rng = super::shape_stream("sheet-canopy", &key);
     let noise_seed = rng.float(0., 1000.);
     let sheets = (width / 1.25).ceil().max(1.) as usize;
     let lap = if sheets > 1 { 0.07 } else { 0. };
@@ -429,19 +451,29 @@ pub(super) fn sheet_canopy(
             let fall = [rng.float(0., tilt), rng.float(0., tilt)];
             let lift = 0.012 * (sheet % 2) as f64;
             let shade_of = rng.float(0.85, 1.05);
-            let columns = ((each / pitch).ceil() as usize * 4).min(640);
-            let grid: Vec<Vec<PatchVertex>> = (0..=4)
+            // A reduced level folds each corrugation as one crest and trough, then lays the
+            // sheet flat; its edges, fall and sag stay.
+            let detail = d.mesh.graphics_detail();
+            let pitches = (each / pitch).ceil() as usize;
+            let columns = detail.pick(pitches * 4, pitches * 2, 4).min(640);
+            let rows = detail.pick(4, 2, 1);
+            let grid: Vec<Vec<PatchVertex>> = (0..=rows)
                 .map(|j| {
-                    let v = j as f64 / 4.;
+                    let v = j as f64 / rows as f64;
                     (0..=columns)
                         .map(|i| {
                             let u = i as f64 / columns as f64;
                             let x = x0 + u * each;
+                            let rib = detail.pick(
+                                sin(2. * PI * (x + width) / pitch),
+                                if i % 2 == 0 { 1. } else { -1. },
+                                0.,
+                            );
                             let z = lift
                                 - slip * (1. - v)
                                 - (drop + fall[0] * (1. - u) + fall[1] * u) * v
                                 - sag * hang(u) * v * v
-                                + amplitude * sin(2. * PI * (x + width) / pitch);
+                                + amplitude * rib;
                             // Rust creeps up from the drip edge and blooms in patches.
                             let patch = value_noise(x * 2.3, v * depth * 5., noise_seed);
                             let streak = value_noise(x * 14., v * depth * 1.5, noise_seed + 5.);

@@ -1,6 +1,7 @@
 //! Rooftop cisterns with structural supports, access hardware and procedural plumbing.
 use super::{
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     metal::{self, Binding, Kind},
     palette::{shade, srgb},
     pen::Tint,
@@ -71,8 +72,17 @@ fn vessel(
     let circumference = 2. * PI * radius;
     let first = drawing.mesh.triangle_count();
     let active = settings.weathering.texture_density > 0. && !drawing.mesh.surveying();
+    // A reduced level turns the same profile in fewer sides and keeps the rows that carry
+    // its shoulders; the chart and its recipe below are the authored vessel's.
+    let detail = drawing.mesh.graphics_detail();
+    let sides = detail.pick(48, 16, 8);
+    let rows: &[usize] = match detail {
+        GraphicsDetail::Full => &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+        GraphicsDetail::Low => &[0, 2, 3, 4, 6, 7, 9],
+        GraphicsDetail::VeryLow => &[0, 3, 4, 7, 9],
+    };
     let point = |row: usize, side: usize| {
-        let angle = side as f64 / 48. * 2. * PI;
+        let angle = side as f64 / sides as f64 * 2. * PI;
         let previous = profile[row.saturating_sub(1)];
         let next = profile[(row + 1).min(9)];
         let dr = next[0] - previous[0];
@@ -89,7 +99,7 @@ fn vessel(
                 sin(angle) * dz / length,
                 -dr / length,
             ],
-            [side as f64 / 48. * circumference, distances[row]],
+            [side as f64 / sides as f64 * circumference, distances[row]],
         )
     };
     let repeat = if active {
@@ -97,13 +107,14 @@ fn vessel(
     } else {
         drawing.repeat("brushed-metal")
     };
-    for row in 0..9 {
-        for side in 0..48 {
+    for pair in rows.windows(2) {
+        let (row, next) = (pair[0], pair[1]);
+        for side in 0..sides {
             let corners = [
                 point(row, side),
                 point(row, side + 1),
-                point(row + 1, side + 1),
-                point(row + 1, side),
+                point(next, side + 1),
+                point(next, side),
             ];
             drawing.pen.face_raw(
                 drawing.mesh,
@@ -163,6 +174,11 @@ fn vessel(
         mesh: drawing.mesh,
         repeats: drawing.repeats,
     };
+    if detail.reduced() {
+        // The foot stands on its frame; the crown closes on the vessel's own sides.
+        let crown: Vec<V3> = (0..sides).map(|side| point(9, side).0).collect();
+        return polished.face("metal", &crown, [0., 0., 1.], tint);
+    }
     polished.disc("metal", [0.; 3], radius * 0.58, [0., 0., -1.], tint, 48)?;
     polished.disc(
         "metal",
@@ -237,7 +253,8 @@ fn cone_lid(
     let profile = [[eave, z - 0.05], [eave, z], [top, z + rise]];
     let slant = hypot(eave - top, rise);
     let normals = [[1., 0.], [1., 0.], [rise / slant, (eave - top) / slant]];
-    let sides = 48;
+    let detail = drawing.mesh.graphics_detail();
+    let sides = detail.pick(48, 16, 8);
     let repeat = drawing.repeat("brushed-metal");
     for row in 0..2 {
         // The skirt is vertical; the cone takes its own slant on both its rows.
@@ -272,7 +289,7 @@ fn cone_lid(
     }
     // The eave's underside, a ring facing down between the skirt and the shell.
     let inner = radius - 0.01;
-    for side in 0..sides {
+    for side in (0..sides).filter(|_| !detail.reduced()) {
         let at = |r: f64, s: usize| {
             let angle = s as f64 / sides as f64 * 2. * PI;
             [cos(angle) * r, sin(angle) * r, z - 0.05]
@@ -296,7 +313,7 @@ fn cone_lid(
         top,
         [0., 0., 1.],
         tinted(0.88, tint),
-        48,
+        sides,
     )
 }
 /// [`round_tank`] with whatever `shape` fixes of it.
@@ -338,6 +355,12 @@ pub fn shaped_round_tank(
         None,
         vec!["paint".into(), "metal".into()],
     )?;
+    // Level 1 keeps the stand's legs, beams and braces, the manhole and the ladder's stiles
+    // with every second rung; plates, stays, the lid's handle and the valve go. Level 2
+    // keeps the legs and beams under the vessel and its feed pipes.
+    let detail = drawing.mesh.graphics_detail();
+    let full = !detail.reduced();
+    let braced = detail != GraphicsDetail::VeryLow;
     let leg = radius * 0.63;
     for x in [-leg, leg] {
         for y in [-leg, leg] {
@@ -353,18 +376,20 @@ pub fn shaped_round_tank(
                 mesh: drawing.mesh,
                 repeats: drawing.repeats,
             };
-            steel::fixing_plate(
-                &mut hd,
-                steel,
-                &Plate {
-                    center: [x, y, 0.1],
-                    across: [1., 0., 0.],
-                    up: [0., 1., 0.],
-                    out: [0., 0., 1.],
-                    size: [0.18, 0.18],
-                    bolts: 4,
-                },
-            )?;
+            if full {
+                steel::fixing_plate(
+                    &mut hd,
+                    steel,
+                    &Plate {
+                        center: [x, y, 0.1],
+                        across: [1., 0., 0.],
+                        up: [0., 1., 0.],
+                        out: [0., 0., 1.],
+                        size: [0.18, 0.18],
+                        bolts: 4,
+                    },
+                )?;
+            }
             steel::member(
                 &mut hd,
                 steel,
@@ -388,15 +413,17 @@ pub fn shaped_round_tank(
                 [0., 1., 0.],
                 [0.1, 0.08],
             )?;
-            steel::member(
-                &mut hd,
-                steel,
-                [[-leg, y, 0.14], [leg, y, base - 0.07]],
-                [0., 1., 0.],
-                [0.025, 0.025],
-            )?;
+            if braced {
+                steel::member(
+                    &mut hd,
+                    steel,
+                    [[-leg, y, 0.14], [leg, y, base - 0.07]],
+                    [0., 1., 0.],
+                    [0.025, 0.025],
+                )?;
+            }
         }
-        for x in [-leg, leg] {
+        for x in [-leg, leg].into_iter().filter(|_| braced) {
             steel::member(
                 &mut hd,
                 steel,
@@ -438,12 +465,15 @@ pub fn shaped_round_tank(
             0.006,
         ),
     };
-    for z in hoops {
-        let path: Vec<_> = (0..49)
+    // Hoops and ribs are two centimetres deep: level 1 bends them of the vessel's sixteen
+    // chords and level 2 leaves the plain shell.
+    let chords = detail.pick(48, 16, 0);
+    for z in hoops.into_iter().filter(|_| chords > 0) {
+        let path: Vec<_> = (0..=chords)
             .map(|i| {
                 [
-                    cos(i as f64 / 48. * PI * 2.) * (radius + proud),
-                    sin(i as f64 / 48. * PI * 2.) * (radius + proud),
+                    cos(i as f64 / chords as f64 * PI * 2.) * (radius + proud),
+                    sin(i as f64 / chords as f64 * PI * 2.) * (radius + proud),
                     z,
                 ]
             })
@@ -499,21 +529,23 @@ pub fn shaped_round_tank(
                 0.009,
             )?;
         }
-        hd.tube(
-            "metal",
-            &[
-                [-0.07, 0., crown + 0.057],
-                [-0.07, 0., crown + 0.112],
-                [0.07, 0., crown + 0.112],
-                [0.07, 0., crown + 0.057],
-            ],
-            0.009,
-            steel.tint,
-            8,
-        )?;
+        if full {
+            hd.tube(
+                "metal",
+                &[
+                    [-0.07, 0., crown + 0.057],
+                    [-0.07, 0., crown + 0.112],
+                    [0.07, 0., crown + 0.112],
+                    [0.07, 0., crown + 0.057],
+                ],
+                0.009,
+                steel.tint,
+                8,
+            )?;
+        }
         let ladder_x = -radius - 0.13;
         let top = crown + 0.16;
-        for y in [-0.16, 0.16] {
+        for y in [-0.16, 0.16].into_iter().filter(|_| braced) {
             steel::member(
                 &mut hd,
                 steel,
@@ -521,7 +553,10 @@ pub fn shaped_round_tank(
                 [0., 1., 0.],
                 [0.028, 0.026],
             )?;
-            for z in [base + 0.25, base + height - 0.22] {
+            for z in [base + 0.25, base + height - 0.22]
+                .into_iter()
+                .filter(|_| full)
+            {
                 steel::member(
                     &mut hd,
                     steel,
@@ -532,14 +567,18 @@ pub fn shaped_round_tank(
             }
         }
         let mut z = 0.22;
+        let mut rung = 0;
         while z < top - 0.13 {
-            hd.tube(
-                "metal",
-                &[[ladder_x, -0.16, z], [ladder_x, 0.16, z]],
-                0.012,
-                steel.tint,
-                8,
-            )?;
+            if full || (braced && rung % 2 == 0) {
+                hd.tube(
+                    "metal",
+                    &[[ladder_x, -0.16, z], [ladder_x, 0.16, z]],
+                    0.012,
+                    steel.tint,
+                    8,
+                )?;
+            }
+            rung += 1;
             z += 0.25;
         }
     }
@@ -553,11 +592,13 @@ pub fn shaped_round_tank(
         ],
         None,
     )?;
-    pipes.coupling(
-        &mut drawing,
-        [radius + 0.03, 0., base + height - 0.25],
-        [1., 0., 0.],
-    )?;
+    if full {
+        pipes.coupling(
+            &mut drawing,
+            [radius + 0.03, 0., base + height - 0.25],
+            [1., 0., 0.],
+        )?;
+    }
     pipes.run(
         &mut drawing,
         &[
@@ -568,6 +609,9 @@ pub fn shaped_round_tank(
         ],
         None,
     )?;
+    if !braced {
+        return Ok(());
+    }
     Fixture {
         pen: hardware,
         mesh: drawing.mesh,
@@ -640,6 +684,18 @@ pub fn box_tank(
             mesh: drawing.mesh,
             repeats: drawing.repeats,
         };
+        // Level 1 keeps the pressed panels without their bolted straps; level 2 draws each
+        // side flat.
+        let detail = face.mesh.graphics_detail();
+        if detail == GraphicsDetail::VeryLow {
+            face.face(
+                "metal",
+                &[[0., 0., 0.], [width, 0., 0.], [width, 0., h], [0., 0., h]],
+                [0., 1., 0.],
+                paint,
+            )?;
+            continue;
+        }
         let count = super::mesh::rounded(width / 0.7, 1.).max(1.) as usize;
         for i in 0..count {
             let x0 = i as f64 * width / count as f64;
@@ -660,7 +716,10 @@ pub fn box_tank(
                 )?;
             }
             face.face("metal", &raised, [0., 1., 0.], paint)?;
-            for x in [x0 + 0.025, x1 - 0.025] {
+            for x in [x0 + 0.025, x1 - 0.025]
+                .into_iter()
+                .filter(|_| !detail.reduced())
+            {
                 face.cuboid(
                     "metal",
                     [x - 0.012, 0.002, 0.02],

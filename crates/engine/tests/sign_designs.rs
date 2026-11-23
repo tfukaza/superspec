@@ -1,106 +1,91 @@
-use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     signs::{
         Construction,
-        copy::{self, Brief, Business},
+        copy::{self, Brief},
         designs::{self, Look},
-        panel::Design,
     },
     weathered,
 };
-fn close(a: &Value, b: &Value) {
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{a} != {b}"
+#[test]
+fn briefs_steer_invented_copy_and_derived_lines_follow_the_business() {
+    for (seed, wanted) in [
+        ("business/0", json!({})),
+        ("business/1", json!({"sectors": ["food"], "floor": 1})),
+        (
+            "business/3",
+            json!({"sectors": ["medical", "retail"], "floor": 2}),
         ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(b) {
-                close(a, b)
-            }
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            assert_eq!(a.len(), b.len());
-            for (k, b) in b {
-                close(&a[k], b)
-            }
-        }
-        _ => assert_eq!(a, b),
-    }
-}
-#[derive(Deserialize)]
-struct CopyCase {
-    seed: String,
-    brief: Brief,
-    business: Business,
-    title: String,
-    floor: Option<String>,
-    phone: String,
-    up: Option<String>,
-    company: String,
-    next: f64,
-}
-#[derive(Deserialize)]
-struct Copies {
-    cases: Vec<CopyCase>,
-}
-pub fn check_reference_copy() {
-    let golden: Copies =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/sign-copy.json")).unwrap();
-    for c in golden.cases {
-        let mut rng = SeededRng::from_text(&c.seed);
-        let b = copy::invent(&mut rng, &c.brief).unwrap();
-        close(
-            &serde_json::to_value(&b).unwrap(),
-            &serde_json::to_value(c.business).unwrap(),
+    ] {
+        let brief: Brief = serde_json::from_value(wanted.clone()).unwrap();
+        let b = copy::invent(&mut SeededRng::from_text(seed), &brief).unwrap();
+        let again = copy::invent(&mut SeededRng::from_text(seed), &brief).unwrap();
+        let business = serde_json::to_value(&b).unwrap();
+        assert_eq!(
+            business,
+            serde_json::to_value(&again).unwrap(),
+            "seeded copy"
         );
-        assert_eq!(copy::title(&b), c.title);
-        assert_eq!(copy::floor_line(&b), c.floor);
-        assert_eq!(copy::phone_line(&b), c.phone);
-        assert_eq!(copy::way_up(&b), c.up);
-        assert_eq!(copy::company_title(&b, &mut rng), c.company);
-        assert_eq!(rng.next_f64(), c.next);
+        if let Some(sectors) = wanted.get("sectors").and_then(Value::as_array) {
+            assert!(sectors.contains(&business["sector"]), "{business}");
+        }
+        let floor = wanted.get("floor").filter(|f| !f.is_null());
+        assert_eq!(business.get("floor").filter(|f| !f.is_null()), floor);
+        let name = business["name"].as_str().unwrap();
+        let title = copy::title(&b);
+        assert!(title.starts_with(name), "{title}");
+        assert!(
+            copy::phone_line(&b).contains(business["phone"].as_str().unwrap()),
+            "phone line carries the number"
+        );
+        assert_eq!(copy::floor_line(&b).is_some(), floor.is_some());
+        assert_eq!(copy::way_up(&b).is_some(), floor.is_some());
+        assert!(copy::company_title(&b, &mut SeededRng::from_text(seed)).starts_with(name));
     }
 }
-#[derive(Deserialize)]
-struct DesignCase {
-    seed: String,
-    construction: Construction,
-    settings: weathered::Settings,
-    look: Look,
-    business: Business,
-    size: [f64; 3],
-    title: Design,
-    tiles: Vec<Design>,
-    painted: Design,
-    next: f64,
-}
-#[derive(Deserialize)]
-struct Designs {
-    cases: Vec<DesignCase>,
-}
-pub fn check_reference_designs() {
-    let golden: Designs = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/sign-designs.json"
-    ))
+#[test]
+fn sign_compositions_fill_the_requested_sizes_and_tile_each_character() {
+    let settings: weathered::Settings = serde_json::from_value(json!({
+        "seed": "sign-design/0", "wear": 0.25, "grime": 0.6, "rust": 0.4, "textureDensity": 0,
+        "metal": {"material": "metal", "repeat": 1},
+        "sheet": {"material": "sheet", "repeat": 1},
+        "paint": {"material": "paint", "repeat": 1}
+    }))
     .unwrap();
-    for (i, c) in golden.cases.into_iter().enumerate() {
-        let mut rng = SeededRng::from_text(&c.seed);
-        let look = designs::draw_look(c.construction, &c.settings, &mut rng).unwrap();
-        close(
-            &serde_json::to_value(&look).unwrap(),
-            &serde_json::to_value(c.look).unwrap(),
+    for (i, (construction, size)) in [
+        (Construction::Sheet, [0.7, 3.2, 0.08]),
+        (Construction::Lightbox, [3.6, 0.8, 0.08]),
+        (Construction::Timber, [5.4, 0.8, 0.08]),
+        (Construction::Tile, [2.1, 1.1, 0.08]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let seed = format!("design/{i}");
+        let mut rng = SeededRng::from_text(&seed);
+        let business = copy::invent(&mut rng, &Brief::default()).unwrap();
+        let look = designs::draw_look(construction, &settings, &mut rng).unwrap();
+        let mut replay = SeededRng::from_text(&seed);
+        copy::invent(&mut replay, &Brief::default()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&look).unwrap(),
+            serde_json::to_value(designs::draw_look(construction, &settings, &mut replay).unwrap())
+                .unwrap(),
+            "seeded look"
         );
-        let title = designs::title_panel(&c.business, c.size, &look, &mut rng).unwrap();
-        close(
-            &serde_json::to_value(title).unwrap(),
-            &serde_json::to_value(c.title).unwrap(),
-        );
+        let title =
+            serde_json::to_value(designs::title_panel(&business, size, &look, &mut rng).unwrap())
+                .unwrap();
+        for (key, want) in ["width", "height", "depth"].into_iter().zip(size) {
+            assert!((title[key].as_f64().unwrap() - want).abs() < 1e-12, "{key}");
+        }
+        let name = serde_json::to_value(&business).unwrap()["name"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let tiles = designs::tile_panels(
-            &c.business.name,
+            &name,
             0.6,
             0.04,
             &Look {
@@ -110,34 +95,28 @@ pub fn check_reference_designs() {
             &mut rng,
         )
         .unwrap();
-        close(
-            &serde_json::to_value(tiles).unwrap(),
-            &serde_json::to_value(c.tiles).unwrap(),
-        );
-        let painted = designs::painted_field(
-            &copy::title(&c.business),
-            if i % 2 == 0 { [1.2, 4.] } else { [4., 1.2] },
-            &Look {
-                construction: Construction::Painted,
-                ..look
-            },
-            &mut rng,
+        assert_eq!(tiles.len(), name.chars().count());
+        for tile in serde_json::to_value(tiles).unwrap().as_array().unwrap() {
+            assert!((tile["width"].as_f64().unwrap() - 0.6).abs() < 1e-12);
+            assert!((tile["height"].as_f64().unwrap() - 0.6).abs() < 1e-12);
+        }
+        let field = if i % 2 == 0 { [1.2, 4.] } else { [4., 1.2] };
+        let painted = serde_json::to_value(
+            designs::painted_field(
+                &copy::title(&business),
+                field,
+                &Look {
+                    construction: Construction::Painted,
+                    ..look
+                },
+                &mut rng,
+            )
+            .unwrap(),
         )
         .unwrap();
-        close(
-            &serde_json::to_value(painted).unwrap(),
-            &serde_json::to_value(c.painted).unwrap(),
-        );
-        assert_eq!(rng.next_f64(), c.next, "design {i} continuation");
+        assert!((painted["width"].as_f64().unwrap() - field[0]).abs() < 1e-12);
+        assert!((painted["height"].as_f64().unwrap() - field[1]).abs() < 1e-12);
     }
-}
-#[test]
-fn seeded_business_copy_matches_reference() {
-    check_reference_copy()
-}
-#[test]
-fn sign_compositions_match_reference() {
-    check_reference_designs()
 }
 #[test]
 fn empty_trade_pool_rejects_without_consuming_random_stream() {

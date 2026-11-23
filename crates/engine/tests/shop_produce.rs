@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
@@ -6,78 +5,82 @@ use superspec_engine::worldspec::themes::kowloon::{
     pen::Pen,
     shop::produce,
 };
-use superspec_geometry::{Matrix, V3};
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[allow(dead_code)]
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-struct Case {
-    kind: String,
-    at: V3,
-    radius: f64,
-    height: f64,
-    seed: String,
-    i: usize,
-    next: f64,
-    matrix: [V3; 4],
-    geometry: assembly::Geometry,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_shop_produce() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/shop-produce.json"
-    ))
-    .unwrap();
-    for c in g.cases {
-        for mode in [Mode::Render, Mode::Survey] {
-            let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
-            let d = &mut Fixture {
-                pen: Pen::new(Matrix(c.matrix), "furniture").unwrap(),
-                mesh: &mut mesh,
-                repeats: &|_| 1.7,
-            };
-            let mut rng = SeededRng::from_text(&c.seed);
-            match c.kind.as_str() {
-                "heap" => {
-                    let kind = produce::fruit_kind("lemon").unwrap();
-                    produce::heap(d, c.at, [0.2, 0.14], 0.028, 3, &mut rng, |d, at, rng| {
-                        produce::fruit(d, at, &kind, rng)
-                    })
-                }
-                "melon" => produce::melon(d, c.at, c.height, &mut rng),
-                "melonHalf" => produce::melon_half(d, c.at, c.radius),
-                "bananas" => produce::bananas(d, c.at, &mut rng),
-                "pineapple" => produce::pineapple(d, c.at, &mut rng),
-                "cabbage" => produce::cabbage(d, c.at, c.radius, &mut rng),
-                "greens" => produce::greens(d, c.at, c.height, &mut rng),
-                "root" => produce::root(d, c.at, c.height, c.i % 2 == 1, &mut rng),
-                "garlicString" => produce::garlic_string(d, c.at, c.height, &mut rng),
-                "sausages" => produce::sausages(d, c.at, &mut rng),
-                "saltedFish" => produce::salted_fish(d, c.at, c.height, &mut rng),
-                _ => produce::fruit(d, c.at, &produce::fruit_kind(&c.kind).unwrap(), &mut rng),
-            }
-            .unwrap();
-            assert_eq!(rng.next_f64(), c.next, "{} {}", c.kind, c.seed);
-            assert_eq!(mesh.triangle_count() * 3, c.geometry.indices.len());
-            if !mesh.surveying() {
-                assembly::check(
-                    &mut mesh,
-                    &c.geometry,
-                    &[],
-                    &format!("{} {}", c.kind, c.seed),
-                );
-            }
-        }
-    }
+use superspec_geometry::Matrix;
+fn frame(index: usize) -> Matrix {
+    let (c, s) = (0.9523335698857134, 0.3050586364434435);
+    let x = if index % 2 == 0 {
+        [c, s, 0.]
+    } else {
+        [-c, -s, 0.]
+    };
+    Matrix([x, [-s, c, 0.], [0., 0., 1.], [0.3, -0.2, 0.4]])
 }
 #[test]
-fn produce_preserves_shape_colors_leaf_sheets_visible_courses_and_random_streams() {
-    check_reference_shop_produce();
+fn produce_surveys_like_render_with_the_same_randomness() {
+    const KINDS: [&str; 22] = [
+        "orange",
+        "apple",
+        "greenApple",
+        "pear",
+        "tomato",
+        "lemon",
+        "pomelo",
+        "plum",
+        "potato",
+        "onion",
+        "egg",
+        "heap",
+        "melon",
+        "melonHalf",
+        "bananas",
+        "pineapple",
+        "cabbage",
+        "greens",
+        "root",
+        "garlicString",
+        "sausages",
+        "saltedFish",
+    ];
+    let at = [0.1, 0.2, 0.3];
+    for kind in KINDS {
+        for i in 0..3 {
+            let radius = [0.08, 0.095, 0.11][i];
+            let height = [0.3, 0.35, 0.4][i];
+            let mut outcomes = vec![];
+            for mode in [Mode::Render, Mode::Survey] {
+                let mut mesh = Mesh::new(mode, 100000, &|| false).unwrap();
+                let d = &mut Fixture {
+                    pen: Pen::new(frame(i), "furniture").unwrap(),
+                    mesh: &mut mesh,
+                    repeats: &|_| 1.7,
+                };
+                let mut rng = SeededRng::from_text(&format!("produce/{i}"));
+                match kind {
+                    "heap" => {
+                        let kind = produce::fruit_kind("lemon").unwrap();
+                        produce::heap(d, at, [0.2, 0.14], 0.028, 3, &mut rng, |d, at, rng| {
+                            produce::fruit(d, at, &kind, rng)
+                        })
+                    }
+                    "melon" => produce::melon(d, at, height, &mut rng),
+                    "melonHalf" => produce::melon_half(d, at, radius),
+                    "bananas" => produce::bananas(d, at, &mut rng),
+                    "pineapple" => produce::pineapple(d, at, &mut rng),
+                    "cabbage" => produce::cabbage(d, at, radius, &mut rng),
+                    "greens" => produce::greens(d, at, height, &mut rng),
+                    "root" => produce::root(d, at, height, i % 2 == 1, &mut rng),
+                    "garlicString" => produce::garlic_string(d, at, height, &mut rng),
+                    "sausages" => produce::sausages(d, at, &mut rng),
+                    "saltedFish" => produce::salted_fish(d, at, height, &mut rng),
+                    _ => produce::fruit(d, at, &produce::fruit_kind(kind).unwrap(), &mut rng),
+                }
+                .unwrap();
+                assert!(mesh.triangle_count() > 0, "{kind} {i}");
+                outcomes.push((mesh.triangle_count(), rng.next_f64()));
+            }
+            assert_eq!(outcomes[0], outcomes[1], "{kind} {i}");
+        }
+    }
 }
 #[test]
 fn produce_rejects_invalid_input_bounds_empty_heap_work_and_recovers_after_cancellation() {

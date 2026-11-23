@@ -7,6 +7,7 @@ use super::{
 };
 use crate::worldspec::themes::kowloon::{
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     kit::Kit,
     laundry,
     palette::{shade, srgb},
@@ -497,6 +498,10 @@ fn fill(
             && shelf.z >= 0.4
             && shelf.z < 2.1
             && setback + 2.2 * depth < shelf.depth;
+        // At the lowest level a product group is one block in its label's colour under a
+        // band of its second colour: the shelf's massing and its colours, not its goods.
+        let massed = !catalog && d.mesh.graphics_detail() == GraphicsDetail::VeryLow;
+        let (start, mut tallest) = (x, 0);
         for facing in 0..facings {
             if x + w > shelf.x1 {
                 break;
@@ -507,7 +512,19 @@ fn fill(
                 levels.saturating_sub(1).max(1)
             };
             let at = [x + w / 2., shelf.y + setback, shelf.z];
-            if catalog {
+            if massed {
+                // The draws its facing would have made, so the next group is the same one.
+                match kind {
+                    Ware::Tins => (0..high).for_each(|_| {
+                        rng.float(0.85, 1.08);
+                    }),
+                    Ware::Boxes | Ware::TallBoxes => (0..2 * high).for_each(|_| {
+                        rng.float(0., 1.);
+                    }),
+                    _ => {}
+                }
+                tallest = tallest.max(high);
+            } else if catalog {
                 finish::shelf_pack(d, kind, at, [w, depth, h], high, [label, body], rng)?;
                 if rear_row && facing + 1 < facings && x + w * 1.2 < shelf.x1 {
                     finish::shelf_pack(
@@ -524,6 +541,28 @@ fn fill(
                 ware(d, kind, at, [w, depth, h], high, [label, body], rng)?;
             }
             x += w + 0.004;
+        }
+        if massed && tallest > 0 {
+            let (y, top) = (shelf.y + setback, shelf.z + tallest as f64 * h);
+            d.cuboid(
+                "paint",
+                [start, y, shelf.z],
+                [x - 0.004, y + depth, top],
+                label,
+                "df",
+            )?;
+            let band = shelf.z + (top - shelf.z) * 0.62;
+            d.face(
+                "paint",
+                &[
+                    [start, y - 0.002, band],
+                    [x - 0.004, y - 0.002, band],
+                    [x - 0.004, y - 0.002, top],
+                    [start, y - 0.002, top],
+                ],
+                [0., -1., 0.],
+                body,
+            )?;
         }
         x += rng.float(0.003, 0.012);
     }
@@ -1343,7 +1382,8 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
     let wood = srgb("#4f3f2d");
     let timber = &room.kit.settings().timber;
     let root = d.pen.clone();
-    let catalog = room.assets.grocer_props;
+    // A reduced level stocks the shop with the low-detail goods coloured per vertex.
+    let catalog = room.assets.grocer_props && !d.mesh.graphics_detail().reduced();
     let (w, depth, h) = (room.width, room.depth, room.height);
     let tall = (h - 0.08).min(3.6);
     let levels = (((tall - 0.1) / 0.31).round() as usize).clamp(4, 11);
@@ -1525,13 +1565,7 @@ pub(super) fn furnish_fitted(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result
         x += width + rng.float(0.15, 0.7);
     }
     if w >= 2.6 {
-        bucket(
-            d,
-            [inset + 0.2, 1.05, 0.],
-            &mut rng,
-            room.assets.grocer_props,
-            false,
-        )?;
+        bucket(d, [inset + 0.2, 1.05, 0.], &mut rng, catalog, false)?;
         broom(d, [w - inset - 0.25, 1., 0.], &mut rng, catalog)?;
     }
     Ok(())
@@ -1564,6 +1598,8 @@ pub(crate) fn street_fitted(
     if !width.is_finite() || !(0.6..=40.).contains(&width) || key.len() > 1024 {
         return Err("Street stock requires a frontage of 0.6 to 40 meters.".into());
     }
+    // A reduced level stands the low-detail stock coloured per vertex on the pavement.
+    let catalog = catalog && !d.mesh.graphics_detail().reduced();
     // Pieces face the street: their frame's -Y is the wall's +Y.
     let root = d.pen.into_part("street-stock")?;
     let facing = |x: f64, out: f64| root.facing([x, out, 0.], [1., 0., 0.], [0., -1., 0.]);
@@ -1824,144 +1860,4 @@ pub(crate) fn street_fitted(
         )?;
     }
     Ok(())
-}
-
-pub(crate) fn street(d: &mut Fixture<'_, '_>, kit: &Kit, textured: bool) -> Result<(), String> {
-    let root = d.pen.into_part("street-stock")?;
-    for (i, (x, y, rows, width, pigment)) in [
-        (3.3, 0.48, 3, 0.48, "#a46752"),
-        (3.94, 0.39, 2, 0.55, "#586c5d"),
-        (4.54, 0.55, 3, 0.49, "#a87359"),
-        (7.66, 0.28, 2, 0.56, "#717451"),
-        (8.4, 0.53, 1, 0.49, "#866b4f"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let color = srgb(pigment);
-        for row in 0..rows {
-            let mut crate_fixture = on(
-                d,
-                root.moved([
-                    x + f64::from(row % 2) * 0.026,
-                    y,
-                    0.015 + f64::from(row) * 0.29,
-                ])?,
-            );
-            let floor = furniture::crate_box(
-                &mut crate_fixture,
-                [width, 0.4, 0.29],
-                color,
-                &mut kit.rng(&format!("crate-{i}-{row}"))?,
-                &kit.settings().timber,
-            )?;
-            if row + 1 != rows {
-                continue;
-            }
-            let center = (floor.x0 + floor.x1) / 2.;
-            if i == 1 {
-                let rim = floor.z + floor.clear;
-                crate_fixture.cuboid(
-                    "timber",
-                    [-0.008, -0.008, rim],
-                    [width + 0.008, 0.408, rim + 0.018],
-                    color,
-                    "",
-                )?;
-                goods::carton_stack(
-                    &mut crate_fixture,
-                    [center, 0.2, rim + 0.018],
-                    0.36,
-                    0.52,
-                    &mut kit.rng("street-cartons")?,
-                    textured,
-                )?;
-            } else {
-                let size = grocer_props::size(
-                    "bottle-load",
-                    [
-                        floor.x1 - floor.x0 - 0.012,
-                        floor.depth - 0.012,
-                        floor.clear + 0.085,
-                    ],
-                )?;
-                grocer_props::draw(
-                    &mut crate_fixture,
-                    "bottle-load",
-                    [center, floor.y + floor.depth / 2., floor.z],
-                    size,
-                    0.,
-                    &grocer_props::Options {
-                        variant: i + 1,
-                        textured,
-                        ..Default::default()
-                    },
-                )?;
-            }
-        }
-    }
-    let mut rack = on(
-        d,
-        root.into_part("threshold-rack")?.facing(
-            [8.29, 0.26, 0.03],
-            [1., 0., 0.],
-            [0., -1., 0.],
-        )?,
-    );
-    let shelves = furniture::shop_shelving(
-        &mut rack,
-        furniture::Family::Wire,
-        [0.66, 0.34, 2.22],
-        6,
-        srgb("#808579"),
-        0.,
-        kit,
-    )?;
-    rows(
-        &mut rack,
-        &shelves,
-        &[
-            Grocery::Tins,
-            Grocery::SmallJars,
-            Grocery::SmallBottles,
-            Grocery::Cartons,
-        ],
-        kit,
-        "threshold-rack",
-        Settings {
-            fill: 0.97,
-            maximum_rows: 1,
-            packed: true,
-        },
-        textured,
-    )?;
-    let mut dolly = on(d, root.into_part("dolly")?.moved([2.83, 0.24, 0.])?);
-    let ivory = srgb("#dfcfaa");
-    for x in [0., 0.4] {
-        dolly.tube(
-            "metal",
-            &[[x, 0., 0.15], [x, 0., 1.58], [x, 0.2, 1.64]],
-            0.021,
-            ivory,
-            8,
-        )?;
-        dolly.disc(
-            "paint",
-            [x, 0.14, 0.14],
-            0.13,
-            [1., 0., 0.],
-            srgb("#343632"),
-            20,
-        )?;
-    }
-    for z in [0.32, 0.76, 1.24] {
-        dolly.tube("metal", &[[0., 0., z], [0.4, 0., z]], 0.018, ivory, 8)?;
-    }
-    dolly.cuboid(
-        "metal",
-        [-0.02, 0., 0.06],
-        [0.42, 0.33, 0.095],
-        srgb("#3f554b"),
-        "",
-    )
 }

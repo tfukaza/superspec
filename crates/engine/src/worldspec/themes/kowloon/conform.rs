@@ -40,34 +40,6 @@ pub struct Edges {
     parent: Option<std::sync::Arc<Edges>>,
 }
 impl Edges {
-    /// Only points inside the drawing bounds can lie on one of its receiver edges.
-    pub(crate) fn binding_hash(&self, hash: &mut sha2::Sha256, bounds: [V3; 2]) {
-        use sha2::Digest;
-        hash.update([u8::from(self.parent.is_some())]);
-        if let Some(parent) = &self.parent {
-            parent.binding_hash(hash, bounds);
-        }
-        let count = self
-            .buckets
-            .values()
-            .flatten()
-            .filter(|point| {
-                (0..3).all(|i| point[i] >= bounds[0][i] - 1e-6 && point[i] <= bounds[1][i] + 1e-6)
-            })
-            .count();
-        hash.update((count as u64).to_le_bytes());
-        for points in self.buckets.values() {
-            for point in points {
-                if (0..3)
-                    .all(|i| point[i] >= bounds[0][i] - 1e-6 && point[i] <= bounds[1][i] + 1e-6)
-                {
-                    for value in point {
-                        hash.update(value.to_bits().to_le_bytes());
-                    }
-                }
-            }
-        }
-    }
     pub fn new(
         points: impl IntoIterator<Item = V3>,
         budget: &mut Budget<'_>,

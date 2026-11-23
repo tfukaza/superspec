@@ -206,6 +206,10 @@ pub fn hook(d: &mut Fixture<'_, '_>, at: V3, drop: f64, tint: V3) -> Result<V3, 
         return Err("Shop hook drop must be 0.02–2 meters.".into());
     }
     let [x, y, z] = at;
+    // A hook is 6 mm of bent wire: a reduced level hangs its goods without drawing it.
+    if d.mesh.graphics_detail().reduced() {
+        return Ok([x, y, z - drop]);
+    }
     d.tube(
         "metal",
         &[
@@ -621,7 +625,10 @@ pub fn price_card(d: &mut Fixture<'_, '_>, at: V3, rng: &mut SeededRng) -> Resul
     let stick = rng.float(0.1, 0.17);
     let w = rng.float(0.09, 0.13);
     let h = w * 0.72;
-    d.bar("timber", at, [x, y, z + stick], 0.005, srgb("#c8b888"))?;
+    // Its 5 mm stick is left out at a reduced level; the card still stands in the goods.
+    if !d.mesh.graphics_detail().reduced() {
+        d.bar("timber", at, [x, y, z + stick], 0.005, srgb("#c8b888"))?;
+    }
     let paper = srgb(rng.pick(&["#f4e04a", "#f0ece0", "#e8483a", "#f4a030"]));
     let ink = srgb(if paper[1] > 0.5 { "#b01e1a" } else { "#f4ecd8" });
     let card = [

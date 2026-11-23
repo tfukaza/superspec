@@ -16,16 +16,10 @@ impl Compiler<'_> {
         inputs: &BTreeMap<String, Material>,
         delivery: &BTreeMap<String, Material>,
         mut bindings: BTreeMap<String, String>,
-        edges: Option<std::sync::Arc<crate::worldspec::themes::kowloon::conform::Edges>>,
     ) -> Result<(), Diagnostic> {
         (execution.observe)("surface-planning");
         let fail = |e: String| rule.fail("AML_DRESSING", e);
         let baking = weathered::finish(drawing, self.cancelled).map_err(fail)?;
-        let baking = if let Some(edges) = edges {
-            baking.with_edge_index(edges)
-        } else {
-            baking
-        };
         let bakes = VisualBaking {
             cache: execution.cache,
             asset: &|path| self.asset(path),

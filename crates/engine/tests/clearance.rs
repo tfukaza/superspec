@@ -1,4 +1,3 @@
-use serde::Deserialize;
 #[cfg(test)]
 use superspec_engine::worldspec::themes::kowloon::clearance::CollisionStorage;
 use superspec_engine::worldspec::themes::kowloon::{
@@ -7,130 +6,158 @@ use superspec_engine::worldspec::themes::kowloon::{
 };
 use superspec_geometry::obstructions::{Budget, Triangle};
 use superspec_geometry::{Matrix, V3};
-#[derive(Deserialize)]
-struct Physical {
-    points: Triangle,
-    object: String,
-    solid: Option<String>,
+/// The closed unit cube with outward winding: CCW seen from above on top, CW on the bottom.
+fn cube() -> Vec<Triangle> {
+    let p = |x: f64, y: f64, z: f64| [x, y, z];
+    vec![
+        [p(0., 0., 1.), p(1., 0., 1.), p(1., 1., 1.)],
+        [p(0., 0., 1.), p(1., 1., 1.), p(0., 1., 1.)],
+        [p(0., 0., 0.), p(1., 1., 0.), p(1., 0., 0.)],
+        [p(0., 0., 0.), p(0., 1., 0.), p(1., 1., 0.)],
+        [p(0., 0., 0.), p(1., 0., 0.), p(1., 0., 1.)],
+        [p(0., 0., 0.), p(1., 0., 1.), p(0., 0., 1.)],
+        [p(0., 1., 0.), p(1., 1., 1.), p(1., 1., 0.)],
+        [p(0., 1., 0.), p(0., 1., 1.), p(1., 1., 1.)],
+        [p(0., 0., 0.), p(0., 1., 1.), p(0., 1., 0.)],
+        [p(0., 0., 0.), p(0., 0., 1.), p(0., 1., 1.)],
+        [p(1., 0., 0.), p(1., 1., 0.), p(1., 1., 1.)],
+        [p(1., 0., 0.), p(1., 1., 1.), p(1., 0., 1.)],
+    ]
 }
-#[derive(Deserialize)]
-struct Foreign {
-    corners: Vec<V3>,
-    owner: usize,
-}
-#[derive(Deserialize)]
-struct Render {
-    points: Triangle,
-    visible: bool,
-}
-#[derive(Deserialize)]
-struct Blocked {
-    matrix: [V3; 4],
-    low: V3,
-    high: V3,
-    owner: usize,
-    exempt: Option<String>,
-    result: bool,
-}
-#[derive(Deserialize)]
-struct Contains {
-    at: V3,
-    exempt: Option<String>,
-    result: bool,
-}
-#[derive(Deserialize)]
-struct Covers {
-    matrix: [V3; 4],
-    rect: [f64; 4],
-    z: f64,
-    result: bool,
-}
-#[derive(Deserialize)]
-struct Golden {
-    collisions: Vec<Physical>,
-    volumes: Vec<Foreign>,
-    render: Vec<Render>,
-    blocked: Vec<Blocked>,
-    contains: Vec<Contains>,
-    covers: Vec<Covers>,
-}
-pub fn check_reference_clearance() {
-    let g: Golden =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/clearance.json")).unwrap();
-    let mut budget = Budget::new(4_000_000, &|| false).unwrap();
-    let obstacles = Obstacles::new(
-        g.collisions
+fn obstacles(solid: Option<&str>, volumes: Vec<Volume>, budget: &mut Budget<'_>) -> Obstacles {
+    Obstacles::new(
+        cube()
             .into_iter()
-            .map(|t| Collision {
-                points: t.points,
-                object: t.object,
-                solid: t.solid,
+            .map(|points| Collision {
+                points,
+                object: "box".into(),
+                solid: solid.map(str::to_owned),
             })
             .collect(),
-        g.volumes
-            .into_iter()
-            .map(|v| Volume {
-                corners: v.corners,
-                owner: v.owner,
-            })
-            .collect(),
-        &mut budget,
+        volumes,
+        budget,
     )
-    .unwrap();
-    let ground = GroundSupport::new(
-        &g.render
-            .into_iter()
-            .map(|t| RenderTriangle {
-                points: t.points,
-                visible: t.visible,
-            })
-            .collect::<Vec<_>>(),
-        &mut budget,
-    )
-    .unwrap();
-    for (i, q) in g.blocked.into_iter().enumerate() {
-        assert_eq!(
-            obstacles
-                .blocked(
-                    &Pen::new(Matrix(q.matrix), "query").unwrap(),
-                    q.low,
-                    q.high,
-                    q.owner,
-                    q.exempt.as_deref(),
-                    &mut budget
-                )
-                .unwrap(),
-            q.result,
-            "oriented box {i}"
-        );
-    }
-    for (i, q) in g.contains.into_iter().enumerate() {
-        assert_eq!(
-            obstacles
-                .contains(q.at, q.exempt.as_deref(), &mut budget)
-                .unwrap(),
-            q.result,
-            "solid containment {i}"
-        );
-    }
-    for (i, q) in g.covers.into_iter().enumerate() {
-        assert_eq!(
-            ground
-                .covers(
-                    &Pen::new(Matrix(q.matrix), "query").unwrap(),
-                    q.rect,
-                    q.z,
-                    &mut budget
-                )
-                .unwrap(),
-            q.result,
-            "ground support {i}"
-        );
-    }
+    .unwrap()
 }
 #[test]
-fn clearance_preserves_closed_solids_exemptions_rotated_volumes_and_render_support() {
-    check_reference_clearance();
+fn closed_solids_contain_interior_points_unless_exempt_or_open() {
+    let mut budget = Budget::new(4_000_000, &|| false).unwrap();
+    let closed = obstacles(Some("box"), vec![], &mut budget);
+    assert!(closed.contains([0.5, 0.5, 0.5], None, &mut budget).unwrap());
+    assert!(!closed.contains([0.5, 0.5, 1.5], None, &mut budget).unwrap());
+    assert!(
+        !closed
+            .contains([0.5, 0.5, -0.5], None, &mut budget)
+            .unwrap()
+    );
+    assert!(!closed.contains([1.5, 0.5, 0.5], None, &mut budget).unwrap());
+    assert!(
+        !closed
+            .contains([0.5, 0.5, 0.5], Some("box"), &mut budget)
+            .unwrap()
+    );
+    let open = obstacles(None, vec![], &mut budget);
+    assert!(!open.contains([0.5, 0.5, 0.5], None, &mut budget).unwrap());
+}
+#[test]
+fn oriented_boxes_hit_collision_faces_and_foreign_volumes_only() {
+    let mut budget = Budget::new(4_000_000, &|| false).unwrap();
+    let volume = Volume {
+        corners: vec![[5., 0., 0.], [6., 0., 0.], [6., 1., 0.], [5., 1., 1.]],
+        owner: 1,
+    };
+    let o = obstacles(Some("box"), vec![volume], &mut budget);
+    let identity = Pen::new(Matrix::default(), "query").unwrap();
+    let mut blocked = |pen: &Pen, low: V3, high: V3, owner, exempt| {
+        o.blocked(pen, low, high, owner, exempt, &mut budget)
+            .unwrap()
+    };
+    // Straddling the top face touches collision; a box wholly inside or outside does not.
+    assert!(blocked(
+        &identity,
+        [0.4, 0.4, 0.9],
+        [0.6, 0.6, 1.1],
+        0,
+        None
+    ));
+    assert!(!blocked(
+        &identity,
+        [0.4, 0.4, 0.4],
+        [0.6, 0.6, 0.6],
+        0,
+        None
+    ));
+    assert!(!blocked(&identity, [2., 2., 2.], [3., 3., 3.], 0, None));
+    assert!(!blocked(
+        &identity,
+        [0.4, 0.4, 0.9],
+        [0.6, 0.6, 1.1],
+        0,
+        Some("box")
+    ));
+    // A query frame moved onto the face reproduces the world-space hit.
+    let moved = identity.moved([0.5, 0.5, 1.]).unwrap();
+    assert!(blocked(
+        &moved,
+        [-0.1, -0.1, -0.1],
+        [0.1, 0.1, 0.1],
+        0,
+        None
+    ));
+    // Foreign volumes block other owners but never their own.
+    assert!(blocked(
+        &identity,
+        [5.2, 0.2, 0.2],
+        [5.4, 0.4, 0.4],
+        0,
+        None
+    ));
+    assert!(!blocked(
+        &identity,
+        [5.2, 0.2, 0.2],
+        [5.4, 0.4, 0.4],
+        1,
+        None
+    ));
+}
+#[test]
+fn ground_support_requires_visible_flat_faces_under_every_sample() {
+    let mut budget = Budget::new(4_000_000, &|| false).unwrap();
+    let floor = |visible| {
+        vec![
+            RenderTriangle {
+                points: [[0., 0., 0.], [4., 0., 0.], [4., 4., 0.]],
+                visible,
+            },
+            RenderTriangle {
+                points: [[0., 0., 0.], [4., 4., 0.], [0., 4., 0.]],
+                visible,
+            },
+        ]
+    };
+    let pen = Pen::new(Matrix::default(), "query").unwrap();
+    let ground = GroundSupport::new(&floor(true), &mut budget).unwrap();
+    assert!(
+        ground
+            .covers(&pen, [1., 2., 1., 2.], 0., &mut budget)
+            .unwrap()
+    );
+    assert!(
+        !ground
+            .covers(&pen, [3., 5., 1., 2.], 0., &mut budget)
+            .unwrap()
+    );
+    assert!(
+        !ground
+            .covers(&pen, [1., 2., 1., 2.], 0.5, &mut budget)
+            .unwrap()
+    );
+    let hidden = GroundSupport::new(&floor(false), &mut budget).unwrap();
+    assert!(
+        !hidden
+            .covers(&pen, [1., 2., 1., 2.], 0., &mut budget)
+            .unwrap()
+    );
 }
 #[test]
 fn invalid_cancelled_or_over_budget_queries_fail_and_recover() {

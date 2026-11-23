@@ -263,9 +263,20 @@ impl Fitting {
     }
 }
 
+/// The section the body and end caps are drawn with where it is not the route's own.
+#[derive(Clone, Debug, Serialize)]
+struct Drawn {
+    section: Section,
+    /// The drawn section's centre from the centreline, along the station's `a` and `b`.
+    offset: P2,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct Route {
     section: Section,
+    /// Absent when the body is drawn as `section`, which leaves such a route's key as it was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    drawn: Option<Drawn>,
     wall: f64,
     points: Vec<V3>,
     bend_radius: f64,
@@ -309,7 +320,7 @@ pub(super) fn resolve(
     let route_error = |field: &str, message: String| {
         context.fail(&format!("{pointer}{field}"), "ITEM_ROUTE", message)
     };
-    let positive = |value, field: &str| -> Result<f64, ItemDiagnostic> {
+    let positive = |value: &super::schema::Scalar, field: &str| -> Result<f64, ItemDiagnostic> {
         let number = context.scalar(value, &format!("{pointer}{field}"))?;
         if number <= 0. || number > 10_000. {
             return Err(route_error(
@@ -323,23 +334,27 @@ pub(super) fn resolve(
         &definition.wall_thickness,
         &format!("{pointer}/wallThickness"),
     )?;
-    let section = match &definition.section {
-        SectionDefinition::Round { radius } => Section::Round {
-            radius: positive(radius, "/section/radius")?,
-            segments: integer(
-                context,
-                context.scalar(&definition.segments, &format!("{pointer}/segments"))?,
-                3. ..=256.,
-                &format!("{pointer}/segments"),
-                "ITEM_ROUTE",
-                "Route segments",
-            )?,
-        },
-        SectionDefinition::Rect { width, height } => Section::Rect {
-            width: positive(width, "/section/width")?,
-            height: positive(height, "/section/height")?,
-        },
-    };
+    let resolve_section =
+        |definition_section: &SectionDefinition, field: &str| -> Result<Section, ItemDiagnostic> {
+            Ok(match definition_section {
+                SectionDefinition::Round { radius } => Section::Round {
+                    radius: positive(radius, &format!("{field}/radius"))?,
+                    segments: integer(
+                        context,
+                        context.scalar(&definition.segments, &format!("{pointer}/segments"))?,
+                        3. ..=256.,
+                        &format!("{pointer}/segments"),
+                        "ITEM_ROUTE",
+                        "Route segments",
+                    )?,
+                },
+                SectionDefinition::Rect { width, height } => Section::Rect {
+                    width: positive(width, &format!("{field}/width"))?,
+                    height: positive(height, &format!("{field}/height"))?,
+                },
+            })
+        };
+    let section = resolve_section(&definition.section, "/section")?;
     let half = section.half();
     if wall < 0. || wall >= half[0].min(half[1]) {
         return Err(route_error(
@@ -347,6 +362,45 @@ pub(super) fn resolve(
             "Wall thickness must be nonnegative and leave a positive inner section.".into(),
         ));
     }
+    let drawn = match &definition.drawn {
+        None => None,
+        Some(drawn) => {
+            let drawn_section = resolve_section(&drawn.section, "/drawn/section")?;
+            let mut offset = [0.; 2];
+            for (axis, value) in drawn.offset.iter().enumerate() {
+                offset[axis] = context.scalar(value, &format!("{pointer}/drawn/offset/{axis}"))?;
+                if offset[axis].abs() > 10_000. {
+                    return Err(route_error(
+                        "/drawn/offset",
+                        "A drawn section sits at most 10000 meters from the centreline.".into(),
+                    ));
+                }
+            }
+            let drawn_half = drawn_section.half();
+            if wall >= drawn_half[0].min(drawn_half[1]) {
+                return Err(route_error(
+                    "/drawn/section",
+                    "Wall thickness must leave the drawn section a positive inner section.".into(),
+                ));
+            }
+            // A drawn section that is the route's own draws the route exactly as without one.
+            let same = match (&section, &drawn_section) {
+                (Section::Round { radius: a, .. }, Section::Round { radius: b, .. }) => a == b,
+                (
+                    Section::Rect { width, height },
+                    Section::Rect {
+                        width: drawn_width,
+                        height: drawn_height,
+                    },
+                ) => width == drawn_width && height == drawn_height,
+                _ => false,
+            };
+            (!same || offset != [0.; 2]).then_some(Drawn {
+                section: drawn_section,
+                offset,
+            })
+        }
+    };
     let bend_segments = integer(
         context,
         context.scalar(
@@ -438,6 +492,19 @@ pub(super) fn resolve(
                     "Bend radius {bend_radius} must exceed the section's half extent {reach} to turn at point {index}."
                 ),
             ));
+        }
+        if let Some(drawn) = &drawn {
+            let drawn_half = drawn.section.half();
+            let reach =
+                (drawn_half[0] + drawn.offset[0].abs()).max(drawn_half[1] + drawn.offset[1].abs());
+            if bend_radius <= reach {
+                return Err(route_error(
+                    "/drawn/section",
+                    format!(
+                        "Bend radius {bend_radius} must exceed the drawn section's reach {reach} to turn at point {index}."
+                    ),
+                ));
+            }
         }
         let tangent = bend_radius * ((1. - c) / (1. + c)).sqrt();
         let axis = unit(cross(before, after)).map_err(|e| route_error(&field, e))?;
@@ -580,6 +647,7 @@ pub(super) fn resolve(
 
     let mut route = Route {
         section,
+        drawn,
         wall,
         points,
         bend_radius,
@@ -885,10 +953,31 @@ impl Route {
         rings
     }
 
+    /// The strips the body is swept from: the drawn section's where the route gives one.
+    fn body_strips(&self, shrink: f64) -> Vec<[Corner; 2]> {
+        match &self.drawn {
+            None => self.section.strips(shrink),
+            Some(drawn) => drawn
+                .section
+                .strips(shrink)
+                .into_iter()
+                .map(|strip| {
+                    strip.map(|corner| Corner {
+                        at: [
+                            corner.at[0] + drawn.offset[0],
+                            corner.at[1] + drawn.offset[1],
+                        ],
+                        ..corner
+                    })
+                })
+                .collect(),
+        }
+    }
+
     pub(super) fn build(&self, surfaces: &mut Surfaces<'_>) -> Result<(), String> {
         let rings = self.rings();
-        let outer = self.section.strips(0.);
-        let inner = (self.wall > 0.).then(|| self.section.strips(self.wall));
+        let outer = self.body_strips(0.);
+        let inner = (self.wall > 0.).then(|| self.body_strips(self.wall));
         for (strips, sign) in [(Some(&outer), 1.), (inner.as_ref(), -1.)] {
             let Some(strips) = strips else { continue };
             for pair in rings.windows(2) {

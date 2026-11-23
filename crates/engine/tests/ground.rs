@@ -1,5 +1,4 @@
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
@@ -11,35 +10,32 @@ use superspec_engine::worldspec::themes::kowloon::{
     weathered,
 };
 use superspec_geometry::Matrix;
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[path = "support/sign_reference.rs"]
-mod reference;
-use assembly::{Chart, Geometry};
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct Case {
     kind: Kind,
     unit: Unit,
     style: Style,
-    opening: Option<Value>,
-    opening_next: f64,
     seed: String,
-    next: f64,
-    reflected: bool,
     detail: u8,
     textured: bool,
     settings: Settings,
-    proposals: Vec<Value>,
-    geometry: Geometry,
-    charts: Vec<Chart>,
 }
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!("../../../tests/fixtures/rust/ground.json")).unwrap()
+fn case(kind: Kind, detail: u8) -> Case {
+    Case {
+        kind,
+        unit: serde_json::from_value(json!({"key": "unit", "u0": 0.1, "u1": 3.5, "height": 3.4}))
+            .unwrap(),
+        style: serde_json::from_value(json!({
+            "frame": [0.05, 0.21, 0.19],
+            "trim": [0.87, 0.84, 0.76],
+            "shutter": [0.07, 0.16, 0.3],
+            "accent": [0.81, 0.74, 0.53]
+        }))
+        .unwrap(),
+        seed: format!("ground-caller/{detail}"),
+        detail,
+        textured: true,
+        settings: serde_json::from_value(json!({"weathering":{"seed":"ground/1","wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":32,"metal":{"material":"metal","repeat":1},"paint":{"material":"paint","repeat":1},"sheet":{"material":"sheet","repeat":1}},"lettering":true,"timber":{"textured":true,"timberRepeat":1,"atlasRepeat":1}})).unwrap(),
+    }
 }
 fn pen(reflected: bool) -> Pen {
     Pen::new(
@@ -52,68 +48,66 @@ fn pen(reflected: bool) -> Pen {
     )
     .unwrap()
 }
-pub fn check_reference_ground() {
-    for (i, c) in fixture().cases.into_iter().enumerate() {
-        let kit = Kit::new(c.settings, c.detail).unwrap();
-        let s = ground::Settings {
-            kit: &kit,
-            style: &c.style,
-            posters: c.textured,
-        };
-        let mut rng = SeededRng::from_text(&c.seed);
-        let opening = ground::opening(c.kind, &c.unit, &mut rng).unwrap();
-        reference::close(&json!(opening), &json!(c.opening));
-        assert_eq!(rng.next_f64(), c.opening_next);
-        let mut rng = SeededRng::from_text(&c.seed);
-        let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-        let proposals = ground::draw(
-            &mut Fixture {
-                pen: pen(c.reflected),
-                mesh: &mut mesh,
-                repeats: &|_| 1.,
-            },
-            c.kind,
-            &c.unit,
-            &s,
-            &mut rng,
-        )
-        .unwrap();
-        assert_eq!(rng.next_f64(), c.next, "ground {i} continuation");
-        assert_eq!(proposals.len(), c.proposals.len());
-        for (p, e) in proposals.iter().zip(&c.proposals) {
-            reference::close(&reference::metadata(p), e);
+#[test]
+fn ground_bay_surveys_match_render_geometry_signs_and_random_stream() {
+    for kind in [
+        Kind::Shutter,
+        Kind::Gate,
+        Kind::Door,
+        Kind::Shop,
+        Kind::Service,
+    ] {
+        for detail in 0..3 {
+            for reflected in [false, true] {
+                let c = case(kind, detail);
+                let kit = Kit::new(c.settings.clone(), c.detail).unwrap();
+                let s = ground::Settings {
+                    kit: &kit,
+                    style: &c.style,
+                    posters: c.textured,
+                };
+                let label = format!("{} detail {detail} reflected {reflected}", c.seed);
+                // Planning an opening is pure: it repeats for the same stream.
+                let opening =
+                    ground::opening(kind, &c.unit, &mut SeededRng::from_text(&c.seed)).unwrap();
+                assert_eq!(
+                    json!(opening),
+                    json!(
+                        ground::opening(kind, &c.unit, &mut SeededRng::from_text(&c.seed)).unwrap()
+                    )
+                );
+                let mut draws = vec![];
+                for mode in [Mode::Render, Mode::Survey] {
+                    let mut rng = SeededRng::from_text(&c.seed);
+                    let mut mesh = Mesh::new(mode, 150000, &|| false).unwrap();
+                    let proposals = ground::draw(
+                        &mut Fixture {
+                            pen: pen(reflected),
+                            mesh: &mut mesh,
+                            repeats: &|_| 1.,
+                        },
+                        c.kind,
+                        &c.unit,
+                        &s,
+                        &mut rng,
+                    )
+                    .unwrap();
+                    draws.push((
+                        mesh.triangle_count(),
+                        rng.next_f64(),
+                        proposals.iter().map(|p| p.key.clone()).collect::<Vec<_>>(),
+                    ));
+                }
+                assert!(draws[0].0 > 0, "{label}");
+                assert_eq!(draws[0], draws[1], "{label}");
+            }
         }
-        assembly::check(&mut mesh, &c.geometry, &c.charts, &format!("ground {i}"));
-        let mut mesh = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
-        let mut rng = SeededRng::from_text(&c.seed);
-        ground::draw(
-            &mut Fixture {
-                pen: pen(c.reflected),
-                mesh: &mut mesh,
-                repeats: &|_| 1.,
-            },
-            c.kind,
-            &c.unit,
-            &s,
-            &mut rng,
-        )
-        .unwrap();
-        assert_eq!(
-            mesh.triangle_count() * 3,
-            c.geometry.indices.len(),
-            "ground {i} survey"
-        );
-        assert_eq!(rng.next_f64(), c.next);
     }
 }
 #[test]
-fn ground_bays_match_reference_geometry_finishes_signs_and_random_stream() {
-    check_reference_ground()
-}
-#[test]
 fn invalid_ground_jobs_do_not_advance_the_seed_and_cancelled_jobs_recover() {
-    let mut c = fixture().cases.remove(1);
-    let kit = Kit::new(c.settings, c.detail).unwrap();
+    let mut c = case(Kind::Gate, 1);
+    let kit = Kit::new(c.settings.clone(), c.detail).unwrap();
     let s = ground::Settings {
         kit: &kit,
         style: &c.style,

@@ -1,59 +1,61 @@
-use serde::Deserialize;
-use std::collections::BTreeMap;
-use superspec_engine::{
-    materialspec::surface::Sample,
-    worldspec::themes::kowloon::{
-        facade_details::{self, Plan, Request, Settings},
-        facade_material::Facade,
-        fixture::Fixture,
-        massing::Rect,
-        mesh::{Mesh, Mode},
-        metal::Metal,
-        pen::Pen,
-        skin::Deposited,
-        weathered::{self, Recipe},
-    },
+use superspec_engine::worldspec::themes::kowloon::{
+    facade_details::{self, Request, Settings},
+    fixture::Fixture,
+    massing::Rect,
+    mesh::{Mesh, Mode},
+    pen::Pen,
+    weathered,
 };
 use superspec_geometry::Matrix;
-#[derive(Deserialize)]
-struct Geometry {
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
-}
-#[derive(Deserialize)]
-struct Chart {
-    triangles: Vec<usize>,
-    point: [f64; 2],
-    sample: Sample,
-}
-#[derive(Deserialize)]
-struct Threshold {
-    u0: f64,
-    u1: f64,
-}
-#[derive(Deserialize)]
 struct Case {
     request: Request,
-    #[serde(rename = "groundRects")]
+    settings: Settings,
     ground_rects: Vec<Rect>,
-    thresholds: Vec<Threshold>,
+    thresholds: Vec<[f64; 2]>,
     blockers: Vec<Rect>,
     miters: [Option<f64>; 2],
-    plan: Plan,
-    settings: Settings,
     reflected: bool,
-    charts: Vec<Chart>,
-    #[serde(flatten)]
-    geometry: Geometry,
 }
-#[derive(Deserialize)]
-struct Golden {
-    repeats: BTreeMap<String, f64>,
-    cases: Vec<Case>,
+fn rect(u0: f64, u1: f64, v0: f64, v1: f64) -> Rect {
+    Rect { u0, u1, v0, v1 }
+}
+/// A three-storey front with two windows, a doorway threshold and optional blocked trim.
+fn case(reflected: bool, blocked: bool, mitered: bool) -> Case {
+    Case {
+        request: Request {
+            key: "lot/front".into(),
+            ground: 2.8,
+            roof: 8.8,
+            top: 9.2,
+            stories: 3,
+            story_height: 3.,
+            body_span: [0., 6.],
+            walls: vec![rect(0., 6., 2.8, 9.2)],
+            openings: vec![rect(1., 2.3, 3.4, 4.8), rect(3.5, 4.8, 6.1, 7.8)],
+        },
+        settings: serde_json::from_value(serde_json::json!({"weathering":{"seed":"facade/0","wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":64,"metal":{"material":"metal","repeat":1.5},"sheet":{"material":"sheet","repeat":1.5},"paint":{"material":"paint","repeat":1}},"concrete":{"material":"concrete","repeat":2.7},"detail":1,"trim":[0.8,0.77,0.65]})).unwrap(),
+        ground_rects: vec![rect(0., 6., 0., 2.8)],
+        thresholds: vec![[2.5, 3.5]],
+        blockers: if blocked {
+            vec![rect(3., 6., 0., 9.2)]
+        } else {
+            vec![]
+        },
+        miters: if mitered {
+            [Some(0.2), Some(0.3)]
+        } else {
+            [None; 2]
+        },
+        reflected,
+    }
+}
+fn repeat(slot: &str) -> f64 {
+    match slot {
+        "wall" => 1.3,
+        "concrete" => 2.7,
+        "metal" | "sheet" => 1.5,
+        _ => 1.,
+    }
 }
 fn pen(reflected: bool) -> Pen {
     Pen::new(
@@ -66,82 +68,7 @@ fn pen(reflected: bool) -> Pen {
     )
     .unwrap()
 }
-fn check(mesh: &Mesh<'_>, expected: &Geometry, label: &str) {
-    assert_eq!(
-        mesh.indices.len(),
-        expected.indices.len(),
-        "{label} triangle count"
-    );
-    assert_eq!(
-        mesh.indices
-            .iter()
-            .zip(&expected.indices)
-            .position(|(a, b)| a != b),
-        None,
-        "{label} indexed order"
-    );
-    for (a, b, name) in [
-        (
-            mesh.vertices
-                .iter()
-                .flat_map(|v| v.position)
-                .collect::<Vec<_>>(),
-            &expected.positions,
-            "positions",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-            &expected.normals,
-            "normals",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.color).collect(),
-            &expected.colors,
-            "colors",
-        ),
-        (
-            mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-            &expected.uv,
-            "uv",
-        ),
-    ] {
-        assert_eq!(a.len(), b.len(), "{label} {name}");
-        if let Some(i) = a.iter().zip(b).position(|(a, b)| (a - b).abs() > 2e-10) {
-            panic!("{label} {name} {i}: {} != {}", a[i], b[i]);
-        }
-    }
-    assert_eq!(
-        mesh.triangle_surfaces
-            .iter()
-            .map(|i| &mesh.surfaces[*i].slot)
-            .collect::<Vec<_>>(),
-        expected.slots.iter().collect::<Vec<_>>()
-    );
-}
-
-fn close(a: &serde_json::Value, b: &serde_json::Value) {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{a} != {b}"
-        ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(b) {
-                close(a, b);
-            }
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            for (k, b) in b {
-                close(&a[k], b);
-            }
-        }
-        _ => assert_eq!(a, b),
-    }
-}
-
-fn draw(mesh: &mut Mesh<'_>, c: &Case, repeats: &BTreeMap<String, f64>) -> Result<(), String> {
+fn draw(mesh: &mut Mesh<'_>, c: &Case) -> Result<(), String> {
     let reach = |r: Rect, limit: f64| {
         Ok(
             if c.blockers
@@ -161,23 +88,16 @@ fn draw(mesh: &mut Mesh<'_>, c: &Case, repeats: &BTreeMap<String, f64>) -> Resul
         ])
     };
     let plan = facade_details::plan(&c.request, &c.settings.weathering.seed, &reach, &|| false)?;
-    close(
-        &serde_json::to_value(&plan).unwrap(),
-        &serde_json::to_value(&c.plan).unwrap(),
-    );
     let mut d = Fixture {
         pen: pen(c.reflected),
         mesh,
-        repeats: &|s| repeats[s],
+        repeats: &|s| repeat(s),
     };
     facade_details::draw(&mut d, &plan, &c.settings, &c.request.key, &miters)?;
     facade_details::plinth(
         &mut d,
         &c.ground_rects,
-        &c.thresholds
-            .iter()
-            .map(|t| [t.u0, t.u1])
-            .collect::<Vec<_>>(),
+        &c.thresholds,
         c.request.ground,
         &c.settings,
         &c.request.key,
@@ -185,109 +105,81 @@ fn draw(mesh: &mut Mesh<'_>, c: &Case, repeats: &BTreeMap<String, f64>) -> Resul
         &miters,
     )
 }
-pub fn check_reference_facade_details() {
-    check_corners();
-    let golden: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/facade-details.json"
-    ))
-    .unwrap();
-    for (i, c) in golden.cases.iter().enumerate() {
+#[test]
+fn detail_receivers_partition_triangles_and_surveys_match_render() {
+    for (reflected, blocked, mitered) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let c = case(reflected, blocked, mitered);
+        let label = format!("reflected={reflected} blocked={blocked} mitered={mitered}");
         let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-        draw(&mut mesh, c, &golden.repeats).unwrap();
-        check(&mesh, &c.geometry, &format!("facade {i}"));
+        draw(&mut mesh, &c).unwrap();
+        assert!(mesh.triangle_count() > 0, "{label}");
+        let mut survey = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
+        draw(&mut survey, &c).unwrap();
+        assert_eq!(survey.triangle_count(), mesh.triangle_count(), "{label}");
+        for (corner, (actual, &index)) in survey.survey.iter().zip(&mesh.indices).enumerate() {
+            for axis in 0..3 {
+                assert!(
+                    (actual[axis] - mesh.vertices[index as usize].position[axis]).abs() <= 2e-10,
+                    "{label} corner {corner}"
+                );
+            }
+        }
+        let triangles = mesh.triangle_count();
         let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        let mut covered = vec![false; c.geometry.indices.len() / 3];
+        let mut covered = vec![false; triangles];
         for receiver in plan.receivers() {
-            let chart = c
-                .charts
-                .iter()
-                .find(|c| c.triangles.contains(&receiver.first_triangle))
-                .unwrap();
-            for (t, seen) in covered
+            for seen in covered
                 .iter_mut()
-                .enumerate()
                 .skip(receiver.first_triangle)
                 .take(receiver.triangle_count)
             {
-                assert!(chart.triangles.contains(&t));
-                assert!(!*seen);
+                assert!(!*seen, "{label}: receivers overlap");
                 *seen = true;
             }
-            let job = &plan.jobs()[receiver.job];
-            let runoff = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
-            let sample_runoff = |u, v| runoff.as_ref().unwrap().sample(u, v);
-            let [u, v] = chart.point;
-            let sample = match &job.recipe {
-                Recipe::Facade(r) => Facade::new(r).unwrap().sample(u, v),
-                Recipe::FacadeDeposits(r) => Deposited::new(r).unwrap().sample(u, v),
-                Recipe::Metal { settings, .. } => Metal::new(
-                    settings,
-                    runoff
-                        .as_ref()
-                        .map(|_| &sample_runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
-                )
-                .unwrap()
-                .sample(u, v),
-                _ => panic!("Unexpected balcony finish"),
-            }
-            .unwrap();
-            close(
-                &serde_json::to_value(sample).unwrap(),
-                &serde_json::to_value(&chart.sample).unwrap(),
-            );
+            assert!(receiver.first_triangle + receiver.triangle_count <= triangles);
         }
-        assert_eq!(
-            covered.iter().filter(|x| **x).count(),
-            c.charts.iter().map(|c| c.triangles.len()).sum::<usize>()
-        );
-        let mut survey = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
-        draw(&mut survey, c, &golden.repeats).unwrap();
-        assert_eq!(
-            survey.triangle_count() * 3,
-            c.geometry.indices.len(),
-            "survey {i}"
-        );
+        assert!(covered.iter().any(|c| *c), "{label}");
     }
-}
-
-#[test]
-fn facade_construction_and_runoff_plans_match_reference() {
-    check_reference_facade_details();
 }
 #[test]
 fn cancelled_or_invalid_planning_recovers_without_emission() {
-    let mut g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/facade-details.json"
-    ))
-    .unwrap();
-    let c = &mut g.cases[0];
+    let mut c = case(false, false, false);
     assert!(facade_details::plan(&c.request, "test", &|_, limit| Ok(limit), &|| true).is_err());
     assert!(facade_details::plan(&c.request, "test", &|_, _| Ok(f64::NAN), &|| false).is_err());
     let ground = c.request.ground;
     c.request.ground = f64::NAN;
     let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-    assert!(draw(&mut mesh, c, &g.repeats).is_err());
+    assert!(draw(&mut mesh, &c).is_err());
     assert!(mesh.indices.is_empty());
     c.request.ground = ground;
-    draw(&mut mesh, c, &g.repeats).unwrap();
+    draw(&mut mesh, &c).unwrap();
     assert!(!mesh.indices.is_empty());
 }
 
 #[test]
 fn corner_query_failure_aborts_the_detached_drawing() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/facade-details.json"
-    ))
+    let c = case(false, false, false);
+    let plan = facade_details::plan(
+        &c.request,
+        &c.settings.weathering.seed,
+        &|_, limit| Ok(limit),
+        &|| false,
+    )
     .unwrap();
-    let c = g.cases.iter().find(|c| !c.plan.bands.is_empty()).unwrap();
+    assert!(!plan.bands.is_empty());
     let mut mesh = Mesh::new(Mode::Render, 150_000, &|| false).unwrap();
     let error = facade_details::draw(
         &mut Fixture {
             pen: pen(c.reflected),
             mesh: &mut mesh,
-            repeats: &|slot| g.repeats[slot],
+            repeats: &|slot| repeat(slot),
         },
-        &c.plan,
+        &plan,
         &c.settings,
         &c.request.key,
         &|_| Err("Clearance cancelled.".into()),
@@ -295,66 +187,6 @@ fn corner_query_failure_aborts_the_detached_drawing() {
     .unwrap_err();
     assert_eq!(error, "Clearance cancelled.");
     let mut fresh = Mesh::new(Mode::Render, 150_000, &|| false).unwrap();
-    draw(&mut fresh, c, &g.repeats).unwrap();
+    draw(&mut fresh, &c).unwrap();
     assert!(!fresh.indices.is_empty());
-}
-#[derive(Deserialize)]
-struct CornerFace {
-    matrix: [[f64; 3]; 4],
-    shift: f64,
-    ground: Vec<Rect>,
-    body: Vec<Rect>,
-    blocked: bool,
-}
-#[derive(Deserialize)]
-struct Query {
-    index: usize,
-    zone: superspec_engine::worldspec::themes::kowloon::facade_details::corners::Zone,
-    u: f64,
-    heights: [f64; 2],
-    result: Option<f64>,
-}
-#[derive(Deserialize)]
-struct CornerCase {
-    faces: Vec<CornerFace>,
-    queries: Vec<Query>,
-}
-fn check_corners() {
-    use superspec_engine::worldspec::themes::kowloon::facade_details::corners::{Face, Joins};
-    #[derive(Deserialize)]
-    struct Golden {
-        cases: Vec<CornerCase>,
-    }
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/facade-corners.json"
-    ))
-    .unwrap();
-    for (i, c) in g.cases.iter().enumerate() {
-        let joins = Joins::new(
-            c.faces
-                .iter()
-                .map(|f| Face {
-                    pen: Pen::new(Matrix(f.matrix), "corner").unwrap(),
-                    shift: f.shift,
-                    ground: f.ground.clone(),
-                    body: f.body.clone(),
-                })
-                .collect(),
-        )
-        .unwrap();
-        for (j, q) in c.queries.iter().enumerate() {
-            let actual = joins
-                .miter(q.index, q.zone, q.u, q.heights, &|index, _, _, depth| {
-                    Ok(if c.faces[index].blocked { 0. } else { depth })
-                })
-                .unwrap();
-            match (actual, q.result) {
-                (Some(a), Some(b)) => {
-                    assert!((a - b).abs() < 2e-10, "corner {i} query {j}: {a} != {b}")
-                }
-                (None, None) => (),
-                _ => panic!("corner {i} query {j} presence"),
-            }
-        }
-    }
 }

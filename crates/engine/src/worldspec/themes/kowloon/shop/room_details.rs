@@ -23,7 +23,14 @@ pub(super) fn services(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), S
     let conduit = srgb("#5c6866");
     let mut rng = room.stream("services")?;
     let box_color = srgb(rng.pick(&["#727d78", "#657677", "#85877c"]));
-    for line in 0..3 {
+    // Conduits are 11 mm lines under the ceiling: level 1 keeps their boxes only, and the
+    // lowest level, which draws massing, none of the services.
+    let detail = d.mesh.graphics_detail();
+    if detail == super::super::graphics_detail::GraphicsDetail::VeryLow {
+        return Ok(());
+    }
+    let lines = if detail.reduced() { 0 } else { 3 };
+    for line in 0..lines {
         let inset = 0.022 + line as f64 * 0.018;
         let z = height - 0.035 - line as f64 * 0.019;
         d.tube(
@@ -61,6 +68,9 @@ pub(super) fn services(d: &mut Fixture<'_, '_>, room: &Room<'_>) -> Result<(), S
             "",
         )?;
         let face = if x < width / 2. { x + 0.062 } else { x - 0.002 };
+        if detail.reduced() {
+            continue;
+        }
         d.bar(
             "paint",
             [face, depth - 0.24, height - 0.075],

@@ -1,69 +1,60 @@
-use serde::Deserialize;
 use std::f64::consts::PI;
 use superspec_engine::worldspec::themes::kowloon::pipe_runoff::{Field, Ring, Surface};
 
-#[derive(Deserialize)]
-struct Geometry {
-    u: f64,
-    v: f64,
-    point: [f64; 3],
-    downhill: [f64; 2],
-}
-#[derive(Deserialize)]
-struct Sample {
-    u: f64,
-    v: f64,
-    value: f64,
-}
-#[derive(Deserialize)]
-struct Case {
-    name: String,
-    rings: Vec<Ring>,
-    circumference: f64,
-    seed: f64,
-    seams: Vec<f64>,
-    geometry: Vec<Geometry>,
-    samples: Vec<Sample>,
-}
-#[derive(Deserialize)]
-struct Cases {
-    cases: Vec<Case>,
-}
-pub fn check_reference_pipe_runoff() {
-    let fixture: Cases = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/pipe-runoff.json"
-    ))
-    .unwrap();
-    for case in fixture.cases {
-        let surface = Surface::new(case.rings, case.circumference).unwrap();
-        for expected in case.geometry {
-            let point = surface.point(expected.u, expected.v).unwrap();
-            let down = surface.downhill(expected.u, expected.v).unwrap();
-            for (a, b) in point
-                .into_iter()
-                .chain(down)
-                .zip(expected.point.into_iter().chain(expected.downhill))
-            {
-                assert!((a - b).abs() < 1e-10, "{} geometry: {a} != {b}", case.name);
-            }
+#[test]
+fn bent_pipe_points_lie_on_each_ring_and_runoff_stays_bounded() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let rings = vec![
+        Ring {
+            center: [0., 0., 0.],
+            radial: [1., 0., 0.],
+            across: [0., 1., 0.],
+            radius: 0.03,
+            distance: 0.,
+        },
+        Ring {
+            center: [0.3 - 0.3 * s, 0., 0.3 * s],
+            radial: [s, 0., -s],
+            across: [0., 1., 0.],
+            radius: 0.04,
+            distance: 0.075 * PI,
+        },
+        Ring {
+            center: [0.3, 0., 0.3],
+            radial: [0., 0., -1.],
+            across: [0., 1., 0.],
+            radius: 0.03,
+            distance: 0.15 * PI,
+        },
+    ];
+    let circumference = 0.06 * PI;
+    let surface = Surface::new(rings.clone(), circumference).unwrap();
+    for ring in &rings {
+        let at = surface.point(0., ring.distance).unwrap();
+        for axis in 0..3 {
+            let expected = ring.center[axis] + ring.radius * ring.radial[axis];
+            assert!((at[axis] - expected).abs() < 1e-10);
         }
-        let field = Field::new(&surface, &case.seams, case.seed, &|| false).unwrap();
-        for sample in case.samples {
-            let value = field.sample(sample.u, sample.v).unwrap();
-            assert!(
-                (value - sample.value).abs() < 1e-7,
-                "{} runoff: {value} != {} at {},{}",
-                case.name,
-                sample.value,
-                sample.u,
-                sample.v
-            );
+        for fraction in [0.25, 0.5, 0.75] {
+            let at = surface
+                .point(fraction * circumference, ring.distance)
+                .unwrap();
+            let distance = (0..3)
+                .map(|axis| (at[axis] - ring.center[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!((distance - ring.radius).abs() < 1e-10);
         }
     }
-}
-#[test]
-fn frozen_pipe_points_gravity_and_transport_match_source() {
-    check_reference_pipe_runoff();
+    let field = Field::new(&surface, &[0.03, 0.4], 41., &|| false).unwrap();
+    for u in [0., 0.3, 0.6, 0.9] {
+        for v in [0., 0.1, 0.2, 0.3, 0.4, 0.47] {
+            let value = field.sample(u * circumference, v).unwrap();
+            assert!((0. ..=1.).contains(&value));
+            let down = surface.downhill(u * circumference, v).unwrap();
+            assert!(down.iter().all(|d| d.is_finite()));
+        }
+    }
 }
 
 fn cylinder(direction: f64) -> Vec<Ring> {

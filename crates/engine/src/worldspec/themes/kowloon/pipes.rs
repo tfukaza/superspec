@@ -1,6 +1,7 @@
 //! Modular plumbing, with one periodic appearance chart per barrel, elbow or sleeve.
 use super::{
-    fasteners, fixture::Fixture, metal, pen::Tint, pipe_runoff, wall::finish_seed, weathered,
+    fasteners, fixture::Fixture, graphics_detail::GraphicsDetail, metal, pen::Tint, pipe_runoff,
+    wall::finish_seed, weathered,
 };
 use std::f64::consts::PI;
 use superspec_geometry::{
@@ -173,7 +174,11 @@ impl PipeSystem {
         let toward_center = cross(unit(cross(start, end))?, start);
         let center = add(a, scale(toward_center, radius));
         let radial = scale(toward_center, -1.);
-        let steps = ((angle / (PI / 24.)).ceil() as usize).max(4);
+        let steps = match drawing.mesh.graphics_detail() {
+            GraphicsDetail::Full => ((angle / (PI / 24.)).ceil() as usize).max(4),
+            GraphicsDetail::Low => ((angle / (PI / 4.)).ceil() as usize).max(2),
+            GraphicsDetail::VeryLow => 1,
+        };
         let rings: Vec<_> = (0..=steps)
             .map(|i| {
                 let theta = angle * i as f64 / steps as f64;
@@ -235,13 +240,16 @@ impl PipeSystem {
             return Err("Pipe mount axis must run parallel to its wall.".into());
         }
         let across = unit(cross(tangent, out))?;
-        self.sleeve(
-            drawing,
-            center,
-            tangent,
-            self.heavier(r * 1.12, r * 0.07 + 0.0035),
-            self.strap_length(),
-        )?;
+        // Level 1 keeps the stem and wall plate as plain members; the strap and bolts go.
+        if !drawing.mesh.graphics_detail().reduced() {
+            self.sleeve(
+                drawing,
+                center,
+                tangent,
+                self.heavier(r * 1.12, r * 0.07 + 0.0035),
+                self.strap_length(),
+            )?;
+        }
         // The wall plate's thickness: its middle plane stands half of it off the wall.
         let thick = self.heavier(0.012, 0.006);
         let stem = (r * 0.45).max(0.018);
@@ -414,11 +422,20 @@ impl PipeSystem {
                 rims.push(distance - half);
             }
             rims.retain(|at| *at >= 0. && *at <= distance);
+            // The barrel's chart keeps every rim at every level; a reduced level draws no
+            // couplings, level 1 every second wall mount and level 2 none.
             self.straight(drawing, a, b, &rims)?;
-            for at in seams {
-                self.coupling(drawing, add(a, scale(axis, at)), axis)?;
+            let detail = drawing.mesh.graphics_detail();
+            if !detail.reduced() {
+                for at in seams {
+                    self.coupling(drawing, add(a, scale(axis, at)), axis)?;
+                }
             }
-            for at in mounts {
+            let every = detail.pick(1, 2, usize::MAX);
+            for at in mounts.into_iter().step_by(every) {
+                if detail == GraphicsDetail::VeryLow {
+                    break;
+                }
                 let center = add(a, scale(axis, at));
                 self.mount(
                     drawing,
@@ -430,8 +447,10 @@ impl PipeSystem {
         }
         for (a, corner, b) in bends {
             self.bend(drawing, a, corner, b, true)?;
-            self.coupling(drawing, a, sub(corner, a))?;
-            self.coupling(drawing, b, sub(b, corner))?;
+            if !drawing.mesh.graphics_detail().reduced() {
+                self.coupling(drawing, a, sub(corner, a))?;
+                self.coupling(drawing, b, sub(b, corner))?;
+            }
         }
         Ok(())
     }
@@ -480,24 +499,34 @@ impl PipeSystem {
             self.options.color
         });
         let first = drawing.mesh.triangle_count();
+        // A reduced level sweeps fewer sides and draws a bore under 20 mm at 25 mm. The
+        // chart, its seams and the weathering recipe below keep the authored section.
+        let detail = drawing.mesh.graphics_detail();
+        let sides = detail
+            .pick(self.options.sides, 6, 4)
+            .min(self.options.sides);
+        let drawn = |own: f64| detail.readable(own * 2.) / 2.;
         let vertex = |row: usize, side: usize| {
             let ring = rings[row];
-            let angle = side as f64 / self.options.sides as f64 * PI * 2.;
+            let angle = side as f64 / sides as f64 * PI * 2.;
             let normal = add(
                 scale(ring.radial, cos(angle)),
                 scale(cross(ring.tangent, ring.radial), sin(angle)),
             );
             (
-                add(ring.center, scale(normal, radii.map_or(radius, |r| r[row]))),
+                add(
+                    ring.center,
+                    scale(normal, drawn(radii.map_or(radius, |r| r[row]))),
+                ),
                 normal,
                 [
-                    circumference * side as f64 / self.options.sides as f64,
+                    circumference * side as f64 / sides as f64,
                     rounded(ring.distance),
                 ],
             )
         };
         for row in 0..rings.len() - 1 {
-            for side in 0..self.options.sides {
+            for side in 0..sides {
                 let slope = radii.map_or(0., |r| {
                     (r[row + 1] - r[row]) / (rings[row + 1].distance - rings[row].distance)
                 });

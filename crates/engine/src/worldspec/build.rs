@@ -5,7 +5,7 @@ use crate::{
 };
 use std::collections::BTreeMap;
 use superspec_model::{
-    theme::{ground, signs},
+    theme::ground,
     visual::{BakedVisualInput, VisualInput},
 };
 use superspec_types::{architecture::Node, diagnostic::Diagnostic, material::Material};
@@ -92,22 +92,6 @@ impl VisualOutput<'_> {
 
     pub(crate) fn ground_plans(&mut self) -> &mut Vec<ground::Plan> {
         &mut self.0.manifest.ground_plans
-    }
-
-    pub(crate) fn sign_plans(&mut self) -> &mut Vec<signs::Plan> {
-        &mut self.0.manifest.sign_plans
-    }
-
-    pub(crate) fn credit(
-        &mut self,
-        contributors: &BTreeMap<String, Vec<String>>,
-    ) -> Result<(), String> {
-        self.0
-            .manifest
-            .architecture
-            .as_mut()
-            .expect("post-review visuals have architectural context")
-            .credit_visuals(contributors)
     }
 }
 

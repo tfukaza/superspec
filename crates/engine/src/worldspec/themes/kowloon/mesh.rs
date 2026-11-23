@@ -11,6 +11,7 @@ pub struct Mesh<'a> {
     geometry: geometry::Mesh<'a>,
     pub(super) identity: Arc<()>,
     pub(super) weathering: super::weathered::Collection,
+    graphics: super::graphics_detail::GraphicsDetail,
 }
 
 impl VisualInput for Mesh<'_> {
@@ -31,26 +32,11 @@ impl VisualInput for Mesh<'_> {
     }
 }
 
-pub(crate) struct OwnedMesh {
-    geometry: geometry::OwnedMesh,
-    identity: Arc<()>,
-    weathering: super::weathered::Collection,
-}
-
-impl OwnedMesh {
-    pub(crate) fn bind(self, cancelled: &dyn Fn() -> bool) -> Mesh<'_> {
-        Mesh {
-            geometry: self.geometry.bind(cancelled),
-            identity: self.identity,
-            weathering: self.weathering,
-        }
-    }
-}
-
 impl<'a> Mesh<'a> {
     pub fn surveying(&self) -> bool {
         self.geometry.surveying()
     }
+    #[cfg(test)]
     pub(crate) fn into_survey(self) -> Vec<superspec_geometry::V3> {
         self.geometry.survey
     }
@@ -63,14 +49,20 @@ impl<'a> Mesh<'a> {
             geometry: geometry::Mesh::new(mode, maximum_triangles, cancelled)?,
             identity: Arc::new(()),
             weathering: Default::default(),
+            graphics: Default::default(),
         })
     }
-    pub(crate) fn into_owned(self) -> OwnedMesh {
-        OwnedMesh {
-            geometry: self.geometry.into_owned(),
-            identity: self.identity,
-            weathering: self.weathering,
+    /// How much geometry fixtures draw into this mesh. A survey always reads level 0, so
+    /// clearance and sign planning see the authored fixture at every level.
+    pub fn graphics_detail(&self) -> super::graphics_detail::GraphicsDetail {
+        if self.surveying() {
+            Default::default()
+        } else {
+            self.graphics
         }
+    }
+    pub fn set_graphics_detail(&mut self, detail: super::graphics_detail::GraphicsDetail) {
+        self.graphics = detail;
     }
 }
 

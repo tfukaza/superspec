@@ -16,7 +16,7 @@ pub type Transform = [[f64; 3]; 4];
 /// The texel densities a slot may declare, in texels per meter (those a bake request accepts).
 const MIN_DENSITY: f64 = 1.;
 const MAX_DENSITY: f64 = 100_000.;
-const MAX_PARAMETERS: usize = 128;
+const MAX_PARAMETERS: usize = 160;
 const MAX_MATERIAL_SLOTS: usize = 128;
 const MAX_ATTACHMENTS: usize = 256;
 const MAX_LAYERS_PER_SLOT: usize = 16;
@@ -466,6 +466,10 @@ pub enum Generator {
     /// Version 2 part generator: a generator supplied by the host (for example a theme's
     /// fixtures), named and given parameters.
     Native(NativeReference),
+    /// Version 2 part generator: one shared shape of a host generator, drawn from its content
+    /// as [`super::NativeGenerators::prototype_meshes`] gives it, so a library of prototypes
+    /// is built from what an item's placements name.
+    Prototype(PrototypeReference),
     /// The value of an absent root `generator`: the item is defined by `parts`.
     #[default]
     Parts,
@@ -517,6 +521,18 @@ pub struct NativeReference {
     pub parameters: Arguments,
 }
 
+/// A prototype by what its key names (`Prototype::key`): the host generator, the content it
+/// is drawn from, passed literally, and whether it is the reflected shape.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrototypeReference {
+    pub name: String,
+    #[serde(default)]
+    pub content: Values,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mirrored: bool,
+}
+
 /// One axis of a repeated part: `count` copies (0 to 256), indexed from zero by `name`.
 /// Inside the part, `name` and `<name>_count` read as numbers. With `footprint` the axis runs
 /// over the footprint's edges instead, and each copy also reads the edge's geometry (see
@@ -528,6 +544,27 @@ pub struct RepeatAxis {
     #[serde(default)]
     pub count: Scalar,
     pub footprint: Option<FootprintReference>,
+    #[serde(
+        default,
+        rename = "footprintMode",
+        skip_serializing_if = "FootprintMode::is_edges"
+    )]
+    pub footprint_mode: FootprintMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FootprintMode {
+    #[default]
+    Edges,
+    Rectangles,
+    LargestRectangle,
+}
+
+impl FootprintMode {
+    fn is_edges(&self) -> bool {
+        *self == Self::Edges
+    }
 }
 
 /// A footprint read from controls: `points` names a `points` control, `streets` an optional
@@ -541,6 +578,8 @@ pub struct RepeatAxis {
 pub struct FootprintReference {
     pub points: String,
     pub streets: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holes: Option<String>,
     #[serde(default)]
     pub cut: Scalar,
     #[serde(default, skip_serializing_if = "Scalar::is_zero")]
@@ -795,10 +834,23 @@ pub struct AttachmentReference {
 fn bend_segments() -> Scalar {
     Scalar::Number(8.)
 }
+/// What a route's body and end caps are drawn as in place of its `section`. The route's
+/// path, fittings, features, attachments and decals still follow `section`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrawnSectionDefinition {
+    pub section: SectionDefinition,
+    /// The drawn section's centre from the centreline: across the section, then along `up`.
+    #[serde(default)]
+    pub offset: [Scalar; 2],
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RouteDefinition {
     pub section: SectionDefinition,
+    /// A different section to draw the body with; absent draws `section`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drawn: Option<DrawnSectionDefinition>,
     #[serde(default)]
     pub wall_thickness: Scalar,
     pub points: RoutePoints,

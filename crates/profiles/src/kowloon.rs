@@ -61,17 +61,20 @@ fn check(document: &Document) -> Result<(), Diagnostic> {
 fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic> {
     let kind = xml.tag_name().name();
     let allowed = match kind {
+        "building" | "spans" => {
+            return Err(source.failure(
+                xml,
+                "AML_DRESSING_REMOVED",
+                "Building dressing and its automatic spans were retired. Place Kowloon buildings with <city><building …/></city>.",
+            ));
+        }
         "dressing" => "theme seed grime wear rust detail time-of-day finishes wall-materials",
         "floor" => {
             "host material face windows grime wear ground patch-size material-size relief wetness litter repairs tile-share tile-size tile-aspect tile-wear tile-grime tile-color timber-share joined-pours asphalt manholes breakup asphalt-material texture-density"
         }
-        "building" => {
-            "host material face windows grime wear rust stories shops texture-density base-wall model"
-        }
         "wall" => {
             "host material face windows grime wear texture-density tile-share tile-size tile-aspect tile-wear tile-grime tile-color"
         }
-        "spans" => "hosts cables clotheslines signs clearance reach",
         _ => {
             return Err(source.failure(
                 xml,
@@ -97,12 +100,9 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
             ));
         }
         let value = match key {
-            "model" if text != "reference-corner" => {
-                return Err(node.fail("AML_DRESSING", "Unknown building model."));
-            }
-            "grime" | "wear" | "rust" | "shops" | "wetness" | "litter" | "repairs"
-            | "tile-share" | "timber-share" | "joined-pours" | "asphalt" | "manholes"
-            | "breakup" | "tile-wear" | "tile-grime" | "cables" | "clotheslines" | "signs" => {
+            "grime" | "wear" | "rust" | "wetness" | "litter" | "repairs" | "tile-share"
+            | "timber-share" | "joined-pours" | "asphalt" | "manholes" | "breakup"
+            | "tile-wear" | "tile-grime" => {
                 let value = text
                     .parse::<f64>()
                     .ok()
@@ -111,20 +111,6 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                         node.fail("AML_DRESSING", format!("{key} must be between 0 and 1."))
                     })?;
                 Value::Number(value)
-            }
-            "clearance" | "reach" => {
-                let maximum = if key == "clearance" { 10. } else { 40. };
-                Value::Number(
-                    text.parse::<f64>()
-                        .ok()
-                        .filter(|v| (2. ..=maximum).contains(v))
-                        .ok_or_else(|| {
-                            node.fail(
-                                "AML_DRESSING",
-                                format!("{key} must be between 2 and {maximum}."),
-                            )
-                        })?,
-                )
             }
             "patch-size" | "material-size" | "relief" | "tile-size" | "tile-aspect" => {
                 Value::Number(
@@ -136,24 +122,17 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                         })?,
                 )
             }
-            "stories" | "texture-density" => {
-                let value = text
-                    .parse::<f64>()
+            "texture-density" => Value::Number(
+                text.parse::<f64>()
                     .ok()
-                    .filter(|v| v.is_finite() && *v > 0.)
+                    .filter(|v| (16. ..=1024.).contains(v))
                     .ok_or_else(|| {
                         node.fail(
                             "AML_DRESSING",
-                            format!("{key} must be finite and positive."),
+                            "texture-density must be between 16 and 1024.",
                         )
-                    })?;
-                if (key == "stories" && (value.fract() != 0. || value > 16.))
-                    || (key == "texture-density" && !(16. ..=1024.).contains(&value))
-                {
-                    return Err(node.fail("AML_DRESSING", format!("Invalid building {key}.")));
-                }
-                Value::Number(value)
-            }
+                    })?,
+            ),
             "windows" => Value::Boolean(match text {
                 "true" => true,
                 "false" => false,
@@ -206,24 +185,6 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
             }
             node.children.push(read(child, source)?);
         }
-    } else if kind == "spans" {
-        let hosts: Vec<_> = node
-            .text("hosts")
-            .unwrap_or("")
-            .split_whitespace()
-            .collect();
-        let unique: std::collections::BTreeSet<_> = hosts.iter().collect();
-        if node.text("hosts").is_some()
-            && (hosts.len() < 2 || hosts.len() > 512 || unique.len() != hosts.len())
-        {
-            return Err(node.fail(
-                "AML_DRESSING",
-                "Spans require 2–512 distinct building hosts.",
-            ));
-        }
-        if xml.children().any(|child| child.is_element()) {
-            return Err(node.fail("AML_CHILD", "Spans cannot contain children."));
-        }
     } else {
         if node
             .text("host")
@@ -237,26 +198,19 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         {
             return Err(node.fail("AML_DRESSING", "Floor material cannot be empty."));
         }
-        let building = kind == "building";
         let wall = kind == "wall";
-        let face = if building {
-            "front"
-        } else if wall {
-            "side"
-        } else {
-            "top"
-        };
+        let face = if wall { "side" } else { "top" };
         if (wall
             && node
                 .text("face")
                 .is_some_and(|v| !["side", "front", "back", "left", "right"].contains(&v)))
             || (!wall
                 && (node.text("face").is_some_and(|value| value != face)
-                    || node.boolean("windows", building) != building))
+                    || node.boolean("windows", false)))
         {
             return Err(node.fail(
                 "AML_DRESSING",
-                "Building dressing requires front/windows=true; floor dressing requires top/windows=false.",
+                "Wall dressing requires a wall face. Floor dressing requires top/windows=false.",
             ));
         }
         if xml.children().any(|c| c.is_element()) {
@@ -264,20 +218,13 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         }
         node.attributes
             .entry("material".into())
-            .or_insert(Value::Text(
-                if building {
-                    "builtin:plaster"
-                } else {
-                    "builtin:concrete"
-                }
-                .into(),
-            ));
+            .or_insert(Value::Text("builtin:concrete".into()));
         node.attributes
             .entry("face".into())
             .or_insert(Value::Text(face.into()));
         node.attributes
             .entry("windows".into())
-            .or_insert(Value::Boolean(building));
+            .or_insert(Value::Boolean(false));
     }
     Ok(node)
 }

@@ -10,6 +10,7 @@ use std::{
     sync::Arc,
 };
 use superspec_model::composition::WorldModel;
+use superspec_model::visual::GraphicsTier;
 
 const MAX_WORLD_ITEM_PLACEMENTS: usize = 1024;
 const MAX_WORLD_MATERIAL_ASSIGNMENTS: usize = 256;
@@ -23,6 +24,9 @@ pub struct World {
     pub material_lods: crate::materialspec::program::MaterialLodSources,
     pub theme_presets: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
     pub project_presets: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    /// Minimum graphics preset by stable scene object ID.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub render_visibility: BTreeMap<String, GraphicsTier>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -228,5 +232,8 @@ pub fn build_model(
     if cancelled() {
         return Err(fail("World authoring cancelled.".into()));
     }
+    model
+        .set_render_visibility(world.render_visibility.clone())
+        .map_err(&fail)?;
     Ok(model)
 }

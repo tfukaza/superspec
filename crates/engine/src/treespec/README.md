@@ -154,6 +154,10 @@ Diagnostics carry a code, the source name and a JSON pointer (`TREE_JSON`, `TREE
 
 ## Looking at the output
 
+The [Gaussian foliage demo](../../../../tests/studio/gaussian-foliage/README.md) renders
+the TreeSpec shrub and grass packets in Three.js. It compares one oriented Gaussian
+per leaf card or blade with camera-facing dabs in a small lawn scene.
+
 ```bash
 cargo test --release -p superspec-engine --test treespec_verification -- --ignored --nocapture
 node tests/treespec-browser.mjs

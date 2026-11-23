@@ -71,6 +71,14 @@ pub struct PreparedProject {
     pub(super) touching: std::cell::OnceCell<ContactScene>,
 }
 
+impl PreparedProject {
+    /// What each item model reports about itself, by model identity: the `items` of the
+    /// project's shading metadata. `None` without item models.
+    pub fn items(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.items.as_ref()
+    }
+}
+
 /// The name [`PreparedProject`] had while only field bakes used it.
 pub type ProjectFields = PreparedProject;
 

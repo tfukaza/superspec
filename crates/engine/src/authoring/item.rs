@@ -729,8 +729,12 @@ pub(super) struct PlacedItem {
     pub bounds: BTreeMap<String, [[f64; 3]; 2]>,
     /// The item's features that reach the receivers of other items of the scene.
     pub scene_features: Vec<Reaching>,
+    /// Per entry of the metadata's `placements`, in order: the prototype slot and the
+    /// placement identity of each mesh it covers, for the composer to state what each is bound to.
+    pub placements: Vec<Vec<(String, String)>>,
     /// For inspection and overlays: controls, derived values, parts with their keys,
-    /// features, anchors, attachments, decals and handles, in world meters.
+    /// features, anchors, attachments, decals and handles, in world meters; and the
+    /// prototypes the item places with their placements, in the item's own coordinates.
     pub metadata: serde_json::Value,
 }
 
@@ -848,6 +852,7 @@ impl Session {
             densities: generated.densities.clone(),
             bounds: BTreeMap::new(),
             scene_features: Vec::new(),
+            placements: Vec::new(),
             metadata: serde_json::Value::Null,
         };
         let textured_slots = self
@@ -1134,7 +1139,89 @@ impl Session {
             handle.position = placement.point(handle.position);
             handles.push(handle);
         }
+        // The prototypes the item places (`docs/plans/parts-as-placements.md`, 8.2): each shared
+        // shape by its content key, and each placement in the item's own coordinates, whatever
+        // the model's placement, naming the meshes it covers as the scene names them.
+        let prototypes: serde_json::Map<_, _> = geometry
+            .prototypes
+            .iter()
+            .map(|(key, prototype)| {
+                let slots: Vec<&str> = prototype
+                    .meshes
+                    .iter()
+                    .map(|mesh| mesh.material_slot.as_str())
+                    .collect();
+                let triangles: usize = prototype
+                    .meshes
+                    .iter()
+                    .map(|mesh| mesh.indices.len() / 3)
+                    .sum();
+                let mut value = json!({
+                    "kind": prototype.kind, "name": prototype.name,
+                    "identity": prototype.identity, "content": prototype.content,
+                    "mirrored": prototype.mirrored, "roles": prototype.roles,
+                    "mount": prototype.mount, "slots": slots, "triangles": triangles,
+                });
+                if let Some(group) = crate::worldspec::shipped::prototype_lod_group(prototype) {
+                    value["lodGroup"] = json!(group);
+                }
+                (key.clone(), value)
+            })
+            .collect();
+        let mut placements = Vec::new();
+        for placement in geometry.placed().map_err(&fail)? {
+            let (Some(node), Some(prototype)) = (
+                geometry.nodes.get(placement.node),
+                geometry.prototypes.get(&placement.prototype),
+            ) else {
+                return Err(fail(format!(
+                    "Placement {} names an unknown node or prototype.",
+                    placement.path
+                )));
+            };
+            let mut meshes = Vec::with_capacity(placement.meshes.len());
+            // The prototype's surviving meshes, in its mesh order, are the covered ones.
+            let mut covered = Vec::with_capacity(placement.meshes.len());
+            let surviving = prototype
+                .meshes
+                .iter()
+                .filter(|mesh| placement.slots.contains_key(&mesh.material_slot));
+            for (source, &index) in surviving.zip(&placement.meshes) {
+                let mesh = geometry
+                    .meshes
+                    .get(index)
+                    .ok_or_else(|| fail(format!("Placement {} names no mesh.", placement.path)))?;
+                let id = format!("{}/{}", node.id, mesh.id);
+                meshes.push(format!("{prefix}{id}"));
+                covered.push((source.material_slot.clone(), id));
+            }
+            placements.push(json!({
+                "prototype": placement.prototype, "path": placement.path,
+                "transform": matrix(Matrix(placement.transform)),
+                "down": placement.down().map_err(&fail)?,
+                "inputs": placement.inputs, "slots": placement.slots,
+                "binding": {}, "assignments": {}, "meshes": meshes,
+            }));
+            placed.placements.push(covered);
+        }
+        // A prototype drawn as it is (a `prototype` part) keeps its roles on its meshes.
+        let roles: BTreeMap<String, &[u8]> = geometry
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node.meshes.iter().filter_map(|&index| {
+                    let mesh = geometry.meshes.get(index)?;
+                    (!mesh.roles.is_empty()).then(|| {
+                        (
+                            format!("{prefix}{}/{}", node.id, mesh.id),
+                            mesh.roles.as_slice(),
+                        )
+                    })
+                })
+            })
+            .collect();
         placed.metadata = json!({
+            "prototypes": prototypes, "placements": placements,
             "entry": entry, "definition": generated.id, "geometryKey": generated.geometry_key,
             "generation": generation, "rebuilt": rebuilt,
             "parameters": parameters, "derived": prepared.derived,
@@ -1143,6 +1230,9 @@ impl Session {
             "reachDropped": reach_dropped,
             "meshSlots": placed.slots.iter().map(|(id, slot)| (format!("{prefix}{id}"), slot.clone())).collect::<BTreeMap<_, _>>(),
         });
+        if !roles.is_empty() {
+            placed.metadata["meshRoles"] = json!(roles);
+        }
         if !parsed.lods.is_empty() {
             let mut levels = vec![render_level(&placed.model, 0.)];
             for (index, level) in parsed.lods.iter().enumerate() {

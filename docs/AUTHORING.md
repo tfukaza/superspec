@@ -318,6 +318,27 @@ explicit `slots` override. `world.materials` accepts assignments with `objects`,
 `item/<placement-id>`. The browser editors reopen material/item bundles; world
 composition is currently a native/API workflow.
 
+Set `world.renderVisibility` in a WorldSpec project to set a minimum graphics
+preset by object ID. Use the AML object ID for scene geometry and
+`item/<placement-id>` for a saved item placement:
+
+```json
+{
+  "renderVisibility": {
+    "item/crate-display": "low",
+    "item/wall-notice": "medium",
+    "ornamental-duct-cover": "high"
+  }
+}
+```
+
+For example, `"low"` appears at Low and above. Untagged objects appear at every
+preset. WorldSpec validates the IDs and writes each tag as
+`extras.worldSpecMinGraphics` on the visual glTF node. The renderer applies the
+tag when it loads the scene. A theme can also tag a separately exported
+primitive, such as a batch of shop inventory. These visual choices leave the
+canonical collision, navigation, and validation data intact.
+
 The `superspec_engine` APIs include `materialspec::program::{compile, Program}`,
 `itemspec::definition::{parse, prepare}`, `Session::build_project` and
 `worldspec::authored::build_model`. One session owns AML and authored artifact
@@ -360,7 +381,7 @@ tuning were undertaken for this milestone.
 | --- | --- | --- |
 | Studio project | Model inputs and material assignments | 16 models, 64 assignments |
 | WorldSpec authoring document | Item placements and material assignments | 1,024 placements, 256 assignments |
-| ItemSpec definition | Parameters, material slots, attachments and layers per slot | 128 parameters, 128 slots, 256 attachments, 16 layers per slot |
+| ItemSpec definition | Parameters, material slots, attachments and layers per slot | 160 parameters, 128 slots, 256 attachments, 16 layers per slot |
 | MaterialSpec program | External inputs of one program and of a composed slot | 16 program inputs, 64 composite inputs |
 | ItemSpec source | Local vertices and triangles for a GLB import | 500,000 vertices, 250,000 triangles |
 | Generated item | Geometry counted for each placement of a source mesh | 1.5 million vertices, 1 million triangles |

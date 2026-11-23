@@ -1,7 +1,10 @@
-use super::{GeneratedItem, ImportedMaterial, ImportedTexture, ItemGeometry, ItemMesh, Values};
+use super::{
+    Feature, GeneratedItem, ImportedMaterial, ImportedTexture, ItemGeometry, ItemMesh, Prototype,
+    Values,
+};
 use crate::materialspec::program::MaterialRequest;
 use serde_json::Value;
-use std::mem::size_of;
+use std::{mem::size_of, sync::Arc};
 
 fn sum(values: impl IntoIterator<Item = usize>) -> usize {
     values.into_iter().fold(0, usize::saturating_add)
@@ -54,8 +57,18 @@ fn mesh(mesh: &ItemMesh) -> usize {
         vector(&mesh.colors),
         vector(&mesh.tangents),
         vector(&mesh.indices),
+        vector(&mesh.roles),
         map_storage::<u32, Vec<[f64; 2]>>(mesh.additional_uvs.len()),
         sum(mesh.additional_uvs.values().map(vector)),
+    ])
+}
+fn feature(feature: &Feature) -> usize {
+    sum([
+        text(&feature.name),
+        text(&feature.part),
+        feature.source.as_ref().map_or(0, text),
+        text(&feature.face),
+        vector(&feature.points),
     ])
 }
 fn material(material: &ImportedMaterial) -> usize {
@@ -114,17 +127,41 @@ impl ItemGeometry {
                 ])
             })),
             vector(&self.features),
-            sum(self.features.iter().map(|feature| {
-                sum([
-                    text(&feature.name),
-                    text(&feature.part),
-                    feature.source.as_ref().map_or(0, text),
-                    text(&feature.face),
-                    vector(&feature.points),
-                ])
-            })),
+            sum(self.features.iter().map(feature)),
             vector(&self.anchors),
             sum(self.anchors.iter().map(|anchor| text(&anchor.part))),
+            map_storage::<String, Arc<Prototype>>(self.prototypes.len()),
+            sum(self.prototypes.iter().map(|(key, prototype)| {
+                sum([
+                    text(key),
+                    size_of::<Prototype>(),
+                    text(&prototype.kind),
+                    text(&prototype.name),
+                    text(&prototype.identity),
+                    values(&prototype.content),
+                    vector(&prototype.meshes),
+                    sum(prototype.meshes.iter().map(mesh)),
+                    vector(&prototype.features),
+                    sum(prototype.features.iter().map(feature)),
+                    vector(&prototype.roles),
+                    sum(prototype.roles.iter().map(text)),
+                ])
+            })),
+            vector(&self.placements),
+            sum(self.placements.iter().map(|placement| {
+                sum([
+                    text(&placement.prototype),
+                    text(&placement.path),
+                    vector(&placement.meshes),
+                    map_storage::<String, [f64; 3]>(placement.inputs.len()),
+                    sum(placement.inputs.keys().map(text)),
+                    map_storage::<String, String>(placement.slots.len()),
+                    sum(placement
+                        .slots
+                        .iter()
+                        .map(|(from, to)| sum([text(from), text(to)]))),
+                ])
+            })),
         ])
     }
 }

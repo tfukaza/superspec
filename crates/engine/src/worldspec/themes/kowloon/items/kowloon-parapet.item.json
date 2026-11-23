@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-parapet",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "z0": {"type": "number", "default": 0, "min": 0, "max": 200, "unit": "m"},
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
     "paint": {"type": "color", "default": "#c0b49e"},
@@ -16,8 +18,8 @@
     "outlet": {"type": "boolean", "default": false},
     "outletX": {"type": "number", "default": 0.45, "min": 0, "max": 40, "unit": "m"},
     "ledge": {"type": "boolean", "default": false},
-    "miterStart": {"type": "number", "default": 0, "min": 0, "max": 4},
-    "miterEnd": {"type": "number", "default": 0, "min": 0, "max": 4},
+    "miterStart": {"type": "number", "default": 0, "min": -4, "max": 4},
+    "miterEnd": {"type": "number", "default": 0, "min": -4, "max": 4},
     "wallMiterStart": {"type": "number", "default": 0, "min": -8, "max": 8},
     "wallMiterEnd": {"type": "number", "default": 0, "min": -8, "max": 8},
     "arris": {"type": "number", "default": 0, "min": 0, "max": 0.05, "unit": "m"},
@@ -51,13 +53,13 @@
       "id": "ledge",
       "when": "ledge",
       "generator": {"kind": "native", "name": "kowloon/cornice",
-        "parameters": {"length": {"parameter": "width"}, "color": "#ffffff", "miterStart": {"parameter": "miterStart"}, "miterEnd": {"parameter": "miterEnd"}}},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "length": {"parameter": "width"}, "color": "#ffffff", "miterStart": {"parameter": "miterStart"}, "miterEnd": {"parameter": "miterEnd"}}},
       "slots": {"concrete": "trim"}
     },
     {
       "id": "outlet",
       "when": "outlet",
-      "generator": {"kind": "native", "name": "kowloon/roof-outlet", "parameters": {}},
+      "generator": {"kind": "native", "name": "kowloon/roof-outlet", "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}}},
       "placement": {"position": [{"parameter": "outletX"}, 0, 0.1]}
     }
   ],

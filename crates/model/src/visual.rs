@@ -5,6 +5,18 @@ use std::sync::Arc;
 use superspec_types::limits;
 use superspec_types::{architecture::V3, material::Material};
 
+/// Minimum viewer preset at which a visual entity is delivered. Collision
+/// and navigation use their own canonical admission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphicsTier {
+    VeryLow,
+    Low,
+    Medium,
+    High,
+    VeryHigh,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Vertex {
     pub position: V3,

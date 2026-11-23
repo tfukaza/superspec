@@ -145,6 +145,7 @@ impl<'a> Surfaces<'a> {
                     tangents: vec![],
                     indices: buffer.indices,
                     material_slot: slot,
+                    roles: vec![],
                 })
             })
             .collect()
@@ -244,37 +245,58 @@ pub(super) fn prism(
     hole: Option<&Outline>,
     depth: [f64; 2],
 ) -> Result<(), String> {
+    prism_loops(
+        surfaces,
+        groups,
+        frame,
+        outer,
+        hole.map_or(&[], std::slice::from_ref),
+        depth,
+    )
+}
+
+pub(super) fn prism_loops(
+    surfaces: &mut Surfaces<'_>,
+    groups: [&'static str; 3],
+    frame: &Frame,
+    outer: &Outline,
+    holes: &[Outline],
+    depth: [f64; 2],
+) -> Result<(), String> {
     let [side, low_cap, high_cap] = groups;
     let depth = [depth[0].min(depth[1]), depth[0].max(depth[1])];
-    if outer.points.len() < 3 || hole.is_some_and(|h| h.points.len() < 3) || depth[1] <= depth[0] {
+    if outer.points.len() < 3 || holes.iter().any(|h| h.points.len() < 3) || depth[1] <= depth[0] {
         return Err("A prism needs an outline with area and a positive depth.".into());
     }
     let outer = outer.counter_clockwise();
-    let hole = hole.map(Outline::counter_clockwise);
+    let holes = holes
+        .iter()
+        .map(Outline::counter_clockwise)
+        .collect::<Vec<_>>();
     caps(
         surfaces,
         [low_cap, high_cap],
         frame,
         [&outer.points, &outer.points],
-        hole.as_ref(),
+        &holes,
         depth,
     )?;
     // Sides. A hole's wall faces into the hole.
     walls(surfaces, side, frame, &outer, 1., depth)?;
-    if let Some(hole) = &hole {
+    for hole in &holes {
         walls(surfaces, side, frame, hole, -1., depth)?;
     }
     Ok(())
 }
 
 /// The two caps of a prism: counter-clockwise `outlines` (low, high) at their depths, minus
-/// `hole`. Cap texture coordinates are the outline's own.
+/// `holes`. Cap texture coordinates are the outline's own.
 fn caps(
     surfaces: &mut Surfaces<'_>,
     groups: [&'static str; 2],
     frame: &Frame,
     outlines: [&[P2]; 2],
-    hole: Option<&Outline>,
+    holes: &[Outline],
     depth: [f64; 2],
 ) -> Result<(), String> {
     let normal = frame.normal();
@@ -282,7 +304,7 @@ fn caps(
     for (index, flip) in [(0, true), (1, false)] {
         let outline = Outline::flat(outlines[index].to_vec());
         if index == 0 || outlines[0] != outlines[1] {
-            shared = Some(if hole.is_none() && outline.convex() {
+            shared = Some(if holes.is_empty() && outline.convex() {
                 (
                     outline.points.clone(),
                     (1..outline.points.len() - 1)
@@ -293,7 +315,7 @@ fn caps(
                 let ring =
                     |outline: &Outline| outline.points.iter().map(|p| [p[0], p[1], 0.]).collect();
                 let mut loops: Vec<Vec<V3>> = vec![ring(&outline)];
-                loops.extend(hole.map(ring));
+                loops.extend(holes.iter().map(ring));
                 let profile = triangulate(loops, &[], &[])?;
                 (
                     profile.points.iter().map(|p| [p[0], p[1]]).collect(),
@@ -547,7 +569,7 @@ pub(super) fn beveled_prism(
         [low_cap, high_cap],
         frame,
         [&low, &high],
-        None,
+        &[],
         depth,
     )?;
     walls(surfaces, side, frame, &outer, 1., belt)

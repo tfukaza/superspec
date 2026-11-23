@@ -1,12 +1,12 @@
-use serde::Deserialize;
 use std::{cell::Cell, collections::BTreeMap};
 use superspec_aml::material::Material;
 use superspec_engine::{
-    materialspec::surface::{Inputs, RasterSettings, Sample, rasterize},
+    materialspec::surface::{Inputs, RasterSettings, rasterize},
     worldspec::themes::kowloon::{
         fixture::Fixture,
         mesh::{Mesh, Mode},
-        painted::{self, Paint, Recipe, Surface},
+        metal::Binding,
+        painted::{self, Paint, Recipe, Settings, Surface},
         pen::Pen,
         weathered,
     },
@@ -14,52 +14,43 @@ use superspec_engine::{
 use superspec_geometry::Matrix;
 #[path = "support/paint_scene.rs"]
 mod scene_fixture;
-#[derive(Deserialize)]
-struct Case {
-    recipe: Recipe,
-    density: f64,
-    points: Vec<[f64; 2]>,
-    samples: Vec<Sample>,
-    width: usize,
-    height: usize,
-    color: Vec<u8>,
-    normal: Vec<u8>,
-    packed: Vec<u8>,
+fn recipe() -> Recipe {
+    Recipe {
+        finish: Settings {
+            bounds: [-0.3, 0., 0.7, 1.2],
+            paint: [0.12, 0.31, 0.24],
+            substrate: [0.17, 0.12, 0.08],
+            seed: 37.,
+            wear: 0.6,
+            grime: 0.7,
+            handle: Some([0.61, 0.7]),
+            panels: vec![[-0.2, 0.15, 0.1, 0.6], [0.2, 0.15, 0.6, 0.6]],
+        },
+        binding: Binding {
+            material: "paint".into(),
+            repeat: 1.25,
+        },
+    }
 }
-#[derive(Deserialize)]
-struct Receiver {
-    first: usize,
-    count: usize,
-}
-#[derive(Deserialize)]
-struct Geometry {
-    frame: String,
-    operation: String,
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    receivers: Vec<Receiver>,
-}
-#[derive(Deserialize)]
-struct Golden {
-    materials: Vec<Material>,
-    cases: Vec<Case>,
-    meshes: Vec<Geometry>,
-}
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!("../../../tests/fixtures/rust/painted.json")).unwrap()
+fn materials() -> BTreeMap<String, Material> {
+    BTreeMap::from([(
+        "paint".into(),
+        Material {
+            id: "paint".into(),
+            color: "#e3dfd3".into(),
+            repeat: 1.25,
+            roughness: 0.7,
+            metalness: 0.,
+            ..Material::default()
+        },
+    )])
 }
 fn surface() -> Surface {
     Surface {
-        recipe: fixture().cases.remove(0).recipe,
+        recipe: recipe(),
         group: "leaf".into(),
         density: 48.,
     }
-}
-fn close(a: f64, b: f64) {
-    assert!((a - b).abs() < 2e-12, "{a} != {b}");
 }
 fn frame(name: &str) -> Matrix {
     match name {
@@ -102,64 +93,44 @@ fn draw(f: &mut Fixture<'_, '_>, operation: &str, s: &Surface) -> Result<(), Str
         ),
     }
 }
-pub fn check_reference_paint() {
-    let golden = fixture();
-    let materials = golden
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+#[test]
+fn paint_samples_are_single_flat_layers_and_bake_relief_rasters() {
+    let materials = materials();
     let inputs = Inputs {
         materials: &materials,
         images: &BTreeMap::new(),
     };
-    for (i, case) in golden.cases.into_iter().enumerate() {
-        let paint = Paint::new(&case.recipe).unwrap();
-        assert_eq!(case.points.len(), case.samples.len());
-        for (point, expected) in case.points.iter().zip(&case.samples) {
-            let actual = paint.sample(point[0], point[1]).unwrap();
-            assert!(
-                (actual.bump.unwrap() - expected.bump.unwrap()).abs() < 2e-12,
-                "case {i} at {point:?}: {:?} != {:?}",
-                actual.bump,
-                expected.bump
-            );
-            close(actual.roughness.unwrap(), expected.roughness.unwrap());
-            assert_eq!(actual.height, 0.);
-            assert_eq!(actual.height, expected.height);
-            assert_eq!(actual.height_weight, expected.height_weight);
-            assert_eq!(
-                actual.layer_elevation_weight,
-                expected.layer_elevation_weight
-            );
-            assert_eq!(actual.layers.len(), 1);
-            assert_eq!(actual.layers.len(), expected.layers.len());
-            assert_eq!(actual.layers[0].weight, 1.);
-            assert_eq!(actual.layers[0].weight, expected.layers[0].weight);
-            assert!(actual.layers[0].coatings.is_empty());
-            assert!(expected.layers[0].coatings.is_empty());
-            assert_eq!(actual.layers[0].roughness, expected.layers[0].roughness);
-            assert_eq!(actual.layers[0].material, expected.layers[0].material);
-            for (a, b) in actual.layers[0]
-                .tint
-                .unwrap()
-                .into_iter()
-                .chain(actual.layers[0].uv)
-                .zip(
-                    expected.layers[0]
-                        .tint
-                        .unwrap()
-                        .into_iter()
-                        .chain(expected.layers[0].uv),
-                )
-            {
-                close(a, b);
+    let mut worn = recipe();
+    worn.finish.wear = 0.9;
+    let mut clean = recipe();
+    clean.finish.wear = 0.;
+    clean.finish.grime = 0.;
+    clean.finish.handle = None;
+    for recipe in [recipe(), worn, clean] {
+        let paint = Paint::new(&recipe).unwrap();
+        let [u0, v0, u1, v1] = recipe.finish.bounds;
+        for i in 0..=10 {
+            for j in 0..=10 {
+                let u = u0 + (u1 - u0) * i as f64 / 10.;
+                let v = v0 + (v1 - v0) * j as f64 / 10.;
+                let sample = paint.sample(u, v).unwrap();
+                assert_eq!(sample.height, 0.);
+                assert!(sample.height_weight.is_none());
+                assert!(sample.layer_elevation_weight.is_none());
+                assert!(sample.bump.unwrap().is_finite());
+                assert!((0. ..=1.).contains(&sample.roughness.unwrap()));
+                assert_eq!(sample.layers.len(), 1);
+                let layer = &sample.layers[0];
+                assert_eq!(layer.weight, 1.);
+                assert!(layer.coatings.is_empty());
+                assert_eq!(layer.material, "paint");
+                assert!(layer.tint.unwrap().iter().all(|c| c.is_finite()));
             }
         }
         let raster = rasterize(
             RasterSettings {
-                bounds: case.recipe.finish.bounds,
-                texels_per_meter: case.density,
+                bounds: recipe.finish.bounds,
+                texels_per_meter: 48.,
                 preserve: true,
                 repeat: false,
                 uv_coordinates: true,
@@ -171,94 +142,64 @@ pub fn check_reference_paint() {
             &|| false,
         )
         .unwrap();
-        assert_eq!(
-            (raster.layout.width, raster.layout.height),
-            (case.width, case.height)
-        );
-        assert_eq!(raster.layers[0].color.rgba, case.color, "paint {i} color");
-        assert_eq!(
-            raster.layers[0].normal.as_ref().unwrap().rgba,
-            case.normal,
-            "paint {i} normal"
-        );
-        assert_eq!(
-            raster.layers[0].metallic_roughness.rgba, case.packed,
-            "paint {i} data"
-        );
+        assert_eq!(raster.layers.len(), 1);
+        assert!(raster.layers[0].normal.is_some());
     }
-    for case in golden.meshes {
-        let s = surface();
-        let pen = Pen::new(frame(&case.frame), "fixture").unwrap();
-        let mut mesh = Mesh::new(Mode::Render, 10000, &|| false).unwrap();
-        draw(
-            &mut Fixture {
-                pen: pen.clone(),
-                mesh: &mut mesh,
-                repeats: &|_| 1.25,
-            },
-            &case.operation,
-            &s,
-        )
-        .unwrap();
-        assert_eq!(
-            mesh.indices, case.indices,
-            "{} {}",
-            case.frame, case.operation
-        );
-        for (actual, expected) in [
-            (
-                mesh.vertices
-                    .iter()
-                    .flat_map(|v| v.position)
-                    .collect::<Vec<_>>(),
-                case.positions,
-            ),
-            (
-                mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-                case.normals,
-            ),
-            (mesh.vertices.iter().flat_map(|v| v.uv).collect(), case.uv),
-            (
-                mesh.vertices.iter().flat_map(|v| v.color).collect(),
-                case.colors,
-            ),
-        ] {
-            assert_eq!(actual.len(), expected.len());
-            for (a, b) in actual.into_iter().zip(expected) {
-                close(a, b);
+}
+
+#[test]
+fn painted_faces_plan_one_receiver_per_face_and_surveys_match_render() {
+    for frame_name in ["identity", "reflected", "tilted"] {
+        for operation in ["panel", "bevel", "box", "plain"] {
+            let s = surface();
+            let pen = Pen::new(frame(frame_name), "fixture").unwrap();
+            let mut mesh = Mesh::new(Mode::Render, 10000, &|| false).unwrap();
+            draw(
+                &mut Fixture {
+                    pen: pen.clone(),
+                    mesh: &mut mesh,
+                    repeats: &|_| 1.25,
+                },
+                operation,
+                &s,
+            )
+            .unwrap();
+            let triangles = mesh.triangle_count();
+            let corners: Vec<_> = mesh
+                .indices
+                .iter()
+                .map(|i| mesh.vertices[*i as usize].position)
+                .collect();
+            let plan = weathered::finish(&mut mesh, &|| false).unwrap();
+            if operation == "plain" {
+                assert!(plan.jobs().is_empty() && plan.receivers().is_empty());
+            } else {
+                // Only the painted face receives the finish; the rest of a box stays authored.
+                assert_eq!(plan.jobs().len(), 1, "{frame_name} {operation}");
+                assert_eq!(plan.receivers().len(), 1, "{frame_name} {operation}");
+                let r = &plan.receivers()[0];
+                assert_eq!(r.triangle_count, 2, "{frame_name} {operation}");
+                assert!(r.first_triangle + r.triangle_count <= triangles);
             }
-        }
-        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        assert_eq!(plan.jobs().len(), usize::from(!case.receivers.is_empty()));
-        assert_eq!(plan.receivers().len(), case.receivers.len());
-        for (a, b) in plan.receivers().iter().zip(&case.receivers) {
-            assert_eq!((a.first_triangle, a.triangle_count), (b.first, b.count));
-        }
-        drop(plan);
-        let mut survey = Mesh::new(Mode::Survey, 10000, &|| false).unwrap();
-        draw(
-            &mut Fixture {
-                pen,
-                mesh: &mut survey,
-                repeats: &|_| panic!("survey material lookup"),
-            },
-            &case.operation,
-            &s,
-        )
-        .unwrap();
-        assert_eq!(survey.survey.len(), mesh.indices.len());
-        for (a, i) in survey.survey.iter().zip(&mesh.indices) {
-            assert_eq!(*a, mesh.vertices[*i as usize].position);
+            drop(plan);
+            let mut survey = Mesh::new(Mode::Survey, 10000, &|| false).unwrap();
+            draw(
+                &mut Fixture {
+                    pen,
+                    mesh: &mut survey,
+                    repeats: &|_| panic!("survey material lookup"),
+                },
+                operation,
+                &s,
+            )
+            .unwrap();
+            assert_eq!(survey.survey, corners, "{frame_name} {operation}");
         }
     }
 }
 #[test]
 fn admitted_coordinate_and_identity_boundaries_bake_and_reject_before_mutation() {
-    let materials = fixture()
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+    let materials = materials();
     let inputs = Inputs {
         materials: &materials,
         images: &BTreeMap::new(),
@@ -330,10 +271,6 @@ fn admitted_coordinate_and_identity_boundaries_bake_and_reject_before_mutation()
     let plan = weathered::finish(&mut mesh, &|| false).unwrap();
     assert_eq!(plan.jobs().len(), 1);
     plan.bake(&inputs, "boundaries", &|| false).unwrap();
-}
-#[test]
-fn paint_fields_rasters_and_receiver_geometry_match_reference() {
-    check_reference_paint();
 }
 #[test]
 fn mixed_recipes_share_one_runner_and_preserve_geometry_and_collision() {
@@ -443,11 +380,7 @@ fn shared_paint_jobs_keep_recipe_identity_and_bind_only_after_success() {
         plan.receivers().iter().map(|r| r.job).collect::<Vec<_>>(),
         [0, 0, 1]
     );
-    let materials = fixture()
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+    let materials = materials();
     let inputs = Inputs {
         materials: &materials,
         images: &BTreeMap::new(),

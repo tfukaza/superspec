@@ -87,6 +87,9 @@ pub struct Manifest {
     pub ground_plans: Vec<theme::ground::Plan>,
     pub materials: Vec<Material>,
     pub meshes: Vec<Mesh>,
+    /// Minimum preset by stable visual object identity.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub render_visibility: std::collections::BTreeMap<String, visual::GraphicsTier>,
     /// Authored render alternatives; higher levels never add canonical collision.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub geometry_lods: Vec<superspec_types::lod::GeometryLodGroup>,
@@ -251,6 +254,7 @@ impl Scene {
                 ground_plans: vec![],
                 materials: vec![],
                 meshes: vec![],
+                render_visibility: Default::default(),
                 geometry_lods: vec![],
                 batches: vec![],
                 batch_placement_owners: Default::default(),

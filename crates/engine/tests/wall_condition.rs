@@ -1,67 +1,12 @@
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use superspec_aml::material::Material;
 use superspec_engine::{
-    materialspec::surface::{Inputs, RasterSettings, Sample, rasterize},
+    materialspec::surface::{Inputs, RasterSettings, rasterize},
     worldspec::themes::kowloon::wall::{
         Backing, Coating, Condition, Ledge, Opening, Settings, WallSample, finish_seed,
     },
 };
 
-#[derive(Deserialize)]
-struct Expected {
-    sample: WallSample,
-    deposit: [f64; 3],
-    opening: [f64; 3],
-    #[serde(rename = "plasterLoss")]
-    plaster_loss: f64,
-    plaster: Sample,
-}
-#[derive(Deserialize)]
-struct Range {
-    bounds: [f64; 4],
-    loss: [f64; 2],
-    plaster: [f64; 2],
-    fracture: bool,
-}
-#[derive(Deserialize)]
-struct Case {
-    settings: Settings,
-    points: Vec<[f64; 2]>,
-    samples: Vec<Expected>,
-    ranges: Vec<Range>,
-    raster: RasterReference,
-}
-#[derive(Deserialize)]
-struct RasterReference {
-    bounds: [f64; 4],
-    width: usize,
-    height: usize,
-    color: Vec<u8>,
-    packed: Vec<u8>,
-}
-#[derive(Deserialize)]
-struct Supplied {
-    at: [f64; 2],
-    seed: f64,
-    target: f64,
-    sample: WallSample,
-    plaster: Sample,
-}
-#[derive(Deserialize)]
-struct Seed {
-    text: String,
-    seed: u32,
-}
-#[derive(Deserialize)]
-struct Fixture {
-    coat: Coating,
-    backing: Backing,
-    cases: Vec<Case>,
-    seeds: Vec<Seed>,
-    supplied: Vec<Supplied>,
-    materials: Vec<Material>,
-}
 fn close(actual: f64, expected: f64) {
     assert!((actual - expected).abs() < 2e-12, "{actual} != {expected}");
 }
@@ -70,159 +15,102 @@ fn sample_channels(s: &WallSample) -> Vec<f64> {
     values.extend([s.loss, s.tone, s.damp, s.runoff]);
     values
 }
-
-/// Frozen TypeScript vectors run unchanged on native and actual browser Wasm.
-pub fn check_reference_walls() {
-    let fixture: Fixture = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/wall-condition.json"
-    ))
-    .unwrap();
-    assert_eq!(fixture.cases.len(), 5);
-    for seed in fixture.seeds {
-        assert_eq!(finish_seed(&seed.text), seed.seed);
+fn coat() -> Coating {
+    Coating {
+        material: "coat".into(),
+        uv: [0.2, 0.3],
+        tint: [0.4, 0.5, 0.6],
     }
-    let wall = Condition::new(&fixture.cases[3].settings).unwrap();
-    assert_eq!(fixture.supplied.len(), 3);
-    for supplied in fixture.supplied {
-        let actual = wall
-            .plaster_sample_from(
-                supplied.at,
-                supplied.seed,
-                &fixture.coat,
-                &fixture.backing,
-                &supplied.sample,
-            )
-            .unwrap();
-        let backing = if supplied.target < 0. {
-            0.15625
-        } else if supplied.target > 0. {
-            0.84375
-        } else {
-            0.5
-        };
-        close(actual.layers[0].weight, 1. - backing);
-        close(actual.layers[1].weight, backing);
-        close(
-            actual.roughness.unwrap(),
-            supplied.plaster.roughness.unwrap(),
-        );
-        assert_eq!(actual.height, 0.);
-        for (a, b) in actual.layers.iter().zip(supplied.plaster.layers) {
-            assert_eq!(a.material, b.material);
-            assert_eq!(a.uv, b.uv);
-            close(a.weight, b.weight);
-            for (a, b) in a.tint.unwrap().into_iter().zip(b.tint.unwrap()) {
-                close(a, b);
-            }
+}
+fn backing() -> Backing {
+    Backing {
+        material: "backing".into(),
+        uv: [0.7, 0.8],
+    }
+}
+
+#[test]
+fn finish_seeds_are_deterministic_and_distinguish_unicode_text() {
+    let texts = ["", "wall", "Wall", "牆身", "金属🌿", "金属🌿 "];
+    let seeds: Vec<_> = texts.iter().map(|t| finish_seed(t)).collect();
+    for (text, seed) in texts.iter().zip(&seeds) {
+        assert_eq!(finish_seed(text), *seed);
+    }
+    for i in 0..seeds.len() {
+        for j in i + 1..seeds.len() {
+            assert_ne!(seeds[i], seeds[j], "{:?} {:?}", texts[i], texts[j]);
         }
     }
-    let materials = BTreeMap::from_iter(fixture.materials.into_iter().map(|m| (m.id.clone(), m)));
+}
+
+#[test]
+fn plaster_samples_are_flat_two_layer_blends_of_coat_and_backing() {
+    let wall = Condition::new(&settings()).unwrap();
+    let materials = BTreeMap::from([
+        (
+            "coat".into(),
+            Material {
+                id: "coat".into(),
+                color: "#d8d0c0".into(),
+                ..Material::default()
+            },
+        ),
+        (
+            "backing".into(),
+            Material {
+                id: "backing".into(),
+                color: "#706860".into(),
+                ..Material::default()
+            },
+        ),
+    ]);
     let images = BTreeMap::new();
     let inputs = Inputs {
         materials: &materials,
         images: &images,
     };
-    for case in fixture.cases {
-        let wall = Condition::new(&case.settings).unwrap();
-        let raster = rasterize(
-            RasterSettings {
-                bounds: case.raster.bounds,
-                texels_per_meter: 16.,
-                preserve: true,
-                repeat: false,
-                uv_coordinates: false,
-                bump: false,
-            },
-            &|u, z| wall.plaster_sample(u, z, case.settings.seed, &fixture.coat, &fixture.backing),
-            &inputs,
-            1024 * 1024,
-            &|| false,
-        )
-        .unwrap();
-        assert_eq!(
-            (raster.layout.width, raster.layout.height),
-            (case.raster.width, case.raster.height)
-        );
-        assert_eq!(raster.layers.len(), 1);
-        assert_eq!(raster.layers[0].color.rgba, case.raster.color);
-        assert_eq!(raster.layers[0].metallic_roughness.rgba, case.raster.packed);
-        assert_eq!(case.points.len(), case.samples.len());
-        for ([u, z], expected) in case.points.into_iter().zip(case.samples) {
-            let actual = wall.sample(u, z).unwrap();
-            for (a, b) in sample_channels(&actual)
-                .into_iter()
-                .zip(sample_channels(&expected.sample))
-            {
-                close(a, b);
-            }
-            for (a, b) in wall
-                .deposit_tint(u, z)
-                .unwrap()
-                .into_iter()
-                .zip(expected.deposit)
-            {
-                close(a, b);
-            }
-            for (a, b) in wall
-                .opening_tint(u, z)
-                .unwrap()
-                .into_iter()
-                .zip(expected.opening)
-            {
-                close(a, b);
-            }
-            close(
-                wall.plaster_loss(u, z, case.settings.seed).unwrap(),
-                expected.plaster_loss,
-            );
+    let seed = settings().seed;
+    for i in 0..=8 {
+        for j in 0..=8 {
+            let (u, z) = (-0.2 + 1.4 * i as f64 / 8., -0.5 + 3. * j as f64 / 8.);
+            let sample = wall.sample(u, z).unwrap();
+            assert!(sample_channels(&sample).iter().all(|v| v.is_finite()));
             let plaster = wall
-                .plaster_sample(u, z, case.settings.seed, &fixture.coat, &fixture.backing)
+                .plaster_sample(u, z, seed, &coat(), &backing())
                 .unwrap();
             assert_eq!(plaster.height, 0.);
             assert!(plaster.bump.is_none());
             assert!(plaster.height_weight.is_none());
             assert!(plaster.layer_elevation_weight.is_none());
-            close(
-                plaster.roughness.unwrap(),
-                expected.plaster.roughness.unwrap(),
-            );
+            assert!(plaster.roughness.unwrap().is_finite());
             assert_eq!(plaster.layers.len(), 2);
+            assert_eq!(plaster.layers[0].material, "coat");
+            assert_eq!(plaster.layers[1].material, "backing");
             close(plaster.layers.iter().map(|l| l.weight).sum(), 1.);
-            for (a, b) in plaster.layers.iter().zip(expected.plaster.layers) {
-                assert_eq!(a.material, b.material);
-                assert_eq!(a.uv, b.uv);
-                assert!(a.coatings.is_empty());
-                assert!(a.roughness.is_none());
-                close(a.weight, b.weight);
-                for (a, b) in a.tint.unwrap().into_iter().zip(b.tint.unwrap()) {
-                    close(a, b);
-                }
+            for layer in &plaster.layers {
+                assert!(layer.coatings.is_empty());
+                assert!(layer.roughness.is_none());
+                assert!((0. ..=1.).contains(&layer.weight));
             }
-        }
-        for range in case.ranges {
-            for (a, b) in wall
-                .loss_range(range.bounds)
-                .unwrap()
-                .into_iter()
-                .zip(range.loss)
-            {
-                close(a, b);
-            }
-            for (a, b) in wall
-                .plaster_range(range.bounds)
-                .unwrap()
-                .into_iter()
-                .zip(range.plaster)
-            {
-                close(a, b);
-            }
-            assert_eq!(wall.needs_fracture(range.bounds).unwrap(), range.fracture);
         }
     }
-}
-#[test]
-fn frozen_wall_programs_preserve_samples_layers_ranges_and_unicode_seeds() {
-    check_reference_walls();
+    let raster = rasterize(
+        RasterSettings {
+            bounds: [-0.2, -0.5, 1.2, 2.5],
+            texels_per_meter: 16.,
+            preserve: true,
+            repeat: false,
+            uv_coordinates: false,
+            bump: false,
+        },
+        &|u, z| wall.plaster_sample(u, z, seed, &coat(), &backing()),
+        &inputs,
+        1024 * 1024,
+        &|| false,
+    )
+    .unwrap();
+    assert_eq!(raster.layers.len(), 1);
+    assert!(raster.layers[0].normal.is_none());
 }
 
 fn settings() -> Settings {

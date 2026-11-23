@@ -104,6 +104,10 @@ pub(super) struct Admission {
     pixels: usize,
 }
 impl Admission {
+    pub(super) fn has_owner(&self, id: &str) -> bool {
+        self.owners.contains(id)
+    }
+
     pub(super) fn from_validated_scene(scene: Arc<Scene>) -> Result<Self, String> {
         let mut result = Self::default();
         result

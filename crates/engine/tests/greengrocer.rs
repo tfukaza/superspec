@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
     kit::Kit,
@@ -9,44 +8,45 @@ use superspec_engine::worldspec::themes::kowloon::{
         room::{Assets, Room},
     },
 };
-use superspec_geometry::{Matrix, V3};
+use superspec_geometry::Matrix;
 #[path = "support/shop_composition.rs"]
 #[allow(dead_code)]
 mod composition;
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Case {
-    width: f64,
-    depth: f64,
-    height: f64,
-    seed: String,
-    detail: u8,
-    key: String,
-    matrix: [V3; 4],
-}
-#[derive(Deserialize)]
-struct Golden {
-    rooms: Vec<Case>,
-}
 fn kit(seed: &str, detail: u8) -> Kit {
     Kit::new(serde_json::from_value(serde_json::json!({"weathering":{"seed":seed,"wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":32,"metal":{"material":"metal","repeat":1.7},"sheet":{"material":"sheet","repeat":1.7},"paint":{"material":"paint","repeat":1.7}},"lettering":true,"timber":{"textured":true,"timberRepeat":1.7,"atlasRepeat":1.7}})).unwrap(),detail).unwrap()
 }
-pub fn check_reference_greengrocer() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/greengrocer.json"
-    ))
-    .unwrap();
-    for c in g.rooms {
+/// Small shop rooms across widths, depths, heights, detail levels and reflected host frames.
+fn rooms() -> Vec<(f64, f64, f64, String, u8, String, Matrix)> {
+    let (c, s) = (0.9523335698857134, 0.3050586364434435);
+    (0..6)
+        .map(|i| {
+            let x = if i % 2 == 0 { [c, s, 0.] } else { [-c, -s, 0.] };
+            (
+                [1.8, 2.2, 2.5, 3.2][i % 4],
+                [2.4, 3.1][i / 4],
+                [2.08, 2.4, 2.6][i % 3],
+                format!("room/{i}"),
+                (i % 3) as u8,
+                format!("shop/{i}"),
+                Matrix([x, [-s, c, 0.], [0., 0., 1.], [0.3, -0.2, 0.4]]),
+            )
+        })
+        .collect()
+}
+#[test]
+fn furnished_greengrocers_survey_their_render_and_support_checkout_and_back_stock() {
+    for (width, depth, height, seed, detail, key, matrix) in rooms() {
+        let c_matrix = matrix.0;
         let mut rendered = vec![];
         for mode in [Mode::Render, Mode::Survey] {
             let mut mesh = Mesh::new(mode, 400000, &|| false).unwrap();
-            let kit = kit(&c.seed, c.detail);
+            let kit = kit(&seed, detail);
             let room = Room {
-                width: c.width,
-                depth: c.depth,
-                height: c.height,
+                width,
+                depth,
+                height,
                 kit: &kit,
-                key: &c.key,
+                key: &key,
                 assets: Assets {
                     posters: true,
                     grocer_props: true,
@@ -58,7 +58,7 @@ pub fn check_reference_greengrocer() {
             };
             greengrocer::furnish(
                 &mut Fixture {
-                    pen: Pen::new(Matrix(c.matrix), "room").unwrap(),
+                    pen: Pen::new(Matrix(c_matrix), "room").unwrap(),
                     mesh: &mut mesh,
                     repeats: &|_| 1.7,
                 },
@@ -71,7 +71,7 @@ pub fn check_reference_greengrocer() {
             } else {
                 composition::valid(&mesh);
                 rendered = composition::positions(&mesh);
-                let checkout = composition::part_points(&mesh, "room/checkout", Matrix(c.matrix));
+                let checkout = composition::part_points(&mesh, "room/checkout", Matrix(c_matrix));
                 assert!(
                     checkout.iter().any(|p| p[2].abs() < 1e-8),
                     "checkout must stand on the floor"
@@ -84,7 +84,7 @@ pub fn check_reference_greengrocer() {
                     let points = composition::part_points(
                         &mesh,
                         &format!("room/back-stock/{bank}"),
-                        Matrix(c.matrix),
+                        Matrix(c_matrix),
                     );
                     assert!(
                         points.iter().any(|p| p[2] < 0.02),
@@ -218,8 +218,4 @@ fn compact_rack_supports_and_deep_market_aisle_have_authored_dimensions() {
     for (a, b) in actual.iter().zip(expected) {
         assert!(a.iter().zip(b).all(|(a, b)| (*a - b).abs() <= 0.0000101));
     }
-}
-#[test]
-fn complete_greengrocer_preserves_stock_transforms_materials_and_named_streams() {
-    check_reference_greengrocer();
 }

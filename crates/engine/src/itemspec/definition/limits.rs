@@ -59,6 +59,7 @@ mod tests {
                 tangents: vec![],
                 indices: vec![0, 1, 2],
                 material_slot: "concrete".into(),
+                roles: vec![],
             }],
             bounds: Default::default(),
             imported_materials: Default::default(),
@@ -66,6 +67,8 @@ mod tests {
             parts: vec![],
             features: vec![],
             anchors: vec![],
+            prototypes: Default::default(),
+            placements: vec![],
         };
         geometry.measure().unwrap();
         assert_eq!(geometry.bounds, [[0., 0., 0.], [1., 1., 0.]]);

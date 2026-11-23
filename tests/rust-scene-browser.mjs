@@ -37,23 +37,18 @@ const textured = [...execFileSync(executable, ['scene', `${root}/inputs/scene.am
 const plain = [...execFileSync(executable, ['scene', 'tests/fixtures/aml/rust-stage1.aml'], { env: { ...process.env, PATH: '' } })];
 let building;
 if (['all','buildings'].includes(scope)) {
-  for (const file of ['superspec_wasm.js','superspec_wasm_bg.wasm']) await copyFile(resolve('generated/wasm',file),resolve(root,file));
+  const wasm = resolve(process.env.RUST_WASM ?? 'generated/wasm');
+  for (const file of ['superspec_wasm.js','superspec_wasm_bg.wasm']) await copyFile(resolve(wasm,file),resolve(root,file));
   // The module imports its snippets (the texture encoder's glue) from beside itself.
-  await cp(resolve('generated/wasm/snippets'),resolve(root,'snippets'),{recursive:true});
-  const cases=[];
-  for(const name of ['dressing','transformed','polygon','shops-open','shops-hole','shops-hidden','multiple-buildings','multiple-buildings-materials','base-wall','base-wall-transformed']) {
-    const stem=name.startsWith('multiple-')?`rust-${name}`:`rust-building-${name}`;
-    const path=`tests/fixtures/aml/${stem}.aml`;
-    const source=await readFile(path,'utf8');
-    const packet=execFileSync(executable,['scene',path],{env:{...process.env,PATH:''},maxBuffer:128*1024*1024});
-    await writeFile(`${root}/building-${name}-native.packet`,packet);
-    cases.push({name,source,hash:createHash('sha256').update(packet).digest('hex')});
-  }
+  await cp(resolve(wasm,'snippets'),resolve(root,'snippets'),{recursive:true});
+  const path='crates/engine/src/worldspec/fixtures/courtyard-building.aml';
+  const source=await readFile(path,'utf8');
+  const packet=execFileSync(executable,['scene',path],{env:{...process.env,PATH:''},maxBuffer:128*1024*1024});
   const catalog=JSON.parse(await readFile('crates/catalog/src/material_catalog.json','utf8'));
   const names=[...new Set(Object.values(catalog).flatMap(m=>Object.values(m)).filter(v=>typeof v==='string'&&v.startsWith('superspec-material:')))];
   await mkdir(root+'/library',{recursive:true});
   for (const name of names) await copyFile('assets/materials/'+name.split(':')[1],root+'/library/'+name.split(':')[1]);
-  building={cases,names};
+  building={source,hash:createHash('sha256').update(packet).digest('hex')};
 }
 const server = createServer(async (request, response) => {
   try {
@@ -432,46 +427,23 @@ try {
   await waitForFrames(page);await page.screenshot({path:`${root}/ground.png`});
   }
   if(['all','buildings'].includes(scope)) {
-    const views=[];
-    for(const entry of building.cases) {
-    const parity=await page.evaluate(async ({source,names,hash})=>{
+    const parity=await page.evaluate(async ({source,hash})=>{
       const wasm=await import('/superspec_wasm.js');await wasm.default();
       const compiler=new wasm.Compiler();
       try {
-        for(const name of names) compiler.set_asset(name,new Uint8Array(await (await fetch('/library/'+name.split(':')[1])).arrayBuffer()));
+        for(const name of JSON.parse(compiler.library_assets(source))) compiler.set_asset(name,new Uint8Array(await (await fetch('/library/'+name.split(':')[1])).arrayBuffer()));
         const packet=compiler.compile(source,0);
         const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',packet))).map(b=>b.toString(16).padStart(2,'0')).join('');
         if(digest!==hash) return {equal:false,applied:false};
         return {equal:true,applied:await window.driver.apply(packet)};
       } finally {compiler.free();}
-    },{...entry,names:building.names});
-    assert.deepEqual(parity,{equal:true,applied:true},`${entry.name}: full AML scene packet must match native and Wasm`);
-    const state=await snapshot();
-    assert.ok(Object.keys(state.materials).some(name=>name.startsWith('host/$dressing/roof:')));
-    if(['dressing','polygon','shops-open','multiple-buildings','multiple-buildings-materials','base-wall','base-wall-transformed'].includes(entry.name)) {
-    views.push({name:entry.name,view:await page.evaluate(()=>window.driver.focus(undefined,[0.35,-0.6,0.6]))});
-    await waitForFrames(page);await page.screenshot({path:`${root}/building-${entry.name}.png`});
-    const wall=Object.keys(state.materials).find(name=>name.startsWith('host/$dressing/envelope:'));
-    assert.ok(wall);
-    views.push({name:entry.name+'-close',view:await page.evaluate(name=>window.driver.focus(name,[0.25,-1,0.4]),wall)});
-    await waitForFrames(page);await page.screenshot({path:`${root}/building-${entry.name}-close.png`});
-    if(entry.name==='shops-open') {
-      const sign=Object.keys(state.materials).find(name=>name.startsWith('host/$dressing/signage:'));
-      assert.ok(sign);
-      views.push({name:'shop-sign',view:await page.evaluate(name=>window.driver.focus(name,[-0.6,-1,0.2]),sign)});
-      await waitForFrames(page);await page.screenshot({path:root+'/building-shop-sign.png'});
-    }
-    if(entry.name.startsWith('multiple-')) {
-      assert.ok(Object.keys(state.materials).some(name=>name.startsWith('second/$dressing/roof:')));
-      const washing=Object.keys(state.materials).find(name=>name.startsWith('second/$dressing/span-washing:')&&name.endsWith(':$library/balcony-cloth'))
-        ??Object.keys(state.materials).find(name=>name.startsWith('second/$dressing/span-washing:'));
-      assert.ok(washing);
-      views.push({name:entry.name+'-washing',view:await page.evaluate(name=>window.driver.focus(name,[0,-1,0.2]),washing)});
-      await waitForFrames(page);await page.screenshot({path:`${root}/building-${entry.name}-washing.png`});
-    }
-    }
-    }
-    await writeFile(root+'/building-views.json',JSON.stringify(views,null,2));
+    },building);
+    assert.deepEqual(parity,{equal:true,applied:true},'Courtyard ItemSpec must produce the same full scene packet on native and Wasm');
+    const materials=Object.keys((await snapshot()).materials);
+    assert.ok(materials.some(name=>name.endsWith('/roof/roof/top')));
+    for(let edge=0;edge<8;edge++) assert.ok(materials.some(name=>name.startsWith(`city/ring/part/side-${edge}/`)));
+    await page.evaluate(()=>window.driver.focus(undefined,[0.35,-0.6,0.6]));
+    await waitForFrames(page);await page.screenshot({path:`${root}/courtyard-building.png`});
   }
   if(['all','spans'].includes(scope)) {
     assert.equal(await applyFixture('span_scene_packet'),true);

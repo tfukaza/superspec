@@ -2,6 +2,7 @@
 use super::super::{
     facade_plan,
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     kit::Kit,
     massing::Lot,
     metal,
@@ -113,8 +114,12 @@ fn shell(
     tiled: bool,
     roast_wall: bool,
     density: f64,
+    wall: f64,
 ) -> Result<(), String> {
     let (x0, x1, floor, head, back) = (p.x0, p.x1, p.floor, p.head, -p.depth);
+    // The side walls start behind the wall the room's opening is cut through: in front of
+    // that the opening's own reveals stand in their plane.
+    let front = -wall;
     let dado = floor + look.dado_height.min(head - floor - 0.3);
     if tiled {
         let root = d.pen.clone();
@@ -183,13 +188,23 @@ fn shell(
     for (z0, z1, wash) in [(floor, dado, look.dado), (dado, head, look.wall)] {
         d.face(
             coat,
-            &[[x0, 0., z0], [x0, back, z0], [x0, back, z1], [x0, 0., z1]],
+            &[
+                [x0, front, z0],
+                [x0, back, z0],
+                [x0, back, z1],
+                [x0, front, z1],
+            ],
             [1., 0., 0.],
             shade(wash, 0.94),
         )?;
         d.face(
             coat,
-            &[[x1, 0., z0], [x1, back, z0], [x1, back, z1], [x1, 0., z1]],
+            &[
+                [x1, front, z0],
+                [x1, back, z0],
+                [x1, back, z1],
+                [x1, front, z1],
+            ],
             [-1., 0., 0.],
             shade(wash, 0.94),
         )?;
@@ -315,7 +330,19 @@ fn shopfront(
     }
 }
 pub fn draw(d: &mut Fixture<'_, '_>, r: &Request<'_>) -> Result<Vec<Proposal>, String> {
+    draw_behind(d, r, 0.)
+}
+/// [`draw`] for a room whose opening is cut through a wall `wall` m thick with reveals of its
+/// own: the room's side walls start behind that wall, where the reveals end.
+pub fn draw_behind(
+    d: &mut Fixture<'_, '_>,
+    r: &Request<'_>,
+    wall: f64,
+) -> Result<Vec<Proposal>, String> {
     let p = r.plan;
+    if !wall.is_finite() || wall < 0. || wall > p.depth / 2. {
+        return Err("A shop room's wall is no thicker than half the room's depth.".into());
+    }
     if [p.x0, p.x1, p.floor, p.head, p.depth]
         .iter()
         .any(|v| !v.is_finite() || v.abs() > 1000.)
@@ -360,6 +387,7 @@ pub fn draw(d: &mut Fixture<'_, '_>, r: &Request<'_>) -> Result<Vec<Proposal>, S
         tiled,
         trade == Trade::Roast && !(room.width >= 4.4 && room.depth >= 5.2),
         r.kit.settings().weathering.texture_density.clamp(16., 128.),
+        wall,
     )?;
     let signs = shopfront(
         &mut on(d, root.into_part("openings")?),
@@ -368,18 +396,27 @@ pub fn draw(d: &mut Fixture<'_, '_>, r: &Request<'_>) -> Result<Vec<Proposal>, S
     )?;
     let pen = pen.with_room_patina_frame(&pen, room_size, room_seed)?;
     let inside = &mut on(d, pen);
-    match trade {
-        Trade::Grocer => grocer::furnish(inside, &room),
-        Trade::Greengrocer => greengrocer::furnish(inside, &room),
-        Trade::Roast => roast::furnish(inside, &room, r.assets.restaurant),
-        Trade::Hardware => hardware::furnish(inside, &room),
-        Trade::Herbalist => herbalist::furnish(inside, &room),
-        Trade::ReferenceProvisions => provisions::furnish(inside, &room),
-        Trade::Provisions => provisions::furnish_fitted(inside, &room),
-    }?;
-    super::room_details::services(inside, &room)?;
-    if tiled {
-        super::room_details::walls(inside, &room, trade == Trade::Roast)?;
+    let furnish = |inside: &mut Fixture<'_, '_>| -> Result<(), String> {
+        match trade {
+            Trade::Grocer => grocer::furnish(inside, &room),
+            Trade::Greengrocer => greengrocer::furnish(inside, &room),
+            Trade::Roast => roast::furnish(inside, &room, r.assets.restaurant),
+            Trade::Hardware => hardware::furnish(inside, &room),
+            Trade::Herbalist => herbalist::furnish(inside, &room),
+            Trade::ReferenceProvisions => provisions::furnish(inside, &room),
+            Trade::Provisions => provisions::furnish_fitted(inside, &room),
+        }?;
+        super::room_details::services(inside, &room)?;
+        if tiled {
+            super::room_details::walls(inside, &room, trade == Trade::Roast)?;
+        }
+        Ok(())
+    };
+    // The lowest level furnishes the room out of sight and draws its massing.
+    if inside.mesh.graphics_detail() == GraphicsDetail::VeryLow {
+        super::massing::room(inside, furnish)?;
+    } else {
+        furnish(inside)?;
     }
     if let (Some(available), Some(trade)) = (r.frontage, trade.display()) {
         let pen = root.moved([p.x0, 0., 0.])?;

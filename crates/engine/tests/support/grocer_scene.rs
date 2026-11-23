@@ -183,6 +183,8 @@ fn kitchen_assets(
         "restaurant-tiles",
         "brushed-metal",
         "kitchen-metal",
+        // The worktop finish the kit binds beside it; it reads the kitchen-metal images.
+        "kitchen-worktop",
     ] {
         let mut m = superspec_aml::material_catalog::material(&format!("builtin:{id}")).unwrap();
         m.id = id.into();

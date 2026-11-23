@@ -106,7 +106,8 @@ pub fn shop_shelving(
                     shade(tint, 0.86),
                     "",
                 )?;
-                if !open {
+                // The uprights' punched slots are sub-millimetre marks: full detail only.
+                if !open && !d.mesh.graphics_detail().reduced() {
                     let mut z = 0.18;
                     while z < height - 0.08 {
                         d.cuboid(

@@ -24,6 +24,12 @@ pub struct ItemMesh {
     pub tangents: Vec<[f64; 4]>,
     pub indices: Vec<u32>,
     pub material_slot: String,
+    /// A prototype's mesh only (see [`Prototype`]): per vertex, 0 where its colour is its own
+    /// and `k` where it is a shade of the prototype's role `k - 1`, which a placement's input
+    /// of that name multiplies. Empty, and then not serialized, on every expanded mesh but
+    /// those of a `prototype` part, which is a prototype drawn as it is.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<u8>,
 }
 
 impl ItemMesh {
@@ -42,6 +48,7 @@ impl ItemMesh {
             || !optional(self.uvs.len())
             || !optional(self.colors.len())
             || !optional(self.tangents.len())
+            || !optional(self.roles.len())
             || self.additional_uvs.values().any(|uvs| uvs.len() != count)
             || self.indices.iter().any(|&index| index as usize >= count)
         {
@@ -66,6 +73,7 @@ impl ItemMesh {
                     self.normals[at].map(bits),
                     self.uvs.get(at).copied().unwrap_or_default().map(bits),
                     self.colors.get(at).copied().unwrap_or_default().map(bits),
+                    self.roles.get(at).copied().unwrap_or_default(),
                 )
             })
         } else {
@@ -78,6 +86,7 @@ impl ItemMesh {
                     .chain(self.tangents.get(at).into_iter().flatten())
                     .chain(self.additional_uvs.values().flat_map(|uvs| &uvs[at]))
                     .map(|&v| bits(v))
+                    .chain(self.roles.get(at).map(|&role| u64::from(role)))
                     .collect::<Vec<_>>()
             })
         };
@@ -97,6 +106,7 @@ impl ItemMesh {
         keep(&mut self.uvs, &kept, count);
         keep(&mut self.colors, &kept, count);
         keep(&mut self.tangents, &kept, count);
+        keep(&mut self.roles, &kept, count);
         for uvs in self.additional_uvs.values_mut() {
             keep(uvs, &kept, count);
         }
@@ -413,6 +423,169 @@ pub struct ItemGeometry {
     /// Version 2: one pattern anchor frame per part that has one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub anchors: Vec<PatternAnchor>,
+    /// The shared shapes `placements` name, by content key. Empty unless a native generator
+    /// describes its output as a prototype.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        serialize_with = "prototypes"
+    )]
+    pub prototypes: BTreeMap<String, Arc<Prototype>>,
+    /// Which of `meshes` are a prototype placed: an annotation over the expanded meshes, which
+    /// stay complete without it. A consumer that ignores it reads the item as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<PartPlacement>,
+}
+fn prototypes<S: Serializer>(
+    value: &BTreeMap<String, Arc<Prototype>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(
+        value
+            .iter()
+            .map(|(key, prototype)| (key, prototype.as_ref())),
+    )
+}
+
+/// What a prototype is fixed to, for the stand-in a shared bake gives it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mount {
+    /// Nothing: it is baked alone.
+    #[default]
+    Free,
+    /// A wall on its local plane y = 0, standing toward -Y.
+    Wall,
+}
+
+/// A shape several parts share: an artifact identity. Its key (see [`Prototype::key`]) names
+/// its generator and content and never a seed, a part, a placement or a colour; what differs
+/// between its placements is their transform and their inputs.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Prototype {
+    /// `native`.
+    pub kind: String,
+    /// The generator's name.
+    pub name: String,
+    /// The generator's implementation identity.
+    pub identity: String,
+    /// The canonical values the generator draws the shape from.
+    pub content: Values,
+    /// The generator's shape reflected in its local X, so that a placement which mirrors it
+    /// is a proper motion of this prototype.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub mirrored: bool,
+    /// The shape in its own coordinates, in the generator's own slots. Vertex colours are
+    /// neutral: see [`ItemMesh::roles`].
+    pub meshes: Vec<ItemMesh>,
+    /// The generator's features, in the same coordinates.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<Feature>,
+    /// The names of the colours a placement supplies, in role order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    pub mount: Mount,
+}
+impl Prototype {
+    /// The content key of a prototype: a hash of its kind, generator, implementation
+    /// identity, content and reflection.
+    pub fn key(
+        kind: &str,
+        name: &str,
+        identity: &str,
+        content: &Values,
+        mirrored: bool,
+    ) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"itemspec-prototype-v1\0");
+        hash.update(
+            serde_json::to_vec(&(kind, name, identity, content, mirrored))
+                .map_err(|error| error.to_string())?,
+        );
+        Ok(format!("{:x}", hash.finalize()))
+    }
+    /// This prototype's own key.
+    pub fn own_key(&self) -> Result<String, String> {
+        Self::key(
+            &self.kind,
+            &self.name,
+            &self.identity,
+            &self.content,
+            self.mirrored,
+        )
+    }
+    /// The prototype reflected in its local X: `x` negated and triangles turned. Reflecting
+    /// twice gives the first again, bit for bit.
+    pub fn reflected(&self) -> Self {
+        let mut result = self.clone();
+        result.mirrored = !self.mirrored;
+        for mesh in &mut result.meshes {
+            mesh.reflect();
+        }
+        for feature in &mut result.features {
+            feature.reflect();
+        }
+        result
+    }
+}
+impl ItemMesh {
+    /// Reflects the mesh in its local X: `x` negated and triangles turned.
+    pub(super) fn reflect(&mut self) {
+        for position in &mut self.positions {
+            position[0] = -position[0];
+        }
+        for normal in &mut self.normals {
+            normal[0] = -normal[0];
+        }
+        for tangent in &mut self.tangents {
+            tangent[0] = -tangent[0];
+            tangent[3] = -tangent[3];
+        }
+        for triangle in self.indices.chunks_exact_mut(3) {
+            triangle.swap(1, 2);
+        }
+    }
+}
+
+/// The reflection in local X that [`Prototype::reflected`] applies.
+pub(super) const REFLECTION: Matrix = Matrix([[-1., 0., 0.], [0., 1., 0.], [0., 0., 1.], [0.; 3]]);
+
+/// One placed prototype: a placement identity. The source identity is `path`, the artifact
+/// identity is `prototype`; neither `path`, `transform` nor `inputs` is part of any key.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartPlacement {
+    /// The key of its prototype in [`ItemGeometry::prototypes`].
+    pub prototype: String,
+    /// The part path that produced it: part IDs outermost first, as `side-1/floor-0/unit`.
+    pub path: String,
+    /// The node whose space `transform` leads to. [`ItemGeometry::placed`] composes the two.
+    pub node: usize,
+    /// Prototype coordinates to the node's. Never a reflection: a mirrored placement names
+    /// the reflected prototype instead.
+    pub transform: Transform,
+    /// The colour of each of the prototype's roles, in linear RGB.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, [f64; 3]>,
+    /// The item slot each of the prototype's slots lands in. A slot the enclosing parts map
+    /// nowhere is absent, and so are its meshes.
+    pub slots: BTreeMap<String, String>,
+    /// The expanded meshes it covers: one per prototype mesh whose slot is in `slots`, in the
+    /// prototype's mesh order.
+    pub meshes: Vec<usize>,
+}
+impl PartPlacement {
+    /// The direction of item-space down (-Z) in prototype coordinates, for a placement whose
+    /// `transform` leads to item space (one from [`ItemGeometry::placed`]): `[0, 0, -1]` for
+    /// every turn about Z. A prototype baked once per direction is baked once for all of those.
+    pub fn down(&self) -> Result<[f64; 3], String> {
+        let down = unit(Matrix(self.transform).inverse()?.direction([0., 0., -1.]))?;
+        Ok(down.map(|v| {
+            let rounded = (v * 1e6).round() / 1e6;
+            if rounded == 0. { 0. } else { rounded }
+        }))
+    }
 }
 
 /// A part's share of an item's geometry. Its meshes are in part coordinates; the node
@@ -461,6 +634,16 @@ pub struct Feature {
     pub zone: Option<crate::materialspec::program::Zone>,
 }
 impl Feature {
+    /// Reflects the feature in its local X, as [`ItemMesh::reflect`] its meshes.
+    pub(super) fn reflect(&mut self) {
+        for point in &mut self.points {
+            point[0] = -point[0];
+        }
+        self.normal[0] = -self.normal[0];
+        if let Some(zone) = &mut self.zone {
+            zone.down[0] = -zone.down[0];
+        }
+    }
     /// The feature's points and zone direction through `matrix`.
     pub(super) fn place_zone(&mut self, matrix: superspec_geometry::Matrix) -> Result<(), String> {
         if let Some(zone) = &mut self.zone {
@@ -633,6 +816,27 @@ impl ItemGeometry {
             result.push(matrix);
         }
         Ok(result)
+    }
+    /// The placements with their transforms composed through their nodes, so each leads
+    /// from its prototype's coordinates to the item's (the space of `bounds`), and `node`
+    /// kept for reference. Placing each prototype's meshes by them gives the meshes
+    /// [`Self::flattened`] gives for the same parts.
+    pub fn placed(&self) -> Result<Vec<PartPlacement>, String> {
+        if self.placements.is_empty() {
+            return Ok(Vec::new());
+        }
+        let transforms = self.world_transforms()?;
+        self.placements
+            .iter()
+            .map(|placement| {
+                let node = transforms
+                    .get(placement.node)
+                    .ok_or("Unknown placement node.")?;
+                let mut placed = placement.clone();
+                placed.transform = node.then(Matrix(placement.transform)).checked()?.0;
+                Ok(placed)
+            })
+            .collect()
     }
     pub fn flattened(&self) -> Result<Vec<ItemMesh>, String> {
         let transforms = self.world_transforms()?;

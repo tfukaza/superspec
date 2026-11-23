@@ -406,7 +406,7 @@ impl Compiler<'_> {
         &self,
         visuals: &mut VisualOutput<'_>,
         prepared: Vec<Prepared>,
-        theme: &mut ThemeState,
+        theme: &ThemeState,
         execution: &Execution<'_>,
     ) -> Result<(), Diagnostic> {
         if prepared.is_empty() {
@@ -455,19 +455,6 @@ impl Compiler<'_> {
                 &mut budget,
             )
             .map_err(fail)?;
-            if !theme.building_hosts.is_empty() {
-                if theme.render_edge_vertices.len() + drawing.indices.len() > 6_000_000 {
-                    return Err(fail(
-                        "Ground receiver edges exceed scene vertex allowance.".into(),
-                    ));
-                }
-                theme.render_edge_vertices.extend(
-                    drawing
-                        .indices
-                        .iter()
-                        .map(|i| drawing.vertices[*i as usize].position),
-                );
-            }
             let bindings = library
                 .materials
                 .keys()
@@ -482,7 +469,6 @@ impl Compiler<'_> {
                 &library.materials,
                 &library.materials,
                 bindings,
-                None,
             )?;
             visuals.ground_plans().push(pavement::render::Plan {
                 host: host.clone(),

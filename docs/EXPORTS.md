@@ -59,9 +59,9 @@ compressed in GPU memory; the 8 x 3.2 m Kowloon study scene at 2048 px is 16.3 M
 - Encoding is deterministic, and native and browser exports are byte-identical
   (`tests/material-ktx2-browser.mjs` with `NATIVE_STUDIO`); KTX2 adds encoding time (about 36 s
   for the 24 maps of the study scene natively, on 8 threads).
-- Loaders need a KTX2 transcoder. With Three.js use `createGltfLoader(renderer)` from
-  `browser/renderer/ktx2.ts`, which serves Three's `basis_transcoder.js` and `.wasm` from `basis/`
-  beside the page (`setTranscoderPath` changes it); the SuperSpec Vite build copies them there.
+- Loaders need a KTX2 transcoder. Use `createRenderGltfLoader(renderer, { transcoderPath: "basis/" })`
+  from `@superspec/three`. Serve Three's `basis_transcoder.js` and `.wasm` from that directory.
+  The SuperSpec Vite build copies both files there.
   LevelSpec viewers use their own `src/viewer/gltf-loader.mjs`, which imports the transcoder as
   Vite asset URLs; other viewers built on a plain `GLTFLoader` need one of these before they can
   load default exports, or export with `--textures png`.

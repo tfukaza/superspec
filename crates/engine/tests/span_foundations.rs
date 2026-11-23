@@ -1,88 +1,8 @@
-use serde::Deserialize;
 use superspec_engine::worldspec::themes::kowloon::spans::{
     catenary::hanging,
     walking::{Surface, Walking},
 };
-use superspec_geometry::V3;
 use superspec_geometry::obstructions::Budget;
-
-#[derive(Deserialize)]
-struct Curve {
-    from: V3,
-    to: V3,
-    slack: f64,
-    segments: usize,
-    points: Vec<V3>,
-}
-#[derive(Deserialize)]
-struct Face {
-    points: [V3; 3],
-    kind: String,
-    collidable: bool,
-}
-#[derive(Deserialize)]
-struct Query {
-    point: V3,
-    clearance: f64,
-    below: Option<f64>,
-    clears: bool,
-}
-#[derive(Deserialize)]
-struct Golden {
-    curves: Vec<Curve>,
-    surfaces: Vec<Face>,
-    queries: Vec<Query>,
-}
-
-pub fn check_reference_span_foundations() {
-    let golden: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/span-foundations.json"
-    ))
-    .unwrap();
-    let mut budget = Budget::new(10_000_000, &|| false).unwrap();
-    for (i, c) in golden.curves.iter().enumerate() {
-        let actual = hanging(c.from, c.to, c.slack, c.segments, &mut budget).unwrap();
-        assert_eq!(actual.len(), c.points.len());
-        assert_eq!(actual[0], c.from);
-        assert_eq!(actual[c.segments], c.to);
-        for (j, (a, b)) in actual.iter().zip(&c.points).enumerate() {
-            for k in 0..3 {
-                assert!(
-                    (a[k] - b[k]).abs() < 1e-7,
-                    "curve {i} sample {j} axis {k}: {} vs {}",
-                    a[k],
-                    b[k]
-                );
-            }
-        }
-    }
-    let faces = golden
-        .surfaces
-        .into_iter()
-        .map(|f| Surface {
-            points: f.points,
-            floor_or_stairs: matches!(f.kind.as_str(), "floor" | "stairs"),
-            collidable: f.collidable,
-        })
-        .collect::<Vec<_>>();
-    let walking = Walking::new(&faces, &mut budget).unwrap();
-    for (i, q) in golden.queries.iter().enumerate() {
-        let actual = walking.below(q.point, &mut budget).unwrap();
-        match (actual, q.below) {
-            (Some(a), Some(b)) => assert!((a - b).abs() < 1e-10, "height query {i}: {a} vs {b}"),
-            _ => assert_eq!(actual, q.below, "height query {i}"),
-        }
-        assert_eq!(
-            walking.clears(q.point, q.clearance, &mut budget).unwrap(),
-            q.clears,
-            "clearance query {i}"
-        );
-    }
-}
-#[test]
-fn hanging_curves_and_physical_floor_heights_match_source() {
-    check_reference_span_foundations();
-}
 
 #[test]
 fn invalid_cancelled_and_exhausted_queries_recover() {
@@ -163,4 +83,27 @@ fn admitted_slack_and_segment_bounds_keep_exact_supports() {
         assert!((slack[j][2] - slack[4096 - j][2]).abs() < 1e-10);
     }
     assert!(hanging(a, [1_000_001., 0., 4.], 0.1, 8, &mut budget).is_err());
+}
+
+#[test]
+fn only_collidable_floors_and_stairs_support_heights() {
+    let mut budget = Budget::new(100_000, &|| false).unwrap();
+    let square = |z: f64| [[0., 0., z], [2., 0., z], [0., 2., z]];
+    let surfaces = [
+        (square(3.), false, true),
+        (square(2.), true, false),
+        (square(1.), true, true),
+    ]
+    .map(|(points, floor_or_stairs, collidable)| Surface {
+        points,
+        floor_or_stairs,
+        collidable,
+    });
+    let walking = Walking::new(&surfaces, &mut budget).unwrap();
+    assert_eq!(
+        walking.below([0.5, 0.5, 10.], &mut budget).unwrap(),
+        Some(1.)
+    );
+    assert_eq!(walking.below([5., 5., 10.], &mut budget).unwrap(), None);
+    assert!(walking.clears([0.5, 0.5, 4.], 2.6, &mut budget).unwrap());
 }

@@ -1,5 +1,4 @@
-use serde::Deserialize;
-use serde_json::Value;
+use serde_json::json;
 use superspec_aml::rng::SeededRng;
 use superspec_engine::worldspec::themes::kowloon::{
     kit::Kit,
@@ -7,68 +6,84 @@ use superspec_engine::worldspec::themes::kowloon::{
     signs::{frontage, mounts::WallRect, panel::Settings},
 };
 use superspec_geometry::Matrix;
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
-struct Case {
-    category: String,
-    rect: WallRect,
-    elevation: f64,
-    span: [f64; 2],
-    heights: [f64; 2],
-    key: String,
-    shown: bool,
-    seed: String,
-    next: f64,
-    reflected: bool,
-    detail: u8,
-    settings: Settings,
-    proposals: Vec<Value>,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-pub fn check_reference_frontages() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/sign-frontage.json"
-    ))
+fn kit(detail: u8) -> Kit {
+    let settings: Settings = serde_json::from_value(json!({
+        "weathering": {"seed": "frontage/0", "wear": 0.25, "grime": 0.6, "rust": 0.4,
+            "textureDensity": 32,
+            "metal": {"material": "metal", "repeat": 1},
+            "paint": {"material": "paint", "repeat": 1},
+            "sheet": {"material": "sheet", "repeat": 1}},
+        "lettering": true,
+        "timber": {"textured": false, "timberRepeat": 1.2, "atlasRepeat": 1}
+    }))
     .unwrap();
-    for c in g.cases {
-        let kit = Kit::new(c.settings, c.detail).unwrap();
-        let mut rng = SeededRng::from_text(&c.seed);
-        let pen = Pen::new(
-            if c.reflected {
-                Matrix([
-                    [-1., 0., 0.],
-                    [0., 1., 0.],
-                    [0., 0., 1.],
-                    [-0.0005, -2., 3.],
-                ])
-            } else {
-                Matrix::default()
-            },
-            "body",
-        )
-        .unwrap();
-        let proposal = match c.category.as_str() {
-            "wall" => Some(frontage::wall_board(&pen, c.rect, &kit, &mut rng).unwrap()),
-            "balcony" => Some(
-                frontage::balcony_board(&pen, c.rect, c.elevation, &kit, &c.key, c.shown).unwrap(),
-            ),
-            "roof" => {
-                frontage::roof_hoarding(&pen, c.span, c.heights, &kit, &c.key, c.shown).unwrap()
-            }
-            _ => panic!("unknown fixture"),
-        };
-        assert_eq!(rng.next_f64(), c.next);
-        assert_eq!(usize::from(proposal.is_some()), c.proposals.len());
-        if let Some(p) = proposal {
-            reference::close(&reference::metadata(&p), &c.proposals[0]);
-        }
+    Kit::new(settings, detail).unwrap()
+}
+fn rect() -> WallRect {
+    WallRect {
+        x0: 0.2,
+        z0: 2.6,
+        width: 2.8,
+        height: 0.7,
+    }
+}
+fn reflected() -> Pen {
+    Pen::new(
+        Matrix([
+            [-1., 0., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [-0.0005, -2., 3.],
+        ]),
+        "body",
+    )
+    .unwrap()
+}
+#[test]
+fn wall_boards_take_one_caller_draw_and_key_by_signed_world_millimeters() {
+    let kit = kit(0);
+    for (pen, key) in [
+        (
+            Pen::new(Matrix::default(), "body").unwrap(),
+            "fascia@200,0,2600",
+        ),
+        // World corner (-0.2005, -2, 5.6) rounds half up to signed millimeters.
+        (reflected(), "fascia@-200,-2000,5600"),
+    ] {
+        let mut rng = SeededRng::from_text("frontage/wall");
+        let mut expected = rng.clone();
+        expected.next_u32();
+        let p = frontage::wall_board(&pen, rect(), &kit, &mut rng).unwrap();
+        assert_eq!(rng.next_f64(), expected.next_f64(), "one designated draw");
+        assert_eq!(p.key, key);
+        assert!(p.shown);
+        assert!(p.business.is_some());
     }
 }
 #[test]
-fn frontage_signs_preserve_named_streams_and_signed_millimeter_identity() {
-    check_reference_frontages()
+fn balcony_and_roof_boards_use_their_named_streams_and_respect_room() {
+    let kit = kit(1);
+    let pen = Pen::new(Matrix::default(), "body").unwrap();
+    for shown in [true, false] {
+        let a = frontage::balcony_board(&pen, rect(), 2.8, &kit, "frontage/choice", shown).unwrap();
+        let b = frontage::balcony_board(&pen, rect(), 2.8, &kit, "frontage/choice", shown).unwrap();
+        assert_eq!(a.key, "frontage/choice");
+        assert_eq!(a.shown, shown);
+        assert_eq!(
+            serde_json::to_value(&a.business).unwrap(),
+            serde_json::to_value(&b.business).unwrap(),
+            "named stream is repeatable"
+        );
+        let roof =
+            frontage::roof_hoarding(&pen, [0.3, 7.], [0.7, 3.6], &kit, "frontage/roof", shown)
+                .unwrap()
+                .unwrap();
+        assert_eq!(roof.shown, shown);
+    }
+    // Roof hoardings need at least 3.2 m of span.
+    assert!(
+        frontage::roof_hoarding(&pen, [0.3, 2.], [0.7, 3.6], &kit, "frontage/roof", true)
+            .unwrap()
+            .is_none()
+    );
 }

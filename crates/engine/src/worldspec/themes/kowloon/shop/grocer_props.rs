@@ -1,5 +1,9 @@
 //! Offline-baked provisions, label variants and touching bag groups.
-use super::super::{fixture::Fixture, pen::Tint};
+use super::super::{
+    fixture::Fixture,
+    graphics_detail::GraphicsDetail,
+    pen::{Pen, Tint},
+};
 use super::forms;
 use serde::Deserialize;
 use std::{collections::BTreeMap, sync::OnceLock};
@@ -175,6 +179,22 @@ fn draw_shape(
     {
         return Err("Grocer prop placement, tint or label variant exceeds bounds.".into());
     }
+    // A reduced level draws the plain stool for the detailed one, the furniture as it is at
+    // level 1, and every other piece as a mass in its own colours.
+    let detail = d.mesh.graphics_detail();
+    let name = if detail.reduced() && name == "shop-stool-detailed" {
+        "shop-stool"
+    } else {
+        name
+    };
+    let massed = match detail {
+        GraphicsDetail::Full => false,
+        GraphicsDetail::Low => !matches!(
+            name,
+            "shop-counter" | "drinks-cooler" | "shop-stool" | "produce-crate"
+        ),
+        GraphicsDetail::VeryLow => true,
+    };
     let asset = &catalog()[name];
     let appearance = appearances().get(name);
     let selected = o
@@ -190,6 +210,29 @@ fn draw_shape(
     let crate_wear = name == "bottle-crate";
     let seed =
         super::super::wall::finish_seed(&format!("{}/{at:?}/{requested:?}", pen.part)) as f64;
+    if massed {
+        let mut points = vec![];
+        for (face_index, face) in asset.faces.iter().enumerate() {
+            let geometry = shape.and_then(|s| s.get(face_index));
+            for (i, v) in face.iter().enumerate() {
+                let p = geometry.map_or(&v[..6], |f| &f[i][..]);
+                let color = selected.map_or([v[8], v[9], v[10]], |s| s.colors[face_index][i]);
+                let wear = if carton {
+                    carton_wear([v[0], v[1], v[2]], asset.size, seed)
+                } else if crate_wear {
+                    plastic_wear([v[0], v[1], v[2]], asset.size, seed)
+                } else {
+                    [1.; 3]
+                };
+                points.push((
+                    [p[0] * scale[0] * sign, p[1] * scale[1], p[2] * scale[2]],
+                    std::array::from_fn(|axis| color[axis] * o.tint[axis] * wear[axis]),
+                ));
+            }
+        }
+        mass(d, &pen, &points, detail, false)?;
+        return Ok(size);
+    }
     let worn;
     let body = if carton && shape.is_none() {
         worn = carton_faces(
@@ -297,6 +340,167 @@ fn draw_shape(
         }
     }
     Ok(size)
+}
+
+/// Draws `piece` out of sight, as the lowest level draws it, and returns its vertices and
+/// colours in its own frame: what [`mass`] sweeps a run or a group of such pieces from.
+pub(super) fn captured(
+    d: &Fixture<'_, '_>,
+    piece: impl FnOnce(&mut Fixture<'_, '_>) -> Result<(), String>,
+) -> Result<Vec<(V3, V3)>, String> {
+    use super::super::mesh::{Mesh, Mode};
+    let mut mesh = Mesh::new(Mode::Render, 400_000, &|| false)?;
+    mesh.set_graphics_detail(GraphicsDetail::VeryLow);
+    let mut pen = Pen::new(superspec_geometry::Matrix::default(), &d.pen.part)?;
+    pen.mirrored = d.pen.mirrored;
+    piece(&mut Fixture {
+        pen,
+        mesh: &mut mesh,
+        repeats: d.repeats,
+    })?;
+    Ok(mesh
+        .vertices
+        .iter()
+        .map(|vertex| (vertex.position, vertex.color))
+        .collect())
+}
+
+/// A piece's massing for a reduced level: its outline at a few heights, swept as a prism or a
+/// coarse round and coloured per ring with the mean of the piece's own vertex colours there,
+/// so a shelf keeps its goods' silhouettes and their colour variation without their detail.
+/// `points` are the piece's vertices and colours in `pen`'s frame.
+pub(super) fn mass(
+    d: &mut Fixture<'_, '_>,
+    pen: &Pen,
+    points: &[(V3, V3)],
+    detail: GraphicsDetail,
+    block: bool,
+) -> Result<(), String> {
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    let mut overall = [0.; 3];
+    for (p, color) in points {
+        for axis in 0..3 {
+            low[axis] = low[axis].min(p[axis]);
+            high[axis] = high[axis].max(p[axis]);
+            overall[axis] += color[axis] / points.len() as f64;
+        }
+    }
+    let height = high[2] - low[2];
+    let centre = [(low[0] + high[0]) / 2., (low[1] + high[1]) / 2.];
+    let half = [(high[0] - low[0]) / 2., (high[1] - low[1]) / 2.];
+    if points.is_empty() || height < 1e-6 || half[0] < 1e-6 || half[1] < 1e-6 {
+        return Ok(());
+    }
+    // Boxes reach their bounds' corners; turned and sewn goods do not.
+    let boxy = block
+        || points.iter().any(|(p, _)| {
+            (p[0] - centre[0]).abs() > 0.8 * half[0] && (p[1] - centre[1]).abs() > 0.8 * half[1]
+        });
+    let slices = detail.pick(1, 4, 2);
+    let sampled: Vec<([f64; 2], V3)> = (0..=slices)
+        .map(|k| {
+            let at = k as f64 / slices as f64;
+            let (mut extent, mut sum, mut count) = ([0.; 2], [0.; 3], 0.);
+            for (p, color) in points {
+                if ((p[2] - low[2]) / height - at).abs() <= 0.5 / slices as f64 + 1e-9 {
+                    for axis in 0..2 {
+                        extent[axis] = f64::max(extent[axis], (p[axis] - centre[axis]).abs());
+                    }
+                    sum = add(sum, *color);
+                    count += 1.;
+                }
+            }
+            if count == 0. {
+                (half, overall)
+            } else {
+                (
+                    // Nothing in a mass is drawn thinner than a reduced level's hairline.
+                    extent.map(|e| e.max(0.0125)),
+                    sum.map(|v| v / count),
+                )
+            }
+        })
+        .collect();
+    // Keep the rings where the outline changes, and the ring before each change.
+    let differs =
+        |a: [f64; 2], b: [f64; 2]| (0..2).any(|axis| (a[axis] - b[axis]).abs() > 0.08 * half[axis]);
+    let mut kept = vec![0];
+    for k in 1..=slices {
+        let last = *kept.last().unwrap();
+        if differs(sampled[k].0, sampled[last].0) {
+            if k - 1 > last {
+                kept.push(k - 1);
+            }
+            kept.push(k);
+        } else if k == slices {
+            kept.push(k);
+        }
+    }
+    let section = |extent: [f64; 2]| -> Vec<[f64; 2]> {
+        if boxy {
+            [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]]
+                .map(|[x, y]| [centre[0] + x * extent[0], centre[1] + y * extent[1]])
+                .to_vec()
+        } else {
+            let sides = detail.pick(6, 6, 4);
+            (0..sides)
+                .map(|k| {
+                    let angle = (k as f64 + 0.5) / sides as f64 * std::f64::consts::TAU
+                        - std::f64::consts::FRAC_PI_2;
+                    [
+                        centre[0] + superspec_geometry::math::cos(angle) * extent[0],
+                        centre[1] + superspec_geometry::math::sin(angle) * extent[1],
+                    ]
+                })
+                .collect()
+        }
+    };
+    let repeat = d.repeat("paint");
+    let ring = |k: usize| -> (Vec<V3>, V3) {
+        let z = low[2] + height * k as f64 / slices as f64;
+        (
+            section(sampled[k].0)
+                .into_iter()
+                .map(|[x, y]| [x, y, z])
+                .collect(),
+            sampled[k].1,
+        )
+    };
+    for pair in kept.windows(2) {
+        let ((foot, below), (head, above)) = (ring(pair[0]), ring(pair[1]));
+        let middle = (foot[0][2] + head[0][2]) / 2.;
+        let color = |p: V3| -> Result<V3, String> { Ok(if p[2] < middle { below } else { above }) };
+        for side in 0..foot.len() {
+            let next = (side + 1) % foot.len();
+            let out = [
+                foot[side][0] + foot[next][0] - 2. * centre[0],
+                foot[side][1] + foot[next][1] - 2. * centre[1],
+                0.,
+            ];
+            pen.face(
+                d.mesh,
+                "paint",
+                &[foot[side], foot[next], head[next], head[side]],
+                out,
+                &Tint::Field(&color),
+                repeat,
+                None,
+                None,
+            )?;
+        }
+    }
+    let (top, color) = ring(*kept.last().unwrap());
+    pen.face(
+        d.mesh,
+        "paint",
+        &top,
+        [0., 0., 1.],
+        &Tint::Color(color),
+        repeat,
+        None,
+        None,
+    )
 }
 
 fn plastic_wear([x, y, z]: V3, size: V3, seed: f64) -> V3 {

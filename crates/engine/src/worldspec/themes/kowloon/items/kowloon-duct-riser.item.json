@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-duct-riser",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "floors": {"type": "integer", "default": 4, "min": 1, "max": 12},
     "storyHeight": {"type": "number", "default": 3.0, "min": 2.4, "max": 5, "unit": "m"},
     "height": {"type": "number", "default": 12, "min": 3, "max": 60, "unit": "m"},
@@ -28,7 +30,7 @@
       "generator": {
         "kind": "route",
         "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
-        "wallThickness": 0.004,
+        "wallThickness": "select(graphicsDetail > 0, 0, 0.004)",
         "points": [[0, "-axis", {"parameter": "base"}], [0, "-axis", {"derived": "top"}]],
         "up": [0, 1, 0],
         "capped": true,
@@ -44,12 +46,13 @@
         "kind": "route",
         "from": {"attachment": "riser/end"},
         "section": {"kind": "rect", "width": {"parameter": "width"}, "height": {"parameter": "depth"}},
-        "wallThickness": 0.004,
-        "points": [[0, 0, -0.05], [0, 0, 0.35], [0, "axis + 0.12", 0.35]],
+        "wallThickness": "select(graphicsDetail > 0, 0, 0.004)",
+        "points": [[0, 0, 0], [0, 0, 0.35], [0, "axis + 0.12", 0.35]],
         "bendRadius": 0.3,
+        "bendSegments": "select(graphicsDetail > 1, 1, select(graphicsDetail > 0, 2, 8))",
         "up": [0, 1, 0],
         "capped": false,
-        "fittings": [{"kind": "flange", "id": "joint", "at": {"from": "start", "offset": 0.05}, "overhang": 0.025, "thickness": 0.026}]
+        "fittings": [{"kind": "flange", "id": "joint", "at": {"from": "start", "offset": 0.013}, "overhang": 0.025, "thickness": 0.026}]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "end": "galvanized"}
     },
@@ -63,7 +66,7 @@
       "id": "bracket",
       "repeat": [{"name": "k", "count": {"derived": "brackets"}}],
       "generator": {"kind": "item", "entry": "kowloon-duct-bracket.item.json",
-        "parameters": {"width": {"parameter": "width"}, "depth": {"parameter": "depth"}, "standoff": {"parameter": "standoff"}}},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"parameter": "width"}, "depth": {"parameter": "depth"}, "standoff": {"parameter": "standoff"}}},
       "placement": {"position": [0, 0, "base + 0.6 + pitch * (k + 0.5) + select(abs(((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight))) < 0.2, select(((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight)) < 0, -0.2, 0.2) - ((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight)), select(abs(((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight)) - 0.45) < 0.1, select(((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight)) < 0.45, 0.35, 0.55) - ((b0 + pitch * (k + 0.5)) - storyHeight * round((b0 + pitch * (k + 0.5)) / storyHeight)), 0))"]}
     },
     {
@@ -73,10 +76,10 @@
       "generator": {
         "kind": "route",
         "section": {"kind": "rect", "width": "width * 0.6", "height": "depth * 0.6"},
-        "points": [["width * 0.2", "-axis", "firstFloor + j * storyHeight + storyHeight - 0.45"], ["width * 0.2", 0.05, "firstFloor + j * storyHeight + storyHeight - 0.45"]],
+        "points": [["width * 0.2", "-standoff", "firstFloor + j * storyHeight + storyHeight - 0.45"], ["width * 0.2", 0.05, "firstFloor + j * storyHeight + storyHeight - 0.45"]],
         "up": [0, 0, 1],
         "capped": false,
-        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.0585}, "overhang": 0.04, "thickness": 0.017, "bolts": 4}]
+        "fittings": [{"kind": "flange", "id": "collar", "at": {"from": "end", "offset": 0.0585}, "overhang": 0.04, "thickness": 0.017, "bolts": "select(graphicsDetail > 0, 0, 4)"}]
       },
       "slots": {"body": "galvanized", "fitting": "galvanized", "bolt": "steel", "end": "galvanized"}
     }

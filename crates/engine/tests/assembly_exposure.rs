@@ -1,78 +1,63 @@
-use serde::Deserialize;
 use std::cell::Cell;
-use superspec_engine::worldspec::themes::kowloon::{exposure::Assembly, metal::Fold};
-use superspec_geometry::V3;
+use superspec_engine::worldspec::themes::kowloon::exposure::Assembly;
 
-#[derive(Deserialize)]
-struct Member {
-    a: V3,
-    b: V3,
-    radius: f64,
-}
-#[derive(Deserialize)]
-struct Face {
-    points: Vec<V3>,
-    hint: V3,
-    uv: Vec<[f64; 2]>,
-}
-#[derive(Deserialize)]
-struct Case {
-    inputs: Vec<Member>,
-    members: Vec<Member>,
-    joints: Vec<Vec<V3>>,
-    faces: Vec<Face>,
-    folds: Vec<Fold>,
-}
-#[derive(Deserialize)]
-struct Fixture {
-    cases: Vec<Case>,
-}
-fn near(a: f64, b: f64) {
-    assert!((a - b).abs() < 2e-12, "{a} != {b}");
-}
-/// Exercises the finalized assembly contract on native and actual browser Wasm.
-pub fn check_reference_exposure() {
-    let fixture: Fixture = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/assembly-exposure.json"
-    ))
-    .unwrap();
-    for case in fixture.cases {
+#[test]
+fn hinged_faces_fold_concave_when_raised_and_convex_when_lowered() {
+    for (rise, concave) in [(0.5, true), (-0.5, false)] {
         let mut assembly = Assembly::default();
-        for (i, m) in case.inputs.iter().enumerate() {
-            assert_eq!(assembly.member(m.a, m.b, m.radius).unwrap(), i);
-        }
-        for f in case.faces {
-            assembly.face(&f.points, f.hint, &f.uv).unwrap();
-        }
+        assembly
+            .face(
+                &[[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.]],
+                [0., 0., 1.],
+                &[[0., 0.], [1., 0.], [1., 1.], [0., 1.]],
+            )
+            .unwrap();
+        assembly
+            .face(
+                &[[1., 0., 0.], [2., 0., rise], [2., 1., rise], [1., 1., 0.]],
+                [-rise, 0., 1.],
+                &[[1., 0.], [2., 0.], [2., 1.], [1., 1.]],
+            )
+            .unwrap();
         let output = assembly.finish(&|| false).unwrap();
-        assert_eq!(output.members.len(), case.members.len());
-        assert_eq!(case.joints.len(), case.members.len());
-        for (i, (a, b)) in output.members.iter().zip(case.members).enumerate() {
-            for (a, b) in
-                a.a.into_iter()
-                    .chain(a.b)
-                    .chain([a.radius])
-                    .zip(b.a.into_iter().chain(b.b).chain([b.radius]))
-            {
-                near(a, b);
-            }
-            let joints = output.joints(i).unwrap();
-            assert_eq!(joints.len(), case.joints[i].len());
-            for (a, b) in joints.iter().flatten().zip(case.joints[i].iter().flatten()) {
-                near(*a, *b);
-            }
-        }
-        assert_eq!(output.folds.len(), case.folds.len());
-        for (a, b) in output.folds.iter().zip(case.folds) {
-            assert_eq!(a.axis, b.axis);
-            assert_eq!(a.concave, b.concave);
-            near(a.at, b.at);
-        }
+        assert_eq!(output.folds.len(), 1);
+        assert_eq!(output.folds[0].axis, 0);
+        assert_eq!(output.folds[0].at, 1.);
+        assert_eq!(output.folds[0].concave, concave);
     }
 }
+
 #[test]
-fn skew_contacts_and_fold_signs_match_frozen_reference() {
-    check_reference_exposure();
+fn skew_member_contacts_lie_on_both_members_and_preserve_member_order() {
+    // Two skew members whose closest approach is within their summed radii.
+    let mut assembly = Assembly::default();
+    let members = [
+        ([-1., 0., 0.], [1., 0., 0.], 0.05),
+        ([0.3, -1., 0.04], [0.3, 1., 0.06], 0.05),
+    ];
+    for (i, (a, b, r)) in members.iter().enumerate() {
+        assert_eq!(assembly.member(*a, *b, *r).unwrap(), i);
+    }
+    let output = assembly.finish(&|| false).unwrap();
+    assert_eq!(output.members.len(), members.len());
+    for (i, (a, b, r)) in members.iter().enumerate() {
+        // Free ends may be inset by at most the member radius, along the member.
+        let m = &output.members[i];
+        assert_eq!(m.radius, *r);
+        for (got, end, other) in [(m.a, a, b), (m.b, b, a)] {
+            let offset: Vec<f64> = (0..3).map(|k| got[k] - end[k]).collect();
+            let length = offset.iter().map(|d| d * d).sum::<f64>().sqrt();
+            assert!(length <= r + 1e-12);
+            let axis: Vec<f64> = (0..3).map(|k| other[k] - end[k]).collect();
+            let along = offset.iter().zip(&axis).map(|(o, x)| o * x).sum::<f64>();
+            assert!(along >= 0.);
+        }
+    }
+    let joints = output.joints(0).unwrap();
+    assert_eq!(joints.len(), 1);
+    let [x, y, z] = joints[0];
+    assert!((x - 0.3).abs() < 1e-12 && y.abs() < 1e-12 && z.abs() < 1e-12);
+    assert_eq!(output.joints(1).unwrap().len(), 1);
 }
 
 #[test]

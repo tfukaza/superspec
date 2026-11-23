@@ -1,4 +1,4 @@
-use super::{Form, Pattern, smooth_normals};
+use super::{Pattern, smooth_normals};
 use crate::worldspec::themes::kowloon::{
     fixture::Fixture,
     noise::{fractal_noise, smooth_step, value_noise},
@@ -178,28 +178,15 @@ impl Field {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn valance(
     d: &mut Fixture<'_, '_>,
-    form: &Form,
+    front: &[[usize; 2]],
     points: &[V3],
     uv: &[[f64; 2]],
     height: f64,
     field: &Field,
-    edge: V3,
+    edge: Option<V3>,
 ) -> Result<(), String> {
-    let maximum = form
-        .uv
-        .iter()
-        .map(|v| v[1])
-        .fold(f64::NEG_INFINITY, f64::max);
-    let front: Vec<_> = form
-        .edges
-        .iter()
-        .copied()
-        .filter(|[a, b]| {
-            (form.uv[*a][1] - maximum).abs() < 1e-7 && (form.uv[*b][1] - maximum).abs() < 1e-7
-        })
-        .collect();
     let mut ids = vec![];
-    for pair in &front {
+    for pair in front {
         for id in pair {
             if !ids.contains(id) {
                 ids.push(*id);
@@ -246,7 +233,7 @@ pub(super) fn valance(
     }
     let mut indices = vec![];
     for row in 0..2 {
-        for [a, b] in &front {
+        for [a, b] in front {
             let a0 = row * columns + column(*a);
             let b0 = row * columns + column(*b);
             let a1 = a0 + columns;
@@ -271,12 +258,16 @@ pub(super) fn valance(
     for tri in indices.as_chunks::<3>().0 {
         field.triangle(d, &tri.iter().map(|i| vertices[*i]).collect::<Vec<_>>())?;
     }
+    // The bound hem is a hairline: a reduced level leaves it out.
+    let Some(edge) = edge else {
+        return Ok(());
+    };
     for [a, b] in front {
         d.tube(
             "tarp",
             &[
-                vertices[columns * 2 + column(a)].point,
-                vertices[columns * 2 + column(b)].point,
+                vertices[columns * 2 + column(*a)].point,
+                vertices[columns * 2 + column(*b)].point,
             ],
             0.0025,
             edge,

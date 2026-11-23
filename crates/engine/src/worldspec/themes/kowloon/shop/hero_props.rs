@@ -54,12 +54,56 @@ fn draw(
     Ok(())
 }
 
+/// A reduced level's stand-in for a baked piece: its turned outline in a paint of its own,
+/// shaded per instance from where it stands so that neighbours differ as the baked ones do.
+fn turned(
+    d: &mut Fixture<'_, '_>,
+    at: V3,
+    profile: &[[f64; 2]],
+    paint: &str,
+    values: &[f64],
+) -> Result<(), String> {
+    use super::super::palette::{shade, srgb};
+    let seed = super::super::wall::finish_seed(&format!("{}/{at:?}", d.pen.part));
+    let own = shade(srgb(paint), 0.9 + (seed % 1000) as f64 / 1000. * 0.18);
+    let tints: Vec<_> = values
+        .iter()
+        .map(|value| Tint::Color(shade(own, *value)))
+        .collect();
+    super::forms::lathe(
+        d,
+        "paint",
+        at,
+        profile,
+        &super::forms::Tints::Bands(&tints),
+        12,
+        None,
+    )
+}
+
 pub(super) fn wooden_stool(
     d: &mut Fixture<'_, '_>,
     at: V3,
     requested: V3,
     yaw: f64,
 ) -> Result<(), String> {
+    if d.mesh.graphics_detail().reduced() {
+        // A round seat on a splayed base.
+        let (r, h) = (requested[0].min(requested[1]) / 2., requested[2]);
+        return turned(
+            d,
+            at,
+            &[
+                [r * 0.95, 0.],
+                [r * 0.7, h * 0.86],
+                [r, h * 0.86],
+                [r, h],
+                [0., h],
+            ],
+            "#7a5a3a",
+            &[0.8, 0.7, 1., 1.1],
+        );
+    }
     draw(d, WOOD, at, requested, [0.39212, 0.39473, 0.39705], yaw)
 }
 
@@ -69,6 +113,23 @@ pub(super) fn jade_stool(
     requested: V3,
     yaw: f64,
 ) -> Result<(), String> {
+    if d.mesh.graphics_detail().reduced() {
+        // A waisted plastic stool.
+        let (r, h) = (requested[0].min(requested[1]) / 2., requested[2]);
+        return turned(
+            d,
+            at,
+            &[
+                [r, 0.],
+                [r * 0.72, h * 0.5],
+                [r * 0.9, h * 0.94],
+                [r * 0.9, h],
+                [0., h],
+            ],
+            "#5f9a84",
+            &[0.85, 1., 0.9, 1.1],
+        );
+    }
     draw(d, JADE, at, requested, [0.388, 0.388, 0.475], yaw)
 }
 
@@ -79,6 +140,25 @@ pub(super) fn bucket(
     height: f64,
     yaw: f64,
 ) -> Result<(), String> {
+    if d.mesh.graphics_detail().reduced() {
+        // The market bucket: its taper, rolled rim and shadowed inside, in a red that
+        // varies bucket by bucket and band by band as the baked finish does.
+        let (r, h) = (radius, height);
+        return turned(
+            d,
+            at,
+            &[
+                [r * 0.72, 0.],
+                [r * 0.96, h * 0.96],
+                [r * 1.05, h],
+                [r * 0.94, h * 0.99],
+                [r * 0.7, 0.03],
+                [0., 0.03],
+            ],
+            "#a8554a",
+            &[1., 1.15, 0.75, 0.6, 0.5],
+        );
+    }
     draw(
         d,
         BUCKET,

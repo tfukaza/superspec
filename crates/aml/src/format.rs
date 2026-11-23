@@ -76,7 +76,9 @@ fn write_node(node: &Node, out: &mut String, depth: usize) -> Result<(), String>
         };
         write!(out, " {name}=\"{}\"", escape(&text)).unwrap();
     }
-    if ["profile", "hole"].contains(&node.kind.as_str()) && node.attributes.contains_key("points") {
+    if ["profile", "hole"].contains(&node.kind.as_str())
+        && matches!(node.attributes.get("points"), Some(Value::Points(_)))
+    {
         out.push_str(" dimensions=\"3\"");
     }
     if node.children.is_empty() {

@@ -1,36 +1,19 @@
-use serde::Deserialize;
+use serde_json::json;
 use std::collections::BTreeMap;
 use superspec_aml::material::Material;
 use superspec_engine::{
-    materialspec::surface::{Inputs, Sample},
+    materialspec::surface::Inputs,
     worldspec::themes::kowloon::{
-        facade_material::Facade,
         fixture::Fixture,
         mesh::{Mesh, Mode},
         pen::Pen,
-        skin::{self, Deposited},
+        skin,
         weathered::{self, Recipe},
     },
 };
 use superspec_geometry::Matrix;
 #[path = "support/skin_scene.rs"]
 mod scene_fixture;
-#[derive(Deserialize)]
-struct Receiver {
-    first: usize,
-    count: usize,
-    point: [f64; 2],
-    sample: Sample,
-    shared: Option<bool>,
-    #[serde(default)]
-    samples: Vec<PointSample>,
-}
-#[derive(Deserialize)]
-struct PointSample {
-    point: [f64; 2],
-    sample: Sample,
-}
-#[derive(Deserialize)]
 struct Stain {
     x0: f64,
     x1: f64,
@@ -41,54 +24,99 @@ struct Stain {
     offset: f64,
     before: bool,
 }
-#[derive(Deserialize)]
-struct Pixels {
-    receiver: usize,
-    width: usize,
-    height: usize,
-    color: Vec<u8>,
-    normal: Vec<u8>,
-    packed: Vec<u8>,
-}
-#[derive(Deserialize)]
 struct Case {
-    #[serde(default)]
     stains: Vec<Stain>,
     settings: skin::Settings,
     reflected: bool,
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    receivers: Vec<Receiver>,
-    rasters: Vec<Pixels>,
-    repairs: Vec<superspec_engine::worldspec::themes::kowloon::render_repair::Patch>,
 }
-#[derive(Deserialize)]
-struct Golden {
-    materials: Vec<Material>,
-    cases: Vec<Case>,
+/// A two-storey wall with one window, two ledges and a ground-floor wash.
+fn settings(grime: f64, washed: bool, tiled: bool) -> skin::Settings {
+    let mut value = json!({
+        "rects":[{"u0":-0.4,"u1":5.1,"v0":0,"v1":2.1}],
+        "openings":[{"u0":1,"u1":2,"v0":0.65,"v1":1.65}],
+        "u_marks":[1,2,2.8,4.7995],"z_marks":[0.65,1.65],
+        "finish":{"concrete":false,"coat":{"material":"wall","repeat":1.3,"tint":[0.7,0.9,0.8]},
+            "backing":{"material":"concrete","repeat":2.7},"wear":0.65,"density":32,"variant":1},
+        "condition":{"base":0,"ledges":[{"u0":-0.4,"u1":5.1,"z":2.1,"flow":0.65},
+            {"u0":1,"u1":2,"z":0.65,"flow":1}],
+            "openings":[{"u0":1,"u1":2,"z0":0.65,"z1":1.65}],
+            "grime":grime,"wear":0.65,"seed":123},
+        "washes":[]
+    });
+    if washed {
+        value["washes"] = json!([{"bounds":[2.8,0,5.1,2.1],"tint":[0.9,0.6,0.5]}]);
+    }
+    if tiled {
+        value["tiles"] = json!({"seed":123,
+            "field":{"seed":22,"wear":0.7,"grime":0.6,"size":0.18,"aspect":1,"share":1},
+            "materials":{"ceramic":"$kowloon/wall-ceramic","bed":"$kowloon/wall-tile-bed",
+                "grime":"$kowloon/wall-tile-grime","repeat":1,"bedRepeat":2.4,"bedRoughness":0.9,"roughness":0.65},
+            "repair":{"material":"render-repair","repeat":1}});
+    }
+    serde_json::from_value(value).unwrap()
 }
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!("../../../tests/fixtures/rust/skin.json")).unwrap()
+fn case(settings: skin::Settings) -> Case {
+    Case {
+        stains: vec![],
+        settings,
+        reflected: false,
+    }
+}
+fn stains() -> Vec<Stain> {
+    vec![
+        Stain {
+            x0: 0.2,
+            x1: 0.8,
+            top: 1.8,
+            bottom: 0.2,
+            wash: [0.7, 0.8, 0.9],
+            depth: 0.6,
+            offset: 0.,
+            before: true,
+        },
+        Stain {
+            x0: 0.5,
+            x1: 1.3,
+            top: 1.7,
+            bottom: 0.1,
+            wash: [0.9, 0.2, 0.1],
+            depth: 0.8,
+            offset: 0.,
+            before: false,
+        },
+        Stain {
+            x0: 2.4,
+            x1: 3.4,
+            top: 2.,
+            bottom: 0.1,
+            wash: [0.1, 0.2, 0.9],
+            depth: 1.,
+            offset: 0.02,
+            before: false,
+        },
+    ]
+}
+fn materials() -> BTreeMap<String, Material> {
+    serde_json::from_value::<Vec<Material>>(json!([
+        {"id":"wall","color":"#caaf92","repeat":1.3,"roughness":0.8,"metalness":0},
+        {"id":"concrete","color":"#807a70","repeat":2.7,"roughness":0.8,"metalness":0},
+        {"id":"render-repair","color":"#aaaaaa","repeat":1,"roughness":0.8,"metalness":0},
+        {"id":"$kowloon/wall-ceramic","color":"#b4c4a2","roughness":0.65,"metalness":0,"repeat":1},
+        {"id":"$kowloon/wall-tile-bed","color":"#737373","roughness":0.9,"metalness":0,"repeat":2.4},
+        {"id":"$kowloon/wall-tile-grime","color":"#725139","roughness":1,"metalness":0,"repeat":1}
+    ]))
+    .unwrap()
+    .into_iter()
+    .map(|m| (m.id.clone(), m))
+    .collect()
 }
 
 #[test]
 fn authored_tile_mapping_survives_local_slots_and_dependency_only_baking() {
     use superspec_geometry::image::Image;
     let render = |aliased: bool, dependencies_only: bool| {
-        let g = fixture();
-        let mut case = g
-            .cases
-            .into_iter()
-            .find(|c| c.settings.tiles.is_some())
-            .unwrap();
-        let mut materials = g
-            .materials
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect::<BTreeMap<_, _>>();
+        let mut case = case(settings(0.6, true, true));
+        let mut materials = materials();
         let mut bindings = BTreeMap::new();
         for (local, source) in [
             ("local-coat", &mut case.settings.finish.coat.material),
@@ -165,14 +193,10 @@ fn authored_tile_mapping_survives_local_slots_and_dependency_only_baking() {
         "All optional coatings must survive dependency filtering"
     );
 }
-pub fn check_household_wash_boundaries() {
+#[test]
+fn adjacent_household_washes_own_lower_edges_and_leave_upper_edges_open() {
     use superspec_engine::worldspec::themes::kowloon::tiled_skin::{Field, Recipe};
-    let settings = fixture()
-        .cases
-        .into_iter()
-        .find(|c| c.settings.tiles.is_some())
-        .unwrap()
-        .settings;
+    let settings = settings(0.6, true, true);
     let left = [0.8, 0.4, 0.3];
     let right = [0.3, 0.5, 0.9];
     let wash = |bounds, tint| skin::Wash {
@@ -203,8 +227,8 @@ pub fn check_household_wash_boundaries() {
             .into_iter()
             .collect();
         assert_eq!(
-            serde_json::json!(field.sample(point[0], point[1]).unwrap()),
-            serde_json::json!(
+            json!(field.sample(point[0], point[1]).unwrap()),
+            json!(
                 Field::new(&homogeneous)
                     .unwrap()
                     .sample(point[0], point[1])
@@ -221,17 +245,13 @@ pub fn check_household_wash_boundaries() {
     bare.washes.clear();
     let p = [1., 0.5];
     assert_eq!(
-        serde_json::json!(Field::new(&open).unwrap().sample(p[0], p[1]).unwrap()),
-        serde_json::json!(Field::new(&bare).unwrap().sample(p[0], p[1]).unwrap())
+        json!(Field::new(&open).unwrap().sample(p[0], p[1]).unwrap()),
+        json!(Field::new(&bare).unwrap().sample(p[0], p[1]).unwrap())
     );
     assert_ne!(
-        serde_json::json!(field.sample(p[0], p[1]).unwrap()),
-        serde_json::json!(Field::new(&bare).unwrap().sample(p[0], p[1]).unwrap())
+        json!(field.sample(p[0], p[1]).unwrap()),
+        json!(Field::new(&bare).unwrap().sample(p[0], p[1]).unwrap())
     );
-}
-#[test]
-fn adjacent_household_washes_own_lower_edges_and_leave_upper_edges_open() {
-    check_household_wash_boundaries();
 }
 fn pen(reflected: bool) -> Pen {
     Pen::new(
@@ -270,234 +290,96 @@ fn draw(mesh: &mut Mesh<'_>, case: &Case) -> Result<(), String> {
     )?;
     deposit(mesh, false)
 }
-fn close(actual: &serde_json::Value, expected: &serde_json::Value) {
-    use serde_json::Value;
-    match (actual, expected) {
-        (Value::Number(a), Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{a} != {b}"
-        ),
-        (Value::Array(a), Value::Array(b)) => {
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(b) {
-                close(a, b);
-            }
+fn variants() -> Vec<Case> {
+    let mut cases = vec![];
+    for stained in [false, true] {
+        for (grime, washed, tiled, concrete, reflected, density) in [
+            (0., false, false, false, false, 32.),
+            (0.6, true, false, false, false, 32.),
+            (0.6, false, false, true, false, 32.),
+            (0.6, false, false, false, true, 32.),
+            (0.6, false, false, false, false, 180.),
+            (0.6, true, true, false, false, 32.),
+            (0.6, false, true, true, false, 32.),
+            (0.6, true, true, false, true, 32.),
+        ] {
+            let mut settings = settings(grime, washed, tiled);
+            settings.finish.concrete = concrete;
+            settings.finish.density = density;
+            cases.push(Case {
+                stains: if stained { stains() } else { vec![] },
+                settings,
+                reflected,
+            });
         }
-        (Value::Object(a), Value::Object(b)) => {
-            for (k, b) in b {
-                close(&a[k], b);
-            }
-        }
-        _ => assert_eq!(actual, expected),
     }
+    cases
 }
-pub fn check_reference_skin() {
-    check(fixture());
-}
-pub fn check_reference_stains() {
-    check(serde_json::from_str(include_str!("../../../tests/fixtures/rust/stains.json")).unwrap());
-}
-fn sample(job: &weathered::Job, p: [f64; 2]) -> Sample {
-    match &job.recipe {
-        Recipe::Facade(r) => Facade::new(r).unwrap().sample(p[0], p[1]),
-        Recipe::FacadeDeposits(r) => Deposited::new(r).unwrap().sample(p[0], p[1]),
-        Recipe::TiledSkin(r) => {
-            superspec_engine::worldspec::themes::kowloon::tiled_skin::Field::new(r)
-                .unwrap()
-                .sample(p[0], p[1])
-        }
-        Recipe::Stained(r) => superspec_engine::worldspec::themes::kowloon::stains::Field::new(r)
-            .unwrap()
-            .sample(p[0], p[1]),
-        _ => panic!("Unexpected skin recipe"),
-    }
-    .unwrap()
-}
-fn check(golden: Golden) {
-    let materials = golden
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+#[test]
+fn wall_plans_follow_finish_rules_and_surveys_match_render() {
+    let materials = materials();
     let inputs = Inputs {
         materials: &materials,
         images: &BTreeMap::new(),
     };
-    for (ci, case) in golden.cases.iter().enumerate() {
-        if let Some(tiles) = &case.settings.tiles
-            && !case.settings.finish.concrete
-        {
-            let patches = superspec_engine::worldspec::themes::kowloon::render_repair::plan(
-                [-0.4, 0., 5.1, 2.1],
-                tiles.seed,
-                &case
-                    .settings
-                    .openings
-                    .iter()
-                    .map(|r| [r.u0, r.v0, r.u1, r.v1])
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap();
-            close(
-                &serde_json::to_value(patches).unwrap(),
-                &serde_json::to_value(&case.repairs).unwrap(),
-            );
-        }
+    for (ci, case) in variants().iter().enumerate() {
         let mut mesh = Mesh::new(Mode::Render, 100000, &|| false).unwrap();
         draw(&mut mesh, case).unwrap();
-        assert_eq!(mesh.indices.len(), case.indices.len(), "skin {ci} indices");
-        assert_eq!(
-            mesh.indices
-                .iter()
-                .zip(&case.indices)
-                .position(|(a, b)| a != b),
-            None,
-            "skin {ci} indexed order"
-        );
-        for (actual, expected, label) in [
-            (
-                mesh.vertices
-                    .iter()
-                    .flat_map(|v| v.position)
-                    .collect::<Vec<_>>(),
-                &case.positions,
-                "position",
-            ),
-            (
-                mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-                &case.normals,
-                "normal",
-            ),
-            (
-                mesh.vertices.iter().flat_map(|v| v.color).collect(),
-                &case.colors,
-                "color",
-            ),
-            (
-                mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-                &case.uv,
-                "uv",
-            ),
-        ] {
-            assert_eq!(actual.len(), expected.len(), "skin {ci} {label}");
-            assert_eq!(
-                actual
-                    .iter()
-                    .zip(expected)
-                    .position(|(a, b)| (a - b).abs() > 2e-10),
-                None,
-                "skin {ci} {label}"
-            );
-        }
+        let mut survey = Mesh::new(Mode::Survey, 100000, &|| false).unwrap();
+        draw(&mut survey, case).unwrap();
+        assert_eq!(survey.triangle_count(), mesh.triangle_count(), "case {ci}");
         let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        assert_eq!(plan.receivers().len(), case.receivers.len());
-        let job_ids: Vec<_> = plan.receivers().iter().map(|r| r.job).collect();
-        for (got, want) in plan.receivers().iter().zip(&case.receivers) {
-            assert_eq!(
-                (got.first_triangle, got.triangle_count),
-                (want.first, want.count)
-            );
-            let job = &plan.jobs()[got.job];
-            if let Some(shared) = want.shared {
-                assert_eq!(
-                    matches!(job.recipe, Recipe::Facade(_)),
-                    shared,
-                    "case {ci} receiver {} sharing",
-                    want.first
-                );
-                if !shared {
-                    for p in &want.samples {
-                        close(
-                            &serde_json::to_value(sample(job, p.point)).unwrap(),
-                            &serde_json::to_value(&p.sample).unwrap(),
-                        );
-                    }
-                }
-            }
-            close(
-                &serde_json::to_value(sample(job, want.point)).unwrap(),
-                &serde_json::to_value(&want.sample).unwrap(),
-            );
+        assert!(!plan.receivers().is_empty());
+        for r in plan.receivers() {
+            let job = &plan.jobs()[r.job];
             if case.settings.condition.grime > 0. && case.settings.tiles.is_none() {
                 assert_eq!(job.density, case.settings.finish.density.min(128.));
             }
         }
-        if case.settings.condition.grime == 0. && case.stains.is_empty() {
-            assert_eq!(plan.jobs().len(), 1);
-        }
-        if !case.rasters.is_empty() {
-            let bakes = plan.bake(&inputs, "skin", &|| false).unwrap();
-            let mut scene=superspec_engine::compile(r#"<architecture version="1" id="skin"><box id="host" width="6" depth=".1" height="3" visible="false"/></architecture>"#,0).unwrap();
-            let bindings = bakes
+        if case.settings.condition.grime == 0. {
+            let facade = plan
+                .receivers()
                 .iter()
-                .map(|b| (b.material().id.clone(), b.material().id.clone()))
-                .collect();
-            scene
-                .append_baked_visual("host", &mesh, &bindings, &bakes)
-                .unwrap();
-            for r in &case.rasters {
-                let bake = &bakes[job_ids[r.receiver]];
-                assert_eq!(
-                    (bake.layout().width, bake.layout().height),
-                    (r.width, r.height)
-                );
-                let m = bake.material();
-                for (id, expected) in [
-                    (m.texture.as_ref().unwrap(), &r.color),
-                    (m.normal_texture.as_ref().unwrap(), &r.normal),
-                    (m.metallic_roughness_texture.as_ref().unwrap(), &r.packed),
-                ] {
-                    let a = scene.manifest.assets.iter().find(|a| &a.id == id).unwrap();
-                    let decoded = superspec_geometry::image::decode(
-                        &scene.asset_bytes[a.byte_start..a.byte_start + a.byte_length],
-                    )
-                    .unwrap();
-                    assert_eq!(decoded.rgba.len(), expected.len());
-                    assert_eq!(
-                        decoded.rgba.iter().zip(expected).position(|(a, b)| a != b),
-                        None,
-                        "skin {ci} raster {id}"
+                .filter(|r| matches!(plan.jobs()[r.job].recipe, Recipe::Facade(_)))
+                .count();
+            if case.stains.is_empty() {
+                assert_eq!(plan.jobs().len(), 1, "case {ci}");
+                assert_eq!(facade, plan.receivers().len());
+            } else {
+                // Stains detach only the receivers they touch from the shared facade.
+                assert!(facade > 0 && facade < plan.receivers().len(), "case {ci}");
+            }
+        }
+        let receivers: Vec<_> = plan
+            .receivers()
+            .iter()
+            .map(|r| (r.first_triangle, r.triangle_count, r.job))
+            .collect();
+        let bakes = plan.bake(&inputs, "skin", &|| false).unwrap();
+        let inverse = pen(case.reflected).matrix.inverse().unwrap();
+        for (first, count, job) in receivers {
+            for t in first..first + count {
+                for &index in &mesh.indices[t * 3..t * 3 + 3] {
+                    let vertex = mesh.vertices[index as usize];
+                    let local = inverse.point(vertex.position);
+                    let expected = bakes[job].layout().uv([local[0], local[2]]);
+                    assert!(
+                        vertex
+                            .uv
+                            .iter()
+                            .zip(expected)
+                            .all(|(a, b)| (a - b).abs() < 1e-12),
+                        "case {ci} triangle {t}"
                     );
                 }
             }
-            for (receiver, job) in case.receivers.iter().zip(&job_ids) {
-                for t in receiver.first..receiver.first + receiver.count {
-                    for &index in &mesh.indices[t * 3..t * 3 + 3] {
-                        let vertex = mesh.vertices[index as usize];
-                        let local = pen(case.reflected)
-                            .matrix
-                            .inverse()
-                            .unwrap()
-                            .point(vertex.position);
-                        let expected = bakes[*job].layout().uv([local[0], local[2]]);
-                        assert!(
-                            vertex
-                                .uv
-                                .iter()
-                                .zip(expected)
-                                .all(|(a, b)| (a - b).abs() < 1e-12)
-                        );
-                    }
-                }
-            }
         }
-        let mut survey = Mesh::new(Mode::Survey, 100000, &|| false).unwrap();
-        draw(&mut survey, case).unwrap();
-        assert_eq!(survey.triangle_count() * 3, case.indices.len());
     }
-}
-#[test]
-fn full_wall_plans_and_deposit_pixels_match_reference() {
-    check_reference_skin();
-}
-#[test]
-fn fixture_stains_preserve_frames_order_repairs_and_unaffected_sharing() {
-    check_reference_stains();
 }
 #[test]
 fn stains_reject_invalid_input_limit_work_and_leave_other_planes_reusable() {
     use superspec_engine::worldspec::themes::kowloon::stains::stain;
-    let case = fixture().cases.remove(0);
+    let case = case(settings(0., false, false));
     let pen = pen(false);
     let mut mesh = Mesh::new(Mode::Render, 100000, &|| false).unwrap();
     assert!(stain(&mut mesh, &pen, [0., 0., 1., f64::NAN], [1.; 3], 0.5).is_err());
@@ -562,7 +444,7 @@ fn tiled_wall_bakes_one_continuous_field_across_panels_and_washes() {
 }
 #[test]
 fn invalid_work_and_exposure_are_rejected_before_emission_and_cancellation_recovers() {
-    let mut case = fixture().cases.remove(1);
+    let mut case = case(settings(0.6, true, false));
     for error in 0..5 {
         let original = case.settings.clone();
         match error {

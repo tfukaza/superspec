@@ -16,9 +16,10 @@ mod route;
 mod schema;
 mod surfaces;
 use crate::materialspec::program::MaterialRequest;
-pub use compose::{Environment, NativeGenerators, NativeOutput};
+pub use compose::{Environment, NativeGenerators, NativeOutput, NativePrototype};
 pub use location::locate_diagnostic;
 pub use output::*;
+pub use parts::PartContent;
 pub use schema::*;
 use serde::Serialize;
 use serde_json::json;
@@ -396,12 +397,13 @@ pub fn prepare_in(
         | Generator::Prism { .. }
         | Generator::Arc(_)
         | Generator::Item(_)
-        | Generator::Native(_) => {
+        | Generator::Native(_)
+        | Generator::Prototype(_) => {
             return Err(fail(
                 &definition.source,
                 "/generator",
                 "ITEM_PART",
-                "Box, panel, route, item and native generators belong to the parts of a version 2 item.",
+                "Box, panel, route, item, native and prototype generators belong to the parts of a version 2 item.",
             ));
         }
     };
@@ -505,6 +507,23 @@ impl PreparedItem {
             v: matrix.direction(local.v),
             normal: matrix.direction(local.normal),
         })
+    }
+    /// Every leaf part of the item and of its sub-items with its content keys, found from
+    /// the prepared shapes without building any mesh. Empty for an item that is not made of
+    /// parts.
+    pub fn part_contents(&self) -> Result<Vec<PartContent>, ItemDiagnostic> {
+        let mut result = Vec::new();
+        if let Shape::Parts(parts) = &self.shape {
+            parts::contents(
+                parts,
+                &self.authored,
+                "",
+                &|slot| Some(slot.to_owned()),
+                &mut result,
+            )
+            .map_err(|e| fail(&self.definition.source, "/parts", "ITEM_PART", e))?;
+        }
+        Ok(result)
     }
     pub fn build(&self, cancelled: &dyn Fn() -> bool) -> Result<GeneratedItem, ItemDiagnostic> {
         Ok(self.construct(None, cancelled)?.0)

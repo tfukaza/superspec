@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-window",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "width": {"type": "number", "default": 1.2, "min": 0.4, "max": 4, "unit": "m"},
     "height": {"type": "number", "default": 1.4, "min": 0.4, "max": 3, "unit": "m"},
     "kind": {"type": "choice", "default": "casement", "choices": ["casement", "slider", "timber", "louver"]},
@@ -35,7 +37,7 @@
     {
       "id": "window",
       "generator": {"kind": "native", "name": "kowloon/window",
-        "parameters": {"kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "kind": {"parameter": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "hood": {"parameter": "hood"}, "recess": {"parameter": "recess"},
                        "frame": {"parameter": "frame"}, "trim": {"parameter": "trim"}, "lit": {"parameter": "lit"},
                        "transom": {"parameter": "transom"}, "glazing": {"parameter": "glazing"}, "storage": {"parameter": "storage"},
@@ -49,7 +51,7 @@
       "id": "bars",
       "when": "bars",
       "generator": {"kind": "native", "name": "kowloon/security-bars",
-        "parameters": {"pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}, "share": {"parameter": "barsShare"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "pattern": {"parameter": "barsPattern"}, "width": {"expr": "width + 0.12"}, "height": {"expr": "height + 0.1"}, "share": {"parameter": "barsShare"},
                        "bar": {"parameter": "barsBar"}, "spacing": {"parameter": "barsSpacing"}}},
       "placement": {"position": [0, -0.06, -0.04]}
     }

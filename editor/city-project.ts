@@ -19,6 +19,7 @@ const modules = Object.fromEntries(
 type CityNode = {
   id: string;
   kind: string;
+  children?: { attributes: { points: [number, number][] } }[];
   attributes: {
     position: number[];
     step?: number[];
@@ -33,6 +34,11 @@ type CityNode = {
     seed?: number;
     model?: string;
     banner?: boolean;
+    "ground-shops"?: boolean;
+    pavement?: boolean;
+    "front-trade"?: string;
+    "graphics-detail"?: number;
+    "variant-budget"?: number;
   };
 };
 type Role = keyof typeof catalog.roles;
@@ -67,7 +73,22 @@ export function modelsOf(packet: ScenePacket) {
             Object.assign(params, families[seed % families.length], {
               seed, footprint: a.footprint ?? [[0, 0], [w, 0], [w, d], [0, d]],
             });
+            if (node.children?.length) params.courtyards = node.children.map(hole => hole.attributes.points);
+            if (a["ground-shops"] !== undefined) params.groundShops = a["ground-shops"];
+            if (a.pavement !== undefined) params.pavement = a.pavement;
+            if (a["front-trade"] !== undefined)
+              for (const [plan, value] of [["shopPlans", "open"], ["tradePlans", a["front-trade"]]] as const) {
+                // The family rows are shared module data: copy before changing the front shop.
+                const rows = structuredClone((params[plan] as string[][] | undefined) ?? [[]]);
+                rows[0][0] = value;
+                params[plan] = rows;
+              }
           }
+          // The shading project regenerates the building from these parameters, so it must draw the
+          // level the compiled scene drew (crates/engine/src/worldspec/themes/kowloon/city.rs).
+          if (a["graphics-detail"] !== undefined) params.graphicsDetail = a["graphics-detail"];
+          // Likewise the variant budget: another budget picks other catalogue shapes.
+          if (a["variant-budget"] !== undefined) params.variantBudget = a["variant-budget"];
         } else {
           for (const key of ["width", "depth", "height"] as const)
             if (a[key] !== undefined) params[key] = a[key];

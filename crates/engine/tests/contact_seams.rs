@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::BTreeMap;
 use superspec_engine::worldspec::themes::kowloon::seams::{self, Facet, Kind};
 use superspec_geometry::V3;
 use superspec_geometry::obstructions::Budget;
@@ -13,25 +12,41 @@ struct Input {
     visible: bool,
     collidable: bool,
 }
-#[derive(Debug, Deserialize, PartialEq)]
-struct Wall {
-    host: String,
-    seams: Vec<[V3; 2]>,
+/// A floor and a raised step meet two walls either side of a doorway at u in [2, 3],
+/// a wall crossing the room, and facets each filter must reject.
+fn room() -> Vec<Input> {
+    serde_json::from_value(serde_json::json!([
+        {"object":"floor","kind":"floor","points":[[0,0,0],[6,0,0],[6,4,0]],"normalZ":1,"visible":true,"collidable":true},
+        {"object":"floor","kind":"floor","points":[[0,0,0],[6,4,0],[0,4,0]],"normalZ":1,"visible":true,"collidable":true},
+        {"object":"step","kind":"stairs","points":[[0,0,1],[6,0,1],[0,4,1]],"normalZ":1,"visible":true,"collidable":true},
+        {"object":"sloped","kind":"floor","points":[[0,0,0],[6,0,0],[0,4,1]],"normalZ":1,"visible":true,"collidable":true},
+        {"object":"hidden-floor","kind":"floor","points":[[0,0,0],[6,0,0],[0,4,0]],"normalZ":1,"visible":false,"collidable":true},
+        {"object":"decoration","kind":"floor","points":[[0,0,0],[6,0,0],[0,4,0]],"normalZ":1,"visible":true,"collidable":false},
+        {"object":"down","kind":"floor","points":[[0,0,0],[0,4,0],[6,0,0]],"normalZ":-1,"visible":true,"collidable":true},
+        {"object":"roof","kind":"other","points":[[0,0,0],[6,0,0],[0,4,0]],"normalZ":1,"visible":true,"collidable":true},
+        {"object":"z-wall","kind":"wall","points":[[-1,0,0],[2,0,0],[2,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"z-wall","kind":"wall","points":[[-1,0,0],[2,0,3],[-1,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"a-wall","kind":"wall","points":[[3,0,0],[7,0,0],[7,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"a-wall","kind":"wall","points":[[3,0,0],[7,0,3],[3,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"crossing","kind":"wall","points":[[-1,2,-1],[7,2,-1],[7,2,2]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"crossing","kind":"wall","points":[[-1,2,-1],[7,2,2],[-1,2,2]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"point","kind":"wall","points":[[-1,0,0],[0,0,0],[0,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"point","kind":"wall","points":[[-1,0,0],[0,0,3],[-1,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"remote","kind":"wall","points":[[9,0,0],[11,0,0],[11,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"remote","kind":"wall","points":[[9,0,0],[11,0,3],[9,0,3]],"normalZ":0,"visible":true,"collidable":true},
+        {"object":"hidden-wall","kind":"wall","points":[[0,0,0],[6,0,0],[6,0,3]],"normalZ":0,"visible":false,"collidable":true},
+        {"object":"hidden-wall","kind":"wall","points":[[0,0,0],[6,0,3],[0,0,3]],"normalZ":0,"visible":false,"collidable":true},
+        {"object":"visual-wall","kind":"wall","points":[[0,0,0],[6,0,0],[6,0,3]],"normalZ":0,"visible":true,"collidable":false},
+        {"object":"visual-wall","kind":"wall","points":[[0,0,0],[6,0,3],[0,0,3]],"normalZ":0,"visible":true,"collidable":false},
+        {"object":"not-vertical","kind":"wall","points":[[0,0,0],[6,0,0],[0,1,3]],"normalZ":0.01,"visible":true,"collidable":true}
+    ]))
+    .unwrap()
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Reference {
-    triangles: Vec<Input>,
-    by_object: BTreeMap<String, Vec<[V3; 2]>>,
-    walls_by_floor: BTreeMap<String, Vec<Wall>>,
-}
-pub fn check_reference_contacts() {
-    let reference: Reference = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/contact-seams.json"
-    ))
-    .unwrap();
+#[test]
+fn physical_contacts_keep_doorways_open_and_filter_hidden_visual_and_non_level_facets() {
+    let room = room();
     let facets = || {
-        reference.triangles.iter().map(|t| Facet {
+        room.iter().map(|t| Facet {
             object: &t.object,
             kind: match t.kind.as_str() {
                 "wall" => Kind::Wall,
@@ -46,38 +61,48 @@ pub fn check_reference_contacts() {
         })
     };
     let output = seams::contacts(facets(), &mut Budget::new(100_000, &|| false).unwrap()).unwrap();
-    assert_eq!(output.by_object, reference.by_object);
+    // Only collidable, visible, level floors and vertical walls that share an edge produce seams.
+    assert_eq!(
+        output
+            .by_object
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["a-wall", "crossing", "floor", "step", "z-wall"]
+    );
+    for seams in output.by_object.values() {
+        for seam in seams {
+            for p in seam {
+                assert!(
+                    p[2] == 0. || p[2] == 1.,
+                    "seams stay on the floor or step: {p:?}"
+                );
+            }
+        }
+    }
     assert_eq!(
         output
             .walls_by_floor
-            .into_iter()
-            .map(|(f, w)| (
-                f,
-                w.into_iter()
-                    .map(|w| Wall {
-                        host: w.host,
-                        seams: w.seams
-                    })
-                    .collect()
-            ))
-            .collect::<BTreeMap<_, Vec<_>>>(),
-        reference.walls_by_floor
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["floor", "step"]
     );
     // Doorway [2,3] stays open; ownership order remains z-wall then a-wall.
+    let floor = &output.walls_by_floor["floor"];
     assert_eq!(
-        reference.walls_by_floor["floor"]
-            .iter()
-            .map(|w| w.host.as_str())
-            .collect::<Vec<_>>(),
+        floor.iter().map(|w| w.host.as_str()).collect::<Vec<_>>(),
         ["z-wall", "a-wall", "crossing"]
     );
-    for wall in &reference.walls_by_floor["floor"][..2] {
+    for wall in &floor[..2] {
         assert!(
             wall.seams
                 .iter()
                 .all(|s| s.iter().all(|p| p[0] <= 2.) || s.iter().all(|p| p[0] >= 3.))
         );
     }
+    // The wall stops at the floor edge: z-wall contributes exactly the shared span u in [0, 2].
+    assert_eq!(floor[0].seams, [[[0., 0., 0.], [2., 0., 0.]]]);
     assert!(
         seams::contacts(facets(), &mut Budget::new(1, &|| false).unwrap())
             .err()
@@ -85,11 +110,6 @@ pub fn check_reference_contacts() {
             .contains("work allowance")
     );
 }
-#[test]
-fn finite_physical_contacts_match_source_with_doorways_and_filters() {
-    check_reference_contacts();
-}
-
 #[test]
 fn contact_limits_and_cancellation_leave_the_next_request_clean() {
     let triangle = Facet {

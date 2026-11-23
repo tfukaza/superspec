@@ -6,6 +6,7 @@ use crate::itemspec::definition::{Feature, ItemMesh, NativeOutput, Reach, Values
 use crate::worldspec::themes::kowloon::{
     facade_plan,
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     kit::Kit,
     massing::Lot,
     molding::{Strip, profiled_strip},
@@ -120,6 +121,9 @@ pub(super) fn shop_room(
     let floor = a.bounded("floor", 0.03, 0.02..=1.)?;
     let storey = a.number("storey", 3.35)?;
     let shutter = a.color("shutter", "#758077")?;
+    // `wall`: m of wall the opening is cut through, whose reveals stand where the room's side
+    // walls would start: the side walls begin that far in (0–1, 0).
+    let wall = a.bounded("wall", 0., 0. ..=1.)?;
     // `hanging`: goods hung on strings across the whole opening, under its head (true).
     let hanging = a.boolean("hanging", !matches!(trade, shop::shell::Trade::Roast))?;
     // `hangClear`: m below the head that only the cords cross, so the goods hang beneath an
@@ -196,7 +200,7 @@ pub(super) fn shop_room(
     };
     let output = draw(cancelled, |mesh| {
         // The shell proposes a fascia sign; signs are items of their own, so it is not drawn.
-        shop::shell::draw(
+        shop::shell::draw_behind(
             &mut fixture(mesh, "shop-room")?,
             &shop::shell::Request {
                 plan: &room,
@@ -208,6 +212,7 @@ pub(super) fn shop_room(
                 shutter_color: Some(shutter),
                 frontage: None,
             },
+            wall,
         )?;
         if hanging && width >= 1.6 {
             // Strings of packets hung across the opening, just inside its head, in the room's
@@ -320,6 +325,7 @@ fn floor_slot(output: &mut NativeOutput, level: f64) {
         tangents: vec![],
         indices: vec![],
         material_slot: slot.into(),
+        roles: vec![],
     };
     let mut parts = [empty("concrete"), empty("shop-floor")];
     let mut remaps = [BTreeMap::new(), BTreeMap::new()];
@@ -2063,17 +2069,29 @@ pub(super) fn tile_deck(
     let mut rng = SeededRng::from_text(&key);
     draw(cancelled, |mesh| {
         let d = &mut on(mesh, room_pen("tile-deck", [-width / 2., -depth / 2., 0.])?)?;
-        d.cuboid(
-            "roof-tile",
-            [0., 0., 0.],
-            [width, depth, thickness * 0.6],
-            shade(repair, 0.5),
-            "d",
-        )?;
+        let bed = shade(repair, 0.5);
+        // A reduced level draws the deck as one face, which is one chart of the bake and
+        // nothing for a distance level to protect a seam around: the mean of the tiles'
+        // colours at level 2, and at level 1 the mean of each quarter of the deck at its
+        // corner, so the repairs still drift across the roof. Level 1 keeps the deck's edge.
+        // Every tile still draws from the stream.
+        let detail = d.mesh.graphics_detail();
+        if !detail.reduced() {
+            d.cuboid(
+                "roof-tile",
+                [0., 0., 0.],
+                [width, depth, thickness * 0.6],
+                bed,
+                "d",
+            )?;
+        }
+        let mut laid: Vec<V3> = vec![];
         for r in 0..rows {
             for c in 0..columns {
                 let roll = rng.next_f64();
                 if roll < 0.015 {
+                    // A missing tile shows the bed.
+                    laid.push(bed);
                     continue;
                 }
                 let base = if patch(c, r) != (roll > 0.95) {
@@ -2082,6 +2100,10 @@ pub(super) fn tile_deck(
                     color
                 };
                 let lift = if roll > 0.985 { 0.008 } else { 0. };
+                if detail.reduced() {
+                    laid.push(shade(base, rng.float(0.72, 1.08)));
+                    continue;
+                }
                 d.cuboid(
                     "roof-tile",
                     [
@@ -2096,6 +2118,59 @@ pub(super) fn tile_deck(
                     ],
                     shade(base, rng.float(0.72, 1.08)),
                     "d",
+                )?;
+            }
+        }
+        if detail.reduced() {
+            // The mean colour of the tiles in a range of columns and rows.
+            let mean =
+                |columns_of: std::ops::Range<usize>, rows_of: std::ops::Range<usize>| -> V3 {
+                    let tiles = (columns_of.len() * rows_of.len()) as f64;
+                    std::array::from_fn(|k| {
+                        rows_of
+                            .clone()
+                            .flat_map(|r| columns_of.clone().map(move |c| r * columns + c))
+                            .map(|index| laid[index][k])
+                            .sum::<f64>()
+                            / tiles
+                    })
+                };
+            // A deck one tile wide has no halves: its one tile is both.
+            let halves = |count: usize| [0..count.div_ceil(2), count / 2..count];
+            let (across, along) = (halves(columns), halves(rows));
+            let quarters = detail == GraphicsDetail::Low;
+            let tint = |local: V3| -> Result<V3, String> {
+                Ok(if quarters {
+                    mean(
+                        across[usize::from(local[0] > width / 2.)].clone(),
+                        along[usize::from(local[1] > depth / 2.)].clone(),
+                    )
+                } else {
+                    mean(0..columns, 0..rows)
+                })
+            };
+            d.pen.face(
+                d.mesh,
+                "roof-tile",
+                &[
+                    [0., 0., thickness],
+                    [width, 0., thickness],
+                    [width, depth, thickness],
+                    [0., depth, thickness],
+                ],
+                [0., 0., 1.],
+                &Tint::Field(&tint),
+                1.,
+                None,
+                None,
+            )?;
+            if quarters {
+                d.cuboid(
+                    "roof-tile",
+                    [0., 0., 0.],
+                    [width, depth, thickness],
+                    bed,
+                    "du",
                 )?;
             }
         }
@@ -2145,6 +2220,12 @@ pub(super) fn cornice(
     ];
     let section: &[[f64; 2]] = if profile == "ledge" { &ledge } else { &coping };
     draw(cancelled, |mesh| {
+        // The rounding is a centimetre: a reduced level draws the section's own corners.
+        let setback = if mesh.graphics_detail().reduced() {
+            0.
+        } else {
+            bevel
+        };
         profiled_strip(
             &pen("cornice")?,
             mesh,
@@ -2154,7 +2235,7 @@ pub(super) fn cornice(
                 section,
                 omitted_edges: &[],
                 miters: [(start != 0.).then_some(-start), (end != 0.).then_some(end)],
-                setback: bevel,
+                setback,
             },
             &Tint::Color(color),
             1.,
@@ -2207,6 +2288,13 @@ pub(super) fn conduit(
     .weighted(weight)?;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "conduit")?;
+        // A conduit is a line 25 mm across with boxes the size of a hand: level 2 draws
+        // none of it, and level 1 its run and its boxes without their lids.
+        let detail = d.mesh.graphics_detail();
+        if detail == GraphicsDetail::VeryLow {
+            return Ok(());
+        }
+        let lidded = !detail.reduced();
         system.run(d, &points, Some(0.))?;
         if boxes {
             // A box grows with its conduit and with the weight, and so does its lid.
@@ -2223,6 +2311,9 @@ pub(super) fn conduit(
                     shade(color, 1.15),
                     "b",
                 )?;
+                if !lidded {
+                    continue;
+                }
                 d.cuboid(
                     "metal",
                     [p[0] - half * 0.8, y + radius + 0.012, p[2] - half],
@@ -2242,6 +2333,9 @@ pub(super) fn conduit(
                 body,
                 "b",
             )?;
+            if !lidded {
+                return Ok(());
+            }
             d.cuboid(
                 "metal",
                 [p[0] - half - 0.008, 0.11, p[2] - 0.008],
@@ -2412,6 +2506,10 @@ pub(super) fn rail(
         for i in 0..=posts {
             let x = length * i as f64 / posts as f64;
             d.tube("metal", &[[x, 0., 0.], [x, 0., height]], 0.02, color, 8)?;
+            // A post's foot plate is 8 mm thick.
+            if d.mesh.graphics_detail().reduced() {
+                continue;
+            }
             d.cuboid(
                 "metal",
                 [x - 0.045, -0.045, 0.],
@@ -2451,9 +2549,29 @@ pub(super) fn ladder(
     a.finish()?;
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "ladder")?;
+        // A ladder is all lines: level 2 draws none of it; level 1 keeps the stiles straight
+        // over the top and every second rung, without the wall stays.
+        let detail = d.mesh.graphics_detail();
+        if detail == GraphicsDetail::VeryLow {
+            return Ok(());
+        }
         let y = 0.16;
         for x in [-width / 2., width / 2.] {
-            if grab > 0. {
+            if grab > 0. && detail.reduced() {
+                let crown = height + grab;
+                d.tube(
+                    "metal",
+                    &[
+                        [x, y, 0.05],
+                        [x, y, crown],
+                        [x, y - 0.28, crown],
+                        [x, y - 0.28, height + 0.02],
+                    ],
+                    0.02,
+                    color,
+                    10,
+                )?;
+            } else if grab > 0. {
                 // Up past the top, over a hoop of 0.14 m radius and down to the roof 0.12 m
                 // behind the wall, with a stay to the wall's head.
                 let (radius, crown) = (0.14, height + grab - 0.14);
@@ -2489,11 +2607,13 @@ pub(super) fn ladder(
                 )?;
             }
             for z in [0.5, height - 0.5] {
-                d.tube("metal", &[[x, y, z], [x, 0., z]], 0.012, color, 6)?;
+                if !detail.reduced() {
+                    d.tube("metal", &[[x, y, z], [x, 0., z]], 0.012, color, 6)?;
+                }
             }
         }
         let rungs = ((height - 0.4) / 0.34) as usize;
-        for i in 0..=rungs {
+        for i in (0..=rungs).step_by(detail.pick(1, 2, 2)) {
             let z = 0.28 + i as f64 * 0.34;
             if z < height - 0.08 {
                 d.tube(
@@ -2659,6 +2779,7 @@ pub(super) fn street_tree(
             material_slot: m.material_slot.clone(),
             additional_uvs: Default::default(),
             tangents: vec![],
+            roles: vec![],
         });
     }
     Ok(NativeOutput {

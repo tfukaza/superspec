@@ -345,6 +345,7 @@ impl Package {
                     tangents,
                     indices,
                     material_slot,
+                    roles: vec![],
                 };
                 if !attributes.contains_key("NORMAL") {
                     if mesh.indices.len() > MAX_SOURCE_VERTICES - vertices {
@@ -422,6 +423,8 @@ impl Package {
             parts: vec![],
             features: vec![],
             anchors: vec![],
+            prototypes: BTreeMap::new(),
+            placements: vec![],
         })
     }
     fn children(&self, node: &Value, pointer: &str) -> Result<Vec<usize>, ItemDiagnostic> {

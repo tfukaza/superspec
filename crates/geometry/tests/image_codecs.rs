@@ -58,7 +58,7 @@ fn jpeg_and_png_decode_distinct_source_samples_and_reject_truncation() {
             0, 0, 0, 255, 85, 85, 85, 255, 170, 170, 170, 255, 255, 255, 255, 255
         ]
     );
-    let jpeg = include_bytes!("../../../tests/fixtures/rust/color-blocks.jpg");
+    let jpeg = include_bytes!("fixtures/color-blocks.jpg");
     let image = decode(jpeg).unwrap();
     assert_eq!(
         (image.width, image.height, image.mime),

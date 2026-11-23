@@ -4,6 +4,8 @@
   "id": "kowloon-sign",
   "densities": {"lettering": 800, "board": 320},
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "mount": {"type": "choice", "default": "board", "choices": ["board", "blade", "hung", "flat"]},
     "width": {"type": "number", "default": 0.94, "min": 0.2, "max": 8, "unit": "m"},
     "height": {"type": "number", "default": 3.3, "min": 0.1, "max": 12, "unit": "m"},
@@ -29,7 +31,7 @@
       "id": "board",
       "when": "mount == 0",
       "generator": {"kind": "native", "name": "kowloon/board-sign",
-        "parameters": {"text": {"parameter": "text"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "text": {"parameter": "text"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "scheme": {"parameter": "scheme"}, "horizontal": {"parameter": "horizontal"},
                        "angle": {"parameter": "angle"}, "reach": {"parameter": "reach"}, "anchor": {"parameter": "anchor"},
                        "end": {"expr": "select(end <= -99, width, end)"}, "ties": {"parameter": "ties"},
@@ -41,19 +43,19 @@
       "id": "blade",
       "when": "mount == 1",
       "generator": {"kind": "native", "name": "kowloon/blade-sign",
-        "parameters": {"height": {"parameter": "height"}, "reach": {"parameter": "reach"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "height": {"parameter": "height"}, "reach": {"parameter": "reach"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "hung",
       "when": "mount == 2",
       "generator": {"kind": "native", "name": "kowloon/hung-sign",
-        "parameters": {"height": {"parameter": "height"}, "reach": {"parameter": "reach"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "height": {"parameter": "height"}, "reach": {"parameter": "reach"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "flat",
       "when": "mount == 3",
       "generator": {"kind": "native", "name": "kowloon/sign",
-        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "height"}, "text": {"parameter": "text"}, "invent": true, "subtitle": "",
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"parameter": "width"}, "height": {"parameter": "height"}, "text": {"parameter": "text"}, "invent": true, "subtitle": "",
                        "ground": {"choose": ["#dfcfaa", "#793f32", "#2f5a48", "#2c4a6e", "#d2a23a", "#1f1d1b", "#dcd8cc"], "by": "scheme"},
                        "ink": {"choose": ["#793f32", "#dfcfaa", "#e9d9a8", "#e8e2d0", "#4a1d17", "#d9b65a", "#8a4a2c"], "by": "scheme"},
                        "border": {"choose": ["#793f32", "#dfcfaa", "#e9d9a8", "#e8e2d0", "#4a1d17", "#d9b65a", "#8a4a2c"], "by": "scheme"},

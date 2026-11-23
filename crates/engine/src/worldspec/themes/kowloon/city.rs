@@ -190,11 +190,42 @@ pub(crate) fn request(
             _ => serde_json::json!([[0, 0], [width, 0], [width, depth], [0, depth]]),
         };
         values.insert("footprint".into(), footprint);
+        if !node.children.is_empty() {
+            let courtyards = node
+                .children
+                .iter()
+                .map(|hole| match hole.attributes.get("points") {
+                    Some(superspec_types::architecture::Value::PlanPoints(points)) => Ok(points),
+                    _ => Err("Missing courtyard points."),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            values.insert("courtyards".into(), serde_json::json!(courtyards));
+        }
+        for (attribute, parameter) in [("ground-shops", "groundShops"), ("pavement", "pavement")] {
+            if node.attributes.contains_key(attribute) {
+                values.insert(parameter.into(), node.boolean(attribute, true).into());
+            }
+        }
         values.insert("seed".into(), seed.into());
         values
     } else {
         std::collections::BTreeMap::new()
     };
+    // A render-only choice: the same building drawn with less geometry for a lower preset.
+    if node.kind == "building"
+        && let Some(level) = node.optional_number("graphics-detail")
+    {
+        parameters.insert(
+            super::graphics_detail::PARAMETER.into(),
+            (level as u8).into(),
+        );
+    }
+    // Also render-only: how many shapes each part type draws. Unstated, the level's own.
+    if node.kind == "building"
+        && let Some(budget) = node.optional_number("variant-budget")
+    {
+        parameters.insert(super::variants::PARAMETER.into(), (budget as u8).into());
+    }
     for key in ["length", "width", "depth", "height"] {
         if node.kind != "building"
             && let Some(value) = node.optional_number(key)

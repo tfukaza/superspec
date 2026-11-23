@@ -188,6 +188,28 @@ impl Garment {
         }
     }
 }
+thread_local! {
+    static DYES: std::cell::RefCell<Option<SeededRng>> = const { std::cell::RefCell::new(None) };
+}
+/// Runs `draw` with the garments it chooses dyed from the stream of `key` (`None`: from the
+/// stream that shapes them, as ever), restoring the caller's dyes. A fixture whose washing is
+/// a catalogue entry's hangs the entry's garments in colours of its own, so two fixtures of
+/// one entry are one geometry in two colourings.
+pub(super) fn with_dyes<T>(key: Option<&str>, draw: impl FnOnce() -> T) -> T {
+    struct Restore(Option<SeededRng>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DYES.with(|dyes| *dyes.borrow_mut() = self.0.take());
+        }
+    }
+    let stream = key.map(|key| SeededRng::from_text(&format!("{key}/dyes")));
+    let _restore = Restore(DYES.with(|dyes| dyes.replace(stream)));
+    draw()
+}
+/// A colour choice drawn from the dye stream, when one is set.
+fn dyed<T>(choose: impl FnOnce(&mut SeededRng) -> T) -> Option<T> {
+    DYES.with(|dyes| dyes.borrow_mut().as_mut().map(choose))
+}
 const WHITES: &str = "#dedbd2 #d9d7d0 #e0dccf #d3d6d8 #dcd6c6";
 const PALES: &str = "#c3ccd6 #d6c7b4 #d9c4c0 #c6d2c4 #d8d0aa #cfc6d2";
 const MIDS: &str = "#8fa3b8 #a89a84 #b88f88 #7f9488 #b5a06a #8f8aa0 #9a9c98";
@@ -209,8 +231,11 @@ pub fn choose(
         return Err("Laundry room requires positive dimensions within 100 m.".into());
     }
     if rng.chance(0.72)
-        && let Some(g) = balcony_props::choose(rng, room, support)?
+        && let Some(mut g) = balcony_props::choose(rng, room, support)?
     {
+        if let Some(tint) = dyed(|dyes| srgb(dyes.pick(&balcony_props::DYES))) {
+            g.tint = tint;
+        }
         return Ok(Some(Garment::Mesh(g)));
     }
     for _ in 0..5 {
@@ -251,20 +276,28 @@ pub fn choose(
             _ => [LINENS, ""],
         };
         let colors: Vec<_> = dyes.iter().flat_map(|s| s.split_whitespace()).collect();
-        let color = srgb(rng.pick(&colors));
-        let tint = shade(color, rng.float(0.86, 1.));
-        let fitting_tint = if support == Support::Hanger {
-            rng.pick(&[
-                shade(srgb("#a4a9aa"), 0.8),
-                srgb("#d8d6cc"),
-                srgb("#7f97ad"),
-                srgb("#3c3c3a"),
-            ])
-        } else {
-            srgb(rng.pick(&[
-                "#b89868", "#b89868", "#9db4c4", "#c9a3a3", "#a9c2a4", "#d6d2c4",
-            ]))
+        // The cloth's dye and its shade, then what its pegs or hanger are made of.
+        let colours = |rng: &mut SeededRng| {
+            let color = srgb(rng.pick(&colors));
+            let tint = shade(color, rng.float(0.86, 1.));
+            let fitting_tint = if support == Support::Hanger {
+                rng.pick(&[
+                    shade(srgb("#a4a9aa"), 0.8),
+                    srgb("#d8d6cc"),
+                    srgb("#7f97ad"),
+                    srgb("#3c3c3a"),
+                ])
+            } else {
+                srgb(rng.pick(&[
+                    "#b89868", "#b89868", "#9db4c4", "#c9a3a3", "#a9c2a4", "#d6d2c4",
+                ]))
+            };
+            (tint, fitting_tint)
         };
+        // The stream that shapes the garment draws its colours always, so the shape is the
+        // same whoever dyes it.
+        let own = colours(&mut *rng);
+        let (tint, fitting_tint) = dyed(colours).unwrap_or(own);
         let tilt = if cut.follows {
             0.
         } else {
@@ -301,6 +334,108 @@ pub fn hang(
 ) -> Result<(), String> {
     hang_with(drawing, garment, left, right, lean, textured, 1.)
 }
+/// A reduced level's meshed garment: its outline cut from plain cotton in its own dye, both
+/// faces, hung from the same anchors with the same lean. A shirt keeps its sleeves and a
+/// pair of trousers its legs, so a line of washing still reads as clothes.
+fn silhouette(
+    drawing: &mut Fixture<'_, '_>,
+    g: &balcony_props::Garment,
+    left: V3,
+    right: V3,
+    lean: f64,
+) -> Result<(), String> {
+    use super::pen::Tint;
+    let run = hypot(right[0] - left[0], right[1] - left[1]);
+    if run < 1e-6 {
+        return Ok(());
+    }
+    let along = [(right[0] - left[0]) / run, (right[1] - left[1]) / run];
+    let middle: V3 = std::array::from_fn(|i| (left[i] + right[i]) / 2.);
+    let (w, drop) = (g.width, g.drop);
+    let place = |[x, y]: [f64; 2]| {
+        let z = lean * (y / drop).clamp(0., 1.).powf(1.3);
+        [
+            middle[0] + along[0] * x - along[1] * z,
+            middle[1] + along[1] * x + along[0] * z,
+            middle[2] - y,
+        ]
+    };
+    let top = 0.02_f64.min(drop * 0.1);
+    let pieces: Vec<[[f64; 2]; 4]> = match g.asset {
+        balcony_props::GarmentName::HangingShirt => vec![
+            [
+                [-0.29 * w, top],
+                [0.29 * w, top],
+                [0.29 * w, drop],
+                [-0.29 * w, drop],
+            ],
+            [
+                [-0.29 * w, top],
+                [-0.29 * w, top + 0.24 * drop],
+                [-0.5 * w, 0.52 * drop],
+                [-0.5 * w, 0.3 * drop],
+            ],
+            [
+                [0.29 * w, top],
+                [0.5 * w, 0.3 * drop],
+                [0.5 * w, 0.52 * drop],
+                [0.29 * w, top + 0.24 * drop],
+            ],
+        ],
+        balcony_props::GarmentName::HangingTrousers => vec![
+            [
+                [-0.5 * w, top],
+                [0.5 * w, top],
+                [0.5 * w, 0.28 * drop],
+                [-0.5 * w, 0.28 * drop],
+            ],
+            [
+                [-0.5 * w, 0.28 * drop],
+                [-0.04 * w, 0.28 * drop],
+                [-0.08 * w, drop],
+                [-0.46 * w, drop],
+            ],
+            [
+                [0.04 * w, 0.28 * drop],
+                [0.5 * w, 0.28 * drop],
+                [0.46 * w, drop],
+                [0.08 * w, drop],
+            ],
+        ],
+        balcony_props::GarmentName::HangingBedsheet => {
+            vec![[
+                [-0.5 * w, top],
+                [0.5 * w, top],
+                [0.5 * w, drop],
+                [-0.5 * w, drop],
+            ]]
+        }
+    };
+    let across = [-along[1], along[0], 0.];
+    for piece in pieces {
+        let points = piece.map(place);
+        // The atlas's plain cotton chart, as the cut garments use it.
+        let uv = piece.map(|[x, y]| {
+            [
+                (520.5 + (x / w + 0.5).clamp(0., 1.) * 495.) / 1024.,
+                1. - (520.5 + (y / drop).clamp(0., 1.) * 495.) / 1024.,
+            ]
+        });
+        for side in [1., -1.] {
+            drawing.pen.face(
+                drawing.mesh,
+                "balcony-cloth",
+                &points,
+                across.map(|v| v * side),
+                &Tint::Color(shade(g.tint, if side > 0. { 0.94 } else { 0.88 })),
+                1.,
+                Some(&uv),
+                None,
+            )?;
+        }
+    }
+    Ok(())
+}
 /// [`hang`] with fittings of `weight` (as [`washing_with`]); a meshed garment has none.
 pub fn hang_with(
     drawing: &mut Fixture<'_, '_>,
@@ -324,7 +459,11 @@ pub fn hang_with(
     {
         return Err("Laundry anchors or lean exceed finite bounds.".into());
     }
+    let detail = drawing.mesh.graphics_detail();
     if let Garment::Mesh(g) = garment {
+        if detail.reduced() {
+            return silhouette(drawing, g, left, right, lean);
+        }
         return balcony_props::hang(drawing, g, left, right, lean, textured);
     }
     let Garment::Cut(g) = garment else {
@@ -333,6 +472,15 @@ pub fn hang_with(
     let run = hypot(right[0] - left[0], right[1] - left[1]);
     if run < 1e-6 {
         return Ok(());
+    }
+    // A reduced level keeps every `step`th row and column of a cut's grid, and its edges.
+    let step = detail.pick(1, 2, 4);
+    fn thinned<T>(all: &[T], step: usize) -> impl Iterator<Item = &T> {
+        let last = all.len().saturating_sub(1);
+        all.iter()
+            .enumerate()
+            .filter(move |(i, _)| i % step == 0 || *i == last)
+            .map(|(_, item)| item)
     }
     let along = [(right[0] - left[0]) / run, (right[1] - left[1]) / run];
     let middle: V3 = std::array::from_fn(|i| (left[i] + right[i]) / 2.);
@@ -355,10 +503,10 @@ pub fn hang_with(
             .spend_work(panel.grid.iter().map(Vec::len).sum())?;
         let mut front = Vec::new();
         let mut back = Vec::new();
-        for row in &panel.grid {
+        for row in thinned(&panel.grid, step) {
             let mut a = Vec::new();
             let mut b = Vec::new();
-            for f in row {
+            for f in thinned(row, step) {
                 let wave = sin(f.x * g.folds.rate[0] + g.folds.phase[0] + f.y * g.folds.skew)
                     + 0.4
                         * sin(f.x * g.folds.rate[1] + g.folds.phase[1] - f.y * g.folds.skew * 1.7);
@@ -399,6 +547,10 @@ pub fn hang_with(
         drawing
             .pen
             .patch(drawing.mesh, "balcony-cloth", &back, true)?;
+    }
+    // Pegs, hanger bars and hooks are hairlines: a reduced level leaves them out.
+    if detail.reduced() {
+        return Ok(());
     }
     for fitting in &g.cut.fittings {
         match *fitting {

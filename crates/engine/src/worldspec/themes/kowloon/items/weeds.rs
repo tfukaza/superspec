@@ -22,6 +22,7 @@ pub(super) fn blades(
         uvs: vec![],
         tangents: vec![],
         additional_uvs: Default::default(),
+        roles: vec![],
     };
     let crowns = if seam {
         [

@@ -1033,6 +1033,11 @@ impl Panel {
         Ok(())
     }
 
+    /// How many openings and seats are cut in it.
+    pub(super) fn opening_count(&self) -> usize {
+        self.openings.len()
+    }
+
     /// The openings a face shows, as `[x, z, width, height]` in part coordinates: every
     /// opening on the front but its seats, the ones cut through on the back.
     pub(super) fn openings_on(&self, front: bool) -> Vec<[f64; 4]> {

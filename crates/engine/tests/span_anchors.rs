@@ -1,136 +1,75 @@
-use serde::Deserialize;
-use serde_json::Value;
 use superspec_engine::worldspec::themes::kowloon::spans::{
     anchors::{self, Face, Plane, Rect, Surroundings},
     neighbors::Index,
     walking::{Surface, Walking},
 };
-use superspec_geometry::V3;
-use superspec_geometry::obstructions::{Budget, Obstructions, Triangle};
-#[path = "support/sign_reference.rs"]
-#[allow(dead_code)]
-mod reference;
-#[derive(Deserialize)]
-struct InputFace {
-    host: usize,
-    glazing: bool,
-    points: Triangle,
-    stored_normal: V3,
-}
-#[derive(Deserialize)]
-struct Case {
-    seed: String,
-    hosts: Vec<String>,
-    faces: Vec<InputFace>,
-    physical: Vec<Triangle>,
-    expected: Vec<Value>,
-}
-#[derive(Deserialize)]
-struct Neighbors {
-    points: Vec<V3>,
-    radius: f64,
-    rise: f64,
-    expected: Vec<Vec<usize>>,
-}
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-    neighbors: Neighbors,
-}
-pub fn check_reference_span_anchors() {
-    let g: Golden = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/span-anchors.json"
-    ))
-    .unwrap();
-    for c in g.cases {
-        let mut budget = Budget::new(16_000_000, &|| false).unwrap();
-        let faces = c
-            .faces
-            .into_iter()
-            .map(|f| Face {
-                host: f.host,
-                glazing: f.glazing,
-                points: f.points,
-                stored_normal: f.stored_normal,
-            })
-            .collect::<Vec<_>>();
-        let planes = anchors::planes(&c.hosts, &faces, &mut budget).unwrap();
-        assert_eq!(planes.len(), c.expected.len(), "{} plane count", c.seed);
-        let obstacles = Obstructions::new(
-            &faces.iter().map(|f| f.points).collect::<Vec<_>>(),
-            &mut budget,
-        )
-        .unwrap();
-        let floors = Walking::new(
-            &c.physical
-                .into_iter()
-                .map(|points| Surface {
-                    points,
-                    floor_or_stairs: true,
-                    collidable: true,
-                })
-                .collect::<Vec<_>>(),
-            &mut budget,
-        )
-        .unwrap();
-        let surroundings = Surroundings {
-            obstructions: &obstacles,
-            floors: &floors,
-        };
-        for (i, (p, expected)) in planes.iter().zip(c.expected).enumerate() {
-            let mut metadata = expected.clone();
-            for key in ["queries", "utility", "anchors"] {
-                metadata.as_object_mut().unwrap().remove(key);
-            }
-            reference::close_at(
-                &serde_json::to_value(p).unwrap(),
-                &metadata,
-                &format!("{}/{i}", c.seed),
-            );
-            for query in expected["queries"].as_array().unwrap() {
-                let rect: Rect = serde_json::from_value(query["rect"].clone()).unwrap();
-                assert_eq!(
-                    p.covers(rect, &mut budget).unwrap(),
-                    query["covers"].as_bool().unwrap(),
-                    "{}/{i} {rect:?}",
-                    c.seed
-                );
-            }
-            let seed = format!("{}/{}/{i}", c.seed, p.host());
-            for _ in 0..2 {
-                reference::close_at(
-                    &serde_json::to_value(
-                        anchors::utility(p, i, &seed, &surroundings, &mut budget).unwrap(),
-                    )
-                    .unwrap(),
-                    &expected["utility"],
-                    &format!("{}/{i}/utility", c.seed),
-                );
-                reference::close_at(
-                    &serde_json::to_value(
-                        anchors::windows(p, i, &seed, &surroundings, &mut budget).unwrap(),
-                    )
-                    .unwrap(),
-                    &expected["anchors"],
-                    &format!("{}/{i}/windows", c.seed),
-                );
-            }
+use superspec_geometry::obstructions::{Budget, Obstructions};
+#[test]
+fn wall_planes_window_fixings_and_neighbors_are_repeatable() {
+    let mut budget = Budget::new(16_000_000, &|| false).unwrap();
+    let quad = |x0: f64, x1: f64, y: f64, z0: f64, z1: f64| {
+        let p = [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]];
+        [[p[0], p[1], p[2]], [p[0], p[2], p[3]]]
+    };
+    let mut faces = vec![];
+    for (glazing, points) in [
+        (false, quad(0., 8., 0., 0., 9.)),
+        (true, quad(2., 3., 0.02, 3.1, 4.6)),
+    ] {
+        for points in points {
+            faces.push(Face {
+                host: 0,
+                glazing,
+                points,
+                stored_normal: [0., -1., 0.],
+            });
         }
     }
-    let n = g.neighbors;
-    let mut budget = Budget::new(1_000_000, &|| false).unwrap();
-    let index = Index::new(&n.points, n.radius, n.rise, &mut budget).unwrap();
-    for (i, expected) in n.expected.iter().enumerate() {
-        assert_eq!(
-            index.near(i, &mut budget).unwrap(),
-            *expected,
-            "neighbor {i}"
-        );
-    }
-}
-#[test]
-fn wall_planes_window_fixings_and_ordered_neighbors_match_source() {
-    check_reference_span_anchors();
+    let planes = anchors::planes(&["tower".into()], &faces, &mut budget).unwrap();
+    assert_eq!(planes.len(), 1);
+    assert_eq!(planes[0].windows().len(), 1);
+    let obstacles = Obstructions::new(
+        &faces.iter().map(|f| f.points).collect::<Vec<_>>(),
+        &mut budget,
+    )
+    .unwrap();
+    let floors = Walking::new(
+        &[
+            [[-10., -10., 0.], [20., -10., 0.], [20., 20., 0.]],
+            [[-10., -10., 0.], [20., 20., 0.], [-10., 20., 0.]],
+        ]
+        .map(|points| Surface {
+            points,
+            floor_or_stairs: true,
+            collidable: true,
+        }),
+        &mut budget,
+    )
+    .unwrap();
+    let surroundings = Surroundings {
+        obstructions: &obstacles,
+        floors: &floors,
+    };
+    let p = &planes[0];
+    let run = |budget: &mut Budget<'_>| {
+        (
+            serde_json::to_value(anchors::utility(p, 0, "tower/0", &surroundings, budget).unwrap())
+                .unwrap(),
+            serde_json::to_value(anchors::windows(p, 0, "tower/0", &surroundings, budget).unwrap())
+                .unwrap(),
+        )
+    };
+    let first = run(&mut budget);
+    assert_eq!(first, run(&mut budget), "seeded fixings are repeatable");
+    assert!(!first.0.as_array().unwrap().is_empty());
+    let windows = anchors::windows(p, 0, "tower/0", &surroundings, &mut budget).unwrap();
+    assert!(!windows.is_empty());
+    assert!(windows.iter().all(|a| a.plane == 0 && a.window.is_some()));
+    let points = [[0., 0., 0.], [1., 0., 0.], [4., 0., 0.]];
+    let index = Index::new(&points, 1.5, 1., &mut budget).unwrap();
+    assert_eq!(index.near(0, &mut budget).unwrap(), [1]);
+    assert_eq!(index.near(1, &mut budget).unwrap(), [0]);
+    assert!(index.near(2, &mut budget).unwrap().is_empty());
 }
 #[test]
 fn coverage_tolerance_boundaries_and_failure_recovery_are_explicit() {

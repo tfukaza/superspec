@@ -10,24 +10,21 @@ geometry and texture baking run in Rust. See [current exports](EXPORTS.md) and
 Production material defaults and override/loading contracts are documented in the
 [shared material library](MATERIALS.md).
 
-AML can apply the seeded `kowloon-street@1` kit to explicit floor, wall, and
-building hosts. The compiler generates ordinary render geometry, texture UVs,
-and material weathering colors. Lighting and shadows are rendered in real time;
-the demo uses no baked lighting, lightmaps, or ambient-occlusion textures.
+AML applies the seeded `kowloon-street@1` kit to explicit floor and wall
+hosts. The compiler generates ordinary render geometry, texture UVs,
+and material weathering colors. The [city building guide](AML.md#building-footprints)
+covers the Kowloon ItemSpec building kit.
 
 ```xml
 <dressing theme="kowloon-street@1" seed="court-01"
           grime="0.7" wear="0.3" detail="medium">
   <wall host="courtyard-wall" face="back" material="mosaic" windows="true"/>
   <floor host="courtyard-floor" material="concrete"/>
-  <building host="building-mass" base-wall="building-ground-wall"
-            material="plaster" stories="4"/>
 </dressing>
 ```
 
-Hosts and materials must already exist. Rules use resolved object IDs and allow
-one recipe per host. An absent dressing section preserves ordinary AML behavior.
-See the complete [demo source](../../levelspec/projects/dressing-demo/level.aml).
+Declare each host and material and assign one recipe per host. See the
+[courtyard demo](../../levelspec/demos/courtyard/scene.aml).
 
 ## Controls
 
@@ -37,17 +34,13 @@ See the complete [demo source](../../levelspec/projects/dressing-demo/level.aml)
 | `seed` | Required nonempty string; repeat builds reproduce the variation. |
 | `grime` | 0–1, default 0.4; broad finish darkening, plus damp rising from plain wall bases and run-off below ledges and rooflines. |
 | `wear` | 0–1, default 0.2; fading of the receiving finish and loss of paint or render from walls, first where they stay damp. |
-| `detail` | `low`, `medium` (default), or `high`; controls wall detail and how much buildings carry. On buildings it never changes the `envelope` or `openings` parts, and raising it only adds fixtures, signs, rooftop equipment and, from `medium`, explicit roof paving joints and hairline cracks. Tile units and grout remain visible at every detail level; existing construction and damage placement stay fixed. |
+| `detail` | `low`, `medium` (default), or `high`. Controls wall detail. |
 | `finishes` | Optional dressing-level prefix naming the author's kit finish materials, described under [Kit finishes](#kit-finishes). At least one `<prefix>-<role>` material must be declared. |
 | `material` | Required declared material on each rule. Its texture repeat is honored. |
-| `wall-materials` | Optional dressing-level list of 1–8 distinct declared substrate materials for plain walls and building tenements. Textures, colors, repeat, and surface response are preserved. |
-| `face` | `front` = −Y, `back` = +Y, `left` = −X, `right` = +X, `top` = upward, `side` = vertical sides, in host coordinates. Floor default is `top`; wall/building default is `front`. |
-| `windows` | Boolean, default true on walls/buildings and false on floors. Building revision 1 requires true. |
-| `stories` | Building-only positive integer giving the stories of the tallest tenement; default derives from height. Each story must fit at least 2.8 m, with 0.35 m reserved above for the roof. |
-| `shops` | Building-only chance, 0–1 (default 0.15), that an eligible bay of a large building opens onto a stocked shop; see [Shops](#shops). |
-| `base-wall` | Optional building-only link to a native physical boundary, described below. |
-| `texture-density` | Optional raster resolution override, 16–1024 texels/m. Facades, components and doors use production materials by default. Allocation remains subject to appearance budgets. |
-| `model="reference-corner"` | Places the authored four-story corner shop house on a 9.8 × 7 × 13.1 m box. The model provides its own stories, shops and façades. Use the box's placement to position and orient it. |
+| `wall-materials` | Optional dressing-level list of 1–8 distinct declared substrate materials for plain walls. Textures, colors, repeat, and surface response are preserved. |
+| `face` | `front` = −Y, `back` = +Y, `left` = −X, `right` = +X, `top` = upward, `side` = vertical sides, in host coordinates. Floor default is `top`; wall default is `front`. |
+| `windows` | Boolean, default true on walls and false on floors. |
+| `texture-density` | Optional raster resolution override, 16–1024 texels/m. Allocation remains subject to appearance budgets. |
 
 Per-rule `grime` and `wear` override global values. Texture coordinates have stable
 offsets and rotations; continuous large-scale color variation reduces repetition.
@@ -64,16 +57,12 @@ If none fit, a source-linked spatial warning identifies the receiving area.
 One wall keeps one window construction, frame color and bar pattern; only what
 each household shows behind the glass differs. Wall windows project at most
 0.15 m.
-Generated panes and building doors are opaque visual details. Use native AML
+Generated window decoration is visual. Use native AML
 openings and glazing for functional openings; this kit does not create enterable interiors.
 
 ## Shared surface finishes
 
-Wall and floor finishes come from two shared models, so a plain wall, a
-building façade, a street and a roof terrace differ in their parameters and
-surroundings rather than in separate generators. Both layer variation from
-broad to fine and both are pure functions of position and seed: the same
-surface always receives the same pattern, however it is tessellated.
+Wall and floor finishes layer seeded variation from broad to fine.
 
 **Walls** share the *wall condition*. It takes the height of the ground a face
 stands on, the ledges that shed water onto it (window sills, slab edges, the
@@ -88,13 +77,7 @@ roofline or coping), `grime`, `wear` and a seed, and derives
    the wall is damp or scoured by run-off.
 
 `grime` scales the deposits and `wear` the coat loss; neither moves the other.
-Each recipe decides what the condition is applied to:
-
-| | Plain walls | Buildings |
-| --- | --- | --- |
-| Substrate from `wall-materials` | Broad sections along a wall, with pilasters at changes. | One per tenement, on all its sides. |
-| Ledges | The wall's own top edge. | Window sills, balcony slabs, the story line and the roofline. |
-| Coat loss | The lower paint band fades where the coat is lost. | Color and normal maps expose a second substrate along the loss field. |
+Walls split substrate changes into broad sections with pilasters and trace their top edge for runoff.
 
 Walls with generated windows (`windows="true"`) and floors, stairs and ramps
 without `ground="patched"` use broad seeded finish mottling. Grime darkens this
@@ -108,19 +91,14 @@ pours, asphalt or felt insets with ragged edges, tiled zones with chipped and
 missing tiles, joints, cracks, broad grime mottling and water in the low
 areas. Tile, grout, shallow chips, repair borders and pigment are composed into
 color, roughness and normal maps on the existing pavement mesh. The broad uneven
-bed, service covers, physical openings and loose props retain geometry. AML floors with `ground="patched"` and the roof decks of buildings both
-run this pass. A roof deck is drawn flat, so the parapets meet it flush, is
-sampled more coarsely the larger it is, and leaves out street litter, service
-covers and broken concrete.
+bed, service covers, physical openings and loose props retain geometry. AML floors with `ground="patched"` use this pass.
 
 ### Procedural appearance maps
 
-Facades use continuous color, roughness and normal maps by default.
-`texture-density="80"` overrides the building default of 64 texels/m.
-Detailed component weathering is enabled by default. Plain walls use 32 texels/m and pavement
+Plain walls use continuous color, roughness and normal maps at 32 texels/m. Pavement
 uses 16 texels/m, with tile patches at 128 texels/m and patches reached by asphalt
 on authored floors at 160 texels/m to retain gravel color and normal detail.
-Distant generated decks retain their ordinary density. Explicit floor
+Explicit floor
 `texture-density` overrides these defaults. These are bounded defaults, not source-image
 resolution guarantees.
 The field blends source textures through warped, multiscale coverage masks, with
@@ -157,8 +135,7 @@ The component base finish includes independent multiscale pigment, brightness,
 brushing and roughness variation, even without added corrosion. Paint loss,
 exposed source material and oxide then layer over it. Rust is restrained and
 concentrated at edges and detected joints; wood exposes wood instead of oxide.
-Set `grime`, `wear` and `rust` in the dressing section, or override them on a
-building, using values from 0 to 1. Rust defaults to wear when omitted.
+Dressing wear and grime controls use values from 0 to 1.
 
 The scoped geometry detector records emitted bars, boxes, tubes and folded
 faces. Inscribed member envelopes find nearby collars/intersections; shared
@@ -434,314 +411,17 @@ rejected on stairs, ramps, walls, buildings, and receivers without a single
 horizontal elevation; ordinary
 floor dressing on stairs/ramps retains its existing behavior.
 
-## Buildings
+## Building migration
 
-A building recipe takes a standalone, static box or vertical convex extrusion
-with `collidable="false"`.
-Widths/depths are 3–40 m and height is at most 40 m. The placement must remain
-level and unscaled; yaw and horizontal reflection are supported. The box is a
-site, not a silhouette: the generator fills it with a row of tenements.
+Move each legacy building lot to a [city building placement](AML.md#building-footprints).
+Keep its native gameplay solids and author any required wall openings in AML.
+For the four-storey reference model, use `model="reference-corner"` on the city placement.
 
-An extrusion instead preserves its polygon outline as one tenement. Trapezoids,
-triangles and clipped-corner footprints use edge-aligned facades and a polygon
-roof terrace with mitered parapets. Profiles must be horizontal and strictly
-convex, without holes, with at most 16 corners, edges at least 1 m, interior
-angles at least 45 degrees, and room for a 0.45 m inward construction margin.
-Profile offsets and either winding are supported. The first edge after the
-lowest-Y, then lowest-X corner in counterclockwise order is the frontage.
-Polygon hosts currently use closed ground frontages: `shops>0` and `base-wall`
-require a box host. Their rooftop equipment fits inside the actual roof.
+## Kit finishes
 
-```xml
-<profile id="tapered-lot" points="0 0; 10 0; 8 6; 2 6"/>
-<extrusion id="tapered-building" profile="tapered-lot" distance="12.35" collidable="false"/>
-<!-- Inside dressing: -->
-<building host="tapered-building" material="plaster" stories="4"/>
-```
-
-- **Massing.** Boxes at least 8.5 m wide are divided along the front into
-  tenements of varying width, here and there separated by a narrow service well
-  set back from the street. The tallest tenement fills the box height; the others
-  step down by up to two stories, keep their own floor-to-floor heights, and may
-  jetty their upper stories up to 0.55 m over the street or step them back. With
-  two or more tenements and at least three stories, the row never shares one
-  roofline. The ground story always spans the complete footprint.
-- **Closed shell.** Every tenement is a closed volume. Walls shared with a
-  neighbor are omitted where covered and exposed above a lower neighbor. The same
-  holds between abutting building recipes whose boxes share an orientation or
-  differ by quarter turns. Jetty soffits, setback ledges, roof
-  decks and parapets close the rest, so walls meet at their corners.
-- **Construction is per tenement.** Each tenement draws one wash, trim, frame
-  color, window type, bar pattern, cage color, awning type, balustrade and bay
-  rhythm, and repeats them on every story. Columns keep their type from the first
-  floor to the roof: punched windows, ribbon windows over painted spandrels,
-  projecting balconies, a stair core, or a narrow service bay. Windows and stair
-  openings sit in real recesses cut into the wall.
-- **Construction detail.** Exposed floors receive chamfered concrete bands;
-  window sills slope outward and carry drip edges, secondary glazing beads and
-  casement hinges. Service vents have angled louvers and roofs have open
-  scupper mouths. The same obstruction checks used for other attachments
-  constrain these details. Fine detail adds fasteners and joints between band
-  sections; the underlying construction stays fixed across detail levels.
-- **Walls weather.** A tenement is built in one `wall-materials` substrate,
-  parapets and soffits included, and shows a second where its coat has come
-  away; without a palette both are the recipe's material. The wash, each
-  household's repainting and the shop dado tint that coat. Sills, balcony
-  slabs, floor bands, vents, scuppers and the roofline stain the wall below them, painted balcony fronts and
-  spandrels streak below their own top edges, damp rises from the street, and
-  `wear` bares the substrate in ragged patches. None of this depends on
-  `detail`.
-- **Roof terraces are paved.** Each roof deck, and the ledge in front of a
-  stepped-back body, runs the ground pass in the recipe's material: screed
-  bays and repairs, felt patches, an occasional stretch of red paving tiles,
-  broad grime mottling and puddles. `low` detail leaves out joint lines,
-  and cracks; the paving itself does not move.
-- **Households vary what they own.** Curtains and blinds, washing, plants,
-  stored boxes, air conditioners, window cages, whether a balcony was caged or
-  glazed in, and an occasional repainted stretch of wall or replaced window
-  differ flat by flat.
-- **Washing is cloth.** Shirts, undershirts, pants, towels and sheets are cut
-  to size, fall into folds and are modeled on both faces, so they show from
-  either side where back faces are culled. They hang on hangers square to a
-  bamboo pole, threaded onto rack poles by the sleeves, pinned to lines, or
-  folded over compatible supports, in faded plain colors. Approved low-poly button
-  shirts, trousers and folded sheets use imported geometry with fitted clips or
-  hangers. Sheets are clipped below clotheslines; their narrow generated folds do
-  not accept poles. Distinct tees, vests, shorts and towels remain procedural.
-  Plants use three shared textured meshes with uniform size and seeded rotation.
-  See [balcony assets](../../levelspec/projects/kowloon-balcony-props/README.md) for source models,
-  measured budgets, local repairs and visual evidence.
-- **Air conditioners are separate models.** Window units come with four rear
-  grilles and split-system condensers with one fan or two, each in several
-  sizes, colors and states of rust, on brackets with drain hoses, line sets
-  and the sheet or board an owner put over them. A condenser in a service bay
-  stands beside the soil stack, above its branch.
-- **Ground story.** The frontage is divided into shop bays: roller shutters
-  closed or part raised over stock, glazed shopfronts, scissor gates, service
-  bays with meters, and one tenement entrance with pressed panels or a timber
-  leaf with divided frosted lights, transom, lamp, number plate and letterboxes.
-  Door pulls, capped hinges, panel bevels, gate pivot pins and shutter hardware
-  are modeled. Door paint loss follows jagged bands at panel edges, the latch
-  and the lower leaf; normal relief stays at paint thickness. Timber entrances
-  reuse the shelf atlas through the `shop-timber` finish at its fixed physical
-  texel density, including aligned rails, stiles and end grain. Wooden jambs,
-  lintels and transom frames share the leaf's timber family, with restrained
-  board tint differences and stronger narrow contact wear along front edges. Shops carry fascia signs, and
-  awnings or a concrete canopy where the story is tall enough.
-- **Street and roof.** [Signs](#signs) project from the piers, lie flat on
-  walls and balcony fronts, and stand on the roofs. Rainwater and soil pipes
-  run down party lines. Roofs carry stair bulkheads, round and box water
-  tanks, sheet-metal huts, drying lines, aerials and parapet fences.
-
-Rear and end walls receive plainer rhythms. Generated doors, shutters and panes
-are opaque visual details.
-
-### Shops
-
-On a large building, some shop bays open onto a stocked room instead of
-showing a closed front. `shops` on the building recipe is the chance, 0–1, that
-each eligible bay does. The default is 0.15, a low rate; 0 keeps every bay
-closed. Raising it only opens more bays: a bay that is a shop at one value is
-the same shop, with the same trade and stock, at every higher value.
-
-```xml
-<building host="tenement-row" material="plaster" stories="5" shops="0.3"/>
-```
-
-- **Room-sized footprints.** The box must be at least 4.8 m wide and 5 m deep,
-  with at least one story. Individual bays still need the room clearance below.
-  Smaller buildings never receive shops; asking one for shops raises the
-  source-linked warning `DRESSING_NO_SHOP_FIT` located at the box.
-- **Eligible bays.** A shutter, gate or glazed bay on the street front of a
-  tenement, at least 2.4 m wide under a ground story of at least 2.9 m. The
-  tenement entrance and service bays stay as they are, and so does everything
-  outside an opened bay, except for optional grounded frontage displays and these changes: the wall skin of that ground
-  story is re-cut around the opening, and the building surveys its signs as a
-  whole, so a shop's fascia may change which other signs it keeps.
-- **The room.** The opening is at least 1.8 m wide and its head stands 2.2–2.6 m
-  above the building base. The floor is one 0.12 m step above the base. The room
-  is as wide and as high as its opening and 2.4–3.6 m deep, never more than
-  49% of the box depth. Its walls, floor and ceiling belong to the `envelope`
-  part, so the shell stays closed and is open only to the street. Nothing
-  attached to the facade crosses the opening except the raised shutter's last
-  slats under the head and, on some shops, a folded gate at one jamb; a pipe
-  that would cross it turns into the wall above the story line instead.
-- **Clear space.** A room must lie clear of the level's collision triangles and
-  of every other building recipe; a bay whose room would meet either keeps its
-  closed front. The building's own `base-wall` is the exception, because it
-  stands in the front plane of every ground story. A large building whose
-  bays are all blocked or too low receives no shop and no warning.
-- **Trades.** Each shop draws one trade and furnishes the whole room for it:
-  `grocer`, packed shelving, a drinks cooler, a counter with sweet jars and a
-  scale, bottle crates, rice sacks and strings of snacks; `greengrocer`, tiers
-  of crates heaped with fruit and vegetables under red lamps and hands of
-  bananas; `roast`, textured chickens in three glaze variants on a rail over a
-  tiled counter, with a barrel oven and stove behind; `hardware`, rails of
-  woks, pots and pails over stacked wares, brooms and steel shelving; and
-  `herbalist`, a wall of labeled drawers, jars, a counter with scale and
-  abacus, open sacks of dried goods and cured meats overhead. Products use reusable meshes or compact combined
-  groups, with seeded assortments and placements.
-- **Parts.** Fittings and stock are the part `shop-<trade>`. Everything in it
-  stays inside its own room: nothing crosses the room's walls, floor or
-  ceiling, or the building's front plane. Grocers choose a front service
-  counter, a side counter, or a recessed counter, with corresponding shelf,
-  cooler and bulk-stock placements. Each arrangement can switch sides. Rooms
-  narrower than 2.2 m use the front-counter arrangement. Fixture layout is
-  seeded independently of product stocking and detail; other trades retain
-  their own counter and display arrangements. The raised shutter and its guides
-  belong to `openings`; the fascia is offered to the sign survey like that of
-  any shopfront.
-- **Street displays.** Grocers, greengrocers, herbalists and hardware shops can
-  add a separate `shop-frontage` part: produce on a stool, stacked-box stands,
-  crate-and-plank shelves, or a two-tier cart. These assemblies stand at the
-  building base and project at most 0.65 m. Their edge patches leave a 1 m
-  central opening; each needs a further 1.2 m standing strip clear of collision
-  geometry and other buildings, plus a 0.65 m obstruction allowance for an
-  opposing storefront display. The original visible render mesh must supply
-  flat support at samples spaced at most 0.15 m, including patch edges/corners,
-  within 5 mm of base height. This is a bounded support check, not continuous
-  coverage or navigation proof. Hidden floors do not qualify; visible
-  noncollidable background streets do. Unsupported or obstructed patches are
-  omitted. Displays retain grounded support relationships while their kind,
-  goods and small rotations vary by seed.
-- **Detail and cost.** Whether a bay is a shop, its room and its trade never
-  depend on `detail`. Raising `detail` only adds to the shop's part, and
-  lowering it removes almost nothing: a shop is about 3,000–45,000 triangles at
-  every level, most for a wide hardware store or densely stocked grocer.
-  Street displays add up to 3,000 triangles per small stand or 4,500 per cart
-  or two-crate shelf, with at most two assemblies per frontage.
-
-Shops are decoration like every other generated part: the room has no
-collision and cannot be entered. With a `base-wall` the player meets that wall
-at the threshold. Spans are never fixed inside a shop: brackets stand at
-least 2.5 m above the floor or the foot of their wall, higher than any room. The
-[shop fixture](../tests/fixtures/aml/shop-dressing.aml) opens every eligible
-bay of one tenement row.
-
-Generated objects are named `<host>/$dressing/<part>` with parts `envelope`
-(walls, soffits, parapets, recesses and shop rooms), `roof` (the paving of
-roof decks and setback ledges),
-`openings`, `shop-<trade>`, `shop-frontage`, `fixtures`, `signage` and `rooftop`. Roof parts do not take the reviewer's `roof`
-role: a sealed visual mass has no interior to reveal, so it keeps its roof when
-**Show roofs** is off.
-
-### Signs
-
-Signs are built from typed text. A sign is described the way a sign painter is
-briefed: what it says, in which face of type, how large, on what kind of panel
-and how it is carried. The generator invents that brief for each shop from the
-dressing seed; nothing is sampled from pre-painted boards.
-
-- **Businesses.** Every shop bay and upstairs tenant is given a business: a
-  two-character name or a practitioner's own name, a trade, a telephone number,
-  a floor and a slogan. A board hung beside a shop often repeats its fascia.
-  The vocabulary lives in
-  [`signs/words.ts`](../src/dressing/kowloon/signs/words.ts); the names are
-  invented from generic words and reproduce no real business.
-- **Lettering.** Each character is one quad sampling a glyph atlas in one of
-  seven faces of type: `hei` (heavy sans), `song` (heavy serif), `kai` (brush
-  regular script), `brush` (expressive brush), `heavy` (poster gothic),
-  `round` and `slim` (condensed). Lines run left to right, right to left as
-  older Hong Kong boards do, or upright from top to bottom. Ideographs are
-  spaced evenly over their line and may be drawn up to a quarter wider or
-  taller than square to fill a board, as painted lettering is; capitals and
-  digits keep their own advance widths and are never stretched. Small letters
-  are lettered as capitals.
-- **Panels.** Painted sheet-metal boards in an angle-iron frame, deep light
-  boxes with a retaining frame and rain cap, lacquered timber plaques with gilt
-  lettering, enamel plates on four screws, single-character tiles (square,
-  diamond or round), cloth banners, and fields painted straight onto a wall.
-  Boards carry a painted border line and up to three blocks of lettering of
-  different sizes and colors, some with a painted drop shadow.
-- **Mounts.** `blade` signs project square to the wall on steel arms and read
-  from both directions along the street: one tall board, a light box, a string
-  of tiles, a ladder of several tenants' boards on shared rails, or a short
-  wide board under a lattice truss. `hung` signs swing on links from a single
-  bracket. `wall` signs are fixed flat: plates on piers, long boards across
-  several bays, and large painted advertisements on blank end and party
-  walls. `fascia` boards sit over shopfronts, `balcony` boards on balcony
-  fronts, and `roof` hoardings stand on a braced frame behind the parapet, as
-  one large board or as a row of character panels.
-- **Steel.** Arms, rails and frames are angle sections bolted through wall
-  plates, with gussets, struts from below or stay rods with turnbuckles from
-  above. Newer signs keep their paint; older ones are drawn in the rust finish
-  and leave rust runs on the wall beneath their fixings.
-- **Weathering.** Each sign has an age drawn from the dressing's `wear` and
-  `grime`. Age fades the board and its lettering, gathers dirt under the top
-  frame and along the foot, runs rust down the face from its fixings, and
-  rusts frames. Fine streaks and rust blooms come from the sign-board finish;
-  broad variation is in vertex colors.
-
-Signs are placed in two passes.
-
-1. **Proposal.** Each facade proposes signs at random from its seed, checking
-   only the level's collision geometry and other building recipes and keeping
-   to the [limits](#limits).
-2. **Survey.** When every building has been generated, all proposed signs are
-   judged together, larger signs first and shop fascias before the rest. A
-   sign is removed as `crowded` when its panels would touch scenery or stand
-   within 0.06 m of a sign already kept, or when it would hide a kept sign
-   from its readers. It is removed as `obstructed` when none of its lettered
-   faces can be read: a face is readable when at least 60% of it is in clear
-   view from one of five reader positions, standing back from the face by 0.8
-   times its longer side (at least 0.8 m, at most 6 m), straight ahead and 25°
-   and 45° to either side. Readers of facade signs look up from the street:
-   the position is lowered as it would be for eyes 1.6 m above the building
-   base, five times the sign's longer side away (6–40 m), by at most 35°.
-   Readers of roof signs look level.
-
-Scenery is the authored render geometry and every building recipe's generated
-parts as they stand at the highest detail, so the decision is the same at every
-detail level: lower detail only withholds some of the signs that were kept.
-Generated wall props, ground dressing and spans are not scenery; spans are
-strung afterwards and avoid the signs that were built.
-
-The compiled level lists every proposed sign in `signPlans`: its host, mount,
-form, lettered lines, the world bounds of its panels, the triangles it added,
-and a status of `built`, `withheld` (kept, but only shown at a higher detail),
-`crowded` or `obstructed`. The survey approximates sight from a few positions;
-it does not establish that a sign is legible from the playable space. Signs
-are drawn into the `signage` part and roof hoardings into `rooftop`.
-[Kowloon sign street](../../levelspec/projects/kowloon-signs/README.md) is a review level
-for them.
-
-### Limits
-
-Relative to the box footprint and base, generated parts stay inside these bounds:
-
-| Bound | Limit |
-| --- | --- |
-| Below the base | Nothing. |
-| Outside the footprint | At most 1.6 m, for jetties, balconies, awnings and signs together. |
-| Below 2.5 m above the base | Attached facade parts project at most 0.15 m. Ground-supported `shop-frontage` displays are a separate exception, capped at 0.65 m with the support and standing-space checks above. |
-| Above the box height | Only the `rooftop` part, at most 3.5 m. |
-
-Before placing anything deeper than a flush part, the generator checks the
-level's collision triangles and other building recipes and shortens or omits
-what would run into them. Collision is tested against each part's own oriented
-box. Other recipes are compared by their bounds, which is exact for mutually
-aligned buildings and conservative otherwise. The check does not see other
-visual props; only [signs](#signs) are afterwards surveyed against rendered
-geometry.
-
-### Kit finishes
-
-Punched building windows contain a 0.42 m dark recess with side returns, a back
-wall, shallow frames, and optional folded curtains. Their view changes with the
-camera because those are real surfaces. No window uses an interior/reflection
-atlas. Swung casements use neutral transparent glass. Planned exterior grilles
-and cages keep leaves closed at every detail setting. Flush window decorations on authored walls and balcony doorlights stay
-flat, since those opaque hosts have no render opening.
-
-`<dressing time-of-day="night">` enables warm emission in a seeded selection of
-households; `day` is the default. Household selection and all geometry stay
-identical between modes. The full-render reviewer uses a dim night environment
-and bloom. Emission exports in GLB/glTF and runtime materials, but does not add
-point lights or promise baked indirect light. Material authors may use
-`emissive="#ffd6a3" emissive-strength="3"`; the color is sRGB and the nonnegative
-strength defaults to one. glTF exports linear color, with
-`KHR_materials_emissive_strength` for strengths above one. Active emission is
-not supported by the OBJ exporter.
+Finish overrides are optional. Material authors can use `emissive="#ffd6a3"`
+and `emissive-strength="3"` for lit decorations. glTF uses linear color and
+`KHR_materials_emissive_strength` for strengths above one.
 
 Kit parts are tinted per vertex. Without `finishes` they use the official shared
 material library, including glyph and prop atlases. Declaring materials under
@@ -853,104 +533,6 @@ edge; upright front corners use a weaker 3 mm band. Vertex-color interpolation i
 confined to those physical bands, leaving interiors, backs and broad panels alone.
 The atlas's `albedoGain` reserves linear color headroom, balanced by normalized
 vertex colors so the brighter wear remains portable in GLB exports.
-
-### Buildings as courtyard boundaries
-
-`base-wall` lets that envelope replace the **visible** native ground-floor wall.
-The native wall supplies collision and navigation; its render triangles are
-omitted. Every tenement's ground story occupies the same front plane and rises
-at least as high as the wall, whatever its height, so exactly one skin covers
-it and there is no second wall in front of the building. Where a
-[shop](#shops) opens through that plane, the room behind it is the skin. A tall wall leaves
-less height for upper stories; stories that no longer fit are dropped.
-
-The linked wall must be static and collidable, run parallel to the building's
-front, span its complete width, meet its ground plane, and fit inside its volume.
-These checks use a 0.00001 m tolerance. A wall can belong to only one building.
-Authored openings and face-material assignments on that wall are rejected because
-the closed building kit cannot preserve them. A hidden building leaves the native
-wall visible. Without `base-wall`, the generated building is entirely visual and
-must be placed outside accessible space or given separately authored collision.
-
-Decoration never modifies collision or navigation. It still occludes the render;
-authors should review its placement and sightlines in the actual compiled scene.
-
-## Spans between elements
-
-Buildings automatically string seeded, randomized power cables and clotheslines
-between nearby solid façades when no `<spans>` recipe is present. Defaults are
-0.6 cables, 0.35 clotheslines, no signs, 14 m reach (9 m for washing), and 2.6 m
-walking clearance. Only building recipes participate in this automatic mode;
-no suitable connection simply leaves the scene unchanged. Explicit recipes
-replace these defaults. Use `<spans cables="0" clotheslines="0" signs="0"/>`
-to disable them entirely.
-
-Anchor searches use a local 3D spatial grid with a vertical band for each span
-family, rather than comparing every building or every floor. Static cable
-start weights are accumulated once and sampled with binary search. Scene
-obstructions and walking surfaces also use spatial indexes.
-
-Most dressing belongs to one host. A `<spans>` recipe strings parts from one
-receiving element to another: utility cables, clotheslines, and street signs
-hung between facing walls.
-
-```xml
-<dressing theme="kowloon-street@1" seed="alley-01">
-  <wall host="yard-wall" face="side" windows="false" material="plaster"/>
-  <building host="north-block" material="plaster" stories="4"/>
-  <building host="south-block" material="plaster" stories="4"/>
-  <spans cables="0.7" clotheslines="0.5" signs="0.3"/>
-</dressing>
-```
-
-| Attribute | Range / default | Meaning |
-| --- | --- | --- |
-| `hosts` | Host IDs / every wall and building recipe | The hosts that may carry anchors. Each must have a wall or building recipe; hidden hosts are skipped. |
-| `cables` | 0–1 / 0.6 | Density of cable bundles. Zero strings none. |
-| `clotheslines` | 0–1 / 0.35 | Density of washing lines: at 1 about two windows in five string one to a facing wall within 9 m. |
-| `signs` | 0–1 / 0.2 | Density of banners and gantry signs across a street. |
-| `clearance` | 2–10 m / 2.6 | Least height of anything hanging between anchors above the walking surface beneath it. |
-| `reach` | 2–40 m / 14 | Longest horizontal distance between the two anchors of one span. |
-
-The Rust compiler currently supports one explicit span recipe and uses dressed
-building hosts for its anchors. Spans run after the building drawing pass:
-
-- **Anchors come from the finished scene.** Brackets are fixed only where the
-  rendered wall is solid behind their whole footprint, so they avoid authored
-  openings, generated windows and recesses, and work on rotated and reflected
-  hosts. They stand at least 2.5 m above the walking surface in front of them
-  or, where there is none, above the foot of that wall face. Clotheslines start beside generated windows. A span may join two
-  hosts or two separate faces of one host, such as tenements across a service
-  well.
-- **Nothing passes through anything.** Every span is tested against all
-  rendered triangles, generated parts included, and against washing and signs
-  placed before it, by this recipe or an earlier one. Blocked spans are
-  dropped, not bent.
-- **Cables** hang as true catenaries from porcelain racks: runs hop from rack
-  to rack along and across the street, several bundles share a rack, and each
-  bundle carries one to six strands of its own slack, gauge and color. Racks
-  with several lines sometimes drop a conduit to a junction box, where its
-  run down the wall is solid and nothing rendered lies across it.
-- **Clotheslines** are two lines between brackets, carrying shirts, trousers,
-  towels and sheets.
-- **Street signs** are cloth banners on ropes or boarded steel gantries,
-  titled and lettered on both faces like the buildings' [signs](#signs),
-  between facing walls 3–12 m apart and at most 7.5 m above the street.
-- **Clearance** applies to everything that hangs in the air: cables,
-  lines, washing and sign boards, over collidable floors and stairs. It is
-  sampled every 0.25 m along each span. Wall
-  fittings (racks, brackets, conduits and junction boxes) stay within 0.15 m
-  of their wall like other wall props and may reach lower.
-
-Generated objects are `<host>/$dressing/span-cables`, `span-washing`,
-`span-signs` and `span-fittings`, owned by the host of the span's first anchor;
-the other host is recorded as a provenance contributor. Spans are render-only
-and never change collision or navigation. A family that is asked for but fits
-nowhere raises the source-linked spatial warning `DRESSING_NO_SPAN_FIT` at the
-hosts' walls; set its amount to 0 to leave it out. Spans do not light up, sway,
-or attach to props other than their host walls. The
-[span fixture](../tests/fixtures/aml/span-dressing.aml) strings all three
-families across an alley and a walled yard.
 
 ## Preview and delivery
 

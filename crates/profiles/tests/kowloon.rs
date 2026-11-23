@@ -3,7 +3,7 @@ use superspec_profiles::{default_registry, parse};
 
 #[test]
 fn default_kowloon_profile_preserves_defaults_and_registration_is_explicit() {
-    let text = "<architecture version=\"1\" id=\"scene\"><dressing seed=\"seed\"><building host=\"house\"/></dressing></architecture>";
+    let text = "<architecture version=\"1\" id=\"scene\"><dressing seed=\"seed\"><floor host=\"walk\"/></dressing></architecture>";
     let default = parse(text).unwrap();
     let explicit = parse_with_registry(text, default_registry()).unwrap();
     assert_eq!(
@@ -15,7 +15,7 @@ fn default_kowloon_profile_preserves_defaults_and_registration_is_explicit() {
     assert_eq!(settings.number("grime", -1.), 0.4);
     assert_eq!(
         settings.children[0].text("material"),
-        Some("builtin:plaster")
+        Some("builtin:concrete")
     );
     let named = parse(&text.replace(
         "<dressing seed",
@@ -64,7 +64,7 @@ fn default_kowloon_profile_preserves_defaults_and_registration_is_explicit() {
         .code,
         "AML_DRESSING"
     );
-    let unknown = text.replace("building", "unknown-recipe");
+    let unknown = text.replace("floor", "unknown-recipe");
     let failure = parse(&unknown).unwrap_err();
     assert_eq!(failure.code, "AML_CHILD");
     let start = unknown.find("<unknown-recipe").unwrap();
@@ -72,6 +72,19 @@ fn default_kowloon_profile_preserves_defaults_and_registration_is_explicit() {
         failure.source.offset,
         unknown[..start].encode_utf16().count()
     );
+}
+
+#[test]
+fn retired_building_dressing_reports_the_city_replacement_at_the_source() {
+    for recipe in ["<building host='house'/>", "<spans hosts='house lane'/>"] {
+        let text = format!(
+            "<architecture version='1' id='scene'>\n  <dressing seed='seed'>\n    {recipe}\n  </dressing>\n</architecture>"
+        );
+        let failure = parse(&text).unwrap_err();
+        assert_eq!(failure.code, "AML_DRESSING_REMOVED");
+        assert_eq!(failure.source.line, 3);
+        assert!(failure.message.contains("<city><building"));
+    }
 }
 
 #[test]

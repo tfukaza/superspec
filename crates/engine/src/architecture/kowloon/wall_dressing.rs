@@ -1,7 +1,6 @@
 //! Visual wall finishes over authored exposed triangles, with optional window fixtures.
 use super::*;
 use crate::worldspec::themes::kowloon::{
-    building::materials::{Appearance, Settings},
     facade_material::{self, Coat},
     fixture::Fixture,
     kit_materials::Library,
@@ -10,7 +9,9 @@ use crate::worldspec::themes::kowloon::{
     palette::srgb,
     pavement::field,
     pen::Pen,
-    tile, tiled_skin, wall, windows,
+    tile, tiled_skin, wall,
+    wall_appearance::{Appearance, Settings},
+    windows,
 };
 use superspec_aml::rng::SeededRng;
 
@@ -170,9 +171,7 @@ impl Compiler<'_> {
                     seed: &identity,
                     grime,
                     wear,
-                    rust: wear,
                     density,
-                    detail: 1,
                 })
                 .map_err(fail)?;
             let mut drawing = Drawing::new(Mode::Render, 2_000_000, &|| false).map_err(fail)?;
@@ -329,18 +328,9 @@ impl Compiler<'_> {
         &self,
         visuals: &mut VisualOutput<'_>,
         jobs: Vec<Job>,
-        theme: &mut ThemeState,
         execution: &Execution<'_>,
     ) -> Result<(), Diagnostic> {
         for mut job in jobs {
-            if !theme.building_hosts.is_empty() {
-                theme.render_edge_vertices.extend(
-                    job.drawing
-                        .indices
-                        .iter()
-                        .map(|i| job.drawing.vertices[*i as usize].position),
-                );
-            }
             self.bake_visual(
                 execution,
                 visuals,
@@ -350,7 +340,6 @@ impl Compiler<'_> {
                 &job.appearance.inputs,
                 &job.materials,
                 job.appearance.bindings,
-                None,
             )?;
         }
         Ok(())

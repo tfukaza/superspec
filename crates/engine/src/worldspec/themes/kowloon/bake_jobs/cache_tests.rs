@@ -86,7 +86,6 @@ fn plan<'mesh, 'cancel>(
         receivers,
         mesh,
         edge_vertices: Arc::from([]),
-        edge_index: None,
     }
 }
 

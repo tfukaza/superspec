@@ -660,6 +660,52 @@ impl Session {
                         v: anchor.v,
                     });
             }
+            // What each placed prototype's slots are bound to, now that the model's slots,
+            // layers, mappings and densities are resolved: everything of a shared raster's key
+            // that the prototype does not itself fix.
+            if !placed.placements.is_empty() {
+                let project = &resolved.project;
+                let assigned: BTreeMap<&str, &MaterialAssignment> = project
+                    .materials
+                    .iter()
+                    .flat_map(|assignment| {
+                        assignment
+                            .meshes
+                            .iter()
+                            .map(move |mesh| (mesh.as_str(), assignment))
+                    })
+                    .collect();
+                for (index, covered) in placed.placements.iter().enumerate() {
+                    let mut binding = serde_json::Map::new();
+                    let mut assignments = serde_json::Map::new();
+                    for (slot, mesh) in covered {
+                        let id = format!("{prefix}{mesh}");
+                        let Some(assignment) = assigned.get(id.as_str()) else {
+                            continue;
+                        };
+                        let density = project
+                            .texel_densities
+                            .get(&id)
+                            .or_else(|| project.texel_densities.get(&assignment.id))
+                            .copied()
+                            .or(project.texel_density);
+                        binding.entry(slot.clone()).or_insert_with(|| {
+                            serde_json::json!({
+                                "entry": assignment.entry, "parameters": assignment.parameters,
+                                "seed": assignment.seed, "layers": assignment.layers,
+                                "mapping": project.mappings.get(&assignment.id).unwrap_or(&project.mapping),
+                                "density": density,
+                            })
+                        });
+                        assignments
+                            .entry(slot.clone())
+                            .or_insert_with(|| assignment.id.clone().into());
+                    }
+                    let record = &mut placed.metadata["placements"][index];
+                    record["binding"] = binding.into();
+                    record["assignments"] = assignments.into();
+                }
+            }
             resolved.metadata.insert(model.id.clone(), placed.metadata);
             placements.insert(model.id.clone(), (placed.model, placed.transforms));
         }

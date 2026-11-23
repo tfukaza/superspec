@@ -47,6 +47,11 @@ pub(super) fn draw(
             )?;
         }
     }
+    // Eyelet rings and lashings are millimetres of wire and cord: a reduced level leaves
+    // them out rather than fattening them.
+    if d.mesh.graphics_detail().reduced() {
+        return Ok(());
+    }
     for (i, pin) in form.attachments.iter().enumerate() {
         if pin.kind == "rear-seam" && i % 7 != 0 {
             continue;

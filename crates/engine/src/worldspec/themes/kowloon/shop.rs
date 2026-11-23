@@ -15,6 +15,7 @@ pub mod hardware;
 pub mod herbalist;
 mod hero_props;
 mod market_trays;
+mod massing;
 pub(super) mod patina;
 pub mod produce;
 pub(super) mod provisions;

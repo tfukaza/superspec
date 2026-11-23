@@ -15,6 +15,10 @@ pub fn bolt(
     tint: V3,
     weathering: Option<&super::weathered::Settings>,
 ) -> Result<(), String> {
+    // A bolt head is a few millimetres across: no reduced level draws one.
+    if drawing.mesh.graphics_detail().reduced() {
+        return Ok(());
+    }
     let original = drawing.pen.clone();
     if let Some(settings) = weathering {
         drawing.pen = original.with_weathering(

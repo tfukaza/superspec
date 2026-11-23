@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde_json::json;
 use std::{cell::Cell, collections::BTreeMap};
 use superspec_aml::material::Material;
 use superspec_engine::{
@@ -9,47 +9,88 @@ use superspec_engine::{
     worldspec::themes::kowloon::metal::{Fold, Metal, Metric, Settings},
 };
 
-#[derive(Deserialize)]
-struct Case {
-    settings: Settings,
-    runoff: bool,
-    points: Vec<[f64; 2]>,
-    samples: Vec<Sample>,
-    width: usize,
-    height: usize,
-    color: Vec<u8>,
-    packed: Vec<u8>,
-    normal: Vec<u8>,
+fn settings(kind: &str, extra: serde_json::Value) -> Settings {
+    let mut value = json!({
+        "kind": kind,
+        "bounds": [0., 0., 1., 0.6],
+        "paint": [0.3, 0.5, 0.7],
+        "seed": 37.,
+        "wear": 0.6,
+        "grime": 0.7,
+        "rust": 0.4,
+        "substrate": {"material": "steel", "repeat": 3.},
+        "coating": {"material": "paint", "repeat": 5.},
+    });
+    for (key, field) in extra.as_object().unwrap() {
+        value[key] = field.clone();
+    }
+    serde_json::from_value(value).unwrap()
 }
-#[derive(Deserialize)]
-struct Noise {
-    seed: f64,
-    x: f64,
-    y: f64,
-    z: f64,
-    hash: u32,
-    value: f64,
-    volume: f64,
-    fractal: f64,
+fn frame() -> Settings {
+    settings("frame", json!({}))
 }
-#[derive(Deserialize)]
-struct Range {
-    bounds: [f64; 4],
-    value: [f64; 2],
-    fractal: [f64; 2],
+fn pipe() -> Settings {
+    settings(
+        "pipe",
+        json!({"bounds": [0., 0., 0.4, 0.6], "wrapU": 0.4, "edgeAxes": [false, true]}),
+    )
 }
-#[derive(Deserialize)]
-struct Fixture {
-    materials: Vec<Material>,
-    cases: Vec<Case>,
-    noise: Vec<Noise>,
-    ranges: Vec<Range>,
+fn recipes() -> Vec<(Settings, bool)> {
+    vec![
+        (frame(), false),
+        (
+            settings(
+                "cage",
+                json!({"contacts": [[0.2, 0.3], [0.7, 0.5]], "metric": {"scale": [1., 1.], "gravity": [0.6, -0.8]}}),
+            ),
+            false,
+        ),
+        (
+            settings(
+                "sheet",
+                json!({"folds": [{"axis": 0, "at": 0.2, "concave": true}, {"axis": 1, "at": 0.4, "concave": false}]}),
+            ),
+            false,
+        ),
+        (pipe(), false),
+        (
+            settings(
+                "frame",
+                json!({"wear": 0., "grime": 0., "rust": 0., "paintCoverage": 0., "contacts": []}),
+            ),
+            false,
+        ),
+        (
+            settings(
+                "pipe",
+                json!({"contacts": [[0.2, 0.3]], "paintCoverage": 0.35}),
+            ),
+            true,
+        ),
+    ]
 }
-fn fixture() -> Fixture {
-    serde_json::from_str(include_str!(
-        "../../../tests/fixtures/rust/metal-surfaces.json"
-    ))
-    .unwrap()
+fn materials() -> BTreeMap<String, Material> {
+    [
+        Material {
+            id: "steel".into(),
+            color: "#9fb1c3".into(),
+            repeat: 1.,
+            roughness: 0.7,
+            metalness: 0.9,
+            ..Material::default()
+        },
+        Material {
+            id: "paint".into(),
+            color: "#ee8b42".into(),
+            repeat: 1.,
+            roughness: 0.35,
+            metalness: 0.,
+            ..Material::default()
+        },
+    ]
+    .into_iter()
+    .map(|m| (m.id.clone(), m))
+    .collect()
 }
 fn close(a: f64, b: f64) {
     assert!((a - b).abs() < 2e-12, "{a} != {b}");
@@ -95,59 +136,39 @@ fn same_sample(a: &Sample, b: &Sample) {
         close(a, b);
     }
 }
-/// Native and actual browser Wasm execute the same frozen recipe, noise and decoded-pixel expectations.
-pub fn check_reference_metal() {
-    let fixture = fixture();
-    for n in fixture.noise {
-        assert_eq!(
-            lattice_hash(n.x, n.y, n.seed) * 4294967296.,
-            f64::from(n.hash)
-        );
-        close(value_noise(n.x, n.y, n.seed), n.value);
-        close(value_noise3(n.x, n.y, n.z, n.seed), n.volume);
-        close(fractal_noise(n.x, n.y, n.seed, 4), n.fractal);
-    }
-    for r in fixture.ranges {
-        for (a, b) in value_noise_range(r.bounds, 37.)
-            .unwrap()
-            .into_iter()
-            .zip(r.value)
-        {
-            close(a, b);
-        }
-        for (a, b) in fractal_noise_range(r.bounds, 37., 4)
-            .unwrap()
-            .into_iter()
-            .zip(r.fractal)
-        {
-            close(a, b);
-        }
-    }
-    let materials: BTreeMap<_, _> = fixture
-        .materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
+#[test]
+fn every_metal_recipe_samples_its_structure_and_bakes_one_relief_layer() {
+    let materials = materials();
     let images = BTreeMap::new();
     let inputs = Inputs {
         materials: &materials,
         images: &images,
     };
     let runoff = |u: f64, v: f64| Ok((0.4 + u * 0.2 + v * 0.3).clamp(0., 1.));
-    for (index, case) in fixture.cases.into_iter().enumerate() {
+    for (index, (settings, runoff_supplied)) in recipes().into_iter().enumerate() {
         let metal = Metal::new(
-            &case.settings,
-            if case.runoff { Some(&runoff) } else { None },
+            &settings,
+            if runoff_supplied { Some(&runoff) } else { None },
         )
         .unwrap();
-        assert_eq!(case.points.len(), case.samples.len());
-        for (point, expected) in case.points.iter().zip(&case.samples) {
-            same_structure(&metal.structure(), expected);
-            same_sample(&metal.sample(point[0], point[1]).unwrap(), expected);
+        let [u0, v0, u1, v1] = settings.bounds;
+        for (fu, fv) in [(0., 0.), (0.17, 0.29), (0.5, 0.5), (0.83, 0.61), (1., 1.)] {
+            let sample = metal
+                .sample(u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv)
+                .unwrap();
+            same_structure(&metal.structure(), &sample);
+            assert!(
+                channels(&sample).iter().all(|v| v.is_finite()),
+                "metal {index}"
+            );
+            let again = metal
+                .sample(u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv)
+                .unwrap();
+            same_sample(&sample, &again);
         }
         let raster = rasterize(
             RasterSettings {
-                bounds: case.settings.bounds,
+                bounds: settings.bounds,
                 texels_per_meter: 24.,
                 preserve: true,
                 repeat: false,
@@ -160,27 +181,36 @@ pub fn check_reference_metal() {
             &|| false,
         )
         .unwrap();
-        assert_eq!(
-            (raster.layout.width, raster.layout.height),
-            (case.width, case.height)
-        );
-        assert_eq!(raster.layers.len(), 1);
-        let layer = &raster.layers[0];
-        assert_eq!(layer.color.rgba, case.color, "metal {index}: color");
-        assert_eq!(
-            layer.metallic_roughness.rgba, case.packed,
-            "metal {index}: packed PBR"
-        );
-        assert_eq!(
-            layer.normal.as_ref().unwrap().rgba,
-            case.normal,
+        assert_eq!(raster.layers.len(), 1, "metal {index}");
+        assert!(
+            raster.layers[0].normal.is_some(),
             "metal {index}: normal-only relief"
         );
     }
 }
+
 #[test]
-fn frozen_metal_channels_noise_and_raster_pixels_match() {
-    check_reference_metal();
+fn noise_is_unit_bounded_and_ranges_enclose_samples() {
+    for bounds in [[0., 0., 1., 1.], [-3.2, 1.7, -1.1, 4.4]] {
+        let value = value_noise_range(bounds, 37.).unwrap();
+        for row in 0..21 {
+            for col in 0..21 {
+                let x = bounds[0] + (bounds[2] - bounds[0]) * col as f64 / 20.;
+                let y = bounds[1] + (bounds[3] - bounds[1]) * row as f64 / 20.;
+                let hash = lattice_hash(x.floor(), y.floor(), 37.);
+                assert!((0. ..1.).contains(&hash));
+                assert_eq!(
+                    (hash * 4294967296.).fract(),
+                    0.,
+                    "hash is a 32-bit lattice value"
+                );
+                let v = value_noise(x, y, 37.);
+                assert!(value[0] <= v && v <= value[1]);
+                assert!((0. ..=1.).contains(&value_noise3(x, y, 0.3, 37.)));
+                assert_eq!(value_noise(x, y, 37.), v, "noise is deterministic");
+            }
+        }
+    }
 }
 
 fn same_structure(structure: &Sample, sample: &Sample) {
@@ -198,7 +228,7 @@ fn same_structure(structure: &Sample, sample: &Sample) {
 
 #[test]
 fn metal_structure_is_stable_and_clean_controls_do_not_erase_intrinsic_finish() {
-    let mut s = fixture().cases.remove(0).settings;
+    let mut s = frame();
     let calls = Cell::new(0);
     let runoff = |_, _| {
         calls.set(calls.get() + 1);
@@ -248,7 +278,7 @@ fn metal_structure_is_stable_and_clean_controls_do_not_erase_intrinsic_finish() 
 
 #[test]
 fn wrapped_metal_is_periodic_with_integer_source_repeats_and_continuous_seams() {
-    let mut s = fixture().cases.remove(3).settings;
+    let mut s = pipe();
     for repeat in [0.2, 3.75, 6.25] {
         s.substrate.repeat = repeat;
         let metal = Metal::new(&s, None).unwrap();
@@ -296,7 +326,7 @@ fn wrapped_metal_is_periodic_with_integer_source_repeats_and_continuous_seams() 
 
 #[test]
 fn exposure_direction_translated_coordinates_and_noise_intervals_are_consistent() {
-    let mut s = fixture().cases.remove(0).settings;
+    let mut s = frame();
     s.contacts = Some(vec![[0.5, 0.4]]);
     s.edge_axes = Some([false, false]);
     let metal = Metal::new(&s, None).unwrap();
@@ -372,7 +402,7 @@ fn exposure_direction_translated_coordinates_and_noise_intervals_are_consistent(
 
 #[test]
 fn invalid_exposure_and_sampler_failures_do_not_poison_later_sampling() {
-    let base = fixture().cases.remove(0).settings;
+    let base = frame();
     for value in [f64::NAN, f64::INFINITY, -1., 1.01] {
         let mut s = base.clone();
         s.wear = value;

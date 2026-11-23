@@ -568,7 +568,7 @@ fn invalid_city_lots_fail_at_the_building() {
     for attrs in [
         r#"footprint="0 0; 0 7; 9 7; 10 0""#,
         r#"footprint="0 0; 10 7; 10 0; 0 7""#,
-        r#"footprint="0 0; 10 0; 11 7""#,
+        r#"footprint="0 0; 10 0""#,
         r#"footprint="0 0; 10 0; 10 0; 0 7""#,
         r#"footprint="0 0; 10 0; 9 7; 0 7" width="10""#,
         r#"footprint="0 0; 10 0; 9 7; 0 7" model="reference-corner""#,

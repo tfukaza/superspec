@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-shopfront",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "width": {"type": "number", "default": 3.0, "min": 1.5, "max": 20, "unit": "m"},
     "height": {"type": "number", "default": 3.35, "min": 2.4, "max": 6, "unit": "m"},
     "kind": {"type": "choice", "default": "shutter", "choices": ["shutter", "gate", "door", "shop", "service", "open"]},
@@ -34,7 +36,8 @@
     "transom": {"type": "choice", "default": "auto", "choices": ["auto", "glazed", "mesh", "none"]},
     "opening": {"type": "number", "default": 0, "min": 0, "max": 6, "unit": "m"},
     "shutterHead": {"type": "number", "default": 0.22, "min": 0.1, "max": 1, "unit": "m"},
-    "shutterHeadRust": {"type": "number", "default": 0, "min": 0, "max": 1}
+    "shutterHeadRust": {"type": "number", "default": 0, "min": 0, "max": 1},
+    "wall": {"type": "number", "default": 0, "min": 0, "max": 1, "unit": "m"}
   },
   "derived": {
     "open": "(kind == 5) * (width >= 1.9) * (depth >= 2.4)",
@@ -50,7 +53,7 @@
       "id": "bay",
       "when": "1 - open",
       "generator": {"kind": "native", "name": "kowloon/ground-bay",
-        "parameters": {"kind": {"choose": ["shutter", "gate", "door", "shop", "service", "shutter"], "by": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "kind": {"choose": ["shutter", "gate", "door", "shop", "service", "shutter"], "by": "kind"}, "width": {"parameter": "width"}, "height": {"parameter": "height"},
                        "seed": {"parameter": "seed"}, "signs": false, "shutter": {"parameter": "shutterColor"}, "frame": {"parameter": "doorColor"}, "gate": {"parameter": "gateColor"},
                        "gateBars": {"parameter": "gateBars"}, "gateBacking": {"parameter": "gateBacking"}, "panels": {"parameter": "doorPanels"},
                        "door": {"parameter": "door"}, "transom": {"parameter": "transom"}, "opening": {"parameter": "opening"}, "lamp": {"parameter": "lampStyle"},
@@ -67,21 +70,21 @@
       "id": "room",
       "when": "open",
       "generator": {"kind": "native", "name": "kowloon/shop-room",
-        "parameters": {"catalogStock": true, "trade": {"parameter": "trade"}, "width": {"parameter": "width"}, "height": {"expr": "height - 0.5"},
-                       "depth": {"parameter": "depth"}, "storey": {"expr": "height + 0.05"}, "seed": {"parameter": "seed"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "catalogStock": true, "trade": {"parameter": "trade"}, "width": {"parameter": "width"}, "height": {"expr": "height - 0.5"},
+                       "depth": {"parameter": "depth"}, "storey": {"expr": "height + 0.05"}, "wall": {"parameter": "wall"}, "seed": {"parameter": "seed"},
                        "hangClear": {"expr": "select(awning, min(0.74 + awningLower, height - 2.1), 0)"}}}
     },
     {
       "id": "stock",
       "when": "open * stock * (trade != 5)",
       "generator": {"kind": "native", "name": "kowloon/street-stock",
-        "parameters": {"catalogStock": true, "width": {"parameter": "width"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "catalogStock": true, "width": {"parameter": "width"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "clutter",
       "when": "cluttered * (trade != 5)",
       "generator": {"kind": "native", "name": "kowloon/street-stock",
-        "parameters": {"catalogStock": true, "width": {"derived": "clutterWidth"}, "seed": {"expr": "seed + 5"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "catalogStock": true, "width": {"derived": "clutterWidth"}, "seed": {"expr": "seed + 5"},
                        "kind": {"choose": ["crates", "crates", "crates", "cartons", "mixed"], "by": "select(clutter == 1, 2 + random(seed, 24) * 3, clutter)"}}},
       "placement": {"position": ["select(clutterOnRight, width / 2 + min(clutterRight, clutterWidth * 0.6) - clutterWidth / 2, -width / 2 - min(clutterLeft, clutterWidth * 0.6) + clutterWidth / 2)", 0, 0]}
     },
@@ -89,7 +92,7 @@
       "id": "sign",
       "when": "signs * (1 - awning) * (kind != 2) * (kind != 4)",
       "generator": {"kind": "item", "entry": "kowloon-sign.item.json",
-        "parameters": {"mount": "flat", "width": {"expr": "min(width * 0.62, 2.6)"}, "height": 0.3,
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "mount": "flat", "width": {"expr": "min(width * 0.62, 2.6)"}, "height": 0.3,
                        "scheme": {"choose": ["green", "red", "ivory", "blue", "black", "yellow"], "by": "random(seed, 21) * 6"},
                        "horizontal": true, "seed": {"parameter": "seed"}}},
       "placement": {"position": [0, 0, "height - 0.49"]}
@@ -98,14 +101,14 @@
       "id": "awning",
       "when": "awning * (awningKind == 0)",
       "generator": {"kind": "native", "name": "kowloon/awning",
-        "parameters": {"width": {"derived": "awningWidth"}, "depth": 0.85, "drop": 0.3, "color": {"parameter": "awningColor"}, "seed": {"parameter": "seed"}}},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"derived": "awningWidth"}, "depth": 0.85, "drop": 0.3, "color": {"parameter": "awningColor"}, "seed": {"parameter": "seed"}}},
       "placement": {"position": [0, 0, {"derived": "awningZ"}]}
     },
     {
       "id": "tarp",
       "when": "awning * (awningKind >= 1)",
       "generator": {"kind": "native", "name": "kowloon/sagging-tarp",
-        "parameters": {"width": {"derived": "awningWidth"}, "depth": {"expr": "select(awningKind == 2, 1.5, 1.35)"}, "drop": {"expr": "select(awningKind == 2, 0.42, 0.46)"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"derived": "awningWidth"}, "depth": {"expr": "select(awningKind == 2, 1.5, 1.35)"}, "drop": {"expr": "select(awningKind == 2, 0.42, 0.46)"},
                        "sag": {"expr": "select(awningKind == 2, awningSag * 0.25, awningSag)"}, "tilt": {"expr": "select(awningKind == 2, 0, 0.12)"},
                        "valance": {"expr": "select(awningKind == 2, 0.24, 0.16)"}, "scallops": {"expr": "select(awningKind == 2, awningBands / 2, 0)"},
                        "color": {"parameter": "awningColor"}, "hem": "#c9bca0",
@@ -118,7 +121,7 @@
     {
       "id": "lamp",
       "when": "lamp",
-      "generator": {"kind": "native", "name": "kowloon/wall-lamp", "parameters": {"style": {"parameter": "lampStyle"}}},
+      "generator": {"kind": "native", "name": "kowloon/wall-lamp", "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "style": {"parameter": "lampStyle"}}},
       "placement": {"position": ["width / 2 + 0.05", 0, "height - 0.9"]}
     }
   ],

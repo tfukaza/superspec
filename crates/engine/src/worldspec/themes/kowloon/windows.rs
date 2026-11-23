@@ -2,6 +2,7 @@
 use super::{
     fasteners::bolt,
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     palette::{shade, srgb},
     pen::Tint,
 };
@@ -404,7 +405,10 @@ fn interior(
 ) -> Result<(), String> {
     let [x0, x1, z0, z1] = span;
     let depth = look.recess;
-    if let (true, Some(room)) = (look.lit, options.room) {
+    let detail = drawing.mesh.graphics_detail();
+    // A reduced level shows a lit room as the flat glowing back; both draw the shared
+    // stream alike below.
+    if let (true, Some(room), false) = (look.lit, options.room, detail.reduced()) {
         // The shared stream advances as for a flat back, so the sashes open alike.
         let curtained = rng.chance(0.6);
         let share = rng.float(0.12, 0.24);
@@ -441,7 +445,21 @@ fn interior(
             srgb(appearance.pick(&["#777f76", "#948a70", "#657278"])),
             appearance.float(0.3, 0.65),
         );
-        for fold in 0..4 {
+        // Level 1 hangs each curtain as one flat sheet; level 2 leaves the dark room.
+        if detail == GraphicsDetail::Low {
+            let y = -depth * 0.82;
+            drawing.sheet(
+                "paint",
+                &[
+                    [start, y, z0],
+                    [start + width, y, z0],
+                    [start + width, y, z1],
+                    [start, y, z1],
+                ],
+                fabric,
+            )?;
+        }
+        for fold in (0..4).filter(|_| !detail.reduced()) {
             let a = start + width * fold as f64 / 4.;
             let b = start + width * (fold + 1) as f64 / 4.;
             let ya = -depth * 0.82 + (fold % 2) as f64 * 0.012;
@@ -457,7 +475,20 @@ fn interior(
         return Ok(());
     }
     for start in [x0, x1 - width] {
-        for fold in 0..3 {
+        if detail == GraphicsDetail::Low {
+            let y = -depth * 0.65;
+            drawing.sheet(
+                "paint",
+                &[
+                    [start, y, z0],
+                    [start + width, y, z0],
+                    [start + width, y, z1],
+                    [start, y, z1],
+                ],
+                shade(look.curtain, 0.24),
+            )?;
+        }
+        for fold in (0..3).filter(|_| !detail.reduced()) {
             let a = start + width * fold as f64 / 3.;
             let b = start + width * (fold + 1) as f64 / 3.;
             let y0 = -depth * 0.65 + (fold % 2) as f64 * 0.025;
@@ -612,25 +643,46 @@ pub fn window_with(
         }
     }
     let recess = look.recess;
-    drawing.molding(
-        "concrete",
-        [x - 0.07, x1 + 0.07],
-        &[
-            [-recess, z - 0.07],
-            [0.09, z - 0.07],
-            [0.115, z - 0.045],
-            [0.115, z - 0.02],
-            [-recess, z],
-        ],
-        look.trim,
-    )?;
-    drawing.panel(
-        "paint",
-        [x - 0.04, x1 + 0.04, z - 0.042, z - 0.036],
-        0.1155,
-        shade(look.trim, 0.5),
-    )?;
-    if look.hood && look.reach >= 0.3 {
+    let detail = drawing.mesh.graphics_detail();
+    if detail.reduced() {
+        // The sill and hood as plain blocks of the same reach; no drip line.
+        drawing.cuboid(
+            "concrete",
+            [x - 0.07, 0., z - 0.07],
+            [x1 + 0.07, 0.115, z],
+            look.trim,
+            "b",
+        )?;
+        if look.hood && look.reach >= 0.3 {
+            drawing.cuboid(
+                "concrete",
+                [x - 0.12, 0., z1 + 0.02],
+                [x1 + 0.12, 0.28, z1 + 0.13],
+                look.trim,
+                "b",
+            )?;
+        }
+    } else {
+        drawing.molding(
+            "concrete",
+            [x - 0.07, x1 + 0.07],
+            &[
+                [-recess, z - 0.07],
+                [0.09, z - 0.07],
+                [0.115, z - 0.045],
+                [0.115, z - 0.02],
+                [-recess, z],
+            ],
+            look.trim,
+        )?;
+        drawing.panel(
+            "paint",
+            [x - 0.04, x1 + 0.04, z - 0.042, z - 0.036],
+            0.1155,
+            shade(look.trim, 0.5),
+        )?;
+    }
+    if !detail.reduced() && look.hood && look.reach >= 0.3 {
         drawing.molding(
             "concrete",
             [x - 0.12, x1 + 0.12],
@@ -721,28 +773,52 @@ fn frame_and_leaves(
     let [w, h] = dimensions;
     let d = FRAME_DEPTH;
     let m = Members::of(options.weight);
-    drawing.frame_box([x, 0., z], [x + member, d, z1], look.frame)?;
-    drawing.frame_box([x1 - member, 0., z], [x1, d, z1], look.frame)?;
-    drawing.frame_box(
-        [x + member, 0., z],
-        [x1 - member, d, z + member],
-        look.frame,
-    )?;
-    drawing.frame_box(
-        [x + member, 0., z1 - member],
-        [x1 - member, d, z1],
-        look.frame,
-    )?;
+    // Level 1 keeps the frame, mullions and transom as plain members and the glass; beads,
+    // hinges, latches, handles and glazing bars are under 25 mm and go. Level 2 draws the
+    // frame as a flat border at least 60 mm wide around the glass.
+    let detail = drawing.mesh.graphics_detail();
+    let reduced = detail.reduced();
+    let flat = detail == GraphicsDetail::VeryLow;
+    if flat {
+        let border = member.max(0.06).min(w / 4.).min(h / 4.);
+        for span in [
+            [x, x + border, z, z1],
+            [x1 - border, x1, z, z1],
+            [x + border, x1 - border, z, z + border],
+            [x + border, x1 - border, z1 - border, z1],
+        ] {
+            drawing.panel("paint", span, d, look.frame)?;
+        }
+    } else {
+        drawing.frame_box([x, 0., z], [x + member, d, z1], look.frame)?;
+        drawing.frame_box([x1 - member, 0., z], [x1, d, z1], look.frame)?;
+        drawing.frame_box(
+            [x + member, 0., z],
+            [x1 - member, d, z + member],
+            look.frame,
+        )?;
+        drawing.frame_box(
+            [x + member, 0., z1 - member],
+            [x1 - member, d, z1],
+            look.frame,
+        )?;
+    }
     let inner = [x + member, x1 - member, z + member, z1 - member];
     let bead = shade(look.frame, 0.72);
-    for u in [inner[0] - 0.012, inner[1]] {
+    for u in [inner[0] - 0.012, inner[1]]
+        .into_iter()
+        .filter(|_| !reduced)
+    {
         drawing.frame_box(
             [u, d - 0.015, inner[2]],
             [u + 0.012, d + 0.008, inner[3]],
             bead,
         )?;
     }
-    for v in [inner[2] - 0.012, inner[3]] {
+    for v in [inner[2] - 0.012, inner[3]]
+        .into_iter()
+        .filter(|_| !reduced)
+    {
         drawing.molding(
             "paint",
             [inner[0], inner[1]],
@@ -755,7 +831,7 @@ fn frame_and_leaves(
             bead,
         )?;
     }
-    if matches!(look.kind, Kind::Casement | Kind::Timber) {
+    if !reduced && matches!(look.kind, Kind::Casement | Kind::Timber) {
         for v in [z + h * 0.2, z + h * 0.66] {
             drawing.frame_box(
                 [x + 0.006, d - 0.004, v - 0.006],
@@ -809,6 +885,9 @@ fn frame_and_leaves(
     let result = interior(drawing, inner, look, options, rng);
     drawing.pen = moved;
     result?;
+    if look.kind == Kind::Louver && flat {
+        return drawing.panel("glass", inner, d * 0.5, shade(srgb("#2a3a40"), 2.6));
+    }
     if look.kind == Kind::Louver {
         let slats = ((inner[3] - inner[2]) / 0.11).round().max(3.) as usize;
         let pitch = (inner[3] - inner[2]) / slats as f64;
@@ -831,7 +910,7 @@ fn frame_and_leaves(
         let leaves = if w > 1.7 { 3 } else { 2 };
         let pitch = (inner[1] - inner[0]) / leaves as f64;
         let open = opened(options, !look.fixed, leaves, rng);
-        for y in [d * 0.3, d * 0.7] {
+        for y in [d * 0.3, d * 0.7].into_iter().filter(|_| !reduced) {
             drawing.frame_box(
                 [inner[0], y - 0.004, inner[2]],
                 [inner[1], y + 0.004, inner[2] + 0.012],
@@ -848,6 +927,29 @@ fn frame_and_leaves(
             let l1 = l0 + pitch;
             let y = if i % 2 != 0 { d * 0.4 } else { d * 0.8 };
             if open.contains(&i) {
+                continue;
+            }
+            if reduced {
+                // A leaf is its two stiles and the pane between them; at level 2 the pane.
+                let stile = if flat { 0. } else { 0.03 };
+                if !flat {
+                    drawing.frame_box(
+                        [l0, y - 0.02, inner[2]],
+                        [l0 + 0.03, y, inner[3]],
+                        look.frame,
+                    )?;
+                    drawing.frame_box(
+                        [l1 - 0.03, y - 0.02, inner[2]],
+                        [l1, y, inner[3]],
+                        look.frame,
+                    )?;
+                }
+                drawing.panel(
+                    "glass",
+                    [l0 + stile, l1 - stile, inner[2], inner[3]],
+                    y - 0.006,
+                    [0.88, 0.94, 0.93],
+                )?;
                 continue;
             }
             drawing.frame_box(
@@ -914,7 +1016,7 @@ fn frame_and_leaves(
     for i in 0..lights {
         let l0 = inner[0] + i as f64 * pitch;
         let l1 = l0 + pitch;
-        if i > 0 {
+        if i > 0 && !flat {
             drawing.frame_box(
                 [l0 - m.mullion, 0., inner[2]],
                 [l0 + m.mullion, d * 0.85, inner[3]],
@@ -1016,7 +1118,7 @@ fn frame_and_leaves(
                     shade(srgb("#2a3a40"), 2.6),
                 )?;
             }
-            for x in [a, b - 0.012] {
+            for x in [a, b - 0.012].into_iter().filter(|_| !reduced) {
                 drawing.frame_box([x, 0.01, z0], [x + 0.012, d, z1], bead)?;
             }
         } else if transom < inner[3] {
@@ -1059,6 +1161,9 @@ fn frame_and_leaves(
             d * 0.4 - 0.003,
             [0.88, 0.94, 0.93],
         )?;
+        if reduced {
+            continue;
+        }
         let latch = inner[2] + (transom - inner[2]) * 0.44;
         drawing.frame_box(
             [l1 - 0.024, d * 0.85, latch - 0.032],
@@ -1088,6 +1193,9 @@ fn frame_and_leaves(
                 look.frame,
             )?;
         }
+    }
+    if flat {
+        return Ok(());
     }
     if transom < inner[3] {
         drawing.frame_box(

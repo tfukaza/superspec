@@ -11,6 +11,13 @@ pub fn item_generators() -> std::sync::Arc<dyn crate::itemspec::definition::Nati
     super::themes::kowloon::items::natives()
 }
 
+/// The key the shipped theme's prototype shares with the same shape drawn at its other
+/// graphics details: its own key with the detail left out of its content. `None` for a
+/// prototype that names no detail.
+pub fn prototype_lod_group(prototype: &crate::itemspec::definition::Prototype) -> Option<String> {
+    super::themes::kowloon::items::prototype_lod_group(prototype)
+}
+
 /// Compiles the architectural model with the shipped profile and portable kernel.
 pub fn compile(source: &str, revision: u32) -> Result<Scene, Diagnostic> {
     compile_with_assets(source, revision, &|path| {

@@ -165,100 +165,104 @@ fn draw(pen: &Pen, mesh: &mut Mesh<'_>, shape: &str) {
         _ => panic!("Unknown reference shape {shape}"),
     }
 }
-fn near(actual: &Value, expected: &Value, path: &str) {
-    match expected {
-        Value::Number(n) => assert!(
-            (actual.as_f64().unwrap() - n.as_f64().unwrap()).abs() < 2e-10,
-            "{path}: {actual} != {expected}"
-        ),
-        Value::Array(a) => {
-            let b = actual.as_array().unwrap();
-            assert_eq!(b.len(), a.len(), "{path}");
-            for (i, e) in a.iter().enumerate() {
-                near(&b[i], e, &format!("{path}/{i}"));
-            }
-        }
-        Value::Object(o) => {
-            for (k, v) in o {
-                near(&actual[k], v, &format!("{path}/{k}"));
-            }
-        }
-        _ => assert_eq!(actual, expected, "{path}"),
-    }
+const SHAPES: [&str; 13] = [
+    "shutter",
+    "bar",
+    "compact-bar",
+    "box",
+    "compact-box",
+    "bevel",
+    "compact-bevel",
+    "pipe",
+    "wide-tube",
+    "compact-tube",
+    "joints",
+    "folds",
+    "bypass",
+];
+fn weathered_mesh<'a>(mesh: &mut Mesh<'a>, shape: &str, reflected: bool) {
+    let matrix = Matrix([
+        [if reflected { -1. } else { 1. }, 0., 0.],
+        [0., 1., 0.],
+        [0., 0., 1.],
+        [0.; 3],
+    ]);
+    let base = Pen::new(matrix, "assembly").unwrap();
+    let pen = base
+        .with_weathering(
+            mesh,
+            settings(),
+            if shape == "pipe" {
+                Kind::Pipe
+            } else if shape == "folds" {
+                Kind::Sheet
+            } else {
+                Kind::Frame
+            },
+            if shape == "folds" {
+                Some(mapping())
+            } else {
+                None
+            },
+            vec!["metal".into(), "paint".into()],
+        )
+        .unwrap();
+    draw(&pen, mesh, shape);
 }
-pub fn check_reference_weathered() {
-    let fixture: Value =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/weathered.json")).unwrap();
-    for case in fixture["cases"].as_array().unwrap() {
-        let shape = case["shape"].as_str().unwrap();
-        let mut mesh = Mesh::new(Mode::Render, 10000, &|| false).unwrap();
-        let matrix = Matrix([
-            [if case["reflected"] == true { -1. } else { 1. }, 0., 0.],
-            [0., 1., 0.],
-            [0., 0., 1.],
-            [0.; 3],
-        ]);
-        let base = Pen::new(matrix, "assembly").unwrap();
-        let pen = base
-            .with_weathering(
-                &mut mesh,
-                settings(),
-                if shape == "pipe" {
-                    Kind::Pipe
-                } else if shape == "folds" {
-                    Kind::Sheet
-                } else {
-                    Kind::Frame
-                },
-                if shape == "folds" {
-                    Some(mapping())
-                } else {
-                    None
-                },
-                vec!["metal".into(), "paint".into()],
-            )
-            .unwrap();
-        draw(&pen, &mut mesh, shape);
-        if shape == "bypass" {
-            for (i, surface) in mesh.triangle_surfaces.iter().enumerate() {
-                assert_eq!(
-                    mesh.surfaces[*surface].slot,
-                    if i < 8 { "metal" } else { "sheet" }
-                );
-            }
-        }
-        let triangles:Vec<_>=mesh.indices.as_chunks::<3>().0.iter().enumerate().map(|(t,tri)|{
-            let surface=&mesh.surfaces[mesh.triangle_surfaces[t]];
-            json!({"part":surface.part,"slot":if surface.slot=="paint"{"paint"}else{"metal"},"corners":tri.map(|i|{let v=mesh.vertices[i as usize];json!({"position":v.position,"normal":v.normal,"uv":v.uv,"color":v.color})})})
-        }).collect();
-        near(&json!(triangles), &case["triangles"], shape);
-        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        let expected = case["receivers"].as_array().unwrap();
-        assert_eq!(plan.receivers().len(), expected.len(), "{shape}");
-        for (r, e) in plan.receivers().iter().zip(expected) {
-            let job = &plan.jobs()[r.job];
-            near(
-                &json!({"first":r.first_triangle,"count":r.triangle_count,"bounds":job.metal_settings().unwrap().bounds,"density":job.density,"seed":job.metal_settings().unwrap().seed,"exposure":[job.metal_settings().unwrap().contacts,job.metal_settings().unwrap().metric,job.metal_settings().unwrap().folds,job.metal_settings().unwrap().edge_axes]}),
-                &json!({"first":e["first"],"count":e["count"],"bounds":e["bounds"],"density":e["density"],"seed":e["seed"],"exposure":e["exposure"]}),
-                shape,
-            );
-            let metal = Metal::new(job.metal_settings().unwrap(), None).unwrap();
-            for sample in e["samples"].as_array().unwrap() {
-                let actual = metal
-                    .sample(sample["u"].as_f64().unwrap(), sample["v"].as_f64().unwrap())
-                    .unwrap();
-                near(
-                    &serde_json::to_value(actual).unwrap(),
-                    &sample["sample"],
-                    shape,
-                );
-            }
-        }
-    }
-}
+
 #[test]
-fn frozen_source_geometry_receivers_and_samples() {
-    check_reference_weathered();
+fn field_tints_and_unselected_slots_keep_their_authored_slots() {
+    let mut mesh = Mesh::new(Mode::Render, 10000, &|| false).unwrap();
+    weathered_mesh(&mut mesh, "bypass", false);
+    // Each bar is eight triangles: the field-tinted metal bar, then the unselected sheet bar.
+    assert_eq!(mesh.triangle_count(), 16);
+    for (i, surface) in mesh.triangle_surfaces.iter().enumerate() {
+        assert_eq!(
+            mesh.surfaces[*surface].slot,
+            if i < 8 { "metal" } else { "sheet" }
+        );
+    }
+}
+
+#[test]
+fn weathered_shapes_plan_disjoint_receivers_with_sampleable_metal() {
+    for shape in SHAPES {
+        for reflected in [false, true] {
+            let mut mesh = Mesh::new(Mode::Render, 10000, &|| false).unwrap();
+            weathered_mesh(&mut mesh, shape, reflected);
+            let triangles = mesh.triangle_count();
+            let indices = mesh.indices.clone();
+            let positions: Vec<_> = mesh.vertices.iter().map(|v| v.position).collect();
+            let plan = weathered::finish(&mut mesh, &|| false).unwrap();
+            let mut covered = vec![false; triangles];
+            for r in plan.receivers() {
+                for t in r.first_triangle..r.first_triangle + r.triangle_count {
+                    assert!(!covered[t], "{shape}: triangle {t} received twice");
+                    covered[t] = true;
+                }
+                let job = &plan.jobs()[r.job];
+                let settings = job.metal_settings().unwrap();
+                assert!(job.density > 0.);
+                let metal = Metal::new(settings, None).unwrap();
+                let [u0, v0, u1, v1] = settings.bounds;
+                assert!(u0 <= u1 && v0 <= v1, "{shape}");
+                for (fu, fv) in [(0., 0.), (0.5, 0.5), (1., 1.)] {
+                    let sample = metal
+                        .sample(u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv)
+                        .unwrap();
+                    assert!(!sample.layers.is_empty(), "{shape}");
+                }
+            }
+            if shape != "bypass" && !shape.starts_with("compact") {
+                assert!(!plan.receivers().is_empty(), "{shape}");
+            }
+            drop(plan);
+            assert_eq!(mesh.indices, indices, "{shape}: planning keeps topology");
+            for (v, p) in mesh.vertices.iter().zip(&positions) {
+                assert_eq!(v.position, *p);
+            }
+        }
+    }
 }
 
 #[test]

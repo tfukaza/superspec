@@ -199,6 +199,9 @@ pub fn bolt(
     out: V3,
     radius: f64,
 ) -> Result<(), String> {
+    if drawing.mesh.graphics_detail().reduced() {
+        return Ok(());
+    }
     let pen = steel.pen(drawing, Kind::Frame)?;
     fasteners::bolt(
         &mut Fixture {

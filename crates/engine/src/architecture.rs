@@ -854,14 +854,13 @@ impl Compiler<'_> {
         solids: &[Solid],
         patches: &[(Geometry, u32)],
     ) -> Result<(), Diagnostic> {
-        self.append_owned(scene, owned_geometry(solids, patches), true, None)
+        self.append_owned(scene, owned_geometry(solids, patches), true)
     }
     fn append_owned(
         &mut self,
         scene: &mut Scene,
         by_owner: BTreeMap<u32, Geometry>,
         collision: bool,
-        capture: Option<&mut Vec<V3>>,
     ) -> Result<(), Diagnostic> {
         let mut by_node: BTreeMap<(usize, String), Geometry> = BTreeMap::new();
         for (owner, geometry) in by_owner {
@@ -883,14 +882,13 @@ impl Compiler<'_> {
                 .triangles
                 .extend(geometry.triangles.into_iter().map(|t| t.map(|i| i + base)));
         }
-        self.append_nodes(scene, by_node, collision, capture)
+        self.append_nodes(scene, by_node, collision)
     }
     fn append_nodes(
         &mut self,
         scene: &mut Scene,
         by_node: BTreeMap<(usize, String), Geometry>,
         collision: bool,
-        mut capture: Option<&mut Vec<V3>>,
     ) -> Result<(), Diagnostic> {
         for ((index, material), geometry) in by_node {
             let node = &self.resolution.nodes[index];
@@ -913,9 +911,6 @@ impl Compiler<'_> {
                 let normal = unit(vector).at(&node.source)?;
                 let base = (scene.positions.len() / 3 - vertex_start) as u32;
                 for p in points {
-                    if let Some(vertices) = capture.as_mut() {
-                        vertices.push(p);
-                    }
                     scene.positions.extend(p.map(|v| v as f32));
                     scene.normals.extend(normal.map(|v| v as f32));
                     scene.colors.extend([1.; 3]);

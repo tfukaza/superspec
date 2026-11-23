@@ -20,6 +20,7 @@ pub static EXTENSION: Extension = Extension {
     tags: &[
         tag("city", "architecture"),
         tag("building", "city"),
+        tag("hole", "building"),
         tag("road", "city"),
         tag("avenue", "city"),
         tag("sidewalk", "city"),
@@ -105,34 +106,37 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 Value::Vector(vector)
             }
             "heading" if kind != "city" => Value::Number(number(text)?),
-            "footprint" if kind == "building" => {
+            "footprint" | "points"
+                if matches!((kind, key), ("building", "footprint") | ("hole", "points")) =>
+            {
                 let mut points = Vec::new();
                 for pair in text.split(';') {
                     let mut xy = pair.split_whitespace();
                     let x = quantize(number(xy.next().ok_or_else(invalid)?)?);
                     let y = quantize(number(xy.next().ok_or_else(invalid)?)?);
-                    if xy.next().is_some() || points.len() == 4 {
+                    if xy.next().is_some() || points.len() == 64 {
                         return Err(invalid());
                     }
                     points.push([x, y]);
                 }
-                if points.len() != 4 {
+                if points.len() < 3 {
                     return Err(node.fail(
                         "AML_CITY",
-                        "A city building footprint needs four local XY corners.",
+                        "Each building boundary needs at least three local XY corners.",
                     ));
                 }
-                for i in 0..4 {
-                    let [a, b, c] = [points[i], points[(i + 1) % 4], points[(i + 2) % 4]];
-                    let edge = [b[0] - a[0], b[1] - a[1]];
-                    let turn = edge[0] * (c[1] - b[1]) - edge[1] * (c[0] - b[0]);
-                    let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
-                    if turn <= 0. || !(36.0..=196.0).contains(&length_squared) {
+                let mut twice_area = 0.;
+                for (a, b) in points.iter().zip(points.iter().cycle().skip(1)) {
+                    if a == b {
                         return Err(node.fail(
                             "AML_CITY",
-                            "A city building footprint must be convex and counterclockwise, with 6–14 m edges.",
+                            "A building boundary has repeated adjacent corners.",
                         ));
                     }
+                    twice_area += a[0] * b[1] - a[1] * b[0];
+                }
+                if twice_area == 0. || (kind == "building" && twice_area < 0.) {
+                    return Err(node.fail("AML_CITY", "Building outer boundaries must run counterclockwise and each loop must enclose a nonzero area."));
                 }
                 Value::PlanPoints(points)
             }
@@ -198,6 +202,16 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 Value::Number(scale)
             }
             "model" if kind == "building" && text == "reference-corner" => Value::Text(text.into()),
+            "graphics-detail" if kind == "building" && matches!(text, "0" | "1" | "2") => {
+                Value::Number(number(text)?)
+            }
+            // Variants per part type: 0 is unlimited, 64 the largest catalogue.
+            "variant-budget" if kind == "building" => Value::Number(
+                text.parse::<u8>()
+                    .ok()
+                    .filter(|v| *v <= 64)
+                    .ok_or_else(invalid)? as f64,
+            ),
             "front-trade"
                 if kind == "building"
                     && matches!(
@@ -262,10 +276,14 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 }
                 Value::Number(value)
             }
-            "banner" | "dressing" | "enclosed"
-                if (kind, key) == ("lamp", "banner")
-                    || (kind, key) == ("ceiling-twin-strip", "enclosed")
-                    || (kind, key) == ("procedural-wall", "dressing") =>
+            "banner" | "dressing" | "enclosed" | "ground-shops" | "pavement"
+                if matches!(
+                    (kind, key),
+                    ("lamp", "banner")
+                        | ("ceiling-twin-strip", "enclosed")
+                        | ("procedural-wall", "dressing")
+                        | ("building", "ground-shops" | "pavement")
+                ) =>
             {
                 Value::Boolean(match text {
                     "true" | "1" => true,
@@ -283,7 +301,10 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         };
         node.attributes.insert(key.into(), value);
     }
-    if kind != "city" {
+    if kind == "hole" && !node.attributes.contains_key("points") {
+        return Err(node.fail("AML_CITY", "A courtyard hole requires local XY points."));
+    }
+    if !matches!(kind, "city" | "hole") {
         if kind == "ceiling-girder" {
             let length = node.number("length", 4.);
             if node
@@ -305,9 +326,18 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         }
         if node.text("model") == Some("reference-corner")
             && (node.number("floors", 4.) != 4.
-                || ["width", "depth", "footprint", "seed", "front-trade"]
-                    .iter()
-                    .any(|k| node.attributes.contains_key(*k)))
+                || xml.children().any(|child| child.is_element())
+                || [
+                    "width",
+                    "depth",
+                    "footprint",
+                    "seed",
+                    "front-trade",
+                    "ground-shops",
+                    "pavement",
+                ]
+                .iter()
+                .any(|k| node.attributes.contains_key(*k)))
         {
             return Err(node.fail(
                 "AML_CITY",
@@ -321,6 +351,9 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
                 "AML_CITY",
                 "Choose a building footprint or rectangular width and depth.",
             ));
+        }
+        if !node.boolean("ground-shops", true) && node.attributes.contains_key("front-trade") {
+            return Err(node.fail("AML_CITY", "A front trade requires ground shops."));
         }
         if node.id.is_empty() || !node.attributes.contains_key("position") {
             return Err(node.fail(
@@ -340,6 +373,26 @@ fn read(xml: Element<'_, '_>, source: &AmlSource<'_>) -> Result<Node, Diagnostic
         }
         if child.is_text() && child.text().is_some_and(|s| !s.trim().is_empty()) {
             return Err(node.fail("AML_CITY", "Unexpected text in city layout."));
+        }
+    }
+    if kind == "building" && !node.children.is_empty() {
+        let outer_corners = match node.attributes.get("footprint") {
+            Some(Value::PlanPoints(points)) => points.len(),
+            _ => 4,
+        };
+        let hole_corners = node
+            .children
+            .iter()
+            .map(|hole| match hole.attributes.get("points") {
+                Some(Value::PlanPoints(points)) => points.len(),
+                _ => unreachable!("admitted courtyard points"),
+            })
+            .sum::<usize>();
+        if outer_corners + hole_corners > 64 {
+            return Err(node.fail(
+                "AML_CITY",
+                "A building footprint supports at most 64 corners across all boundaries.",
+            ));
         }
     }
     Ok(node)

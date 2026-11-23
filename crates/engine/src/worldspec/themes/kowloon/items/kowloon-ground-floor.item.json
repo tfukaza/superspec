@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-ground-floor",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "u0": {"type": "number", "default": 0, "min": -1000, "max": 1000, "unit": "m"},
     "paint": {"type": "color", "default": "#c0b49e"},
     "peeling": {"type": "number", "default": 0.15, "min": 0, "max": 1},
@@ -85,7 +87,7 @@
       "id": "shop",
       "repeat": [{"name": "i", "count": {"derived": "shops"}}],
       "generator": {"kind": "item", "entry": "kowloon-shopfront.item.json",
-        "parameters": {"width": {"expr": "(select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15)) - (select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))"}, "height": {"expr": "height - 0.05"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"expr": "(select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15)) - (select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15))"}, "height": {"expr": "height - 0.05"},
                        "kind": {"choose": ["open", "shutter", "gate", "shop", "door", "open", "shop", "gate", "shop", "shutter", "gate", "door", "service", "open"],
                                 "by": "select(cell(shopPlan, i) == 0, random(seed, i, 5) * 8, 7 + cell(shopPlan, i))"},
                        "trade": {"choose": ["provisions", "grocer", "greengrocer", "hardware", "herbalist", "roast"], "by": "select(cell(tradePlan, i) == 0, random(seed, i, 9) * 5, cell(tradePlan, i) - 1)"},
@@ -104,7 +106,7 @@
                        "awningColor": {"choose": ["#6b6f5c", "#778778", "#6b6f5c", "#8a8f7a", "#9a5a4a"], "by": "select(floor(select(cell(awningPlan, i) == 0, 3 + random(seed, i, 8) * 3, cell(awningPlan, i))) == 4, 4, random(seed, i, 7) * 4)"},
                        "awningSag": {"expr": "select(cell(awningSagPlan, i) > 0, min(0.8, cell(awningSagPlan, i)), 0.28)"},
                        "awningStripes": {"expr": "clamp(round(cell(awningStripePlan, i)), 0, 60)"},
-                       "lamp": {"choose": [false, true], "by": "i + 1 < shops"}, "lampStyle": {"parameter": "lampStyle"},
+                       "lamp": {"choose": [false, true], "by": "i + 1 < shops"}, "lampStyle": {"parameter": "lampStyle"}, "wall": {"parameter": "thickness"},
                        "seed": {"expr": "seed * 1000 + i"}}},
       "placement": {"position": ["((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) + (select(spans > 0, cell(shopSpans, i, 1), edge + i * pitch + pitch - 0.15))) / 2", 0, 0]}
     },
@@ -129,7 +131,7 @@
       "repeat": [{"name": "i", "count": {"derived": "shops"}}],
       "when": "meters * (count(meterPlan) == 0) * (i > 0) * (random(seed, i, 12) < 0.6) * ((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) - (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15)) >= 0.34)",
       "generator": {"kind": "native", "name": "kowloon/meter-bank",
-        "parameters": {"count": {"expr": "clamp(floor(((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) - (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) / 0.33), 1, 1 + floor(random(seed, i, 13) * 3))"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "count": {"expr": "clamp(floor(((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) - (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) / 0.33), 1, 1 + floor(random(seed, i, 13) * 3))"},
                        "seed": {"expr": "seed * 1000 + 500 + i"}}},
       "placement": {"position": ["((select(spans > 0, cell(shopSpans, i, 0), edge + i * pitch + 0.15)) + (select(spans > 0, cell(shopSpans, i - 1, 1), edge + i * pitch - 0.15))) / 2", 0, 1.47]}
     },
@@ -137,13 +139,13 @@
       "id": "meterAt",
       "repeat": [{"name": "k", "count": "count(meterPlan)"}],
       "generator": {"kind": "native", "name": "kowloon/meter-bank",
-        "parameters": {"count": {"expr": "select(count(meterPlan, k) > 2, clamp(round(cell(meterPlan, k, 2)), 1, 16), 1)"}, "seed": {"expr": "seed * 1000 + 700 + k"}}},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "count": {"expr": "select(count(meterPlan, k) > 2, clamp(round(cell(meterPlan, k, 2)), 1, 16), 1)"}, "seed": {"expr": "seed * 1000 + 700 + k"}}},
       "placement": {"position": ["cell(meterPlan, k, 0)", 0, "select(count(meterPlan, k) > 1, cell(meterPlan, k, 1), 1.47)"]}
     },
     {
       "id": "fascia",
       "when": "fascia",
-      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.12, 0.22], "bevel": 0.02, "bevelSegments": 2, "bevelAxis": "x"},
+      "generator": {"kind": "box", "size": [{"parameter": "width"}, 0.117, 0.217], "bevel": 0.02, "bevelSegments": 2, "bevelAxis": "x"},
       "placement": {"position": [0, -0.12, "height - 0.22"]},
       "slots": {"side": "trim", "top": "trim", "bottom": "trim"}
     }

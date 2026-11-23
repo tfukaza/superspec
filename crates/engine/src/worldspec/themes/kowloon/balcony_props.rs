@@ -1,5 +1,5 @@
 //! Shared baked plants and fitted mesh garments; source assets remain renderer-independent data.
-use super::{fixture::Fixture, palette::srgb, pen::Tint};
+use super::{fixture::Fixture, graphics_detail::GraphicsDetail, palette::srgb, pen::Tint};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::OnceLock};
 use superspec_geometry::{
@@ -147,6 +147,61 @@ fn emit(
         Some(normals),
     )
 }
+/// The share of a plant's surface its reduced levels keep, largest faces first: levels 1, 2.
+const KEPT_AREA: [f64; 2] = [0.75, 0.5];
+
+/// Which faces of a plant each reduced level draws: the largest, in the asset's own order,
+/// until they cover [`KEPT_AREA`] of its surface.
+fn largest(name: Plant) -> Result<&'static [Vec<bool>; 2], String> {
+    static KEPT: OnceLock<Result<BTreeMap<&'static str, [Vec<bool>; 2]>, String>> = OnceLock::new();
+    KEPT.get_or_init(|| {
+        [Plant::RubberPlant, Plant::TrailingPothos, Plant::SnakePlant]
+            .into_iter()
+            .map(|plant| {
+                let faces = &asset(plant.name())?.faces;
+                let areas: Vec<f64> = faces
+                    .iter()
+                    .map(|face| {
+                        let at = |i: usize| [face[i][0], face[i][1], face[i][2]];
+                        (1..face.len() - 1)
+                            .map(|i| {
+                                let (a, b, c) = (at(0), at(i), at(i + 1));
+                                let u: V3 = std::array::from_fn(|k| b[k] - a[k]);
+                                let v: V3 = std::array::from_fn(|k| c[k] - a[k]);
+                                length([
+                                    u[1] * v[2] - u[2] * v[1],
+                                    u[2] * v[0] - u[0] * v[2],
+                                    u[0] * v[1] - u[1] * v[0],
+                                ]) / 2.
+                            })
+                            .sum()
+                    })
+                    .collect();
+                let total: f64 = areas.iter().sum();
+                let mut order: Vec<usize> = (0..faces.len()).collect();
+                // Ties keep the asset's order, so the choice is the same on every platform.
+                order.sort_by(|a, b| areas[*b].total_cmp(&areas[*a]).then(a.cmp(b)));
+                let kept = KEPT_AREA.map(|share| {
+                    let mut kept = vec![false; faces.len()];
+                    let mut covered = 0.;
+                    for index in &order {
+                        if covered >= total * share {
+                            break;
+                        }
+                        kept[*index] = true;
+                        covered += areas[*index];
+                    }
+                    kept
+                });
+                Ok((plant.name(), kept))
+            })
+            .collect()
+    })
+    .as_ref()
+    .map_err(Clone::clone)?
+    .get(name.name())
+    .ok_or_else(|| format!("Missing embedded balcony asset {}.", name.name()))
+}
 pub fn plant(
     drawing: &mut Fixture<'_, '_>,
     name: Plant,
@@ -167,7 +222,17 @@ pub fn plant(
     let c = cos(rotation);
     let s = sin(rotation);
     let turn = |x: f64, y: f64, z: f64| [c * x - s * y, s * x + c * y, z];
-    for face in &source.faces {
+    // A reduced level keeps the plant's largest faces: the pot's sides and the broad leaves
+    // that carry its shape and colour, and none of the small ones between them.
+    let kept = match drawing.mesh.graphics_detail() {
+        GraphicsDetail::Full => None,
+        GraphicsDetail::Low => Some(&largest(name)?[0]),
+        GraphicsDetail::VeryLow => Some(&largest(name)?[1]),
+    };
+    for (index, face) in source.faces.iter().enumerate() {
+        if kept.is_some_and(|kept| !kept[index]) {
+            continue;
+        }
         let points: Vec<_> = face
             .iter()
             .map(|v| {
@@ -188,6 +253,10 @@ pub fn plant(
     }
     Ok(())
 }
+/// The dyes a garment is one of.
+pub(super) const DYES: [&str; 6] = [
+    "#f2efe8", "#a9c6cf", "#bdc6a4", "#d0a7a1", "#b8abc8", "#d7c695",
+];
 /// Selects and uniformly fits a garment without changing the RNG on invalid room admission.
 pub fn choose(
     rng: &mut SeededRng,
@@ -241,9 +310,7 @@ pub fn choose(
             drop: source.drop * scale + hanger_drop + 0.015,
             scale,
             support,
-            tint: srgb(rng.pick(&[
-                "#f2efe8", "#a9c6cf", "#bdc6a4", "#d0a7a1", "#b8abc8", "#d7c695",
-            ])),
+            tint: srgb(rng.pick(&DYES)),
         }));
     }
     Ok(None)

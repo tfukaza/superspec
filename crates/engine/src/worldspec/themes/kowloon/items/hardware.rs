@@ -6,6 +6,7 @@ use crate::itemspec::definition::{NativeOutput, Values};
 use crate::worldspec::themes::kowloon::{
     fasteners,
     fixture::Fixture,
+    graphics_detail::GraphicsDetail,
     palette::{mix, shade, srgb},
     pipes,
 };
@@ -72,6 +73,29 @@ pub(super) fn pipe_clip(
     // Drawn heavy: a broad band, thick ears and bolt heads that read from the street.
     let (band, half) = (radius * 1.26 + 0.003, (radius * 0.65).max(0.03));
     const EAR: f64 = 0.013;
+    let detail = d.mesh.graphics_detail();
+    if detail.reduced() {
+        // Level 1 keeps the band and one plate behind the pipe for both ears; level 2 draws
+        // the pipe alone.
+        if detail == GraphicsDetail::Low {
+            let ear = band + (radius * 1.6).max(0.06);
+            d.tube(
+                "metal",
+                &[[x, y, z - half], [x, y, z + half]],
+                band,
+                color,
+                12,
+            )?;
+            d.cuboid(
+                "metal",
+                [x - ear, 0., z - half],
+                [x + ear, detail.readable(EAR), z + half],
+                color,
+                "b",
+            )?;
+        }
+        return Ok(());
+    }
     d.tube(
         "metal",
         &[[x, y, z - half], [x, y, z + half]],
@@ -134,6 +158,11 @@ pub(super) fn junction(
 ) -> Result<(), String> {
     let half = width / 2.;
     d.cuboid("metal", [-half, 0., 0.], [half, depth, height], color, "b")?;
+    let detail = d.mesh.graphics_detail();
+    if detail == GraphicsDetail::VeryLow {
+        // The body alone: its lid and stubs are a centimetre or two across.
+        return Ok(());
+    }
     let lid = shade(color, 0.88);
     // Drawn heavy: a thick lid lapping well over the body, and bolt heads to match.
     const LID: f64 = 0.012;
@@ -293,6 +322,12 @@ pub(super) fn cable(
         .collect();
     draw(cancelled, |mesh| {
         let d = &mut fixture(mesh, "cable")?;
+        // Wires are hairlines from across the street: level 2 draws none of the bundle, its
+        // clips or its boxes, and level 1 samples each catenary half as often.
+        let detail = d.mesh.graphics_detail();
+        if detail == GraphicsDetail::VeryLow {
+            return Ok(());
+        }
         for (i, slack) in slack.iter().enumerate() {
             let lift = i as f64 * spread;
             let mut path: Vec<V3> = vec![];
@@ -300,7 +335,9 @@ pub(super) fn cable(
                 let (from, to) = (pair[0], pair[1]);
                 let turning = corner > 0. && run == 1;
                 let samples = if turning {
-                    6
+                    detail.pick(6, 3, 3)
+                } else if detail.reduced() {
+                    (((to - from) / 0.5).ceil() as usize).clamp(3, 12)
                 } else {
                     (((to - from) / 0.2).ceil() as usize).clamp(6, 28)
                 };

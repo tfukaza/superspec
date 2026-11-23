@@ -255,7 +255,13 @@ fn shutter(
                 .collect()
         })
         .collect();
-    for segment in 0..12 {
+    // The lifting ring is 12 mm of bent rod: full detail only.
+    let segments = if d.mesh.graphics_detail().reduced() {
+        0
+    } else {
+        12
+    };
+    for segment in 0..segments {
         for side in 0..6 {
             let next = (segment + 1) % 12;
             let around = (side + 1) % 6;

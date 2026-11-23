@@ -882,6 +882,8 @@ fn guard_and_unit(
                 plates: true,
                 louvred: false,
                 weight: 2.,
+                variants: super::variant_budget(),
+                entry: None,
             },
         )?;
     }

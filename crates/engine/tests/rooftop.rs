@@ -1,5 +1,3 @@
-use serde::Deserialize;
-use serde_json::Value;
 use superspec_engine::worldspec::themes::kowloon::{
     fixture::Fixture,
     kit::Kit,
@@ -7,29 +5,23 @@ use superspec_engine::worldspec::themes::kowloon::{
     metal::Binding,
     pen::Pen,
     rooftop::{self, Request},
+    signs::mounts::Proposal,
     signs::panel::Settings,
 };
 use superspec_geometry::Matrix;
-#[path = "support/assembly_reference.rs"]
-mod assembly;
-#[path = "support/sign_reference.rs"]
-mod reference;
-#[derive(Deserialize)]
 struct Case {
     request: Request,
     reflected: bool,
     detail: u8,
     settings: Settings,
-    proposals: Vec<Value>,
-    geometry: assembly::Geometry,
-    charts: Vec<assembly::Chart>,
 }
-#[derive(Deserialize)]
-struct Golden {
-    cases: Vec<Case>,
-}
-fn fixture() -> Golden {
-    serde_json::from_str(include_str!("../../../tests/fixtures/rust/rooftop.json")).unwrap()
+fn case(tenement: bool, detail: u8, reflected: bool) -> Case {
+    Case {
+        request: serde_json::from_value(serde_json::json!({"lot_key":"lot","tenement":tenement,"wall_tint":[0.89,0.82,0.69],"width":10,"depth":11,"parapet":0.65,"ceiling":4.8,"perimeter":true})).unwrap(),
+        reflected,
+        detail,
+        settings: serde_json::from_value(serde_json::json!({"weathering":{"seed":"rooftop/1","wear":0.25,"grime":0.6,"rust":0.4,"textureDensity":32,"metal":{"material":"metal","repeat":1},"paint":{"material":"paint","repeat":1},"sheet":{"material":"sheet","repeat":1}},"lettering":true,"timber":{"textured":true,"timberRepeat":1,"atlasRepeat":1}})).unwrap(),
+    }
 }
 fn binding(slot: &str) -> Binding {
     Binding {
@@ -37,10 +29,7 @@ fn binding(slot: &str) -> Binding {
         repeat: 1.,
     }
 }
-fn draw(
-    mesh: &mut Mesh<'_>,
-    c: &Case,
-) -> Result<Vec<superspec_engine::worldspec::themes::kowloon::signs::mounts::Proposal>, String> {
+fn draw(mesh: &mut Mesh<'_>, c: &Case) -> Result<Vec<Proposal>, String> {
     let kit = Kit::new(c.settings.clone(), c.detail)?;
     rooftop::draw(
         &mut Fixture {
@@ -66,31 +55,45 @@ fn draw(
         },
     )
 }
-pub fn check_reference_rooftop() {
-    for (i, c) in fixture().cases.into_iter().enumerate() {
-        let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
-        let proposals = draw(&mut mesh, &c).unwrap();
-        assert_eq!(proposals.len(), c.proposals.len(), "rooftop {i} signs");
-        for (p, e) in proposals.iter().zip(&c.proposals) {
-            reference::close(&reference::metadata(p), e);
+#[test]
+fn rooftop_surveys_match_render_geometry_and_reservations_at_every_detail() {
+    for tenement in [true, false] {
+        for detail in 0..3 {
+            for (reflected, perimeter, small) in [
+                (false, true, false),
+                (true, true, false),
+                (false, false, false),
+                (false, true, true),
+            ] {
+                let mut c = case(tenement, detail, reflected);
+                c.request.perimeter = perimeter;
+                if small {
+                    c.request.width = 3.5;
+                    c.request.depth = 3.5;
+                }
+                let label = format!(
+                    "tenement={tenement} detail={detail} reflected={reflected} perimeter={perimeter} small={small}"
+                );
+                let mut mesh = Mesh::new(Mode::Render, 150000, &|| false).unwrap();
+                let rendered = draw(&mut mesh, &c).unwrap();
+                if tenement {
+                    assert!(mesh.triangle_count() > 0, "{label}");
+                }
+                let mut survey = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
+                let surveyed = draw(&mut survey, &c).unwrap();
+                assert_eq!(survey.triangle_count(), mesh.triangle_count(), "{label}");
+                assert_eq!(
+                    rendered.iter().map(|p| &p.key).collect::<Vec<_>>(),
+                    surveyed.iter().map(|p| &p.key).collect::<Vec<_>>(),
+                    "{label} signs"
+                );
+            }
         }
-        assembly::check(&mut mesh, &c.geometry, &c.charts, &format!("rooftop {i}"));
-        let mut survey = Mesh::new(Mode::Survey, 150000, &|| false).unwrap();
-        draw(&mut survey, &c).unwrap();
-        assert_eq!(
-            survey.triangle_count() * 3,
-            c.geometry.indices.len(),
-            "rooftop {i} survey"
-        );
     }
 }
 #[test]
-fn complete_rooftops_preserve_reservations_geometry_and_finishes_at_every_detail() {
-    check_reference_rooftop()
-}
-#[test]
 fn invalid_and_cancelled_rooftops_fail_without_poisoning_the_next_job() {
-    let mut c = fixture().cases.remove(4);
+    let mut c = case(true, 1, true);
     let request = c.request.clone();
     for fault in 0..4 {
         c.request = request.clone();

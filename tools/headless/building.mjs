@@ -104,5 +104,6 @@ export async function bakeBuilding(host, source, nativeMeshes) {
   await run.ready;
   run.commit(false);
   if (Object.keys(status.unsupported).length) throw Error("Unbaked receivers: " + JSON.stringify(status.unsupported));
-  return { meshes, close: () => baking.dispose() };
+  // The atlas each baked mesh's maps and display triangles follow, for a publisher that re-lays its charts.
+  return { meshes, layouts: new Map(targets.map(target => [target.mesh.name, target.layout])), close: () => baking.dispose() };
 }

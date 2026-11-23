@@ -78,6 +78,60 @@ fn chart(
             * repeat,
     ]
 }
+trait Banded {
+    fn band(&self, index: usize) -> Result<&Tint<'_>, String>;
+}
+impl Banded for Tints<'_> {
+    fn band(&self, index: usize) -> Result<&Tint<'_>, String> {
+        Tints::band(self, index)
+    }
+}
+/// The tints of a profile reduced to its `kept` points.
+struct Kept<'a, 'b> {
+    tints: &'a Tints<'b>,
+    kept: &'a [usize],
+}
+impl Banded for Kept<'_, '_> {
+    fn band(&self, index: usize) -> Result<&Tint<'_>, String> {
+        self.tints
+            .band(self.kept[index.min(self.kept.len().saturating_sub(1))])
+    }
+}
+/// The profile points that stand more than `tolerance` off the outline through the rest.
+fn outline_points(profile: &[[f64; 2]], tolerance: f64) -> Vec<usize> {
+    let last = profile.len() - 1;
+    let mut keep = vec![false; profile.len()];
+    keep[0] = true;
+    keep[last] = true;
+    let mut spans = vec![(0, last)];
+    while let Some((a, b)) = spans.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (p, q) = (profile[a], profile[b]);
+        let along = [q[0] - p[0], q[1] - p[1]];
+        let run = along[0] * along[0] + along[1] * along[1];
+        let mut worst = (0., a);
+        for (i, v) in profile.iter().enumerate().take(b).skip(a + 1) {
+            let offset = [v[0] - p[0], v[1] - p[1]];
+            let t = if run < 1e-18 {
+                0.
+            } else {
+                ((offset[0] * along[0] + offset[1] * along[1]) / run).clamp(0., 1.)
+            };
+            let distance = hypot(offset[0] - t * along[0], offset[1] - t * along[1]);
+            if distance > worst.0 {
+                worst = (distance, i);
+            }
+        }
+        if worst.0 > tolerance {
+            keep[worst.1] = true;
+            spans.push((a, worst.1));
+            spans.push((worst.1, b));
+        }
+    }
+    (0..profile.len()).filter(|i| keep[*i]).collect()
+}
 /// A vertical turned profile. Returning down the inside creates an open vessel.
 pub fn lathe(
     d: &mut Fixture<'_, '_>,
@@ -105,7 +159,36 @@ pub fn lathe(
         );
     }
     tints.band(0)?;
+    // A reduced level turns the same profile with fewer sides, by its widest radius.
+    let widest = profile.iter().map(|p| p[0]).fold(0., f64::max);
+    let sides = d.mesh.graphics_detail().sides(widest, sides);
+    // Shelf goods (tins, jars, mugs) stand by the hundred: five sides each when reduced.
+    let sides = if d.mesh.graphics_detail().reduced() && widest < 0.07 {
+        sides.min(5)
+    } else {
+        sides
+    }
+    .max(3);
     d.mesh.check_work(profile.len() * sides * 2)?;
+    // ...and with only the profile points that shape its outline; a merged run of segments
+    // takes its first one's tint.
+    let detail = d.mesh.graphics_detail();
+    let outline: Vec<[f64; 2]>;
+    let kept: Vec<usize>;
+    let banded;
+    let (profile, tints) = if detail.reduced() && profile.len() > 2 {
+        let size = profile
+            .iter()
+            .flat_map(|p| [p[0], p[1].abs()])
+            .fold(0., f64::max)
+            .max(1e-9);
+        kept = outline_points(profile, size * detail.pick(0., 0.07, 0.12));
+        outline = kept.iter().map(|i| profile[*i]).collect();
+        banded = Kept { tints, kept: &kept };
+        (&outline[..], &banded as &dyn Banded)
+    } else {
+        (profile, tints as &dyn Banded)
+    };
     let slopes: Vec<_> = profile
         .windows(2)
         .map(|p| {
@@ -248,6 +331,18 @@ pub fn limb(
     {
         return Err("Swept shop goods require finite paths, matching bounded radii and positive flattening.".into());
     }
+    // A reduced level sweeps fewer sides and draws a hairline limb 25 mm across.
+    let detail = d.mesh.graphics_detail();
+    let widest = radii.iter().copied().fold(0., f64::max);
+    let sides = detail.sides(widest, sides).max(3);
+    let widened: Vec<f64>;
+    let radii = if detail.reduced() && widest > 0. && detail.readable(widest * 2.) > widest * 2. {
+        let grow = detail.readable(widest * 2.) / (widest * 2.);
+        widened = radii.iter().map(|r| r * grow).collect();
+        &widened[..]
+    } else {
+        radii
+    };
     d.mesh.check_work(path.len() * sides * 2)?;
     let last = path.len() - 1;
     let mut stations: Vec<Station> = Vec::with_capacity(path.len());
@@ -335,6 +430,10 @@ pub fn ball(
             "Shop ellipsoids require bounded positive dimensions and 2–128 latitude bands.".into(),
         );
     }
+    let detail = d.mesh.graphics_detail();
+    let sides = detail.sides(radius, sides).max(3);
+    // Fruit-sized balls become bipyramids: a heap reads by its colours, not its rounds.
+    let bands = detail.pick(bands, bands.min(if radius < 0.06 { 2 } else { 3 }), 2);
     d.mesh.check_work(sides * bands * 2)?;
     let at = |latitude, longitude| -> Result<Corner, String> {
         let level = cos(latitude);

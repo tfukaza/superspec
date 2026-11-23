@@ -496,12 +496,16 @@ fn instanced_unused_vertices_cannot_bypass_placed_geometry_allowance() {
     bytes.extend([0, 0, 1, 0, 2, 0]);
     bytes.extend([0, 0]);
     bytes.extend(floats(&[0., 0., 1.].repeat(10_000)));
+    // One placement of the 10,000-vertex source past the placed allowance, of which only
+    // three vertices each are referenced.
+    let placements = superspec_types::limits::MAX_MODEL_VERTICES / 10_000 + 1;
+    assert_eq!(superspec_types::limits::MAX_MODEL_VERTICES % 10_000, 0);
     let document = json!({"asset":{"version":"2.0"},"buffers":[{"byteLength":bytes.len()}],
         "bufferViews":[{"buffer":0,"byteOffset":0,"byteLength":120_000},{"buffer":0,"byteOffset":120_000,"byteLength":6},{"buffer":0,"byteOffset":120_008,"byteLength":120_000}],
         "accessors":[{"bufferView":0,"componentType":5126,"count":10_000,"type":"VEC3"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"},{"bufferView":2,"componentType":5126,"count":10_000,"type":"VEC3"}],
         "meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":2},"indices":1}]}],
-        "nodes":(0..101).map(|_|json!({"mesh":0})).collect::<Vec<_>>(),
-        "scenes":[{"nodes":(0..101).collect::<Vec<_>>()}]});
+        "nodes":(0..placements).map(|_|json!({"mesh":0})).collect::<Vec<_>>(),
+        "scenes":[{"nodes":(0..placements).collect::<Vec<_>>()}]});
     let error = imported(glb(document, bytes)).unwrap_err();
     assert!(
         error.message.contains("Placed item vertex allowance"),
@@ -718,6 +722,7 @@ fn native_vertex_sharing_preserves_all_corner_attributes_and_unreferenced_bounds
         tangents: vec![[1., 0., 0., 1.]; 8],
         additional_uvs: BTreeMap::from([(2, vec![[0., 1.]; 8])]),
         indices: vec![0, 2, 3, 1, 4, 5, 1, 5, 6],
+        roles: vec![],
     };
     mesh.normals[2] = [0., 1., 0.];
     let neighboring_uv = 1.0 + f64::EPSILON;

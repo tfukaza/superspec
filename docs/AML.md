@@ -331,7 +331,7 @@ document, subject to the scene geometry limits.
 
 | Element | Local anchor and controls |
 | --- | --- |
-| `building` | Lot origin at pavement height. `floors` selects 2–12 storeys (default 4). `width` and `depth` are 6–14 m (defaults 9.8 × 7). `seed` selects repeatable architecture and dressing (0–31, defaults to floor count). Use `front-trade` to open the first street-facing bay as a `provisions`, `grocer`, `greengrocer`, `hardware`, `herbalist`, or `roast` shop. The same intrinsic attributes share a design across placements. For the authored four-storey demo use `model="reference-corner"` with its original dimensions and seed. |
+| `building` | Lot origin at pavement height. `floors` selects 2–12 storeys (default 4). `width` and `depth` are 6–14 m (defaults 9.8 × 7). `seed` selects repeatable architecture and dressing (0–31, defaults to floor count). Use `front-trade` to open the first street-facing bay as a `provisions`, `grocer`, `greengrocer`, `hardware`, `herbalist`, or `roast` shop. `graphics-detail` draws the same building with less geometry for a lower viewer preset: `0` is the authored building (default), `1` is for Low and `2` for Very Low. It changes the picture only; placements, colours and physical output are those of level 0. `variant-budget` (0–64) states how many shapes each part type, such as an air conditioner or a window, draws from its catalogue; unstated it follows the detail level (4, 2 and 1 at levels 0, 1 and 2), a value is rounded down to a power of two, and `0` lets every instance draw its own shape. It is render-only too. The same intrinsic attributes share a design across placements. For the authored four-storey demo use `model="reference-corner"` with its original dimensions and seed. |
 | `road` | Near starting corner at road surface. `length` extends along +X and `width` toward −Y. |
 | `sidewalk` | Starting corner at paving height on the wall side. The strip runs along +X with its kerb toward −Y. Accepts `length` and `width`. |
 | `pillar`, `wall` | Closed concrete member with its lower corner at the placement. Width follows +X, depth +Y, and height +Z before heading rotation. Defaults are 0.5 × 0.5 × 3 m for a pillar and 4 × 0.28 × 2.2 m for a wall. Each member has its own metric concrete finish and shares the washroom weathering recipe. |
@@ -352,16 +352,44 @@ document, subject to the scene geometry limits.
 These theme props contribute visual geometry. Author AML slabs, walls or collision
 proxies independently where the layout requires walking surfaces or obstructions.
 
-For a four-sided building lot, supply `footprint="0 0; 10 0; 8 7; 0 7"` in place
-of `width` and `depth`. The four XY corners are in local metres, in counterclockwise
-order. The lot must be convex and its edges must each measure 6–14 m. The first
-edge takes the family's first facade. Position and heading place the finished
-building, including its shaped roof. The authored reference corner keeps its own lot.
-
 For service runs, `supports` accepts one local XYZ offset per centerline segment.
 Each offset points perpendicularly from the centerline to its mounting surface.
 The generator places clamps and footplates along straight sections. Use
 `0 0 0` for an unsupported leg such as a short wall penetration.
-The existing `<dressing><building host="…"/></dressing>` continues to dress an
-architectural host. The [WorldSpec city plan](plans/worldspec-city.md) records
-the placement and rendering scope.
+
+### Building footprints
+
+`<city><building>` places the shipped `kowloon-building` ItemSpec. Supply
+`footprint` in counterclockwise local XY metres in place of `width` and `depth`.
+The first edge takes the family's first facade. Trace a C or H as a single
+concave outer loop. An O-shaped building has one or more `<hole>` loops for
+open courtyards. The ItemSpec kit generates facades and parapets on the inner
+edges and leaves the courtyards open through the roof.
+
+| Shape | Example `footprint` in local metres |
+| --- | --- |
+| C | `0 0; 8 0; 8 2; 2 2; 2 6; 8 6; 8 8; 0 8` |
+| H | `0 0; 2 0; 2 3; 6 3; 6 0; 8 0; 8 8; 6 8; 6 5; 2 5; 2 8; 0 8` |
+
+```xml
+<architecture version="1" id="courtyard-building">
+  <city>
+    <building id="tenement" position="0 0 0" floors="3" seed="6"
+              footprint="0 0; 16 0; 16 14; 0 14" ground-shops="false">
+      <hole points="4 4; 4 10; 12 10; 12 4"/>
+    </building>
+  </city>
+</architecture>
+```
+
+Use `ground-shops="false"` for a residential ground floor and `pavement="false"`
+for a building on an existing deck. Boundaries must be simple, with at most 64
+corners across the outer loop and all holes. Holes can use either winding and
+must clear each other and the outer loop. Allow room for the inset roof and use
+courtyard edges at least 0.3 m long. Facade spans can be up to 30 m long. The
+authored reference corner uses its own footprint. Use native solids for gameplay
+collision.
+
+For standalone ItemSpec projects, use the same `footprint` coordinates and pass
+the inner loops as the `courtyards` parameter. Older scenes with building rules
+under `<dressing>` can migrate their lots to city placements using this syntax.

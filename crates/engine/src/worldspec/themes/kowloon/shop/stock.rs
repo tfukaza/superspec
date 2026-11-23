@@ -1,5 +1,5 @@
 //! Shelf stocking keeps product selection separate from placement and label variation.
-use super::super::fixture::Fixture;
+use super::super::{fixture::Fixture, graphics_detail::GraphicsDetail};
 use super::{
     forms,
     furniture::Shelf,
@@ -235,6 +235,8 @@ pub fn shelf(
         }
         let row_depth = shelf.depth / rows as f64;
         let setback = placement.float(0.05, if packed { 0.4 } else { 0.85 });
+        let massed = d.mesh.graphics_detail() == GraphicsDetail::VeryLow;
+        let mut run = None;
         for _ in 0..facings {
             if x + line.width > shelf.x1 {
                 break;
@@ -281,10 +283,28 @@ pub fn shelf(
                 };
                 let offset =
                     (setback + placement.float(-0.22, 0.22)).clamp(0., 1.) * (row_depth - depth);
+                let slip = placement.float(0., gap);
+                // A reduced level stocks the front row only; a rear row shows where the
+                // front facing is sold.
+                if row > 0 && !sold && d.mesh.graphics_detail().reduced() {
+                    continue;
+                }
+                if massed {
+                    // The lowest level sweeps the line's front row as one block below.
+                    if row == 0 {
+                        let (from, tallest, y) = run.map_or(
+                            (x, 0, shelf.y + depth / 2. + offset),
+                            |(from, _, tallest, y): (f64, f64, usize, f64)| (from, tallest, y),
+                        );
+                        run = Some((from, x + width, tallest.max(high), y));
+                    }
+                    stocked = true;
+                    continue;
+                }
                 let pen = forms::rotated(
                     &d.pen,
                     [
-                        x + width / 2. + placement.float(0., gap),
+                        x + width / 2. + slip,
                         shelf.y + row as f64 * row_depth + depth / 2. + offset,
                         shelf.z,
                     ],
@@ -302,6 +322,25 @@ pub fn shelf(
                 stocked = true;
             }
             x += width + gap;
+        }
+        if let Some((from, to, tallest, y)) = run {
+            let piece = grocer_props::captured(d, |scratch| (line.draw)(scratch, [0.; 3]))?;
+            let stretch = (to - from) / line.width;
+            let points: Vec<_> = piece
+                .into_iter()
+                .map(|(p, color)| {
+                    (
+                        [
+                            (from + to) / 2. + p[0] * stretch,
+                            y + p[1],
+                            shelf.z + p[2] * tallest as f64,
+                        ],
+                        color,
+                    )
+                })
+                .collect();
+            let pen = d.pen.clone();
+            grocer_props::mass(d, &pen, &points, GraphicsDetail::VeryLow, true)?;
         }
         x += if packed {
             rng.float(0.002, 0.006)

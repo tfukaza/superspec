@@ -625,6 +625,90 @@ fn a_bend_that_does_not_fit_fails_with_item_route_and_recovers() {
     }
 }
 
+/// The lowest and highest coordinate of the meshes' vertices along one axis.
+fn span(parts: &[&ItemMesh], axis: usize) -> [f64; 2] {
+    parts
+        .iter()
+        .flat_map(|mesh| &mesh.positions)
+        .fold([f64::INFINITY, f64::NEG_INFINITY], |[low, high], p| {
+            [low.min(p[axis]), high.max(p[axis])]
+        })
+}
+
+#[test]
+fn a_drawn_section_changes_the_body_and_nothing_the_route_reports() {
+    // A 10 mm strap along X, 60 mm tall, with a sleeve at its middle. Its width runs along Y.
+    let strap = |drawn: Option<Value>| {
+        let mut generator = json!({"section":{"kind":"rect","width":0.01,"height":0.06},
+            "points":[[0.,0.,0.],[1.,0.,0.]],"capped":true,
+            "fittings":[{"kind":"coupling","id":"sleeve","at":{"fraction":0.5},"length":0.1,"clearance":0.01}]});
+        if let Some(drawn) = drawn {
+            generator["drawn"] = drawn;
+        }
+        generate(&route(generator), &[]).unwrap()
+    };
+    let plain = strap(None);
+    // Drawn 30 mm wide and moved 10 mm along +Y: the -Y face stays where the strap's is.
+    let wide = strap(Some(
+        json!({"section":{"kind":"rect","width":0.03,"height":0.06},"offset":[0.01,0.]}),
+    ));
+    let reported = |generated: &GeneratedItem| {
+        (
+            generated.geometry.features.clone(),
+            serde_json::to_string(&generated.attachments).unwrap(),
+            serde_json::to_string(&generated.geometry.anchors).unwrap(),
+        )
+    };
+    assert_eq!(reported(&plain), reported(&wide));
+    assert!(plain.geometry.features.iter().any(|f| f.name == "end"));
+    assert!(plain.geometry.features.iter().any(|f| f.name == "joint"));
+    // The sleeve is a fitting: it is drawn round the route's own section.
+    assert_eq!(
+        meshes(&plain, &["run/fitting"]),
+        meshes(&wide, &["run/fitting"])
+    );
+    for (generated, across) in [(&plain, [-0.005, 0.005]), (&wide, [-0.005, 0.025])] {
+        let body = meshes(generated, &["run/body", "run/end"]);
+        for (found, expected) in [
+            (span(&body, 0), [0., 1.]),
+            (span(&body, 1), across),
+            (span(&body, 2), [-0.03, 0.03]),
+        ] {
+            close(found[0], expected[0], 1e-12);
+            close(found[1], expected[1], 1e-12);
+        }
+        close(
+            closed_volume(&body),
+            (across[1] - across[0]) * 0.06 * 1.,
+            1e-12,
+        );
+    }
+    assert_ne!(part_key(&plain, "run"), part_key(&wide, "run"));
+    // A drawn section that is the route's own is no change: the same meshes under the same key.
+    let same = strap(Some(
+        json!({"section":{"kind":"rect","width":0.01,"height":0.06},"offset":[0.,0.]}),
+    ));
+    assert_eq!(plain.geometry.meshes, same.geometry.meshes);
+    assert_eq!(part_key(&plain, "run"), part_key(&same, "run"));
+    // The drawn section turns the route's bends and keeps its wall, so it must fit both.
+    for generator in [
+        // Half its width and its offset reach 0.11 m, past the 0.1 m bend.
+        json!({"section":{"kind":"rect","width":0.01,"height":0.06},"bendRadius":0.1,
+            "drawn":{"section":{"kind":"rect","width":0.02,"height":0.06},"offset":[0.1,0.]},
+            "points":[[0.,0.,0.],[1.,0.,0.],[1.,1.,0.]]}),
+        // A 4 mm wall leaves nothing of a 6 mm drawn width.
+        json!({"section":{"kind":"rect","width":0.01,"height":0.06},"wallThickness":0.004,
+            "drawn":{"section":{"kind":"rect","width":0.006,"height":0.06}},
+            "points":[[0.,0.,0.],[1.,0.,0.]]}),
+    ] {
+        let error = generate(&route(generator), &[]).unwrap_err();
+        assert_eq!(
+            (error.code.as_str(), error.pointer.as_str()),
+            ("ITEM_ROUTE", "/parts/0/generator/drawn/section")
+        );
+    }
+}
+
 fn hangers(length: f64) -> GeneratedItem {
     generate(
         &route(json!({"section":{"kind":"rect","width":0.3,"height":0.2},"wallThickness":0.005,

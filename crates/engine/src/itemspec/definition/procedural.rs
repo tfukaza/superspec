@@ -25,6 +25,7 @@ fn output(mesh: Mesh<'_>) -> ItemGeometry {
             tangents: vec![],
             indices: mesh.indices,
             material_slot,
+            roles: vec![],
         }],
         nodes: vec![ItemNode {
             id: "node/0".into(),
@@ -40,6 +41,8 @@ fn output(mesh: Mesh<'_>) -> ItemGeometry {
         parts: vec![],
         features: vec![],
         anchors: vec![],
+        prototypes: BTreeMap::new(),
+        placements: vec![],
     }
 }
 fn emit(

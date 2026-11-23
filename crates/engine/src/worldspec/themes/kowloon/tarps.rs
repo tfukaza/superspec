@@ -347,23 +347,98 @@ fn panel(
         module_offset,
         pattern,
     };
-    for ids in form.indices.as_chunks::<3>().0 {
-        field.triangle(
-            d,
-            &ids.iter()
-                .map(|i| cloth::Vertex {
-                    point: fit.points[*i],
-                    uv: uv[*i],
-                    normal: normals[*i],
+    let detail = d.mesh.graphics_detail();
+    let vertex = |i: usize| cloth::Vertex {
+        point: fit.points[i],
+        uv: uv[i],
+        normal: normals[i],
+    };
+    if detail.reduced() {
+        // A coarse grid of the settled form's own vertices: the same corners, edges and sag
+        // envelope (so the same shadow on the street) with a fraction of the cloth's folds.
+        let (columns, rows) = detail.pick((0, 0), (12, 4), (6, 2));
+        let grid = coarse(form, columns, rows);
+        for j in 0..rows {
+            for i in 0..columns {
+                let at = |i: usize, j: usize| grid[j * (columns + 1) + i];
+                let (a, b, c, f) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                for ids in [[a, b, c], [a, c, f]] {
+                    if ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2] {
+                        field.triangle(d, &ids.map(vertex))?;
+                    }
+                }
+            }
+        }
+        if e.valance > 0. {
+            let front: Vec<[usize; 2]> = (0..columns)
+                .map(|i| {
+                    [
+                        grid[rows * (columns + 1) + i],
+                        grid[rows * (columns + 1) + i + 1],
+                    ]
                 })
-                .collect::<Vec<_>>(),
-        )?;
+                .filter(|[a, b]| a != b)
+                .collect();
+            cloth::valance(d, &front, &fit.points, &uv, e.valance, &field, None)?;
+        }
+        return fittings::draw(d, form, &fit, &normals, settings);
+    }
+    for ids in form.indices.as_chunks::<3>().0 {
+        field.triangle(d, &ids.iter().map(|i| vertex(*i)).collect::<Vec<_>>())?;
     }
     for [a, b] in &form.edges {
         d.tube("tarp", &[fit.points[*a], fit.points[*b]], 0.0025, edge, 4)?;
     }
     if e.valance > 0. {
-        cloth::valance(d, form, &fit.points, &uv, e.valance, &field, edge)?;
+        let maximum = form
+            .uv
+            .iter()
+            .map(|v| v[1])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let front: Vec<_> = form
+            .edges
+            .iter()
+            .copied()
+            .filter(|[a, b]| {
+                (form.uv[*a][1] - maximum).abs() < 1e-7 && (form.uv[*b][1] - maximum).abs() < 1e-7
+            })
+            .collect();
+        cloth::valance(d, &front, &fit.points, &uv, e.valance, &field, Some(edge))?;
     }
     fittings::draw(d, form, &fit, &normals, settings)
+}
+
+/// The form's vertices nearest the nodes of a `columns` by `rows` grid over its rest
+/// coordinates, row by row from the wall to the front edge.
+fn coarse(form: &Form, columns: usize, rows: usize) -> Vec<usize> {
+    let bounds: [[f64; 2]; 2] = std::array::from_fn(|axis| {
+        [
+            form.uv
+                .iter()
+                .map(|v| v[axis])
+                .fold(f64::INFINITY, f64::min),
+            form.uv
+                .iter()
+                .map(|v| v[axis])
+                .fold(f64::NEG_INFINITY, f64::max),
+        ]
+    });
+    let mut grid = Vec::with_capacity((columns + 1) * (rows + 1));
+    for j in 0..=rows {
+        for i in 0..=columns {
+            let target = [
+                bounds[0][0] + (bounds[0][1] - bounds[0][0]) * i as f64 / columns as f64,
+                bounds[1][0] + (bounds[1][1] - bounds[1][0]) * j as f64 / rows as f64,
+            ];
+            let mut best = (f64::INFINITY, 0);
+            for (index, rest) in form.uv.iter().enumerate() {
+                let distance = hypot(rest[0] - target[0], rest[1] - target[1]);
+                if distance < best.0 {
+                    best = (distance, index);
+                }
+            }
+            grid.push(best.1);
+        }
+    }
+    grid
 }

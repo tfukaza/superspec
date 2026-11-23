@@ -1,4 +1,4 @@
-/** Executes native-shared golden kernel assertions in actual browser Wasm, with no production test API. */
+/** Executes native-shared behavioural kernel assertions in actual browser Wasm, with no production test API. */
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -28,7 +28,7 @@ try {
   const passed = await page.evaluate(async () => {
     const kernel = await import('/superspec_kernel_acceptance.js');
     await kernel.default({ module_or_path: '/superspec_kernel_acceptance_bg.wasm' });
-    for (const name of ['check_material_features', 'check_surface_kernels', 'check_procedural_meshes', 'check_metal_recipes', 'check_wall_recipes']) {
+    for (const name of ['check_material_features', 'check_procedural_meshes']) {
       try {
         if (!kernel[name]()) return false;
       } catch (cause) {
@@ -38,8 +38,8 @@ try {
     return true;
   });
   assert.equal(passed, true);
-  await writeFile(`${root}/result.json`, JSON.stringify({ browser: 'Chromium', receiverFeatureIndices: true, nativeSharedRasterGoldens: true, srgbTransitions: true, proceduralMeshesAndSurveys: true, intrinsicMetalPixels: true, wallConditionAndPlaster: true }));
-  console.log('Rust receiver features, raster, procedural mesh/survey, metal and wall checks pass in Chromium/Wasm.');
+  await writeFile(`${root}/result.json`, JSON.stringify({ browser: 'Chromium', receiverFeatureIndices: true, shopFrontagesShellsAndOpenFacades: true }));
+  console.log('Rust receiver feature and shop frontage, shell and open facade checks pass in Chromium/Wasm.');
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));

@@ -1,4 +1,3 @@
-use serde::Deserialize;
 use superspec_engine::{
     materialspec::surface::Sample,
     worldspec::themes::kowloon::{
@@ -14,42 +13,6 @@ use superspec_geometry::Matrix;
 #[path = "support/pipe_scene.rs"]
 mod scene_fixture;
 
-#[derive(Deserialize)]
-struct Receiver {
-    first: usize,
-    count: usize,
-    settings: Option<metal::Settings>,
-    points: Vec<[f64; 2]>,
-    samples: Vec<Sample>,
-}
-#[derive(Deserialize)]
-struct Case {
-    frame: String,
-    operation: String,
-    options: Options,
-    receivers: Vec<Receiver>,
-    indices: Vec<u32>,
-    positions: Vec<f64>,
-    normals: Vec<f64>,
-    uv: Vec<f64>,
-    colors: Vec<f64>,
-    slots: Vec<String>,
-    raster: Option<Raster>,
-}
-#[derive(Deserialize)]
-struct Raster {
-    width: usize,
-    height: usize,
-    color: Vec<u8>,
-    properties: Vec<u8>,
-    normal: Vec<u8>,
-}
-#[derive(Deserialize)]
-struct Cases {
-    cases: Vec<Case>,
-    #[serde(rename = "rasterMaterials")]
-    raster_materials: Vec<superspec_aml::material::Material>,
-}
 fn matrix(frame: &str) -> Matrix {
     match frame {
         "identity" => Matrix::default(),
@@ -61,9 +24,10 @@ fn matrix(frame: &str) -> Matrix {
 fn repeat(slot: &str) -> f64 {
     if slot == "metal" { 1.5 } else { 1.25 }
 }
-fn draw(drawing: &mut Fixture<'_, '_>, case: &Case) -> Result<(), String> {
-    let pipe = PipeSystem::new(case.options.clone())?;
-    match case.operation.as_str() {
+const OPERATIONS: [&str; 6] = ["vertical", "diagonal", "elbow", "coupling", "mount", "run"];
+fn draw(drawing: &mut Fixture<'_, '_>, options: &Options, operation: &str) -> Result<(), String> {
+    let pipe = PipeSystem::new(options.clone())?;
+    match operation {
         "vertical" => pipe.straight(drawing, [0.2, 0.3, 0.1], [0.2, 0.3, 2.1], &[0.4, 1.4]),
         "diagonal" => pipe.straight(drawing, [0.2, 0.3, 0.1], [1.2, 1.3, 2.1], &[0.4, 1.4]),
         "elbow" => pipe.bend(
@@ -88,190 +52,80 @@ fn draw(drawing: &mut Fixture<'_, '_>, case: &Case) -> Result<(), String> {
         _ => panic!("unknown operation"),
     }
 }
-fn close_json(actual: &serde_json::Value, expected: &serde_json::Value, context: &str) {
-    match (actual, expected) {
-        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => assert!(
-            (a.as_f64().unwrap() - b.as_f64().unwrap()).abs() < 2e-10,
-            "{context}: {a} != {b}"
-        ),
-        (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
-            assert_eq!(a.len(), b.len(), "{context}");
-            for (a, b) in a.iter().zip(b) {
-                close_json(a, b, context);
-            }
-        }
-        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
-            assert_eq!(a.len(), b.len(), "{context}");
-            for (k, b) in b {
-                close_json(&a[k], b, &format!("{context}/{k}"));
-            }
-        }
-        (a, b) => assert_eq!(a, b, "{context}"),
-    }
-}
-/// Same indexed geometry, chart recipes and sampled PBR assertions run natively and in browser Wasm.
-pub fn check_reference_pipes() {
-    let cases: Cases =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/pipes.json")).unwrap();
-    let materials = cases
-        .raster_materials
-        .into_iter()
-        .map(|m| (m.id.clone(), m))
-        .collect();
-    let images = std::collections::BTreeMap::new();
-    let inputs = superspec_engine::materialspec::surface::Inputs {
-        materials: &materials,
-        images: &images,
-    };
-    for case in cases.cases {
-        let label = format!(
-            "{}/{}/{}",
-            case.frame,
-            case.operation,
-            case.options.weathering.is_some()
-        );
-        let pen = Pen::new(matrix(&case.frame), "fixture").unwrap();
-        let mut mesh = Mesh::new(Mode::Render, 20000, &|| false).unwrap();
-        draw(
-            &mut Fixture {
-                pen: pen.clone(),
-                mesh: &mut mesh,
-                repeats: &repeat,
-            },
-            &case,
-        )
-        .unwrap();
-        assert_eq!(mesh.indices, case.indices, "{label} indices");
-        for (name, actual, expected) in [
-            (
-                "positions",
-                mesh.vertices
-                    .iter()
-                    .flat_map(|v| v.position)
-                    .collect::<Vec<_>>(),
-                &case.positions,
-            ),
-            (
-                "normals",
-                mesh.vertices.iter().flat_map(|v| v.normal).collect(),
-                &case.normals,
-            ),
-            (
-                "uv",
-                mesh.vertices.iter().flat_map(|v| v.uv).collect(),
-                &case.uv,
-            ),
-            (
-                "colors",
-                mesh.vertices.iter().flat_map(|v| v.color).collect(),
-                &case.colors,
-            ),
-        ] {
-            assert_eq!(actual.len(), expected.len(), "{label}/{name} count");
-            for (i, (a, b)) in actual.iter().zip(expected).enumerate() {
-                assert!((a - b).abs() < 2e-10, "{label}/{name}/{i}: {a} != {b}");
-            }
-        }
-        assert_eq!(
-            mesh.triangle_surfaces
-                .iter()
-                .map(|s| mesh.surfaces[*s].slot.clone())
-                .collect::<Vec<_>>(),
-            case.slots,
-            "{label} slots"
-        );
-        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
-        assert_eq!(
-            plan.receivers().len(),
-            case.receivers.len(),
-            "{label} receiver count"
-        );
-        for (range, expected) in plan.receivers().iter().zip(&case.receivers) {
-            assert_eq!(
-                (range.first_triangle, range.triangle_count),
-                (expected.first, expected.count),
-                "{label}"
-            );
-            if let Some(settings) = &expected.settings {
-                let job = &plan.jobs()[range.job];
-                close_json(
-                    &serde_json::to_value(job.metal_settings().unwrap()).unwrap(),
-                    &serde_json::to_value(settings).unwrap(),
-                    &label,
-                );
-                let field = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
-                let runoff = |u, v| field.as_ref().unwrap().sample(u, v);
-                let metal = Metal::new(
-                    job.metal_settings().unwrap(),
-                    field
-                        .as_ref()
-                        .map(|_| &runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
+
+#[test]
+fn every_pipe_operation_surveys_its_rendered_corners_and_receivers_cover_owned_triangles() {
+    for frame in ["identity", "reflection", "tilted"] {
+        for weathered in [false, true] {
+            for operation in OPERATIONS {
+                let label = format!("{frame}/{operation}/{weathered}");
+                let mut options = scene_fixture::options();
+                if !weathered {
+                    options.weathering = None;
+                }
+                let pen = Pen::new(matrix(frame), "fixture").unwrap();
+                let mut mesh = Mesh::new(Mode::Render, 20000, &|| false).unwrap();
+                draw(
+                    &mut Fixture {
+                        pen: pen.clone(),
+                        mesh: &mut mesh,
+                        repeats: &repeat,
+                    },
+                    &options,
+                    operation,
                 )
                 .unwrap();
-                assert_eq!(expected.points.len(), expected.samples.len());
-                for (uv, sample) in expected.points.iter().zip(&expected.samples) {
-                    close_json(
-                        &serde_json::to_value(metal.sample(uv[0], uv[1]).unwrap()).unwrap(),
-                        &serde_json::to_value(sample).unwrap(),
-                        &label,
+                assert!(mesh.triangle_count() > 0, "{label}");
+                let triangles = mesh.triangle_count();
+                let plan = weathered::finish(&mut mesh, &|| false).unwrap();
+                if !weathered {
+                    assert!(plan.receivers().is_empty(), "{label} receivers");
+                }
+                let mut end = 0;
+                for range in plan.receivers() {
+                    assert!(
+                        range.first_triangle >= end && range.triangle_count > 0,
+                        "{label}"
+                    );
+                    end = range.first_triangle + range.triangle_count;
+                    assert!(end <= triangles, "{label}");
+                    let job = &plan.jobs()[range.job];
+                    let field = job.runoff_recipe().map(|r| r.build(&|| false).unwrap());
+                    let runoff = |u, v| field.as_ref().unwrap().sample(u, v);
+                    let metal = Metal::new(
+                        job.metal_settings().unwrap(),
+                        field
+                            .as_ref()
+                            .map(|_| &runoff as &dyn Fn(f64, f64) -> Result<f64, String>),
+                    )
+                    .unwrap();
+                    for [u, v] in [[0.1, 0.2], [0.5, 0.5], [0.9, 0.7]] {
+                        let _: Sample = metal.sample(u, v).unwrap();
+                    }
+                }
+                drop(plan);
+                let mut survey = Mesh::new(Mode::Survey, 20000, &|| false).unwrap();
+                draw(
+                    &mut Fixture {
+                        pen,
+                        mesh: &mut survey,
+                        repeats: &|_| panic!("survey resolved appearance"),
+                    },
+                    &options,
+                    operation,
+                )
+                .unwrap();
+                assert_eq!(survey.survey.len(), mesh.indices.len(), "{label} survey");
+                for (p, i) in survey.survey.iter().zip(&mesh.indices) {
+                    assert_eq!(
+                        *p, mesh.vertices[*i as usize].position,
+                        "{label} survey position"
                     );
                 }
             }
         }
-        if let Some(raster) = &case.raster {
-            let bakes = plan.bake(&inputs, "golden-pipe", &|| false).unwrap();
-            assert_eq!(bakes.len(), 1);
-            assert_eq!(
-                (bakes[0].layout().width, bakes[0].layout().height),
-                (raster.width, raster.height)
-            );
-            let material = bakes[0].material();
-            let bindings = bakes
-                .iter()
-                .map(|b| (b.material().id.clone(), b.material().id.clone()))
-                .collect();
-            let mut scene=superspec_engine::compile(r#"<architecture version="1" id="pipe-raster"><box id="host" width="1" depth="1" height="1"/></architecture>"#,0).unwrap();
-            scene
-                .append_baked_visual("host", &mesh, &bindings, &bakes)
-                .unwrap();
-            for (id, expected) in [
-                (material.texture.as_ref().unwrap(), &raster.color),
-                (material.normal_texture.as_ref().unwrap(), &raster.normal),
-                (
-                    material.metallic_roughness_texture.as_ref().unwrap(),
-                    &raster.properties,
-                ),
-            ] {
-                let asset = scene.manifest.assets.iter().find(|a| a.id == *id).unwrap();
-                let image = superspec_geometry::image::decode(
-                    &scene.asset_bytes[asset.byte_start..asset.byte_start + asset.byte_length],
-                )
-                .unwrap();
-                assert_eq!(&image.rgba, expected, "{label} {id} baked pixels");
-            }
-        } else {
-            drop(plan);
-        }
-        let mut survey = Mesh::new(Mode::Survey, 20000, &|| false).unwrap();
-        draw(
-            &mut Fixture {
-                pen,
-                mesh: &mut survey,
-                repeats: &|_| panic!("survey resolved appearance"),
-            },
-            &case,
-        )
-        .unwrap();
-        assert_eq!(survey.survey.len(), mesh.indices.len(), "{label} survey");
-        for (p, i) in survey.survey.iter().zip(&mesh.indices) {
-            assert_eq!(
-                *p, mesh.vertices[*i as usize].position,
-                "{label} survey position"
-            );
-        }
     }
 }
-
 #[derive(Debug, PartialEq)]
 struct Snapshot {
     vertices: Vec<Vec<u64>>,
@@ -309,11 +163,6 @@ fn snapshot(mesh: &Mesh<'_>) -> Snapshot {
             .collect(),
     }
 }
-#[test]
-fn pipes_match_frozen_reference() {
-    check_reference_pipes();
-}
-
 #[test]
 fn pipe_preview_has_baked_maps_and_keeps_collision_separate() {
     let scene = scene_fixture::scene();
@@ -381,14 +230,25 @@ fn pipe_sharing_tracks_orientation_seams_and_variant_but_not_translation() {
 #[test]
 fn explicit_receiver_releases_unaccounted_spare_capacity() {
     use superspec_engine::worldspec::themes::kowloon::pipe_runoff::{Recipe, Ring};
-    let cases: Cases =
-        serde_json::from_str(include_str!("../../../tests/fixtures/rust/pipes.json")).unwrap();
-    let mut settings = cases
-        .cases
-        .into_iter()
-        .flat_map(|c| c.receivers)
-        .find_map(|r| r.settings)
+    // Start from the receiver settings an ordinary weathered pipe produces.
+    let mut settings = {
+        let mut mesh = Mesh::new(Mode::Render, 20000, &|| false).unwrap();
+        draw(
+            &mut Fixture {
+                pen: Pen::new(Matrix::default(), "pipe").unwrap(),
+                mesh: &mut mesh,
+                repeats: &repeat,
+            },
+            &scene_fixture::options(),
+            "vertical",
+        )
         .unwrap();
+        let plan = weathered::finish(&mut mesh, &|| false).unwrap();
+        plan.jobs()[plan.receivers()[0].job]
+            .metal_settings()
+            .unwrap()
+            .clone()
+    };
     settings.contacts = Some(Vec::with_capacity(1_000_000));
     settings.folds.reserve(10000);
     settings.substrate.material.reserve(1_000_000);

@@ -800,6 +800,5 @@ pub fn finish<'mesh, 'cancel>(
         receivers,
         mesh,
         edge_vertices: Default::default(),
-        edge_index: None,
     })
 }

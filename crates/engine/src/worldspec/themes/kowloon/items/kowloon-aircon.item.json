@@ -3,6 +3,8 @@
   "version": 2,
   "id": "kowloon-aircon",
   "parameters": {
+    "graphicsDetail": {"type": "integer", "default": 0, "min": 0, "max": 2},
+    "variantBudget": {"type": "integer", "default": -1, "min": -1, "max": 64},
     "split": {"type": "boolean", "default": false},
     "lines": {"type": "boolean", "default": true},
     "clearance": {"type": "number", "default": 1.6, "min": 0.3, "max": 10, "unit": "m"},
@@ -12,23 +14,32 @@
     "height": {"type": "number", "default": 0.6, "min": 0.5, "max": 1.2, "unit": "m"},
     "plates": {"type": "boolean", "default": true}
   },
+  "derived": {
+    "variants": "select(variantBudget < 0, select(graphicsDetail > 1, 1, select(graphicsDetail > 0, 2, 4)), select(variantBudget >= 64, 64, select(variantBudget >= 32, 32, select(variantBudget >= 16, 16, select(variantBudget >= 8, 8, select(variantBudget >= 4, 4, select(variantBudget >= 2, 2, variantBudget)))))))",
+    "linePick": "floor(random(seed, 2) * variants) / max(variants, 1) + 0.5 - floor(floor(random(seed, 2) * variants) / max(variants, 1) + 0.5)",
+    "lineRise": "0.35 + 0.3 * select(variants > 0, linePick, random(seed, 2))",
+    "lineRun": "0.2 + 0.1 * select(variants > 0, 3 * linePick + 0.5 - floor(3 * linePick + 0.5), random(seed, 3))",
+    "lineRise2": "height + 0.7 + 0.5 * select(variants > 0, 5 * linePick + 0.25 - floor(5 * linePick + 0.25), random(seed, 4))",
+    "hosePick": "floor(random(seed, 5) * variants) / max(variants, 1) + 0.5 - floor(floor(random(seed, 5) * variants) / max(variants, 1) + 0.5)",
+    "hoseRise": "min(0.5 + 0.9 * select(variants > 0, hosePick, random(seed, 5)), clearance - 0.15)"
+  },
   "parts": [
     {
       "id": "unit",
       "when": "1 - split",
-      "generator": {"kind": "native", "name": "kowloon/aircon", "parameters": {"drop": {"parameter": "drop"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
+      "generator": {"kind": "native", "name": "kowloon/aircon", "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "drop": {"parameter": "drop"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "condenser",
       "when": "split",
       "generator": {"kind": "native", "name": "kowloon/condenser",
-        "parameters": {"width": {"parameter": "width"}, "height": {"parameter": "height"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "width": {"parameter": "width"}, "height": {"parameter": "height"}, "plates": {"parameter": "plates"}, "seed": {"parameter": "seed"}}}
     },
     {
       "id": "lines",
       "when": "split * lines",
       "generator": {"kind": "native", "name": "kowloon/conduit",
-        "parameters": {"rise": {"expr": "0.35 + 0.3 * random(seed, 2)"}, "run": {"expr": "0.2 + 0.1 * random(seed, 3)"}, "rise2": {"expr": "height + 0.7 + 0.5 * random(seed, 4)"},
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "rise": {"derived": "lineRise"}, "run": {"derived": "lineRun"}, "rise2": {"derived": "lineRise2"},
                        "radius": 0.017, "color": "#9b9985", "boxes": false}},
       "placement": {"position": ["width / 2 + 0.1", 0, "height * 0.3 - 0.5"]}
     },
@@ -36,8 +47,8 @@
       "id": "hose",
       "when": "lines",
       "generator": {"kind": "native", "name": "kowloon/conduit",
-        "parameters": {"rise": {"expr": "min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)"}, "run": 0, "rise2": 0, "radius": 0.012, "color": "#cfcabb", "boxes": false}},
-      "placement": {"position": ["select(split, -width / 2 + 0.08, 0.2)", 0, "-(min(0.5 + 0.9 * random(seed, 5), clearance - 0.15)) - select(split, 0.02, 0.1)"]}
+        "parameters": {"graphicsDetail": {"parameter": "graphicsDetail"}, "variantBudget": {"parameter": "variantBudget"}, "rise": {"derived": "hoseRise"}, "run": 0, "rise2": 0, "radius": 0.012, "color": "#cfcabb", "boxes": false}},
+      "placement": {"position": ["select(split, -width / 2 + 0.08, 0.2)", 0, "-hoseRise - select(split, 0.02, 0.1)"]}
     }
   ],
   "features": [

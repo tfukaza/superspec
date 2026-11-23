@@ -1,4 +1,4 @@
-//! Plan footprints: a counterclockwise polygon whose edges a part can repeat over, with the
+//! Plan footprints and courtyard loops whose edges a part can repeat over, with the
 //! convex corners between two street edges cut back (a 45 degree cut on a square corner), and
 //! the cut outline, optionally inset, for a roof or slab.
 //!
@@ -15,9 +15,201 @@ use super::{
     schema::{FootprintReference, ParameterType, Scalar},
 };
 use serde_json::Value;
-use superspec_geometry::math::{atan2, cos, sin};
+use superspec_geometry::{
+    V3,
+    math::{atan2, cos, sin},
+    triangulate,
+};
 
 pub(super) type P2 = [f64; 2];
+
+pub(super) struct Footprint {
+    rings: Vec<Vec<Edge>>,
+    boundary: Vec<Vec<P2>>,
+    raw_bounds: [f64; 4],
+    shaped: bool,
+}
+
+impl Footprint {
+    pub(super) fn edge_count(&self) -> usize {
+        self.rings.iter().map(Vec::len).sum()
+    }
+
+    pub(super) fn edge_locals(&self, name: &str, mut index: usize) -> Vec<(String, f64)> {
+        for (ring_index, ring) in self.rings.iter().enumerate() {
+            if index < ring.len() {
+                let mut values = locals(name, ring, index);
+                let inward = if self.shaped && ring[index].street {
+                    self.inward_depth(&ring[index])
+                } else {
+                    0.
+                };
+                values.extend([
+                    (format!("{name}_courtyard"), flag(ring_index > 0)),
+                    (format!("{name}_shaped"), flag(self.shaped)),
+                    (format!("{name}_inward_depth"), inward),
+                ]);
+                return values;
+            }
+            index -= ring.len();
+        }
+        unreachable!("footprint edge index was checked by the caller")
+    }
+
+    /// Distance to the first other boundary across the open width of this edge's inward strip.
+    /// Consecutive walls touching the strip's ends do not reduce its available depth.
+    fn inward_depth(&self, edge: &Edge) -> f64 {
+        let local = |p| {
+            let [x, y] = sub(p, edge.start);
+            let [dx, dy] = edge.direction;
+            [dx * x + dy * y, dx * y - dy * x]
+        };
+        let ends = [1e-7, edge.length - 1e-7];
+        let mut depth = 1e5_f64;
+        for [p, q] in self.boundary.iter().flat_map(|ring| pairs(ring)) {
+            let (mut a, mut b) = (local(p), local(q));
+            if a[0] > b[0] {
+                std::mem::swap(&mut a, &mut b);
+            }
+            if b[0] < ends[0] || a[0] > ends[1] || a[1].max(b[1]) <= 1e-7 {
+                continue;
+            }
+            let [x, y] = a;
+            let at = |u| y + (b[1] - y) * (u - x) / (b[0] - x);
+            if x < ends[0] {
+                a[1] = at(ends[0]);
+            }
+            if b[0] > ends[1] {
+                b[1] = at(ends[1]);
+            }
+            if a[1].max(b[1]) > 1e-7 {
+                depth = depth.min(a[1].min(b[1]).max(0.));
+            }
+        }
+        depth
+    }
+
+    pub(super) fn outlines(&self, inset: f64) -> Result<Vec<Vec<P2>>, String> {
+        let mut loops = self
+            .rings
+            .iter()
+            .map(|ring| outline(ring, inset))
+            .collect::<Vec<_>>();
+        if self.shaped {
+            for (original, inset) in self.boundary.iter().zip(&loops) {
+                if !pairs(original).zip(pairs(inset)).all(|([a, b], [p, q])| {
+                    let [ux, uy] = sub(b, a);
+                    let [vx, vy] = sub(q, p);
+                    ux * vx + uy * vy > 1e-9
+                }) {
+                    return Err("The footprint inset collapses or reverses an edge.".into());
+                }
+            }
+            loops = profile_loops(&loops)?
+                .loops
+                .into_iter()
+                .map(|ring| ring.into_iter().map(|p| [p[0], p[1]]).collect())
+                .collect();
+        }
+        Ok(loops)
+    }
+
+    pub(super) fn rectangles(&self, largest: bool) -> Result<Vec<[f64; 4]>, String> {
+        if !self.shaped {
+            return Ok(vec![self.raw_bounds]);
+        }
+        let loops = self.outlines(0.2)?;
+        let mut bounds = rectangles(&loops);
+        if largest {
+            bounds = bounds
+                .into_iter()
+                .max_by(|a, b| rectangle_area(*a).total_cmp(&rectangle_area(*b)))
+                .into_iter()
+                .collect();
+        }
+        Ok(bounds)
+    }
+
+    pub(super) fn rectangle_locals(&self, name: &str, bounds: [f64; 4]) -> Vec<(String, f64)> {
+        let mut values = self.edge_locals(name, 0);
+        for (field, value) in ["min_x", "min_y", "max_x", "max_y"].into_iter().zip(bounds) {
+            let field = format!("{name}_{field}");
+            values.iter_mut().find(|(key, _)| *key == field).unwrap().1 = value;
+        }
+        values
+    }
+}
+
+fn profile_loops(loops: &[Vec<P2>]) -> Result<superspec_geometry::Profile, String> {
+    let rings = loops
+        .iter()
+        .map(|ring| ring.iter().map(|p| [p[0], p[1], 0.] as V3).collect())
+        .collect();
+    triangulate(rings, &[], &[])
+}
+
+fn pairs(points: &[P2]) -> impl Iterator<Item = [P2; 2]> + Clone + '_ {
+    points
+        .iter()
+        .copied()
+        .zip(points.iter().copied().cycle().skip(1))
+        .map(|(a, b)| [a, b])
+}
+
+fn area(points: &[P2]) -> f64 {
+    pairs(points).map(|[a, b]| cross(a, b)).sum::<f64>() / 2.
+}
+
+fn flag(value: bool) -> f64 {
+    f64::from(u8::from(value))
+}
+
+fn rectangle_area([x0, y0, x1, y1]: [f64; 4]) -> f64 {
+    (x1 - x0) * (y1 - y0)
+}
+
+/// Between vertex heights each edge crossing moves linearly. Taking the common width at
+/// both ends of a strip keeps every box in the solid and covers rectangular wings exactly.
+fn rectangles(loops: &[Vec<P2>]) -> Vec<[f64; 4]> {
+    let mut heights: Vec<_> = loops.iter().flatten().map(|p| p[1]).collect();
+    heights.sort_by(f64::total_cmp);
+    heights.dedup_by(|a, b| (*a - *b).abs() < 1e-8);
+    let edges = loops
+        .iter()
+        .flat_map(|ring| pairs(ring))
+        .collect::<Vec<_>>();
+    let mut rectangles: Vec<[f64; 4]> = Vec::new();
+    for heights in heights.windows(2) {
+        let (y0, y1) = (heights[0], heights[1]);
+        let mid = (y0 + y1) / 2.;
+        let mut sides: Vec<_> = edges
+            .iter()
+            .filter_map(|&[a, b]| {
+                if !(a[1].min(b[1]) < mid && mid < a[1].max(b[1])) {
+                    return None;
+                }
+                let at = |y: f64| a[0] + (b[0] - a[0]) * ((y - a[1]) / (b[1] - a[1]));
+                Some([at(mid), at(y0), at(y1)])
+            })
+            .collect();
+        sides.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        for [left, right] in sides.as_chunks::<2>().0.iter().copied() {
+            let x0 = left[1].max(left[2]);
+            let x1 = right[1].min(right[2]);
+            if x1 - x0 < 1e-6 {
+                continue;
+            }
+            if let Some(previous) = rectangles.iter_mut().rev().find(|r| {
+                (r[3] - y0).abs() < 1e-8 && (r[0] - x0).abs() < 1e-8 && (r[2] - x1).abs() < 1e-8
+            }) {
+                previous[3] = y1;
+            } else {
+                rectangles.push([x0, y0, x1, y1]);
+            }
+        }
+    }
+    rectangles
+}
 
 /// One edge of a footprint and the cut corner at its end.
 #[derive(Clone, Debug)]
@@ -80,16 +272,13 @@ pub(super) fn edges(
     cut: f64,
     round: usize,
     facet: usize,
+    courtyard: bool,
 ) -> Result<Vec<Edge>, String> {
     let n = points.len();
     if n < 3 {
         return Err("A footprint has at least three points.".into());
     }
-    let area: f64 = (0..n)
-        .map(|i| cross(points[i], points[(i + 1) % n]))
-        .sum::<f64>()
-        / 2.;
-    if area <= 0. {
+    if !courtyard && area(points) <= 0. {
         return Err("A footprint runs counterclockwise seen from above (positive area).".into());
     }
     if !cut.is_finite() || cut < 0. {
@@ -100,8 +289,9 @@ pub(super) fn edges(
     for i in 0..n {
         let span = sub(points[(i + 1) % n], points[i]);
         let l = length(span);
-        if l < 0.01 {
-            return Err(format!("Footprint edge {i} is shorter than a centimeter."));
+        let minimum = if courtyard { 0.3 } else { 0.01 };
+        if l < minimum {
+            return Err(format!("Footprint edge {i} is shorter than {minimum} m."));
         }
         spans.push(([span[0] / l, span[1] / l], l));
     }
@@ -305,7 +495,7 @@ pub(super) fn resolve(
     values: &Values,
     derived: &Derived,
     pointer: &str,
-) -> Result<Vec<Edge>, ItemDiagnostic> {
+) -> Result<Footprint, ItemDiagnostic> {
     let failure = |message: String| fail(&definition.source, pointer, "ITEM_FOOTPRINT", message);
     let control = |name: &str, kind: ParameterType| -> Result<&Value, ItemDiagnostic> {
         if definition
@@ -317,15 +507,43 @@ pub(super) fn resolve(
         }
         definition.parameter(name, values, pointer, true)
     };
-    let points: Vec<P2> = control(&reference.points, ParameterType::Points)?
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|point| {
-            let xy = point.as_array()?;
-            Some([xy.first()?.as_f64()?, xy.get(1)?.as_f64()?])
-        })
-        .collect();
+    let read_points = |value: &Value| {
+        value
+            .as_array()?
+            .iter()
+            .map(|point| {
+                let [x, y] = point.as_array()?.as_slice() else {
+                    return None;
+                };
+                let xy = [x.as_f64()?, y.as_f64()?];
+                xy.iter()
+                    .all(|v| v.is_finite() && v.abs() <= 1e5)
+                    .then_some(xy)
+            })
+            .collect::<Option<Vec<P2>>>()
+    };
+    let points = read_points(control(&reference.points, ParameterType::Points)?)
+        .expect("validated points parameter");
+    let mut loops = vec![points];
+    if let Some(name) = &reference.holes {
+        let holes = control(name, ParameterType::Grid)?;
+        for hole in holes.as_array().expect("validated grid parameter") {
+            let Some(mut points) = read_points(hole).filter(|p| p.len() >= 3) else {
+                return Err(failure(
+                    "A courtyard is a loop of at least three finite XY points.".into(),
+                ));
+            };
+            if area(&points) > 0. {
+                points[1..].reverse();
+            }
+            loops.push(points);
+        }
+        if loops.iter().map(Vec::len).sum::<usize>() > 64 {
+            return Err(failure(
+                "A footprint and its courtyards have at most 64 corners in total.".into(),
+            ));
+        }
+    }
     let streets: Vec<bool> = match &reference.streets {
         None => vec![],
         Some(name) => control(name, ParameterType::Flags)?
@@ -350,7 +568,38 @@ pub(super) fn resolve(
     };
     let round = whole(&reference.round, "round", 16.)?;
     let facet = whole(&reference.facet, "facet", 255.)?;
-    edges(&points, &streets, cut, round, facet).map_err(failure)
+    let outer = &loops[0];
+    let shaped = loops.len() > 1
+        || pairs(outer)
+            .zip(pairs(outer).cycle().skip(1))
+            .any(|([a, b], [_, c])| cross(sub(b, a), sub(c, b)) < -1e-9);
+    let mut rings = vec![edges(outer, &streets, cut, round, facet, false).map_err(failure)?];
+    if shaped || outer.len() > 4 {
+        profile_loops(&loops).map_err(failure)?;
+    }
+    for hole in &loops[1..] {
+        rings.push(edges(hole, &[], 0., 0, 0, true).map_err(failure)?);
+    }
+    let raw_bounds = outer.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |b, [x, y]| [b[0].min(*x), b[1].min(*y), b[2].max(*x), b[3].max(*y)],
+    );
+    let boundary = if shaped {
+        rings.iter().map(|ring| outline(ring, 0.)).collect()
+    } else {
+        vec![]
+    };
+    Ok(Footprint {
+        rings,
+        boundary,
+        raw_bounds,
+        shaped,
+    })
 }
 
 /// The values a copy along edge `edge` reads, as `<name>_<field>`.
