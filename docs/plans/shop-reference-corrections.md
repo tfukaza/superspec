@@ -1,5 +1,7 @@
 # Shop reference corrections
 
+> Superseded on 2026-11-22: the frozen JSON captures, their maintenance drivers and the tests that compared generator output against them were removed. Tests now check behaviour rather than captured outcomes; this record is historical.
+
 The extraction retained the Rust implementation at `fb5df8c`. Its storefront
 updates intentionally ported selected parts of the later TypeScript implementation.
 The older frozen references must therefore be corrected by supported feature, not
@@ -82,7 +84,7 @@ closure. The tiled floor retains its complete expected triangles with the explic
 native `room-floor` ownership and must bind a raster material. Exterior envelopes,
 openings, frontage, signs and connecting spans retain full triangle comparisons.
 
-The reusable maintenance drivers are in `tests/fixtures/rust/reference`. They take
+The maintenance drivers (since removed) lived beside the captures. They took
 a reconstructed source/evidence directory. `building-shop-profile.mjs` applies the
 reviewed subset to an unmodified historical tree; its street, shop and window
 outputs were reproduced exactly against the source used for the corrected AML

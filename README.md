@@ -15,10 +15,13 @@ the scene, textures, collision data and optional runtime records.
 
 The standard glTF materials and meshes provide the portable appearance.
 `worldSpecEnvironment`, `worldSpecLighting` and `worldSpecRender` are optional scene extras. Version 1
-of the render record lists named effects. The Three.js package in
-`adapters/three/` binds supported effects and material records to the loaded
-scene. Klali installs the packaged adapter, supplies its renderer and camera,
-and owns gameplay navigation, match logic and game capture tools.
+of the render record lists named effects. The [Three.js render engine](adapters/three/README.md)
+in `adapters/three/` owns delivered scene binding, LOD, visibility, texture
+residency, shadow caching, and finishing passes. WorldSpec and Klali use the
+same published-world controller. The WorldSpec, ItemSpec, MaterialSpec, and
+TreeSpec authoring previews use the same graphics profiles, LOD selection, and
+shader preparation with their editable scene packets. Each host owns its camera,
+frame loop, and input. Klali also owns gameplay and networking.
 The publisher can capture reflection probes directly from an exported GLB.
 WorldSpec carries geometry and material alternatives from their source owners to
 the viewer. See the [LOD authoring and export contract](docs/LOD.md) for item,
@@ -74,6 +77,11 @@ projector effects from the current view. Set `paintedshadows=on` or
 The viewer build requires no compiler Wasm. The Basis transcoder decodes KTX2 textures.
 For offline GPU bakes, install the native Node bindings with `npm ci --prefix tools/headless`,
 build the shared shaders with `npm run build:headless`, and build `superspec-studio` in release mode.
+The headless bundle embeds the Kowloon item definitions and the mapping from a compiled
+building to its shading project (`editor/city-project.ts`), so rebuild it together with the
+executables after changing either. `node --test tests/headless-building-levels.test.mjs`
+checks that the bundle and `superspec-studio` regenerate the building each prototype was
+compiled as, at every `graphics-detail`.
 LevelSpec's Stoa building and arena exporters use these tools directly. Set `STUDIO_CLI`
 when the executable is outside `target/release`. See the [pipeline and comparison notes](docs/plans/native-pipelines.md) for timings and visual checks.
 
@@ -163,7 +171,8 @@ browser for the reflection capture.
 - `crates/catalog`: shipped material definitions and image identities;
   the AML crate retains their declaration adapter.
 - `assets/materials`: catalog image bytes, supplied by native/browser hosts.
-- `browser`: shared model transport, renderer, worker runtime and navigation.
+- `adapters/three`: distributable Three.js runtime for scenes and previews.
+- `browser`: editable scene packets, preview assembly, worker runtime and navigation.
 - `editor`: AML, material and item editors, plus native live-preview entry points.
 - `tools/browser.mjs`: shared browser-automation launcher for engine checks and
   LevelSpec capture/planning scripts; consumers do not import test internals.

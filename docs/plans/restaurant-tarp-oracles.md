@@ -1,5 +1,7 @@
 # Restaurant and canvas reference corrections
 
+> Superseded on 2026-11-22: the frozen JSON captures, their maintenance drivers and the tests that compared generator output against them were removed. Tests now check behaviour rather than captured outcomes; this record is historical.
+
 The restaurant and canvas fixtures predate intentional changes already present in
 the supported Rust implementation. This correction changes expected evidence; it
 does not change those producers or relax their tests.
@@ -38,7 +40,7 @@ interior correction. Only that canvas's values and winding change. All other
 facade geometry, material slots, receiver records and the interior revision remain
 unchanged.
 
-The optional drivers under `tests/fixtures/rust/reference/` capture the actual
+The optional drivers (since removed) captured the actual
 historical producers and apply guarded deltas; they never import Rust output.
 Each updated fixture records original bytes and source hashes. The staged source,
 complete before/after observations and comparison reports are retained under

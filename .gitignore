@@ -4,7 +4,3 @@ node_modules/
 *.log
 *.tsbuildinfo
 __pycache__/
-# Golden engine fixtures (637 MB; building.json exceeds GitHub's 100 MB file limit) stay local
-# until a storage approach (Git LFS or compressed fixtures) is chosen. Engine tests that embed
-# them with include_str! need a local copy.
-tests/fixtures/rust/

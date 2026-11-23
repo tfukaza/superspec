@@ -1,5 +1,7 @@
 # Historical fixture corrections
 
+> Superseded on 2026-11-22: the frozen JSON captures, their maintenance drivers and the tests that compared generator output against them were removed. Tests now check behaviour rather than captured outcomes; this record is historical.
+
 This correctness pass follows the reviewed
 `7fb777e33287efc4c942b8368b05e60bd585c56b404a40cf8d3dd449b37be3d0`
 distribution. Its five building integration failures and one window-color failure
@@ -45,7 +47,7 @@ checkout register. Unknown descendants fail. Every selected point must stay in
 the planned room; floor support, stock height, ceiling service extents and the
 register's authored display height are required. The complete building render and
 survey must agree to the delivery grid, including the independently checked outer
-structure. Maintenance drivers are under `tests/fixtures/rust/reference/building-room*.mjs`.
+structure. Its maintenance drivers (`building-room*.mjs`) have since been removed.
 
 ## Oracle policy
 
@@ -68,8 +70,8 @@ preserve that narrower contract instead of importing every later TypeScript chan
 
 ## Reproducing aggregate references
 
-The optional maintenance drivers live under `tests/fixtures/rust/reference/` and
-require explicitly staged historical TypeScript and its dependencies. Ordinary
+The optional maintenance drivers (since removed) lived beside the captures and
+required explicitly staged historical TypeScript and its dependencies. Ordinary
 builds use the frozen JSON and have no LevelSpec dependency. Original fixture data
 comes from `af7f5e22d78f1f45ff7e5ba21c56c3097f12d13d`; the fixture-era compact
 `weathered.ts` has SHA-256

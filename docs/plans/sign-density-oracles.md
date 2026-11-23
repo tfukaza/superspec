@@ -1,5 +1,7 @@
 # Sign-density reference correction
 
+> Superseded on 2026-11-22: the frozen JSON captures, their maintenance drivers and the tests that compared generator output against them were removed. Tests now check behaviour rather than captured outcomes; this record is historical.
+
 The five failing `building_aml` cases were stale reference data, not a new
 placement or collision regression. The snapshots were introduced by LevelSpec
 `af7f5e22d78f1f45ff7e5ba21c56c3097f12d13d`. The subsequent TypeScript change
@@ -79,7 +81,6 @@ window, room and canvas corrections and every unchanged sign record. UV and
 receiver comparisons remain strict.
 
 The maintained `building-signs-setup`, `building-signs-capture`,
-`building-signs-samples` and `building-signs-correct` scripts in
-`tests/fixtures/rust/reference` accept explicit source, original-fixture and output
+`building-signs-samples` and `building-signs-correct` scripts (since removed) accepted explicit source, original-fixture and output
 paths. The final corrector records the current fixture hash and writes a separate
 candidate; publication remains a deliberate merge step.

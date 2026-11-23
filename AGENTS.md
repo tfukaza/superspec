@@ -23,6 +23,8 @@ Inside the compiler, generic `materialspec` and `itemspec` code must not import
 `worldspec` or physical assembly. Kowloon recipes, assets
 and theme assembly belong under `worldspec::themes::kowloon`. Keep AML and physical
 adaptation explicit; do not move compiler internals merely to rename a directory.
+Use the shipped `kowloon-building.item.json` for procedural Kowloon buildings and
+place it in AML with `<city><building>`. Extend that kit for new building shapes.
 WorldSpec's build coordinator accepts a theme adapter; theme planning state belongs
 to the selected theme. Physical lowering stays private behind typed stages. The
 `architecture::kowloon` adapter owns concrete receiving-surface adaptation, and

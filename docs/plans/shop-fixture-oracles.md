@@ -1,5 +1,7 @@
 # Shop fixture corrections
 
+> Superseded on 2026-11-22: the frozen JSON captures, their maintenance drivers and the tests that compared generator output against them were removed. Tests now check behaviour rather than captured outcomes; this record is historical.
+
 The shared shop fixtures originally captured the TypeScript producers at
 `14ae2704d66f1eaacf0cf24d17ad4e5db8b45839`. Later Rust ports adopted appearance
 catalogs, cardboard deformation and analytic room/shelf shading while retaining
@@ -58,6 +60,6 @@ do not depend on LevelSpec or historical source trees.
 4. Review the provenance and deltas, then run the unchanged component tests and
    shared Chromium/Wasm acceptance checks before adopting corrected fixtures.
 
-All tools are under `tests/fixtures/rust/reference/`. Review evidence for this pass
+The tools lived beside the captures and have since been removed. Review evidence for this pass
 is under `generated/verification/shop-reference/`; focused native results are in
 `generated/verification/stock-final-corrections.log`.

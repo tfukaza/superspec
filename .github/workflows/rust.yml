@@ -62,6 +62,8 @@ jobs:
           CHECK_WASM_PARITY: "1"
       - run: npm run build:rust-ui
       - run: npm run check
+      - run: npm run pack:three
+      - run: npm run test:city-runtime
       - run: node --test tests/browser/rust-packet.test.ts tests/browser/rust-updates.test.ts
       - run: npx playwright install --with-deps chromium
       - run: node tests/rust-preview-browser.mjs

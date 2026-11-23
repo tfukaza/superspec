@@ -329,6 +329,30 @@ separate run. The measured advantage was GPU memory. The standard publication
 continues to use its original metallic/roughness data. The staged entry and
 integrity checks are under `generated/runtime-performance/mr-ktx2`.
 
+### Smaller web downloads
+
+Stage a browser delivery of an already published city with:
+
+```sh
+node tools/kowloon-export/city-web-delivery.mjs maps/stoacity.glb --out generated/web-map/stoacity.glb
+```
+
+The stage replaces eligible PNGs with lossless WebP only when the decoded
+dimensions and every RGBA byte match and the replacement saves space. It keeps
+geometry, material parameters and LOD index payloads, rebuilds the affected
+content-hashed buffers, and writes a whole-pack size report. JPEG images keep
+their original bytes. The web pack requires a glTF loader with
+`EXT_texture_webp` support. Keep the core PNG/JPEG publication for consumers
+that need it. Use a separate delivery directory for each variant.
+
+Serve the GLB entry with revalidation and give content-hashed companion
+resources an immutable cache lifetime. HTTP Brotli can still reduce bytes in
+the binary buffers. Compare transfer sizes with the same HTTP encoding policy
+on both packs. This stage leaves texture dimensions and LOD selection at
+their authored values. GPU-memory and texture residency changes have their
+own delivery paths. The stage accepts the core external-buffer city pack
+before optional texture-residency pairs or GPU-compressed variants are applied.
+
 ### Interactive edit measurements
 
 Run `npm run bench:world-edits -- initial.aml edited.aml next-edit.aml` against
