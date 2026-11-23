@@ -14,6 +14,8 @@ import {
   arcadeBattenLight, citySky, passageLampLight, planterCeilingLight, shopAccentLights, shopTubeLight,
 } from "../../crates/engine/src/worldspec/themes/kowloon/materials/arcade-lighting.mjs";
 import { finishArena } from "../../crates/engine/src/worldspec/themes/kowloon/authoring/arena-finish.mjs";
+import { kowloonDecorationMinimum } from "../../crates/engine/src/worldspec/themes/kowloon/authoring/graphics-visibility.mjs";
+import { graphicsAllows } from "../../adapters/three/src/graphicsVisibility.ts";
 import { finishDownstands } from "../../crates/engine/src/worldspec/themes/kowloon/authoring/downstand-finish.mjs";
 import { finishGrilleBlades } from "../../crates/engine/src/worldspec/themes/kowloon/authoring/maintenance/grille-finish.mjs";
 import { finishServicePipes } from "../../crates/engine/src/worldspec/themes/kowloon/authoring/service-pipe-finish.mjs";
@@ -250,10 +252,33 @@ for (const name of ["arena", ...new Set(placements.map((p) => p.prototype))]) {
           );
         }
       }
-      root.addChild(doc.createNode(node.getName()).setMesh(copy).setMatrix(node.getMatrix()));
+      root.addChild(doc.createNode(node.getName()).setMesh(copy).setMatrix(node.getMatrix()).setExtras(node.getExtras()));
     }
   }
   const passageTextures = name === "arena" ? await finishPassageWall(doc, "brush-78", TextureInfo) : [];
+  // Resolve inherited entity thresholds before flattening the prototype.
+  // Join does not retain primitive extras, so marked geometry keeps its own
+  // primitive through the batch step.
+  for (const node of doc.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    let minimum;
+    for (let owner = node; owner; owner = owner.getParentNode()) {
+      const tier = owner.getExtras().worldSpecMinGraphics;
+      if (tier === undefined) continue;
+      graphicsAllows(tier, tier);
+      if (minimum === undefined || graphicsAllows(minimum, tier)) minimum = tier;
+    }
+    if (minimum === undefined) continue;
+    const variant = mesh.clone();
+    for (const primitive of mesh.listPrimitives()) {
+      const local = primitive.getExtras().worldSpecMinGraphics;
+      const tier = graphicsAllows(local, minimum) ? minimum : local;
+      variant.removePrimitive(primitive);
+      variant.addPrimitive(primitive.clone().setExtras({ ...primitive.getExtras(), worldSpecMinGraphics: tier }));
+    }
+    node.setMesh(variant);
+  }
   // Native GLB includes a preview sun. Klali owns game lighting and shadow passes.
   for (const node of doc.getRoot().listNodes()) {
     if (node.getExtension("KHR_lights_punctual")) node.dispose();
@@ -267,7 +292,8 @@ for (const name of ["arena", ...new Set(placements.map((p) => p.prototype))]) {
         prim.setAttribute("TEXCOORD_0", null);
       prim.setAttribute("_SUPERSPEC_HDR_COLOR", null);
     }
-  await doc.transform(flatten(), join(), weld());
+  await doc.transform(flatten(), join({ filter: node => !node.getMesh()?.listPrimitives()
+    .some(primitive => primitive.getExtras().worldSpecMinGraphics !== undefined) }), weld());
   if (name === "arena")
     for (const texture of doc.getRoot().listTextures()) {
       if (passageTextures.includes(texture) || texture.getName().startsWith("Washroom concrete ") || texture.getName() === "Laid stone paving") continue;
@@ -333,6 +359,9 @@ const stockMaterials = new Set(["builtin:grocer-props", "builtin:shop-register",
 for (const mesh of result.getRoot().listMeshes()) {
   for (const primitive of mesh.listPrimitives()) {
     const material = primitive.getMaterial();
+    const min = kowloonDecorationMinimum(material?.getName());
+    if (min && primitive.getExtras().worldSpecMinGraphics === undefined)
+      primitive.setExtras({ ...primitive.getExtras(), worldSpecMinGraphics: min });
     if (stockMaterials.has(material?.getName()) || material?.getExtras().worldSpecOutline === false) {
       primitive.setExtras({ ...primitive.getExtras(), worldSpecOutline: false });
     }

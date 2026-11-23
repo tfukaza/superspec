@@ -5,7 +5,7 @@ import { basename, dirname, extname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import sharp from "sharp";
-import { entryBytes, imageBytes, localPath, readCityEntry, realDestination,
+import { cityCompanionUris, entryBytes, imageBytes, localPath, readCityEntry, realDestination,
   retargetLod, verifiedLod } from "./city-data-textures.mjs";
 
 export const TEXTURE_LOD_RECIPE = `superspec-city-mip2-lanczos3-linear-colour-v1-sharp${sharp.versions.sharp}-vips${sharp.versions.vips}`;
@@ -114,14 +114,8 @@ export async function stageCityTextureLods({ source, destination, cacheDirectory
   if (occupied && !relative(source, occupied)) throw Error("Staged entry must not alias the source entry.");
   const original = await readFile(source);
   const { entry, report } = await attachCityTextureLods(destination, original, { directory, cacheDirectory: cache, workers, resize });
-  const companions = new Set();
-  const collect = (value, key = "") => {
-    if (typeof value === "string" && (key === "uri" || key === "cityLod" || value.includes("/"))
-      && !/^[a-z][a-z\d+.-]*:/i.test(value) && /\.(?:bin|png|jpe?g|ktx2|json|glb)$/i.test(value)) companions.add(value);
-    else if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) collect(child, key);
-  };
-  collect(readCityEntry(original).json);
-  for (const uri of companions) await copyImmutable(localPath(directory, uri), localPath(output, uri));
+  for (const uri of cityCompanionUris(readCityEntry(original).json))
+    await copyImmutable(localPath(directory, uri), localPath(output, uri));
   await mkdir(output, { recursive: true });
   const pending = destination + "." + randomUUID() + ".tmp";
   try {

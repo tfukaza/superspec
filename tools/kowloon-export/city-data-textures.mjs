@@ -1,7 +1,7 @@
 import { copyImmutable, writeImmutable } from "./immutable-file.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, resolve, relative, isAbsolute } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
@@ -98,6 +98,44 @@ export function localPath(root, uri) {
   if (!child || child === ".." || child.startsWith("..\\") || child.startsWith("../") || isAbsolute(child))
     throw Error(`Companion URI escapes its entry directory: ${uri}`);
   return path;
+}
+
+/** glTF resources and file references in the published WorldSpec records. */
+export function cityCompanionUris(json) {
+  const uris = new Set();
+  const collect = (value, key = "") => {
+    // Embedded textures may use their original source path as a display name.
+    if (typeof value === "string" && key !== "name" && (key === "uri" || key === "cityLod" || value.includes("/"))
+      && !/^[a-z][a-z\d+.-]*:/i.test(value) && /\.(?:bin|png|jpe?g|webp|ktx2|json|glb)$/i.test(value)) uris.add(value);
+    else if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) collect(child, key);
+  };
+  collect(json);
+  return uris;
+}
+
+/** Record the companions a published entry references, and remove the ones an
+ * earlier publication of the same entry recorded that nothing references now.
+ * Files without such a record, or recorded for a sibling entry, are never removed. */
+export async function settlePublishedFiles(destination, json) {
+  const output = dirname(destination), name = basename(destination), suffix = ".files.json";
+  const files = [...cityCompanionUris(json)].sort(), keep = new Set(files), removed = [];
+  const recorded = async path => {
+    try {
+      const record = JSON.parse(await readFile(path, "utf8"));
+      return record?.version === 1 && Array.isArray(record.files) ? record.files.filter(uri => typeof uri === "string") : [];
+    } catch (error) { if (error.code === "ENOENT" || error instanceof SyntaxError) return []; throw error; }
+  };
+  const previous = await recorded(destination + suffix);
+  if (previous.some(uri => !keep.has(uri)))
+    for (const sibling of await readdir(output))
+      if (sibling.endsWith(".glb" + suffix) && sibling !== name + suffix) for (const uri of await recorded(resolve(output, sibling))) keep.add(uri);
+  for (const uri of previous) {
+    if (keep.has(uri)) continue;
+    await rm(localPath(output, uri), { force: true });
+    removed.push(uri);
+  }
+  await writeFile(destination + suffix, JSON.stringify({ version: 1, entry: name, files }));
+  return removed;
 }
 
 export async function imageBytes(json, tail, directory, image) {
@@ -205,14 +243,8 @@ export async function stageCityDataTextures({ source, destination, cacheDirector
     if (records.length) json.extensionsUsed = [...new Set([...(json.extensionsUsed ?? []), BASIS])];
     if (records.length) await retargetLod(json, lod, output, folder);
     // Buffer/image URIs and sidecars such as cityLod are the complete published dependencies.
-    const companions = new Set();
-    const collect = (value, key = "") => {
-      if (typeof value === "string" && (key === "uri" || key === "cityLod" || value.includes("/"))
-        && !/^[a-z][a-z\d+.-]*:/i.test(value) && /\.(?:bin|png|jpe?g|ktx2|json|glb)$/i.test(value)) companions.add(value);
-      else if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) collect(child, key);
-    };
-    collect(readCityEntry(original).json);
-    for (const uri of companions) await copyImmutable(localPath(directory, uri), localPath(output, uri));
+    for (const uri of cityCompanionUris(readCityEntry(original).json))
+      await copyImmutable(localPath(directory, uri), localPath(output, uri));
     await mkdir(output, { recursive: true });
     const pending = destination + "." + randomUUID() + ".tmp";
     try {
@@ -229,9 +261,22 @@ export async function stageCityDataTextures({ source, destination, cacheDirector
 async function main() {
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     out: { type: "string" }, cache: { type: "string" }, cli: { type: "string" }, workers: { type: "string" }, help: { type: "boolean" },
+    "gpu-textures": { type: "string" }, "color-codec": { type: "string" }, psnr: { type: "boolean" }, streaming: { type: "string" },
   } });
-  if (values.help) { console.log("Usage: node tools/kowloon-export/city-data-textures.mjs ENTRY.glb --out STAGED.glb [--cache DIR --cli superspec-materials --workers 4]\nOpt-in UASTC metallic/roughness atlases; preserves original PNG/JPEG fallback and all other maps. Source and output directories must differ."); return; }
+  if (values.help) { console.log("Usage: node tools/kowloon-export/city-data-textures.mjs ENTRY.glb --out STAGED.glb [--cache DIR --cli superspec-materials --workers 4]\nOpt-in UASTC metallic/roughness atlases; preserves original PNG/JPEG fallback and all other maps. Source and output directories must differ.\n\n  --gpu-textures medium|low|very-low  Publish every texture as KTX2 (KHR_texture_basisu, required) with that tier's map content.\n  --color-codec etc1s|uastc           Colour pages with --gpu-textures (etc1s). --psnr measures each encoded texture.\n  --streaming off|policy|all          Quarter-edge distant companions: none, the Medium texture LOD policy, or every surface family."); return; }
   if (positionals.length !== 1 || !values.out) throw Error("Supply ENTRY.glb and --out STAGED.glb. Use --help for usage.");
+  if (values["gpu-textures"]) {
+    const { gpuTextureTiers, stageCityGpuTextures } = await import("./city-gpu-textures.mjs");
+    const tier = gpuTextureTiers[values["gpu-textures"]], streaming = { off: false, policy: true, all: "all" }[values.streaming ?? ""];
+    if (!tier || values.streaming !== undefined && streaming === undefined) throw Error("--gpu-textures takes medium, low or very-low and --streaming takes off, policy or all.");
+    const report = await stageCityGpuTextures({ source: positionals[0], destination: values.out, tier: values["gpu-textures"],
+      maps: values.streaming === undefined ? tier : { ...tier, streaming },
+      colorCodec: values["color-codec"], cacheDirectory: values.cache, workers: values.workers && Number(values.workers), measure: values.psnr });
+    await writeFile(resolve(dirname(report.destination), "city-gpu-textures.json"), JSON.stringify(report, null, 2));
+    const { records, ...summary } = report;
+    console.log(JSON.stringify(summary, null, 2));
+    return;
+  }
   const report = await stageCityDataTextures({ source: positionals[0], destination: values.out, cacheDirectory: values.cache, cli: values.cli, workers: Number(values.workers ?? 4) });
   await writeFile(resolve(dirname(report.destination), "city-data-textures.json"), JSON.stringify(report, null, 2));
   const { records, ...summary } = report;

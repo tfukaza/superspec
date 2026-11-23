@@ -247,3 +247,99 @@ test("bounded parallel simplification publishes the same ordered indices as a se
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+/** A flat roof of square tiles. Every tile is its own atlas chart, placed in the
+ * atlas out of order, and is finely tessellated so that a level has work to do. */
+function tiledRoof({ tiles = 12, cells = 4, size = 0.5 } = {}) {
+  const positions = [], uvs = [], indices = [], charts = [], slots = tiles * tiles, pitch = 1 / tiles, inset = pitch * 0.1;
+  for (let tile = 0; tile < slots; tile++) {
+    const tx = tile % tiles, tz = Math.floor(tile / tiles), slot = (tile * 37 + 11) % slots;
+    const chart = { x: tx * size, z: tz * size, size, u: (slot % tiles) * pitch + inset, v: Math.floor(slot / tiles) * pitch + inset, span: pitch - 2 * inset };
+    const base = positions.length / 3;
+    for (let j = 0; j <= cells; j++) for (let i = 0; i <= cells; i++) {
+      positions.push((tx + i / cells) * size, 0, (tz + j / cells) * size);
+      uvs.push(chart.u + chart.span * i / cells, chart.v + chart.span * j / cells);
+    }
+    for (let j = 0; j < cells; j++) for (let i = 0; i < cells; i++) {
+      const a = base + j * (cells + 1) + i, b = a + 1, c = a + cells + 1, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+    charts.push(chart);
+  }
+  return { positions: Float32Array.from(positions), uvs: Float32Array.from(uvs), indices: Uint32Array.from(indices), charts };
+}
+
+/** The farthest any sampled texel is shown from where its chart authored it.
+ * A sample that reads outside every chart shows texels nobody authored. */
+function farthestTexelDrift({ positions, uvs, charts }, indices) {
+  let farthest = 0;
+  for (let t = 0; t < indices.length; t += 3) for (const weights of [[1 / 3, 1 / 3, 1 / 3], [0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]]) {
+    let x = 0, z = 0, u = 0, v = 0;
+    for (let corner = 0; corner < 3; corner++) {
+      const vertex = indices[t + corner], weight = weights[corner];
+      x += weight * positions[vertex * 3]; z += weight * positions[vertex * 3 + 2];
+      u += weight * uvs[vertex * 2]; v += weight * uvs[vertex * 2 + 1];
+    }
+    const chart = charts.find(chart => u >= chart.u - 1e-6 && u <= chart.u + chart.span + 1e-6 && v >= chart.v - 1e-6 && v <= chart.v + chart.span + 1e-6);
+    if (!chart) return Infinity;
+    farthest = Math.max(farthest, Math.hypot(chart.x + (u - chart.u) / chart.span * chart.size - x, chart.z + (v - chart.v) / chart.span * chart.size - z));
+  }
+  return farthest;
+}
+
+test("protected chart seams keep every texel of a flat tiled surface where it was authored", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "superspec-seam-lod-"));
+  try {
+    await mkdir(join(directory, "roof-data"));
+    const roof = tiledRoof(), arrays = [roof.positions, roof.uvs, roof.indices];
+    // The measure itself: one tile's triangle pulled onto a corner of a tile two rows away.
+    const stretched = Uint32Array.from(roof.indices);
+    stretched[2] = 25 * 30;
+    assert.ok(farthestTexelDrift(roof, roof.indices) < 1e-5);
+    assert.ok(farthestTexelDrift(roof, stretched) > 0.25);
+    const bytes = Buffer.concat(arrays.map(array => Buffer.from(array.buffer)));
+    await writeFile(join(directory, "roof-data", "mesh.bin"), bytes);
+    let offset = 0;
+    const json = {
+      asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [0], extras: {} }], nodes: [{ mesh: 0 }],
+      meshes: [{ name: "building-0", primitives: [{ attributes: { POSITION: 0, TEXCOORD_0: 1 }, indices: 2, material: 0 }] }],
+      materials: [{ extras: { worldSpecSurface: { family: "Building atlases", surface: "Mixed surfaces with metal", recipe: "weathered-steel" } } }],
+      buffers: [{ uri: "roof-data/mesh.bin", byteLength: bytes.length }],
+      bufferViews: arrays.map(array => ({ buffer: 0, byteOffset: (offset += array.byteLength) - array.byteLength, byteLength: array.byteLength })),
+      accessors: [{ bufferView: 0, componentType: 5126, type: "VEC3", count: roof.positions.length / 3 },
+        { bufferView: 1, componentType: 5126, type: "VEC2", count: roof.uvs.length / 2 },
+        { bufferView: 2, componentType: 5125, type: "SCALAR", count: roof.indices.length }],
+    };
+    const options = { workers: 1, farProfile: "aggressive" };
+    const entry = await attachCityLod(join(directory, "roof.glb"), entryBytes(json), { ...options, seams: "protect" });
+    const published = JSON.parse(entry.toString("utf8", 20, 20 + entry.readUInt32LE(12)));
+    const sidecar = await readFile(join(directory, published.scenes[0].extras.cityLod));
+    const length = sidecar.readUInt32LE(8), start = 12 + Math.ceil(length / 4) * 4;
+    const [record] = JSON.parse(sidecar.toString("utf8", 12, 12 + length)).primitives;
+    await MeshoptDecoder.ready;
+    let reduced = 0;
+    for (const level of [...record.levels, ...record.detailLevels]) {
+      if (!level.bytes) continue;
+      const indices = new (level.componentBytes === 2 ? Uint16Array : Uint32Array)(level.count);
+      MeshoptDecoder.decodeIndexBuffer(new Uint8Array(indices.buffer), level.count, level.componentBytes,
+        sidecar.subarray(start + level.offset, start + level.offset + level.bytes));
+      reduced++;
+      // A level may move the surface by its metre budget. Its texels move no farther.
+      assert.ok(farthestTexelDrift(roof, indices) <= level.errorMeters + 1e-4,
+        `a level of ${level.count / 3} triangles shows texels away from their chart`);
+    }
+    assert.ok(reduced > 0, "the tessellated tiles leave the levels triangles to remove");
+    await assert.rejects(attachCityLod(join(directory, "roof.glb"), entryBytes(json), { ...options, seams: "loose" }), /seams must be permissive, protect or near/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a page of signs keeps every triangle, and one that only shares a page with a sign does not", async () => {
+  const { keepsEveryTriangle } = await import("./city-lod.mjs");
+  assert.equal(keepsEveryTriangle({ extras: { cityDetailKeep: true, sourceFinishes: ["blade / paint"] } }), true);
+  assert.equal(keepsEveryTriangle({ extras: { sourceFinishes: ["room / posters", "window / tube-light"] } }), true);
+  assert.equal(keepsEveryTriangle({ extras: { sourceFinishes: ["room / posters", "cage-1 / metal"] } }), false);
+  assert.equal(keepsEveryTriangle({ extras: { sourceFinishes: [] } }), false);
+  assert.equal(keepsEveryTriangle({}), false);
+});

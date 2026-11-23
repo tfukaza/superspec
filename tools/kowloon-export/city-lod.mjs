@@ -35,6 +35,14 @@ export function cityFarPolicy(material) {
         || /\b(?:sign|signage|lettering|poster|posters|tube-light|lens|emissive)\b/i.test(finish)))) return;
   return { levels: aggressiveFarLevels, flags: ["ErrorAbsolute", "Prune", "Permissive"] };
 }
+/** A material that holds nothing but signs, posters and lamps. The bake gives these finishes pages of
+ * their own (chart-atlas.mjs), and a level's share of so small a primitive would come out of an emblem's
+ * teeth or a letter's strokes, so it keeps every triangle at every distance. */
+export function keepsEveryTriangle(material) {
+  const finishes = material?.extras?.sourceFinishes;
+  return material?.extras?.cityDetailKeep === true || Array.isArray(finishes) && finishes.length > 0 && finishes.every(finish => typeof finish === "string"
+    && /\b(?:sign|signage|lettering|poster|posters|tube-light|lens|emissive)\b/i.test(finish));
+}
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const components = {
   5120: [1, "getInt8", 127], 5121: [1, "getUint8", 255],
@@ -93,9 +101,29 @@ export class GeometryReader {
   }
 }
 
-async function primitiveInputs(reader, part, scale, policy, farPolicy) {
+/** Mark the vertices where two atlas charts meet: the same position carrying
+ * different texture coordinates. A permissive collapse through such a vertex
+ * stretches one chart's triangle over its neighbour's surface, and on a flat
+ * surface nothing geometric resists it, so the texels smear into fans. The
+ * marks are meshoptimizer's per-vertex Protect bit. */
+export function chartSeamVertices(positions, uvs, reach = 0) {
+  const protect = new Uint8Array(positions.length / 3), first = new Map();
+  for (let vertex = 0; vertex < protect.length; vertex++) {
+    const key = positions[vertex * 3] + "," + positions[vertex * 3 + 1] + "," + positions[vertex * 3 + 2];
+    const other = first.get(key);
+    if (other === undefined) first.set(key, vertex);
+    else if (Math.abs(uvs[other * 2] - uvs[vertex * 2]) > reach || Math.abs(uvs[other * 2 + 1] - uvs[vertex * 2 + 1]) > reach)
+      protect[other] = protect[vertex] = 2;
+  }
+  return protect;
+}
+
+async function primitiveInputs(reader, part, scale, policy, farPolicy, seams) {
   const indices = await reader.read(part.indices, Uint32Array);
   const positions = await reader.read(part.attributes.POSITION), vertexCount = positions.length / 3;
+  const permissive = [policy, farPolicy].some(plan => plan?.flags.includes("Permissive"));
+  const protect = seams !== "permissive" && permissive && part.attributes.TEXCOORD_0 !== undefined
+    ? chartSeamVertices(positions, await reader.read(part.attributes.TEXCOORD_0), Number(process.env.SUPERSPEC_CITY_LOD_SEAM_REACH ?? 0)) : undefined;
   for (let i = 0; i < positions.length; i++) positions[i] *= scale;
   const attributes = [], weights = [];
   for (const [name, weight] of attributeWeights) {
@@ -110,10 +138,10 @@ async function primitiveInputs(reader, part, scale, policy, farPolicy) {
       fields[i * weights.length + lane + c] = values[i * width + c];
     lane += width;
   }
-  return { indices, positions, fields, weights, policy, farPolicy };
+  return { indices, positions, fields, weights, policy, farPolicy, protect, protectError: seams === "near" ? Number(process.env.SUPERSPEC_CITY_LOD_SEAM_ERROR ?? 0.18) : Infinity };
 }
 
-async function simplifyCity(jobs, reader, workers) {
+async function simplifyCity(jobs, reader, workers, seams) {
   // Largest jobs first avoids a long single-worker tail. Results stay in source order,
   // which determines both manifest and payload bytes.
   const queue = jobs.map((job, index) => ({ job, index })).sort((a, b) => b.job.work - a.job.work);
@@ -134,13 +162,14 @@ async function simplifyCity(jobs, reader, workers) {
       while (!failure && cursor < queue.length) {
         const { job, index } = queue[cursor++];
         current = job;
-        const inputs = await primitiveInputs(reader, job.part, job.scale, job.policy, job.farPolicy);
+        const inputs = await primitiveInputs(reader, job.part, job.scale, job.policy, job.farPolicy, seams);
         if (!worker) {
           results[index] = await simplifyPrimitive(inputs);
           continue;
         }
         // Transfer one primitive once for all levels. Each input owns its buffer.
-        worker.postMessage(inputs, [inputs.indices.buffer, inputs.positions.buffer, inputs.fields.buffer]);
+        worker.postMessage(inputs, [inputs.indices.buffer, inputs.positions.buffer, inputs.fields.buffer,
+          ...(inputs.protect ? [inputs.protect.buffer] : [])]);
         const reply = await replies.next();
         if (reply.done) throw Error("City LOD worker exited before returning its primitive");
         const [result] = reply.value;
@@ -162,9 +191,16 @@ async function simplifyCity(jobs, reader, workers) {
 export async function attachCityLod(destination, sourceEntry, {
   workers = Number(process.env.SUPERSPEC_CITY_LOD_WORKERS ?? Math.max(1, Math.min(4, availableParallelism() - 1))),
   farProfile = process.env.SUPERSPEC_CITY_LOD_FAR ?? "standard",
+  // "protect" keeps every atlas chart's texels on its own surface in the detail and far
+  // chains. Reduced building renditions need it: their flat tiled surfaces are many
+  // coplanar charts. "permissive" is the long-standing behaviour, with fewer triangles.
+  // "near" protects them in the levels a viewer meets up close (within 18 cm of the surface)
+  // and lets the farther ones collapse through: parts keep their own texels where that shows.
+  seams = process.env.SUPERSPEC_CITY_LOD_SEAMS ?? "permissive",
 } = {}) {
   if (!Number.isSafeInteger(workers) || workers < 1 || workers > 4) throw RangeError("City LOD workers must be between 1 and 4.");
   if (!["standard", "aggressive"].includes(farProfile)) throw RangeError("City LOD far profile must be standard or aggressive.");
+  if (!["permissive", "protect", "near"].includes(seams)) throw RangeError("City LOD seams must be permissive, protect or near.");
   const json = JSON.parse(sourceEntry.toString("utf8", 20, 20 + sourceEntry.readUInt32LE(12)));
   const scene = json.scenes[json.scene ?? 0], directory = dirname(destination);
   delete scene.extras.cityLod;
@@ -199,7 +235,7 @@ export async function attachCityLod(destination, sourceEntry, {
     for (const [primitive, part] of mesh.primitives.entries()) {
       // Each turf vertex establishes the surface sampled by the blade roots.
       // Independent building LOD simplification would move their receiving surface.
-      if (json.materials[part.material]?.extras?.grassField) continue;
+      if (json.materials[part.material]?.extras?.grassField || keepsEveryTriangle(json.materials[part.material])) continue;
       if ((part.mode ?? 4) !== 4 || part.indices === undefined) continue;
       const count = json.accessors[part.indices].count;
       if (count < 120) continue;
@@ -216,7 +252,7 @@ export async function attachCityLod(destination, sourceEntry, {
       placements.push({ meshIndex, primitive, job: jobIndices.get(key) });
     }
   }
-  const results = await simplifyCity(jobs, reader, workers);
+  const results = await simplifyCity(jobs, reader, workers, seams);
   let offset = 0;
   for (const { meshIndex, primitive, job } of placements) {
     const { record: relative, payload: bytes } = results[job];
@@ -242,10 +278,10 @@ export async function attachCityLod(destination, sourceEntry, {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (!process.argv[2] || process.argv.slice(3).some(arg => !/^--far-profile=(standard|aggressive)$/.test(arg)))
-    throw Error("Usage: node city-lod.mjs MAP.glb [--far-profile=standard|aggressive]");
+  if (!process.argv[2] || process.argv.slice(3).some(arg => !/^--(far-profile=(standard|aggressive)|seams=(permissive|protect|near))$/.test(arg)))
+    throw Error("Usage: node city-lod.mjs MAP.glb [--far-profile=standard|aggressive] [--seams=permissive|protect|near]");
   const destination = resolve(process.argv[2]);
   const source = await readFile(destination);
-  const farProfile = process.argv.slice(3).find(arg => arg.startsWith("--far-profile="))?.split("=")[1];
-  await replaceFile(destination, await attachCityLod(destination, source, { farProfile }), source);
+  const option = name => process.argv.slice(3).find(arg => arg.startsWith(`--${name}=`))?.split("=")[1];
+  await replaceFile(destination, await attachCityLod(destination, source, { farProfile: option("far-profile"), seams: option("seams") }), source);
 }

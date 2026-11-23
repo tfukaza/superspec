@@ -9,7 +9,7 @@ import {
   labelsFor,
 } from "./material-provenance.mjs";
 import { coalesceBindings, mergeEdgeVariants } from "./coalesce-materials.mjs";
-import { reflectionPanorama } from "../../browser/renderer/painted-metal-sky.ts";
+import { reflectionPanorama } from "../../adapters/three/src/paintedMetalSky.ts";
 import sharp from "sharp";
 import { GeometryReader, entryBytes } from "./city-lod.mjs";
 import { resolveSubmaterials } from "../../tools/materialspec/submaterials.mjs";
@@ -291,9 +291,18 @@ export async function attachMaterialLibrary(
       w = info.width;
       h = info.height;
     }
-    const scale = pixels ? Math.min(1, 512 / Math.max(w, h)) : 1;
+    // The residual is painted at a quarter of the authored texel density: 512 texels of a 2048
+    // page, the same share of a larger one, and more of a page already baked at a reduced
+    // density. Its crease strokes are a texel or two wide, so that density sets their width on
+    // the surface. It is stored at a quarter of its own page, as it always was.
+    const density = Math.min(1, ...rows.map((r) => r.mat.extras?.worldSpecTexelDensity ?? 1));
+    const share = pixels ? Math.max(512 / Math.max(w, h), 0.25) : 1;
+    const scale = Math.min(1, Math.max(share, 0.25 / density));
     const mw = Math.max(1, Math.round(w * scale)),
       mh = Math.max(1, Math.round(h * scale));
+    const stored = scale > share
+      ? { width: Math.max(1, Math.round(w * share)), height: Math.max(1, Math.round(h * share)), fit: "fill" }
+      : undefined;
     const mask = pixels ? new Uint8Array(mw * mh) : null,
       painted = [];
     let coverage;
@@ -454,12 +463,16 @@ export async function attachMaterialLibrary(
             }
         }
         for (let i = 0; i < mask.length; i++) out[4 * i + 3] = mask[i];
+        const residual = () => sharp(out, { raw: { width: mw, height: mh, channels: 4 } });
+        // The crease in alpha is data beside the correction, not its coverage: reduce them apart.
+        const reduced = stored && sharp(await residual().removeAlpha().resize(stored).raw().toBuffer(),
+          { raw: { width: stored.width, height: stored.height, channels: 3 } })
+          .joinChannel(await residual().extractChannel(3).resize(stored).raw().toBuffer(),
+            { raw: { width: stored.width, height: stored.height, channels: 1 } });
         corrections.set(
           pigment,
           await store(
-            await sharp(out, { raw: { width: mw, height: mh, channels: 4 } })
-              .png()
-              .toBuffer(),
+            await (reduced || residual()).png().toBuffer(),
             source,
             "Metal pigment correction and crease mask",
           ),

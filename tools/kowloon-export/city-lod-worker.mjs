@@ -31,7 +31,7 @@ function verifyIndices(source, decoded) {
 
 /** Compute every requested stream from the same source geometry in one worker. Offsets are
  * relative to this primitive until publication joins the buffers in original mesh order. */
-export async function simplifyPrimitive({ indices, positions, fields, weights, policy, farPolicy }) {
+export async function simplifyPrimitive({ indices, positions, fields, weights, policy, farPolicy, protect, protectError = Infinity }) {
   await ready;
   const vertexCount = positions.length / 3, componentBytes = vertexCount <= 65536 ? 2 : 4;
   const record = { vertexCount, nearCount: indices.length, levels: [] };
@@ -50,7 +50,9 @@ export async function simplifyPrimitive({ indices, positions, fields, weights, p
   for (const plan of plans) for (const level of plan.levels) {
     const target = 3 * Math.floor(indices.length * level.fraction / 3);
     let [simplified, error] = MeshoptSimplifier.simplifyWithAttributes(
-      indices, positions, 3, fields, weights.length, weights, null, target, level.errorMeters, plan.flags,
+      // Chart-seam marks only matter where a plan may collapse through attribute seams.
+      indices, positions, 3, fields, weights.length, weights,
+      plan.flags.includes("Permissive") && level.errorMeters <= protectError ? protect ?? null : null, target, level.errorMeters, plan.flags,
     );
     // Independent error thresholds can leave a few more triangles after a
     // different collapse sequence. Never make an optional farther tier heavier.

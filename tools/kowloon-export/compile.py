@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 import struct
 import subprocess
@@ -23,9 +24,16 @@ parser.add_argument("cli")
 parser.add_argument("output", type=Path)
 parser.add_argument("--jobs", type=int, default=min(4, os.cpu_count() or 1),
                     help="maximum independent native prototype exports (default: up to four)")
+parser.add_argument("--graphics-detail", type=int, choices=(0, 1, 2), default=0,
+                    help="building rendition for a Low (1) or Very Low (2) city pack (default: 0, as authored)")
+parser.add_argument("--variant-budget", type=int, default=None, metavar="N",
+                    help="shapes each building part type draws from its catalogue, 0 to 64; 0 is unlimited "
+                         "(default: 4, 2 or 1 by graphics detail)")
 args = parser.parse_args()
 if args.jobs < 1:
     parser.error("--jobs must be positive")
+if args.variant_budget is not None and not 0 <= args.variant_budget <= 64:
+    parser.error("--variant-budget must be from 0 to 64")
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
 project = args.scene.resolve().parent
@@ -109,7 +117,23 @@ for prop in city:
             and not passage_lamp_fits(root, brushes, city, prop)):
         continue
     intrinsic = {k: v for k, v in prop.attrib.items() if k not in ("id", "position", "heading", "count", "step", "scale")}
-    key = (prop.tag, tuple(sorted(intrinsic.items())))
+    # A tier pack draws every building at one rendition. A building that states
+    # its own level keeps it. Collision comes from the arena and is unaffected.
+    if prop.tag == "building" and args.graphics_detail:
+        intrinsic.setdefault("graphics-detail", str(args.graphics_detail))
+    # Likewise the variants per part type. Unstated, each building's level decides.
+    if prop.tag == "building" and args.variant_budget is not None:
+        intrinsic.setdefault("variant-budget", str(args.variant_budget))
+    # A courtyard belongs to the local prototype. Placement coordinates are applied later.
+    boundaries = []
+    for child in prop:
+        boundary = deepcopy(child)
+        if boundary.tail is not None and not boundary.tail.strip():
+            boundary.tail = None
+        boundaries.append(boundary)
+    body = prop.text if prop.text and prop.text.strip() else None
+    key = (prop.tag, tuple(sorted(intrinsic.items())), body,
+           tuple(ET.tostring(child) for child in boundaries))
     if key not in prototypes:
         name = f"{prop.tag}-{len(prototypes)}"
         if prop.tag == "grass-field":
@@ -120,7 +144,9 @@ for prop in city:
             copyfile(companion, target)
             lawn_sources[name] = relative.as_posix()
         source = ET.Element("architecture", version="1", id=name)
-        ET.SubElement(ET.SubElement(source, "city"), prop.tag, id="prototype", position="0 0 0", **intrinsic)
+        prototype = ET.SubElement(ET.SubElement(source, "city"), prop.tag, id="prototype", position="0 0 0", **intrinsic)
+        prototype.text = body
+        prototype.extend(boundaries)
         jobs.append((name, source, prop.tag == "tree"))
         prototypes[key] = name
     origin = list(map(float, prop.attrib["position"].split()))

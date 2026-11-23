@@ -5,11 +5,21 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile, rm, symlink } from "node:
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import sharp from "sharp";
-import { DATA_RECIPE, dataTextureKey, exclusiveDataTextures, readCityEntry, stageCityDataTextures } from "./city-data-textures.mjs";
+import { DATA_RECIPE, cityCompanionUris, dataTextureKey, exclusiveDataTextures, readCityEntry, stageCityDataTextures } from "./city-data-textures.mjs";
 import { entryBytes } from "./city-lod.mjs";
 
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const material = index => ({ pbrMetallicRoughness: { metallicRoughnessTexture: { index } } });
+
+test("embedded building texture names are not external city resources", () => {
+  const json = {
+    images: [{ name: "$generated/surfaces/tenement/0/normal.png", bufferView: 0, mimeType: "image/png" }],
+    buffers: [{ uri: "city-data/chunk.bin" }],
+    scenes: [{ extras: { cityLod: "city-data/lod.bin" } }],
+  };
+  assert.deepEqual([...cityCompanionUris(json)], ["city-data/chunk.bin", "city-data/lod.bin"]);
+});
+
 async function fixture(t, width = 1024, height = 1024) {
   const root = await mkdtemp(join(tmpdir(), "city-data-"));
   t.after(() => rm(root, { recursive: true, force: true }));
